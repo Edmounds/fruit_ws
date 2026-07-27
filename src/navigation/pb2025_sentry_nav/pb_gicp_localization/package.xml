@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>pb_gicp_localization</name>
+  <version>1.0.0</version>
+  <description>Localize odom-frame Point-LIO scans in a GLIM map and publish map to odom.</description>
+  <maintainer email="lihanchen2004@163.com">Lihan Chen</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_auto</buildtool_depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>libomp-dev</depend>
+  <depend>libpcl-all-dev</depend>
+  <depend>eigen</depend>
+  <depend>pcl_conversions</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf2_ros</depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export><build_type>ament_cmake</build_type></export>
+</package>

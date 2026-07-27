@@ -1,0 +1,12 @@
+mission_name: temp
+frame_id: odom
+planning_mode: straight_line
+start:
+  x: 0.012455762093328581
+  y: -0.0022020624453127692
+  yaw: -0.00079668609514840761
+targets: []
+goal:
+  x: 0.75299949321020077
+  y: -0.001116434123039356
+  yaw: 0.014479275996483397

@@ -1,0 +1,12 @@
+mission_name: zuozhuan
+frame_id: odom
+planning_mode: straight_line
+start:
+  x: 0.0063831983702126172
+  y: -0.0019890371917389246
+  yaw: -0.0010249798438394496
+targets: []
+goal:
+  x: 0.0028678495952966674
+  y: -0.0058002821115610169
+  yaw: 1.5631096577318819

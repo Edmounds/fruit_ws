@@ -1,0 +1,33 @@
+mission_name: keypoint_red_79
+frame_id: odom
+planning_mode: straight_line
+start:
+  x: 0
+  y: 0
+  yaw: 0
+targets:
+  - pose:
+      x: 1.5555478188986973
+      y: 2.5427335415455357
+      yaw: 1.5776622561682465
+  - pose:
+      x: 1.2690947920360576
+      y: 3.3511050931994371
+      yaw: -3.1361246670502072
+  - pose:
+      x: 1.9125381623272601
+      y: 3.3736562642208625
+      yaw: 0.003323636215766786
+relative_goals:
+  rotate_180:
+    x: 0
+    y: 0
+    yaw: 3.1415926535897931
+  youzhuan_90:
+    x: 0
+    y: 0
+    yaw: -1.5707963267948966
+  zuozhuan_90:
+    x: 0
+    y: 0
+    yaw: 1.5707963267948966

@@ -1,0 +1,17 @@
+mission_name: jiugongge_temp
+frame_id: odom
+planning_mode: straight_line
+start:
+  x: -0.00079413568359228972
+  y: 0.00098350613637905311
+  yaw: -0.0020231183196879913
+targets:
+  - pose:
+      x: 4.4634978935427307
+      y: 0.49545070058679042
+      yaw: 0.014879121809691439
+relative_goals:
+  meilin_qianjin:
+    x: 0.57758956368308811
+    y: 0
+    yaw: 0

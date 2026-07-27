@@ -1,0 +1,10 @@
+pb_diff_teleop_twist_joy:
+  ros__parameters:
+    enable_button: 4
+    turbo_button: 5
+    linear_axis: 1
+    angular_axis: 0
+    normal_linear_scale: 0.4
+    normal_angular_scale: 0.8
+    turbo_linear_scale: 0.6
+    turbo_angular_scale: 1.0

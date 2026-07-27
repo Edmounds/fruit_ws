@@ -1,0 +1,36 @@
+mission_name: blue_meilin_keypoint
+frame_id: odom
+planning_mode: straight_line
+start:
+  x: 0
+  y: 0
+  yaw: 0
+targets:
+  # entry_02_front: 入口顶 2
+  - pose:
+      x: 1.5168979695182263
+      y: -2.5451378086000584
+      yaw: -1.5615908341306486
+  # entry_02_to_01_limit: 2 顶 1
+  - pose:
+      x: 1.2470819531286197
+      y: -3.41295773233717
+      yaw: -3.1291225639051401
+  # entry_02_to_03_limit: 2 顶 3
+  - pose:
+      x: 1.8963252909065886
+      y: -3.3674300003672792
+      yaw: 0.008820152364958183
+relative_goals:
+  rotate_180:
+    x: 0
+    y: 0
+    yaw: 3.1415926535897931
+  youzhuan_90:
+    x: 0
+    y: 0
+    yaw: -1.5707963267948966
+  zuozhuan_90:
+    x: 0
+    y: 0
+    yaw: 1.5707963267948966

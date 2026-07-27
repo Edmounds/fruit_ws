@@ -1,0 +1,8 @@
+mission_manager_node:
+  ros__parameters:
+    missions_dir: ""
+    odom_topic: /Odometry
+    frame_id: map
+    planning_mode: straight_line
+    pose_avg_duration_sec: 0.5
+    auto_load_last_mission: true
