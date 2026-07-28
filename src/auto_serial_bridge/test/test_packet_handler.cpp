@@ -189,16 +189,13 @@ TEST_F(PacketHandlerTest, PayloadLongerThanProtocolMaximumIsRejectedAndResynced)
     EXPECT_EQ(pkt.as<Packet_Heartbeat>().count, 33);
 }
 
-TEST_F(PacketHandlerTest, ReliableWirePayloadLengthIsAcceptedForMerlinPickGoal) {
+TEST_F(PacketHandlerTest, ReliableWirePayloadLengthIsAcceptedForDemoReliableCommand) {
     PacketHandler handler(64);
 
-    Packet_MerlinPickGoal payload{};
-    payload.x = 1.0f;
-    payload.y = 2.0f;
-    payload.z = 3.0f;
-    payload.yaw = 4.0f;
+    Packet_DemoReliableCommand payload{};
+    payload.value = 42;
 
-    std::vector<uint8_t> frame = handler.pack(PACKET_ID_MERLINPICKGOAL, payload);
+    std::vector<uint8_t> frame = handler.pack(PACKET_ID_DEMORELIABLECOMMAND, payload);
     frame[3] = static_cast<uint8_t>(frame[3] + 1);
     frame.insert(frame.end() - 1, 0x2A);
     frame.back() = PacketHandler::calculate_checksum(frame.data() + 2, frame.size() - 3);
@@ -207,8 +204,8 @@ TEST_F(PacketHandlerTest, ReliableWirePayloadLengthIsAcceptedForMerlinPickGoal) 
 
     Packet pkt;
     ASSERT_TRUE(handler.parse_packet(pkt));
-    EXPECT_EQ(pkt.id, PACKET_ID_MERLINPICKGOAL);
-    ASSERT_EQ(pkt.payload.size(), sizeof(Packet_MerlinPickGoal) + 1);
+    EXPECT_EQ(pkt.id, PACKET_ID_DEMORELIABLECOMMAND);
+    ASSERT_EQ(pkt.payload.size(), sizeof(Packet_DemoReliableCommand) + 1);
     EXPECT_EQ(pkt.payload.back(), 0x2A);
 }
 

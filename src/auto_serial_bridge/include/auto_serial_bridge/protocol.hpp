@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <vector>
 #include <cstring>
-#include "protocol.h" // Generated MCU header
+#include "auto_serial_bridge/generated/protocol.h"
 
 namespace auto_serial_bridge {
 

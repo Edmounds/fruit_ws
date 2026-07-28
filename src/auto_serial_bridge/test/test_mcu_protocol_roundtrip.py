@@ -9,7 +9,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CODEGEN_SCRIPT = REPO_ROOT / "scripts" / "codegen.py"
-SAMPLE_CONFIG = REPO_ROOT / "config" / "protocol-sample.yaml"
+SAMPLE_CONFIG = REPO_ROOT / "config" / "protocol.yaml"
 HARNESS_SOURCE = REPO_ROOT / "test" / "test_mcu_main.c"
 
 
@@ -107,8 +107,8 @@ def _generate_and_compile(tmp_path: Path) -> tuple[dict, Path]:
             "-Wall",
             "-Wextra",
             "-I",
-            str(tmp_path / "mcu_output"),
-            str(tmp_path / "mcu_output" / "protocol.c"),
+            str(tmp_path / "generated"),
+            str(tmp_path / "generated" / "protocol.c"),
             str(HARNESS_SOURCE),
             "-o",
             str(executable),

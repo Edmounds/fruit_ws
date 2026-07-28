@@ -4,7 +4,7 @@ import time
 import pytest
 import rclpy
 import struct
-from std_msgs.msg import Int32MultiArray
+from std_msgs.msg import Float32, UInt32
 
 from pty_test_utils import (
     ID_HANDSHAKE,
@@ -149,26 +149,26 @@ class TestSerialController(SerialControllerPtyTestCase):
                 self.assertEqual(len(payload), 4)
                 self.write_serial_packet(self.pack_packet(packet_id, payload))
 
-    def test_generic_status_round_trip_uses_int32_multi_array(self):
+    def test_demo_messages_round_trip(self):
         self.ensure_running_state()
         heartbeat_id = get_message_id('Heartbeat')
-        generic_status_tx_id = get_message_id('GenericStatusTx')
-        generic_status_rx_id = get_message_id('GenericStatusRx')
+        demo_command_id = get_message_id('DemoCommand')
+        demo_telemetry_id = get_message_id('DemoTelemetry')
 
-        self.assertIsNotNone(generic_status_tx_id)
-        self.assertIsNotNone(generic_status_rx_id)
+        self.assertIsNotNone(demo_command_id)
+        self.assertIsNotNone(demo_telemetry_id)
 
-        publisher = self.node.create_publisher(Int32MultiArray, '/task/generic_status_tx', 10)
+        publisher = self.node.create_publisher(UInt32, 'demo/command', 10)
         received_msgs = []
         self.node.create_subscription(
-            Int32MultiArray,
-            '/task/generic_status_rx',
-            lambda msg: received_msgs.append(list(msg.data)),
+            Float32,
+            'demo/telemetry',
+            lambda msg: received_msgs.append(msg.data),
             10,
         )
 
-        tx_msg = Int32MultiArray()
-        tx_msg.data = [7, 8, 9]
+        tx_msg = UInt32()
+        tx_msg.data = 42
 
         tx_seen = False
         deadline = time.time() + 4.0
@@ -183,15 +183,14 @@ class TestSerialController(SerialControllerPtyTestCase):
                 self.assertEqual(len(payload), 4)
                 self.write_serial_packet(self.pack_packet(packet_id, payload))
                 continue
-            if packet_id == generic_status_tx_id:
-                self.assertEqual(list(payload[:3]), [7, 8, 9])
-                self.assertEqual(len(payload), 4)
+            if packet_id == demo_command_id:
+                self.assertEqual(struct.unpack('<I', payload)[0], 42)
                 tx_seen = True
 
-        self.assertTrue(tx_seen, "Did not observe GenericStatusTx payload on serial")
+        self.assertTrue(tx_seen, "Did not observe DemoCommand payload on serial")
 
         self.write_serial_packet(
-            self.pack_packet(generic_status_rx_id, bytes([10, 11, 12]))
+            self.pack_packet(demo_telemetry_id, struct.pack('<f', 12.5))
         )
 
         rx_deadline = time.time() + 2.0
@@ -202,5 +201,5 @@ class TestSerialController(SerialControllerPtyTestCase):
                 self.assertEqual(len(payload), 4)
                 self.write_serial_packet(self.pack_packet(packet_id, payload))
 
-        self.assertTrue(received_msgs, "Did not receive GenericStatusRx on ROS topic")
-        self.assertEqual(received_msgs[0], [10, 11, 12])
+        self.assertTrue(received_msgs, "Did not receive DemoTelemetry on ROS topic")
+        self.assertAlmostEqual(received_msgs[0], 12.5)

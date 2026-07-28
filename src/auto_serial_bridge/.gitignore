@@ -29,10 +29,4 @@ devel/
 .catkin_workspace
 _codeql_detected_source_root
 
-# output_file
-mcu_output/
-include/auto_serial_bridge/generated_bindings.hpp
-include/auto_serial_bridge/generated_config.hpp
-
-# Local config
-config/protocol.yaml
+# Generated files are emitted under the CMake build directory.

@@ -32,6 +32,11 @@ if [ -z "$ALIAS_NAME" ]; then
     exit 1
 fi
 
+if ! [[ "$ALIAS_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo -e "${RED}[错误] 别名只能包含字母、数字、点、下划线和连字符。${NC}"
+    exit 1
+fi
+
 # 提取设备信息
 echo -e "\n正在读取 $SOURCE_DEV 的硬件信息..."
 
@@ -56,11 +61,16 @@ RULES_FILE="/etc/udev/rules.d/99-${ALIAS_NAME}.rules"
 
 echo -e "\n正在生成规则文件: $RULES_FILE ..."
 
+UACCESS_TAG=""
+if udevadm --version >/dev/null 2>&1; then
+    UACCESS_TAG=', TAG+="uaccess"'
+fi
+
 if [ -n "$SERIAL" ]; then
-    RULE_CONTENT="KERNEL==\"tty*\", SUBSYSTEMS==\"usb\", ATTRS{idVendor}==\"$VID\", ATTRS{idProduct}==\"$PID\", ATTRS{serial}==\"$SERIAL\", MODE=\"0666\", SYMLINK+=\"$ALIAS_NAME\""
+    RULE_CONTENT="KERNEL==\"tty*\", SUBSYSTEMS==\"usb\", ATTRS{idVendor}==\"$VID\", ATTRS{idProduct}==\"$PID\", ATTRS{serial}==\"$SERIAL\", MODE=\"0660\", GROUP=\"dialout\"${UACCESS_TAG}, ENV{ID_MM_DEVICE_IGNORE}=\"1\", SYMLINK+=\"$ALIAS_NAME\""
 else
-    echo -e "${CYAN}[提示] 该设备没有序列号，将仅通过 VID/PID 匹配。如果有两个完全相同的设备，可能会冲突。${NC}"
-    RULE_CONTENT="KERNEL==\"tty*\", SUBSYSTEMS==\"usb\", ATTRS{idVendor}==\"$VID\", ATTRS{idProduct}==\"$PID\", MODE=\"0666\", SYMLINK+=\"$ALIAS_NAME\""
+    echo -e "${CYAN}[风险提示] 设备没有序列号，只能通过 VID/PID 匹配；连接多个相同设备时会发生规则冲突。${NC}"
+    RULE_CONTENT="KERNEL==\"tty*\", SUBSYSTEMS==\"usb\", ATTRS{idVendor}==\"$VID\", ATTRS{idProduct}==\"$PID\", MODE=\"0660\", GROUP=\"dialout\"${UACCESS_TAG}, ENV{ID_MM_DEVICE_IGNORE}=\"1\", SYMLINK+=\"$ALIAS_NAME\""
 fi
 
 # --- 修正点 2: 捕获写入错误 ---

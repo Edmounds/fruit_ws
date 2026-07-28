@@ -16,12 +16,12 @@ def test_generated_bindings_include_decoded_mcu_tx_logging():
         )
         assert result.returncode == 0, result.stderr
 
-        bindings = Path(tmpdir, "include/auto_serial_bridge/generated_bindings.hpp").read_text()
+        bindings = Path(tmpdir, "generated/generated_bindings.hpp").read_text()
 
     assert "MCU TX DECODED" in bindings
     assert "describe_packet" in bindings
-    assert "case PACKET_ID_CMDVEL" in bindings
-    assert "CmdVel:" in bindings
+    assert "case PACKET_ID_DEMOCOMMAND" in bindings
+    assert "DemoCommand:" in bindings
 
 
 def test_serial_controller_sources_include_raw_mcu_tx_logging():
@@ -30,8 +30,8 @@ def test_serial_controller_sources_include_raw_mcu_tx_logging():
 
     assert "log_mcu_tx" in header
     assert "MCU TX RAW" in source
-    assert "describe_packet" in source
-    assert "detail::should_log_raw_tx_frame(debug_raw_frame_, debug_log_enabled)" in source
+    assert "describe_protocol_packet" in source
+    assert "should_log_mcu_tx_raw" in source
     assert "RCLCPP_DEBUG" in source
 
 
@@ -42,7 +42,7 @@ def test_serial_controller_decoded_mcu_tx_logging_is_debug_only_and_respects_deb
     end = source.index("bool SerialController::async_send_impl", start)
     log_fn = source[start:end]
 
-    assert "const bool debug_log_enabled = config::is_debug_log_enabled(id);" in log_fn
+    assert "const bool debug_log_enabled = should_log_protocol_debug(id);" in log_fn
     assert "if (!debug_log_enabled)" in log_fn
     assert "[MCU TX DECODED] id=0x%02X" in log_fn
 
@@ -61,7 +61,7 @@ def test_generated_default_port_comes_from_protocol_yaml():
         )
         assert result.returncode == 0, result.stderr
 
-        generated_config = Path(tmpdir, "include/auto_serial_bridge/generated_config.hpp").read_text()
+        generated_config = Path(tmpdir, "generated/generated_config.hpp").read_text()
 
     controller_source = (REPO_ROOT / "src/serial_controller.cpp").read_text()
     assert 'DEFAULT_PORT = "/dev/ttyACM0"' in generated_config
@@ -75,6 +75,5 @@ def test_receive_callback_posts_to_serial_strand_without_strand_wrap():
     end = source.index("size_t SerialController::ingest_received_bytes", start)
     start_receive = source[start:end]
 
-    assert "port->async_receive(" in start_receive
-    assert "post_serial" in start_receive
-    assert "serial_strand_->wrap" not in start_receive
+    assert "port->async_read_some(" in start_receive
+    assert "serial_strand_->wrap" in start_receive

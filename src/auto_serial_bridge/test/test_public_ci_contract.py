@@ -14,7 +14,7 @@ CMAKELISTS_PATH = REPO_ROOT / "CMakeLists.txt"
 PACKAGE_XML_PATH = REPO_ROOT / "package.xml"
 NODE_LAUNCH_PATH = REPO_ROOT / "launch" / "serial_bridge_by_node.launch.py"
 COMPONENT_LAUNCH_PATH = REPO_ROOT / "launch" / "serial_bridge_by_component.launch.py"
-PROTOCOL_SAMPLE_PATH = REPO_ROOT / "config" / "protocol-sample.yaml"
+PROTOCOL_SAMPLE_PATH = REPO_ROOT / "config" / "protocol.yaml"
 RUNTIME_PARAMS_PATH = REPO_ROOT / "config" / "runtime_params.yaml"
 WEB_APP_PATH = REPO_ROOT / "web" / "app.js"
 WEB_INDEX_PATH = REPO_ROOT / "web" / "index.html"
@@ -109,47 +109,36 @@ def _package_dependencies() -> set[str]:
     return deps
 
 
-def test_public_workflow_only_runs_sample_self_checks():
+def test_public_workflow_builds_and_tests_humble_package():
     script = _workflow_run_script()
 
-    assert "protocol-sample.yaml" in script
+    assert "protocol.yaml" in script
     assert "scripts/codegen.py" in script
-    assert "pytest" in script
-    assert "test/test_codegen_checksum.py" in script
-
-    assert "colcon build" not in script
-    assert "colcon test" not in script
-    assert "cp src/auto_serial_bridge/config/protocol-sample.yaml src/auto_serial_bridge/config/protocol.yaml" not in script
+    assert "colcon build" in script
+    assert "colcon test" in script
+    assert "scripts/public_source_scan.py" in script
 
 
-def test_readme_documents_private_protocol_boundary():
+def test_readme_documents_tracked_public_protocol():
     readme = README_PATH.read_text()
 
-    assert "开源仓库不附带生产环境的 `config/protocol.yaml`" in readme
-    assert "`config/protocol-sample.yaml` 仅用于示例和公开自检" in readme
-    assert "公开 CI 只校验 sample 和 codegen，不执行 `colcon build` 或 `colcon test`" in readme
+    assert "仓库已经跟踪 `config/protocol.yaml`" in readme
+    assert "全新 clone 不需要复制配置" in readme
 
 
 def test_cmakelists_tracks_package_manifest_for_reconfigure_and_codegen():
     cmakelists = CMAKELISTS_PATH.read_text()
 
-    assert "set(PACKAGE_MANIFEST" in cmakelists
     assert "CMAKE_CONFIGURE_DEPENDS" in cmakelists
-    assert "${PACKAGE_MANIFEST}" in cmakelists
-    assert "DEPENDS ${PROTOCOL_YAML} ${CODEGEN_SCRIPT} ${PACKAGE_MANIFEST}" in cmakelists
-
-
-def test_readme_documents_package_version_rebuild_trigger():
-    readme = README_PATH.read_text()
-
-    assert "修改 `package.xml` 的 `<version>` 后，同样会触发重新构建流程。" in readme
+    assert "${CMAKE_CURRENT_SOURCE_DIR}/package.xml" in cmakelists
+    assert "DEPENDS ${PROTOCOL_YAML} ${CODEGEN_SCRIPT} ${CMAKE_CURRENT_SOURCE_DIR}/package.xml" in cmakelists
 
 
 def test_readme_documents_protocol_rebuild_requirement_for_launch():
     readme = README_PATH.read_text()
 
-    assert "修改 `config/protocol.yaml` 后必须重新 `colcon build`" in readme
-    assert "否则 launch 读到的仍然是 install 目录里的旧值" in readme
+    assert "修改 `config/protocol.yaml` 后必须重新执行 `colcon build" in readme
+    assert "launch 读取的是安装目录中的配置" in readme
 
 
 def test_launch_files_load_runtime_params_from_protocol_yaml(tmp_path):
@@ -167,12 +156,16 @@ def test_launch_files_load_runtime_params_from_protocol_yaml(tmp_path):
     node_description = node_module.generate_launch_description()
     component_description = component_module.generate_launch_description()
 
-    node_action = node_description.entities[0]
-    component_action = component_description.entities[0]
+    node_action = node_description.entities[-1]
+    component_action = component_description.entities[-1]
     component_node = component_action.kwargs["composable_node_descriptions"][0]
 
-    assert node_action.kwargs["parameters"] == [expected_params]
-    assert component_node.kwargs["parameters"] == [expected_params]
+    assert node_action.kwargs["parameters"][0]["baudrate"] == expected_params["baudrate"]
+    assert node_action.kwargs["parameters"][0]["debug_raw_frame"] == expected_params["debug_raw_frame"]
+    assert component_node.kwargs["parameters"][0]["baudrate"] == expected_params["baudrate"]
+    assert component_node.kwargs["parameters"][0]["debug_raw_frame"] == expected_params["debug_raw_frame"]
+    assert "LaunchConfiguration" in type(node_action.kwargs["parameters"][0]["port"]).__name__
+    assert "LaunchConfiguration" in type(component_node.kwargs["parameters"][0]["port"]).__name__
 
 
 def test_runtime_params_yaml_has_been_removed():
@@ -185,20 +178,21 @@ def test_package_xml_declares_yaml_runtime_dependency_for_launch():
     assert "python3-yaml" in deps
 
 
-def test_protocol_sample_yaml_contains_runtime_ros_section_for_launch_only():
+def test_protocol_yaml_contains_single_serial_baudrate():
     config = yaml.safe_load(PROTOCOL_SAMPLE_PATH.read_text())
     params = config["serial_controller"]["ros__parameters"]
 
-    assert list(params) == ["port", "baudrate", "timeout", "debug_raw_frame"]
+    assert list(params) == ["port", "baudrate", "debug_raw_frame"]
+    assert "baudrate" not in config["config"]
     assert "&baudrate" not in PROTOCOL_SAMPLE_PATH.read_text()
     assert "*baudrate" not in PROTOCOL_SAMPLE_PATH.read_text()
 
 
-def test_protocol_sample_yaml_is_protocol_only_without_ros_runtime_section():
+def test_protocol_yaml_has_public_structure():
     config = yaml.safe_load(PROTOCOL_SAMPLE_PATH.read_text())
 
     assert list(config) == ["serial_controller", "config", "type_mappings", "messages"]
-    assert list(config["serial_controller"]["ros__parameters"]) == ["port", "baudrate", "timeout", "debug_raw_frame"]
+    assert list(config["serial_controller"]["ros__parameters"]) == ["port", "baudrate", "debug_raw_frame"]
     assert "&baudrate" not in PROTOCOL_SAMPLE_PATH.read_text()
     assert "*baudrate" not in PROTOCOL_SAMPLE_PATH.read_text()
 
@@ -228,8 +222,8 @@ def test_protocol_sample_yaml_includes_ack_example():
 
     assert ack["id"] == 0xFD
     assert ack["direction"] == "both"
-    assert ack["sub_topic"] == "/task/ack"
-    assert ack["pub_topic"] == "/task/ack"
+    assert ack["sub_topic"] == "auto_serial_bridge/system/ack"
+    assert ack["pub_topic"] == "auto_serial_bridge/system/ack"
     assert ack["ros_msg"] == "std_msgs/msg/Int32MultiArray"
     assert [field["proto"] for field in ack["fields"]] == ["acked_id", "ack_seq"]
 
@@ -240,10 +234,24 @@ def test_protocol_sample_yaml_messages_include_debug_log_mode_setting():
     messages = {message["name"]: message for message in config["messages"]}
     system_messages = {"Ack", "Heartbeat", "Handshake"}
 
-    assert system_messages.issubset(messages), "protocol-sample.yaml should include fixed system messages"
+    assert system_messages.issubset(messages), "protocol.yaml should include fixed system messages"
 
     for name in system_messages:
         assert messages[name]["debug_log_mode"] in {"on", "off"}
+
+    assert {"DemoCommand", "DemoReliableCommand", "DemoTelemetry"}.issubset(messages)
+
+
+def test_public_protocol_contains_no_private_names():
+    protocol_text = PROTOCOL_SAMPLE_PATH.read_text()
+    forbidden_hex = (
+        "576561706f6e446f636b", "4d65726c696e5069636b", "47726964506c616365",
+        "4772696441747461636b", "47656e65726963537461747573", "2f7461736b2f",
+        "2f6465762f73746d3332", "436d6456656c",
+    )
+    for encoded in forbidden_hex:
+        forbidden = bytes.fromhex(encoded).decode()
+        assert forbidden not in protocol_text
 
 
 def test_web_editor_exposes_fixed_system_message_examples():

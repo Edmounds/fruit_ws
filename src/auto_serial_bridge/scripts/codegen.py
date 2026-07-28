@@ -53,21 +53,29 @@ def canonicalize_protocol_hash_input(protocol_source):
 
 
 def _protocol_hash_input(config_data):
-    """Return hash input with ROS-only raw-frame logging removed."""
-    if not isinstance(config_data, dict):
-        return config_data
+    """Return only fields that affect the wire protocol or peer contract."""
+    cfg = config_data.get('config', {})
+    type_mappings = config_data.get('type_mappings', {})
+    messages = []
+    for message in config_data.get('messages', []):
+        messages.append({
+            'id': message['id'],
+            'direction': message['direction'],
+            'reliable': bool(message.get('reliable', False)),
+            'field_types': [
+                get_c_type(field['type'], type_mappings)
+                for field in message.get('fields', [])
+            ],
+        })
 
-    protocol_data = dict(config_data)
-    serial_controller = protocol_data.get('serial_controller')
-    if isinstance(serial_controller, dict):
-        serial_controller = dict(serial_controller)
-        ros_parameters = serial_controller.get('ros__parameters')
-        if isinstance(ros_parameters, dict):
-            ros_parameters = dict(ros_parameters)
-            ros_parameters.pop('debug_raw_frame', None)
-            serial_controller['ros__parameters'] = ros_parameters
-        protocol_data['serial_controller'] = serial_controller
-    return protocol_data
+    return {
+        'head_byte_1': cfg['head_byte_1'],
+        'head_byte_2': cfg['head_byte_2'],
+        'checksum': cfg.get('checksum', 'CRC8').upper(),
+        'require_handshake': bool(cfg.get('require_handshake', True)),
+        'enable_heartbeat': bool(cfg.get('enable_heartbeat', True)),
+        'messages': messages,
+    }
 
 
 def calculate_protocol_hash(protocol_source):
@@ -97,6 +105,14 @@ def get_c_type(yaml_type, type_mappings):
     if yaml_type in type_mappings:
         return type_mappings[yaml_type]
     return yaml_type  # 兜底返回
+
+
+def ros_message_packages(config_data):
+    """Return sorted unique package names referenced by ros_msg entries."""
+    return sorted({
+        message['ros_msg'].split('/', 1)[0]
+        for message in config_data.get('messages', [])
+    })
 
 
 def message_payload_size(message, type_mappings):
@@ -597,6 +613,22 @@ def _normalize_debug_log_mode(value) -> str:
     return str(value).strip().lower()
 
 
+def _write_guarded_rx_debug_log(f, msg_name: str, fmt_parts, arg_parts) -> None:
+    packet_id = f"PACKET_ID_{msg_name.upper()}"
+    f.write(f"            if constexpr (config::is_debug_log_enabled({packet_id})) {{\n")
+    if fmt_parts:
+        fmt_str = ", ".join(fmt_parts)
+        args_str = ", ".join(arg_parts)
+        f.write(
+            f"                RCLCPP_DEBUG(logger, \"RX {msg_name}: {fmt_str}\", {args_str});\n"
+        )
+    else:
+        f.write(
+            f"                RCLCPP_DEBUG(logger, \"RX {msg_name}\");\n"
+        )
+    f.write("            }\n")
+
+
 def generate_ros_bindings(messages, type_mappings, config, output_path):
     """生成ROS端使用的C++绑定代码。
 
@@ -621,6 +653,7 @@ def generate_ros_bindings(messages, type_mappings, config, output_path):
         f.write("#include <functional>\n")
         f.write("#include <sstream>\n")
         f.write("#include <string>\n")
+        f.write("#include \"auto_serial_bridge/generated/generated_config.hpp\"\n")
         f.write("#include \"auto_serial_bridge/serial_controller.hpp\"\n")
         for inc in includes:
              parts = inc.split('/')
@@ -629,7 +662,7 @@ def generate_ros_bindings(messages, type_mappings, config, output_path):
              snake_typ = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
              f.write(f"#include <{pkg}/{sub}/{snake_typ}.hpp>\n")
         
-        f.write("#include \"protocol.h\"\n")
+        f.write("#include \"auto_serial_bridge/generated/protocol.h\"\n")
         f.write("\n")
         
         f.write("namespace auto_serial_bridge {\n")
@@ -737,36 +770,6 @@ def generate_ros_bindings(messages, type_mappings, config, output_path):
                 
                 send_api = "reliable_send" if msg.get('reliable', False) else "send_packet"
                 f.write(f"            node->{send_api}(PACKET_ID_{msg['name'].upper()}, pkt);\n")
-                debug_log_mode = msg.get('debug_log_mode', 'on')
-                fmt_parts = []
-                arg_parts = []
-                for field in msg['fields']:
-                    field_name = field['proto']
-                    field_type = str(field.get('type', '')).lower()
-                    if field_type.startswith('f'):
-                        fmt_parts.append(f"{field_name}=%.3f")
-                        arg_parts.append(f"static_cast<double>(pkt.{field_name})")
-                    elif field_type.startswith('u'):
-                        fmt_parts.append(f"{field_name}=%u")
-                        arg_parts.append(f"static_cast<unsigned int>(pkt.{field_name})")
-                    elif field_type.startswith('i'):
-                        fmt_parts.append(f"{field_name}=%d")
-                        arg_parts.append(f"static_cast<int>(pkt.{field_name})")
-                    else:
-                        fmt_parts.append(f"{field_name}=%d")
-                        arg_parts.append(f"static_cast<int>(pkt.{field_name})")
-
-                if debug_log_mode == 'on':
-                    if fmt_parts:
-                        fmt_str = ", ".join(fmt_parts)
-                        args_str = ", ".join(arg_parts)
-                        f.write(
-                            f"            RCLCPP_DEBUG(node->get_logger(), \"TX {msg['name']}: {fmt_str}\", {args_str});\n"
-                        )
-                    else:
-                        f.write(
-                            f"            RCLCPP_DEBUG(node->get_logger(), \"TX {msg['name']}\");\n"
-                        )
                 f.write(f"        }}));\n")
                 f.write("\n")
 
@@ -827,7 +830,6 @@ def generate_ros_bindings(messages, type_mappings, config, output_path):
                      else:
                          f.write(f"            {write_expr} = pkt->{field['proto']};\n")
 
-                debug_log_mode = msg.get('debug_log_mode', 'on')
                 fmt_parts = []
                 arg_parts = []
                 for field in msg['fields']:
@@ -846,17 +848,7 @@ def generate_ros_bindings(messages, type_mappings, config, output_path):
                         fmt_parts.append(f"{field_name}=%d")
                         arg_parts.append(f"static_cast<int>(pkt->{field_name})")
 
-                if debug_log_mode == 'on':
-                    if fmt_parts:
-                        fmt_str = ", ".join(fmt_parts)
-                        args_str = ", ".join(arg_parts)
-                        f.write(
-                            f"            RCLCPP_DEBUG(logger, \"RX {msg['name']}: {fmt_str}\", {args_str});\n"
-                        )
-                    else:
-                        f.write(
-                            f"            RCLCPP_DEBUG(logger, \"RX {msg['name']}\");\n"
-                        )
+                _write_guarded_rx_debug_log(f, msg['name'], fmt_parts, arg_parts)
                 
                 f.write(f"            if (pubs.pub_{msg['name']}) {{\n")
                 f.write(f"                pubs.pub_{msg['name']}->publish(msg);\n")
@@ -884,17 +876,18 @@ def generate_cpp_config(config, messages, type_mappings, output_path, serial_par
     reliable_max_retries = config.get('reliable_max_retries', 3)
     serial_params = serial_params or {}
     default_port = serial_params.get('port', '/dev/ttyACM0')
+    default_baudrate = serial_params.get('baudrate', 115200)
 
     with open(output_path, 'w') as f:
         f.write("#pragma once\n")
         f.write("#include <cstdint>\n")
         f.write("#include <cstddef>\n\n")
-        f.write("#include \"protocol.h\"\n\n")
+        f.write("#include \"auto_serial_bridge/generated/protocol.h\"\n\n")
         f.write("namespace auto_serial_bridge {\n")
         f.write("namespace config {\n\n")
 
         f.write(f"    constexpr const char * DEFAULT_PORT = \"{default_port}\";\n")
-        f.write(f"    constexpr uint32_t DEFAULT_BAUDRATE = {config['baudrate']};\n")
+        f.write(f"    constexpr uint32_t DEFAULT_BAUDRATE = {default_baudrate};\n")
         f.write(f"    constexpr size_t BUFFER_SIZE = {config['buffer_size']};\n")
         f.write(f"    constexpr uint8_t CFG_FRAME_HEADER1 = {config['head_byte_1']};\n")
         f.write(f"    constexpr uint8_t CFG_FRAME_HEADER2 = {config['head_byte_2']};\n\n")
@@ -962,13 +955,19 @@ _C_TYPE_SIZES = {
 }
 
 
-def _field_table(fields: list, type_mappings: dict, checksum_algo: str = "CRC8") -> str:
+def _field_table(
+    fields: list,
+    type_mappings: dict,
+    checksum_algo: str = "CRC8",
+    include_reliable_seq: bool = False,
+) -> str:
     """渲染字段信息为 Markdown 表格字符串。
 
     Args:
         fields: 协议字段定义列表。
         type_mappings: YAML 类型到 C 类型的映射。
         checksum_algo: 校验算法名称。
+        include_reliable_seq: 是否在数据段末尾展示 reliable 框架附加序列号。
 
     Returns:
         Markdown 表格字符串，包含字节偏移、字段名、类型、字节数列。
@@ -989,13 +988,17 @@ def _field_table(fields: list, type_mappings: dict, checksum_algo: str = "CRC8")
         size = _C_TYPE_SIZES.get(c_type, 1)
         lines.append(f"| {offset} | `{field['proto']}` | `{c_type}` | {size} |")
         offset += size
+    if include_reliable_seq:
+        lines.append(f"| {offset} | *(reliable seq，框架附加，非业务结构体字段)* | `uint8_t` | 1 |")
+        offset += 1
     label = _CHECKSUM_LABELS.get(checksum_algo, checksum_algo)
     lines.append(f"| **{offset}** | *({label})* | `uint8_t` | 1 |")
     return "\n".join(lines)
 
 
 def generate_mcu_doc(config: dict, messages: list, type_mappings: dict,
-                    protocol_hash: int, output_path: str, generated_at: str) -> None:
+                    protocol_hash: int, output_path: str, generated_at: str,
+                    serial_params=None) -> None:
     """生成面向电控的 Markdown 通信协议文档。
 
     文档包含帧格式说明、电控发送/接收的消息列表及字段表格。
@@ -1011,7 +1014,8 @@ def generate_mcu_doc(config: dict, messages: list, type_mappings: dict,
 
     head1 = config['head_byte_1']
     head2 = config['head_byte_2']
-    baudrate = config.get('baudrate', 115200)
+    serial_params = serial_params or {}
+    baudrate = serial_params.get('baudrate', 115200)
     checksum = config.get('checksum', 'CRC8').upper()
     require_handshake = config.get('require_handshake', True)
     enable_heartbeat = config.get('enable_heartbeat', True)
@@ -1097,10 +1101,12 @@ def generate_mcu_doc(config: dict, messages: list, type_mappings: dict,
         f.write("## ROS → 电控（电控被动接收）\n\n")
         if tx_msgs:
             for msg in tx_msgs:
-                total_bytes = sum(
+                base_bytes = sum(
                     _C_TYPE_SIZES.get(type_mappings.get(f['type'], f['type']), 1)
                     for f in msg['fields']
                 )
+                reliable = msg.get('reliable', False)
+                total_bytes = base_bytes + (1 if reliable else 0)
                 f.write(f"### `{msg['name']}` — ID `{msg['id']:#04x}`\n\n")
                 f.write(f"- **ROS 话题**：`{msg.get('sub_topic', 'N/A')}`\n")
                 f.write(f"- **ROS 消息类型**：`{msg['ros_msg']}`\n")
@@ -1111,10 +1117,15 @@ def generate_mcu_doc(config: dict, messages: list, type_mappings: dict,
                     f.write("- **默认生成行为**：`on_receive_Handshake()` 在收到匹配 `PROTOCOL_HASH` 的握手包后会自动调用 `send_Handshake(pkt)` 回包。\n")
                 if msg['name'] == 'Heartbeat' and enable_heartbeat:
                     f.write("- **默认生成行为**：`on_receive_Heartbeat()` 会自动调用 `send_Heartbeat(pkt)`，按原样回同一个 `count` 作为 ACK。\n")
-                if msg.get('reliable', False):
-                    f.write("- **可靠投递**：该消息启用 ACK/重传。默认 weak 回调会自动 `send_Ack()`；若你覆写 `on_receive_xxx()`，需手动回 ACK。\n")
+                if reliable:
+                    f.write("- **可靠投递**：该消息启用 ACK/重传。ROS 端会在业务结构体 payload 后透明追加 1 字节 reliable seq；该字节参与 `Len` 和校验，但不属于 `Packet_xxx` 业务结构体字段。生成的分发逻辑会先自动 `send_Ack()`，再调用 `on_receive_xxx()`。\n")
                 f.write("\n")
-                f.write(_field_table(msg['fields'], type_mappings, checksum))
+                f.write(_field_table(
+                    msg['fields'],
+                    type_mappings,
+                    checksum,
+                    include_reliable_seq=reliable,
+                ))
                 f.write("\n\n")
         else:
             f.write("_无_\n\n")
@@ -1124,10 +1135,41 @@ def generate_mcu_doc(config: dict, messages: list, type_mappings: dict,
 
 def validate_protocol(config_data):
     """验证协议配置的完整性和合法性。"""
+    if not isinstance(config_data, dict):
+        raise ValueError("Protocol YAML root must be a mapping.")
+
     cfg = config_data.get('config', {})
     messages = config_data.get('messages', [])
     type_mappings = config_data.get('type_mappings', {})
+    serial_params = config_data.get('serial_controller', {}).get('ros__parameters', {})
     errors = []
+
+    if not isinstance(cfg, dict):
+        errors.append("Top-level 'config' must be a mapping.")
+        cfg = {}
+    if not isinstance(messages, list) or not messages:
+        errors.append("Top-level 'messages' must be a non-empty list.")
+        messages = []
+    if not isinstance(type_mappings, dict) or not type_mappings:
+        errors.append("Top-level 'type_mappings' must be a non-empty mapping.")
+        type_mappings = {}
+    if not isinstance(serial_params, dict):
+        errors.append("serial_controller.ros__parameters must be a mapping.")
+        serial_params = {}
+
+    if 'baudrate' in cfg:
+        errors.append("config.baudrate is not supported; use serial_controller.ros__parameters.baudrate only.")
+    baudrate = serial_params.get('baudrate')
+    if not isinstance(baudrate, int) or isinstance(baudrate, bool) or baudrate <= 0:
+        errors.append("serial_controller.ros__parameters.baudrate must be a positive integer.")
+    port = serial_params.get('port')
+    if not isinstance(port, str) or not port:
+        errors.append("serial_controller.ros__parameters.port must be a non-empty string.")
+
+    identifier_re = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+    ros_msg_re = re.compile(r'^[a-z][a-z0-9_]*/msg/[A-Z][A-Za-z0-9_]*$')
+    topic_re = re.compile(r'^(?!/)(?!.*//)[A-Za-z0-9_~][A-Za-z0-9_~/]*$')
+    supported_c_types = set(_C_TYPE_SIZES)
 
     SUPPORTED_CHECKSUMS = {"NONE", "SUM8", "XOR8", "CRC8"}
     checksum_algo = cfg.get('checksum', 'CRC8').upper()
@@ -1135,8 +1177,18 @@ def validate_protocol(config_data):
         errors.append(f"Unsupported checksum '{cfg.get('checksum')}'. Supported: {', '.join(sorted(SUPPORTED_CHECKSUMS))}")
     cfg['checksum'] = checksum_algo
 
-    if 'head_byte_1' not in cfg or 'head_byte_2' not in cfg:
-        errors.append("Protocol must define 'head_byte_1' and 'head_byte_2'.")
+    for key in ('head_byte_1', 'head_byte_2'):
+        value = cfg.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 0xFF:
+            errors.append(f"config.{key} must be an integer in [0, 255].")
+
+    buffer_size = cfg.get('buffer_size')
+    if not isinstance(buffer_size, int) or isinstance(buffer_size, bool) or buffer_size <= 0:
+        errors.append("config.buffer_size must be a positive integer.")
+
+    for key in ('require_handshake', 'ignore_version_mismatch', 'enable_heartbeat', 'strict_heartbeat'):
+        if not isinstance(cfg.get(key, True), bool):
+            errors.append(f"config.{key} must be boolean.")
 
     ignore_version_mismatch = cfg.get('ignore_version_mismatch', True)
     if not isinstance(ignore_version_mismatch, bool):
@@ -1156,6 +1208,9 @@ def validate_protocol(config_data):
     seen_names = set()
 
     for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            errors.append(f"messages[{i}] must be a mapping.")
+            continue
         label = msg.get('name', f'messages[{i}]')
 
         for required in ('name', 'id', 'direction', 'ros_msg', 'fields'):
@@ -1181,16 +1236,24 @@ def validate_protocol(config_data):
 
         mid = msg.get('id')
         if mid is not None:
-            if mid in seen_ids:
+            if not isinstance(mid, int) or isinstance(mid, bool) or not 0 <= mid <= 0xFF:
+                errors.append(f"Message '{label}' id must be an integer in [0, 255].")
+            elif mid in seen_ids:
                 errors.append(f"Message '{label}' has duplicate ID {mid:#04x} (conflicts with '{seen_ids[mid]}').")
             else:
                 seen_ids[mid] = label
 
         name = msg.get('name')
         if name:
+            if not isinstance(name, str) or not identifier_re.fullmatch(name):
+                errors.append(f"Message name '{name}' must be a valid C identifier.")
             if name in seen_names:
                 errors.append(f"Duplicate message name '{name}'.")
             seen_names.add(name)
+
+        ros_msg = msg.get('ros_msg')
+        if not isinstance(ros_msg, str) or not ros_msg_re.fullmatch(ros_msg):
+            errors.append(f"Message '{label}' has invalid ros_msg '{ros_msg}'. Expected package/msg/Type.")
 
         direction = msg.get('direction', '')
         if direction in ('tx', 'both') and 'sub_topic' not in msg:
@@ -1198,10 +1261,95 @@ def validate_protocol(config_data):
         if direction in ('rx', 'both') and 'pub_topic' not in msg:
             errors.append(f"Message '{label}' (direction={direction}) missing 'pub_topic'.")
 
-        for field in msg.get('fields', []):
+        for topic_key in ('sub_topic', 'pub_topic'):
+            if topic_key not in msg:
+                continue
+            topic = msg.get(topic_key)
+            if not isinstance(topic, str) or not topic_re.fullmatch(topic):
+                errors.append(
+                    f"Message '{label}' has invalid {topic_key} '{topic}'. Use a non-empty relative ROS topic."
+                )
+
+        fields = msg.get('fields', [])
+        if not isinstance(fields, list):
+            errors.append(f"Message '{label}' fields must be a list.")
+            fields = []
+        seen_fields = set()
+        for field in fields:
+            if not isinstance(field, dict):
+                errors.append(f"Message '{label}' contains a field that is not a mapping.")
+                continue
+            field_name = field.get('proto')
+            if not isinstance(field_name, str) or not identifier_re.fullmatch(field_name):
+                errors.append(f"Message '{label}' field name '{field_name}' must be a valid C identifier.")
+            elif field_name in seen_fields:
+                errors.append(f"Message '{label}' has duplicate field name '{field_name}'.")
+            else:
+                seen_fields.add(field_name)
             ftype = field.get('type', '')
-            if ftype not in type_mappings and ftype not in type_mappings.values():
+            c_type = get_c_type(ftype, type_mappings)
+            if c_type not in supported_c_types:
                 errors.append(f"Message '{label}', field '{field.get('proto', '?')}': unknown type '{ftype}'.")
+            if not isinstance(field.get('ros'), str) or not field.get('ros'):
+                errors.append(f"Message '{label}', field '{field.get('proto', '?')}' missing non-empty ros path.")
+
+        if fields:
+            wire_size = message_wire_payload_size(msg, type_mappings)
+            if wire_size > 0xFF:
+                errors.append(f"Message '{label}' wire payload is {wire_size} bytes; maximum is 255.")
+
+    expected_system_messages = {
+        'Ack': {
+            'id': 0xFD,
+            'direction': 'both',
+            'fields': [('acked_id', 'uint8_t'), ('ack_seq', 'uint8_t')],
+        },
+        'Heartbeat': {
+            'id': 0xFE,
+            'direction': 'both',
+            'fields': [('count', 'uint32_t')],
+        },
+        'Handshake': {
+            'id': 0xFF,
+            'direction': 'both',
+            'fields': [('protocol_hash', 'uint32_t')],
+        },
+    }
+    messages_by_name = {
+        message.get('name'): message
+        for message in messages
+        if isinstance(message, dict) and isinstance(message.get('name'), str)
+    }
+    for name, expected in expected_system_messages.items():
+        message = messages_by_name.get(name)
+        if message is None:
+            errors.append(f"Required system message '{name}' is missing.")
+            continue
+        if message.get('id') != expected['id']:
+            errors.append(f"System message '{name}' must use ID 0x{expected['id']:02X}.")
+        if message.get('direction') != expected['direction']:
+            errors.append(f"System message '{name}' must use direction 'both'.")
+        actual_fields = [
+            (field.get('proto'), get_c_type(field.get('type'), type_mappings))
+            for field in message.get('fields', [])
+            if isinstance(field, dict)
+        ]
+        if actual_fields != expected['fields']:
+            errors.append(
+                f"System message '{name}' fields must be exactly {expected['fields']} in this order."
+            )
+
+    for reserved_id, system_name in ((0xFD, 'Ack'), (0xFE, 'Heartbeat'), (0xFF, 'Handshake')):
+        owner = seen_ids.get(reserved_id)
+        if owner is not None and owner != system_name:
+            errors.append(f"ID 0x{reserved_id:02X} is reserved for system message '{system_name}'.")
+
+    if isinstance(buffer_size, int) and buffer_size > 0 and messages:
+        largest_frame = max(message_wire_payload_size(msg, type_mappings) + 5 for msg in messages)
+        if buffer_size < largest_frame:
+            errors.append(
+                f"config.buffer_size={buffer_size} cannot hold the largest complete frame ({largest_frame} bytes)."
+            )
 
     if errors:
         print("Protocol validation failed:")
@@ -1211,44 +1359,57 @@ def validate_protocol(config_data):
 
 
 def main():
-    if len(sys.argv) < 3:
-        print("Usage: codegen.py <protocol_yaml> <output_dir>")
-        sys.exit(1)
-        
-    yaml_file = sys.argv[1]
-    output_dir = sys.argv[2] 
+    parser = argparse.ArgumentParser(description="Generate Auto Serial Bridge protocol sources.")
+    parser.add_argument('protocol_yaml')
+    parser.add_argument('output_dir', nargs='?')
+    parser.add_argument(
+        '--print-ros-packages',
+        action='store_true',
+        help='validate YAML and print referenced ROS message packages, one per line',
+    )
+    args = parser.parse_args()
+    if not args.print_ros_packages and not args.output_dir:
+        parser.error('output_dir is required unless --print-ros-packages is used')
+    yaml_file = args.protocol_yaml
+    output_dir = args.output_dir
     
     with open(yaml_file, 'r') as f:
         content = f.read()
         config_data = yaml.safe_load(content)
 
     validate_protocol(config_data)
+
+    if args.print_ros_packages:
+        print('\n'.join(ros_message_packages(config_data)))
+        return
         
     phash = calculate_protocol_hash(config_data)
     generated_at = generate_timestamp()
     
-    mcu_header_path = os.path.join(output_dir, 'mcu_output', 'protocol.h')
+    generated_dir = os.path.join(output_dir, 'generated')
+    mcu_header_path = os.path.join(generated_dir, 'protocol.h')
     header_user_blocks = extract_user_code(mcu_header_path)
     
     generate_mcu_header(config_data['config'], config_data['messages'], config_data['type_mappings'], phash, 
                         mcu_header_path, header_user_blocks, generated_at)
     
-    mcu_source_path = os.path.join(output_dir, 'mcu_output', 'protocol.c')
+    mcu_source_path = os.path.join(generated_dir, 'protocol.c')
     source_user_blocks = extract_user_code(mcu_source_path)
     
     generate_mcu_source(config_data['config'], config_data['messages'], config_data['type_mappings'],
                         mcu_source_path, source_user_blocks, generated_at)
                         
     generate_cpp_config(config_data['config'], config_data['messages'], config_data['type_mappings'],
-                        os.path.join(output_dir, 'include', 'auto_serial_bridge', 'generated_config.hpp'),
+                        os.path.join(generated_dir, 'generated_config.hpp'),
                         config_data.get('serial_controller', {}).get('ros__parameters', {}))
                         
     generate_ros_bindings(config_data['messages'], config_data['type_mappings'],
                           config_data['config'],
-                          os.path.join(output_dir, 'include', 'auto_serial_bridge', 'generated_bindings.hpp'))
+                          os.path.join(generated_dir, 'generated_bindings.hpp'))
 
     generate_mcu_doc(config_data['config'], config_data['messages'], config_data['type_mappings'],
-                     phash, os.path.join(output_dir, 'mcu_output', 'PROTOCOL_DOC.md'), generated_at)
+                     phash, os.path.join(generated_dir, 'PROTOCOL_DOC.md'), generated_at,
+                     config_data.get('serial_controller', {}).get('ros__parameters', {}))
 
 if __name__ == "__main__":
     main()

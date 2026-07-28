@@ -3,7 +3,7 @@
 #include <cstring>
 #include <numeric>
 #include "auto_serial_bridge/packet_handler.hpp"
-#include "auto_serial_bridge/generated_config.hpp"
+#include "auto_serial_bridge/generated/generated_config.hpp"
 #include "protocol.h"
 
 using namespace auto_serial_bridge;

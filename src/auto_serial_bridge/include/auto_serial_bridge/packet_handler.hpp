@@ -1,7 +1,7 @@
 #pragma once
 
 #include "auto_serial_bridge/protocol.hpp"
-#include "auto_serial_bridge/generated_config.hpp"
+#include "auto_serial_bridge/generated/generated_config.hpp"
 #include <vector>
 #include <iostream>
 #include <algorithm>

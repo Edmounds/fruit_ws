@@ -1,4 +1,3 @@
-import hashlib
 import os
 import re
 import struct
@@ -49,7 +48,11 @@ def load_protocol_config():
 
 
 def load_generated_protocol_macros():
-    protocol_header_path = os.path.join(REPO_ROOT, "mcu_output", "protocol.h")
+    try:
+        share_dir = get_package_share_directory("auto_serial_bridge")
+        protocol_header_path = os.path.join(share_dir, "mcu_output", "protocol.h")
+    except Exception:
+        protocol_header_path = ""
     macros = {}
     if not os.path.exists(protocol_header_path):
         return macros
@@ -183,13 +186,20 @@ def get_protocol_hash():
     if "PROTOCOL_HASH" in GENERATED_PROTOCOL_MACROS:
         return int(GENERATED_PROTOCOL_MACROS["PROTOCOL_HASH"], 0)
     if PROTOCOL_YAML_CONTENT:
-        canonical_content = yaml.safe_dump(
-            yaml.safe_load(PROTOCOL_YAML_CONTENT),
-            sort_keys=True,
-            default_flow_style=False,
-            allow_unicode=True,
+        result = subprocess.run(
+            ["python3", os.path.join(REPO_ROOT, "scripts", "codegen.py"),
+             os.path.join(REPO_ROOT, "config", "protocol.yaml"),
+             "/tmp/auto_serial_bridge_pty_codegen"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        return int(hashlib.md5(canonical_content.encode("utf-8")).hexdigest()[:8], 16)
+        if result.returncode == 0:
+            header_path = "/tmp/auto_serial_bridge_pty_codegen/generated/protocol.h"
+            with open(header_path, "r", encoding="utf-8") as file_obj:
+                for line in file_obj:
+                    if line.startswith("#define PROTOCOL_HASH "):
+                        return int(line.split()[-1], 0)
     return 0
 
 

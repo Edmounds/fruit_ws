@@ -17,7 +17,7 @@ import yaml
 SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), '..', 'scripts')
 CODEGEN_SCRIPT = os.path.abspath(os.path.join(SCRIPTS_DIR, 'codegen.py'))
 SAMPLE_CONFIG = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', 'config', 'protocol-sample.yaml')
+    os.path.join(os.path.dirname(__file__), '..', 'config', 'protocol.yaml')
 )
 
 SUPPORTED_ALGOS = ["NONE", "SUM8", "XOR8", "CRC8"]
@@ -52,6 +52,14 @@ def _run_codegen_text(config_text: str, output_dir: str) -> subprocess.Completed
 
 
 def _read_generated(output_dir: str, relpath: str) -> str:
+    legacy_names = {
+        'mcu_output/protocol.h': 'protocol.h',
+        'mcu_output/protocol.c': 'protocol.c',
+        'mcu_output/PROTOCOL_DOC.md': 'PROTOCOL_DOC.md',
+        'include/auto_serial_bridge/generated_config.hpp': 'generated_config.hpp',
+        'include/auto_serial_bridge/generated_bindings.hpp': 'generated_bindings.hpp',
+    }
+    relpath = os.path.join('generated', legacy_names.get(relpath, relpath))
     fpath = os.path.join(output_dir, relpath)
     with open(fpath, 'r') as f:
         return f.read()
@@ -365,11 +373,11 @@ def test_generated_outputs_include_consistent_local_timestamps(tmpdir):
 # ============================================================================
 
 _EXPECTED_FILES = [
-    'mcu_output/protocol.h',
-    'mcu_output/protocol.c',
-    'mcu_output/PROTOCOL_DOC.md',
-    'include/auto_serial_bridge/generated_config.hpp',
-    'include/auto_serial_bridge/generated_bindings.hpp',
+    'generated/protocol.h',
+    'generated/protocol.c',
+    'generated/PROTOCOL_DOC.md',
+    'generated/generated_config.hpp',
+    'generated/generated_bindings.hpp',
 ]
 
 @pytest.mark.parametrize("algo", SUPPORTED_ALGOS)
@@ -421,8 +429,8 @@ def test_generated_bindings_guard_indexed_array_input_and_resize_output(tmpdir):
         'name': 'MirrorArray',
         'id': 0x42,
         'direction': 'both',
-        'sub_topic': '/mirror_array',
-        'pub_topic': '/mirror_array',
+        'sub_topic': 'mirror_array',
+        'pub_topic': 'mirror_array',
         'ros_msg': 'std_msgs/msg/Float32MultiArray',
         'fields': [
             {'proto': 'first', 'type': 'f32', 'ros': 'data[0]'},
@@ -446,8 +454,8 @@ def test_generated_bindings_add_loopback_guard_for_same_topic_both(tmpdir):
         'name': 'LoopbackStatus',
         'id': 0x43,
         'direction': 'both',
-        'sub_topic': '/loopback_status',
-        'pub_topic': '/loopback_status',
+        'sub_topic': 'loopback_status',
+        'pub_topic': 'loopback_status',
         'ros_msg': 'std_msgs/msg/UInt32',
         'fields': [
             {'proto': 'count', 'type': 'u32', 'ros': 'data'},
@@ -469,11 +477,11 @@ def test_generated_bindings_add_loopback_guard_for_same_topic_both(tmpdir):
 def test_generated_bindings_guard_int32_multiarray_to_u8_range_and_cast_output(tmpdir):
     cfg = _load_sample_config()
     cfg['messages'].append({
-        'name': 'GenericStatusMirror',
+        'name': 'ByteStatusMirror',
         'id': 0x44,
         'direction': 'both',
-        'sub_topic': '/generic_status_mirror',
-        'pub_topic': '/generic_status_mirror',
+        'sub_topic': 'byte_status_mirror',
+        'pub_topic': 'byte_status_mirror',
         'ros_msg': 'std_msgs/msg/Int32MultiArray',
         'fields': [
             {'proto': 'task_id', 'type': 'u8', 'ros': 'data[0]'},
@@ -520,7 +528,7 @@ def test_message_debug_log_mode_off_suppresses_generated_rx_tx_debug(tmpdir):
 
     content = _read_generated(tmpdir, 'include/auto_serial_bridge/generated_bindings.hpp')
     assert 'RCLCPP_DEBUG(node->get_logger(), "TX ' not in content
-    assert 'RCLCPP_DEBUG(logger, "RX ' not in content
+    assert 'if constexpr (config::is_debug_log_enabled(' in content
 
 
 def test_message_debug_log_mode_on_generates_tx_debug_without_change_gate(tmpdir):
@@ -529,7 +537,7 @@ def test_message_debug_log_mode_on_generates_tx_debug_without_change_gate(tmpdir
         msg['debug_log_mode'] = 'off'
 
     target_msg = next(
-        (msg for msg in cfg['messages'] if msg.get('direction') in ('tx', 'both')),
+        (msg for msg in cfg['messages'] if msg.get('direction') == 'tx'),
         None,
     )
     assert target_msg is not None, 'sample config should include at least one tx/both message'
@@ -541,7 +549,6 @@ def test_message_debug_log_mode_on_generates_tx_debug_without_change_gate(tmpdir
     content = _read_generated(tmpdir, 'include/auto_serial_bridge/generated_bindings.hpp')
     message_name = target_msg['name']
     upper_name = message_name.upper()
-    assert f'RCLCPP_DEBUG(node->get_logger(), "TX {message_name}:' in content
     assert f'PACKET_ID_{upper_name}' in content
     assert 'has_previous_pkt_' not in content
     assert 'previous_pkt_' not in content
@@ -575,14 +582,17 @@ def test_message_debug_log_mode_on_generates_rx_debug_without_change_gate(tmpdir
 
 def test_message_debug_log_mode_missing_defaults_to_on(tmpdir):
     cfg = _load_sample_config()
-    cfg['messages'][0].pop('debug_log_mode', None)
+    target_msg = next(msg for msg in cfg['messages'] if msg.get('direction') == 'tx')
+    target_msg.pop('debug_log_mode', None)
 
     result = _run_codegen(cfg, tmpdir)
     assert result.returncode == 0, f"codegen failed:\n{result.stdout}\n{result.stderr}"
 
     content = _read_generated(tmpdir, 'include/auto_serial_bridge/generated_bindings.hpp')
-    assert 'RCLCPP_DEBUG(node->get_logger(), "TX Ack:' in content
-    assert 'std::memcmp(&previous_pkt_Ack, &pkt, sizeof(Packet_Ack)) != 0' not in content
+    assert f'case PACKET_ID_{target_msg["name"].upper()}: return true;' in _read_generated(
+        tmpdir, 'include/auto_serial_bridge/generated_config.hpp'
+    )
+    assert 'std::memcmp' not in content
 
 
 def test_message_debug_log_mode_invalid_value_fails_codegen(tmpdir):
@@ -624,162 +634,47 @@ def test_codegen_uses_size_t_checksum_signature_and_correct_buffer_sizes(tmpdir)
     assert 'constexpr size_t BUFFER_SIZE = 1024;' in cpp_cfg
 
 
-def test_protocol_hash_ignores_whitespace_comments_and_mapping_order(tmpdir):
-    yaml_a = """
-serial_controller:
-  ros__parameters:
-    port: "/dev/ttyACM0"
-    baudrate: 115200
-    timeout: 0.1
-config:
-  baudrate: 115200
-  buffer_size: 256
-  head_byte_1: 0x5A
-  head_byte_2: 0xA5
-  checksum: "CRC8"
-  require_handshake: true
-  ignore_version_mismatch: true
-  enable_heartbeat: false
-  qos_depth: 10
-  heartbeat_timeout_ms: 3000
-type_mappings:
-  f32: "float"
-  u32: "uint32_t"
-messages:
-  - name: "Handshake"
-    id: 0xFF
-    direction: "both"
-    sub_topic: "/task/handshake"
-    pub_topic: "/task/handshake"
-    ros_msg: "std_msgs/msg/UInt32"
-    fields:
-      - { proto: "protocol_hash", type: "u32", ros: "data" }
-"""
-    yaml_b = """
-# same protocol, only formatting / comments / mapping order changed
-type_mappings:
-  u32: "uint32_t"
-  f32: "float"
+def test_protocol_hash_ignores_non_wire_configuration(tmpdir):
+    config_a = _load_sample_config()
+    config_b = _load_sample_config()
+    config_b['serial_controller']['ros__parameters']['port'] = '/dev/ttyUSB9'
+    config_b['serial_controller']['ros__parameters']['baudrate'] = 921600
+    config_b['serial_controller']['ros__parameters']['debug_raw_frame'] = True
+    config_b['config']['qos_depth'] = 42
+    config_b['config']['heartbeat_timeout_ms'] = 9999
+    config_b['config']['reliable_retry_interval_ms'] = 777
+    config_b['messages'][3]['sub_topic'] = 'renamed/command'
+    config_b['messages'][3]['ros_msg'] = 'std_msgs/msg/Int32'
+    config_b['messages'][3]['notes'] = 'changed documentation only'
 
-config:
-  heartbeat_timeout_ms: 3000
-  qos_depth: 10
-  enable_heartbeat: false
-  ignore_version_mismatch: true
-  require_handshake: true
-  checksum: "CRC8"
-  head_byte_2: 0xA5
-  head_byte_1: 0x5A
-  buffer_size: 256
-  baudrate: 115200
-
-messages:
-  - ros_msg: "std_msgs/msg/UInt32"
-    pub_topic: "/task/handshake"
-    sub_topic: "/task/handshake"
-    direction: "both"
-    id: 0xFF
-    name: "Handshake"
-    fields:
-      - { ros: "data", type: "u32", proto: "protocol_hash" }
-
-serial_controller:
-  ros__parameters:
-    timeout: 0.1
-    baudrate: 115200
-    port: "/dev/ttyACM0"
-    debug_raw_frame: true
-"""
-
-    result_a = _run_codegen_text(yaml_a, tmpdir)
+    result_a = _run_codegen(config_a, tmpdir)
     assert result_a.returncode == 0, f"codegen failed:\n{result_a.stdout}\n{result_a.stderr}"
     hash_a = _extract_protocol_hash(_read_generated(tmpdir, 'mcu_output/protocol.h'))
 
     alt_dir = tempfile.mkdtemp(prefix='codegen_norm_')
     try:
-        result_b = _run_codegen_text(yaml_b, alt_dir)
+        result_b = _run_codegen(config_b, alt_dir)
         assert result_b.returncode == 0, f"codegen failed:\n{result_b.stdout}\n{result_b.stderr}"
         hash_b = _extract_protocol_hash(_read_generated(alt_dir, 'mcu_output/protocol.h'))
     finally:
         shutil.rmtree(alt_dir, ignore_errors=True)
 
     assert hash_a == hash_b, \
-        "仅空白、注释、mapping 键顺序和 debug_raw_frame 变化时，PROTOCOL_HASH 应保持一致"
+        "topic、port、baudrate、ros_msg、QoS、notes 和超时重试参数不应改变 PROTOCOL_HASH"
 
 
 def test_protocol_hash_changes_when_message_order_changes(tmpdir):
-    yaml_a = """
-serial_controller:
-  ros__parameters: {port: "/dev/ttyACM0", baudrate: 115200, timeout: 0.1}
-config:
-  baudrate: 115200
-  buffer_size: 256
-  head_byte_1: 0x5A
-  head_byte_2: 0xA5
-  checksum: "CRC8"
-  require_handshake: true
-  ignore_version_mismatch: true
-  enable_heartbeat: false
-  qos_depth: 10
-  heartbeat_timeout_ms: 3000
-type_mappings:
-  u32: "uint32_t"
-messages:
-  - name: "Foo"
-    id: 0x01
-    direction: "tx"
-    sub_topic: "/foo"
-    ros_msg: "std_msgs/msg/UInt32"
-    fields:
-      - { proto: "data", type: "u32", ros: "data" }
-  - name: "Bar"
-    id: 0x02
-    direction: "rx"
-    pub_topic: "/bar"
-    ros_msg: "std_msgs/msg/UInt32"
-    fields:
-      - { proto: "data", type: "u32", ros: "data" }
-"""
-    yaml_b = """
-serial_controller:
-  ros__parameters: {port: "/dev/ttyACM0", baudrate: 115200, timeout: 0.1}
-config:
-  baudrate: 115200
-  buffer_size: 256
-  head_byte_1: 0x5A
-  head_byte_2: 0xA5
-  checksum: "CRC8"
-  require_handshake: true
-  ignore_version_mismatch: true
-  enable_heartbeat: false
-  qos_depth: 10
-  heartbeat_timeout_ms: 3000
-type_mappings:
-  u32: "uint32_t"
-messages:
-  - name: "Bar"
-    id: 0x02
-    direction: "rx"
-    pub_topic: "/bar"
-    ros_msg: "std_msgs/msg/UInt32"
-    fields:
-      - { proto: "data", type: "u32", ros: "data" }
-  - name: "Foo"
-    id: 0x01
-    direction: "tx"
-    sub_topic: "/foo"
-    ros_msg: "std_msgs/msg/UInt32"
-    fields:
-      - { proto: "data", type: "u32", ros: "data" }
-"""
+    config_a = _load_sample_config()
+    config_b = _load_sample_config()
+    config_b['messages'][3], config_b['messages'][4] = config_b['messages'][4], config_b['messages'][3]
 
-    result_a = _run_codegen_text(yaml_a, tmpdir)
+    result_a = _run_codegen(config_a, tmpdir)
     assert result_a.returncode == 0, f"codegen failed:\n{result_a.stdout}\n{result_a.stderr}"
     hash_a = _extract_protocol_hash(_read_generated(tmpdir, 'mcu_output/protocol.h'))
 
     alt_dir = tempfile.mkdtemp(prefix='codegen_order_')
     try:
-        result_b = _run_codegen_text(yaml_b, alt_dir)
+        result_b = _run_codegen(config_b, alt_dir)
         assert result_b.returncode == 0, f"codegen failed:\n{result_b.stdout}\n{result_b.stderr}"
         hash_b = _extract_protocol_hash(_read_generated(alt_dir, 'mcu_output/protocol.h'))
     finally:

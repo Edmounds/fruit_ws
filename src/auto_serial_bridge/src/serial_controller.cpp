@@ -2,14 +2,18 @@
 #include <future>
 #include <sstream>
 
-#include "auto_serial_bridge/generated_bindings.hpp"
-#include "auto_serial_bridge/generated_config.hpp"
+#include "auto_serial_bridge/generated/generated_config.hpp"
 #include "auto_serial_bridge/loopback_utils.hpp"
 #include "auto_serial_bridge/serial_controller.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
 
 namespace auto_serial_bridge
 {
+  namespace
+  {
+    constexpr auto kConnectionCheckPeriod = std::chrono::seconds(1);
+  } // namespace
+
 
   SerialController::SerialController(const rclcpp::NodeOptions &options)
       : Node("serial_controller", options),
@@ -48,20 +52,16 @@ namespace auto_serial_bridge
 
     get_parameters();
 
-    auto pubs = std::make_shared<auto_serial_bridge::generated::ProtocolPublishers>();
-    pubs->init(this);
-    protocol_impl_ = pubs;
+    auto ready_qos = rclcpp::QoS(rclcpp::KeepLast(1));
+    ready_qos.reliable().transient_local();
+    ready_publisher_ = this->create_publisher<std_msgs::msg::Bool>(
+        "auto_serial_bridge/ready", ready_qos);
+    publish_ready(false);
 
-    auto_serial_bridge::generated::register_all(this);
-
-    device_config_ = std::make_unique<drivers::serial_driver::SerialPortConfig>(
-        baudrate_,
-        drivers::serial_driver::FlowControl::NONE,
-        drivers::serial_driver::Parity::NONE,
-        drivers::serial_driver::StopBits::ONE);
+    init_protocol_bindings();
 
     timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(1000),
+        kConnectionCheckPeriod,
         std::bind(&SerialController::check_connection, this));
 
     heartbeat_timer_ = this->create_wall_timer(
@@ -71,6 +71,7 @@ namespace auto_serial_bridge
           post_serial([this]()
                       { handle_heartbeat_timer(); });
         });
+
   }
 
   SerialController::~SerialController()
@@ -84,8 +85,17 @@ namespace auto_serial_bridge
       auto future = done.get_future();
       serial_strand_->post([this, &done]() mutable
                            {
-      reset_serial();
-      done.set_value(); });
+                             reset_serial();
+                             if (pending_serial_ops_ == 0)
+                             {
+                               done.set_value();
+                               return;
+                             }
+                             pending_serial_drain_callback_ = [&done]() mutable
+                             {
+                               done.set_value();
+                             };
+                           });
       future.wait();
       return;
     }
@@ -140,14 +150,12 @@ namespace auto_serial_bridge
   {
     this->declare_parameter<std::string>("port", auto_serial_bridge::config::DEFAULT_PORT);
     this->declare_parameter<int>("baudrate", auto_serial_bridge::config::DEFAULT_BAUDRATE);
-    this->declare_parameter<double>("timeout", 0.1);
     this->declare_parameter<bool>("debug_raw_frame", false);
 
     this->get_parameter("port", port_);
     int baudrate_temp = auto_serial_bridge::config::DEFAULT_BAUDRATE;
     this->get_parameter("baudrate", baudrate_temp);
     baudrate_ = static_cast<uint32_t>(baudrate_temp);
-    this->get_parameter("timeout", timeout_);
     this->get_parameter("debug_raw_frame", debug_raw_frame_);
 
     RCLCPP_INFO(
@@ -172,6 +180,19 @@ namespace auto_serial_bridge
         strict_heartbeat_ ? "true" : "false");
   }
 
+  void SerialController::publish_ready(bool ready)
+  {
+    if (ready_published_ && ready_state_ == ready)
+    {
+      return;
+    }
+    std_msgs::msg::Bool message;
+    message.data = ready;
+    ready_publisher_->publish(message);
+    ready_state_ = ready;
+    ready_published_ = true;
+  }
+
   bool SerialController::try_open_serial()
   {
     return try_open_serial_impl();
@@ -182,10 +203,19 @@ namespace auto_serial_bridge
     try
     {
       reset_serial();
-      driver_ = std::make_unique<drivers::serial_driver::SerialDriver>(*ctx_);
-      driver_->init_port(port_, *device_config_);
-      driver_->port()->open();
-      return driver_->port()->is_open();
+
+      auto port = std::make_shared<asio::serial_port>(ctx_->ios());
+      port->open(port_);
+      port->set_option(asio::serial_port_base::baud_rate(baudrate_));
+      port->set_option(asio::serial_port_base::flow_control(
+          asio::serial_port_base::flow_control::none));
+      port->set_option(asio::serial_port_base::parity(
+          asio::serial_port_base::parity::none));
+      port->set_option(asio::serial_port_base::stop_bits(
+          asio::serial_port_base::stop_bits::one));
+
+      serial_port_ = port;
+      return serial_port_->is_open();
     }
     catch (const std::exception &e)
     {
@@ -198,21 +228,28 @@ namespace auto_serial_bridge
 
   void SerialController::reset_serial()
   {
+    publish_ready(false);
     is_connected_ = false;
+    ++connection_generation_;
+    shutdown_requested_ = true;
 
     if (reliable_sender_)
     {
       reliable_sender_->clear_all();
     }
 
-    if (driver_)
+    tx_queue_.clear();
+    tx_write_in_progress_ = false;
+
+    if (serial_port_)
     {
-      const auto port = driver_->port();
-      if (port && port->is_open())
+      asio::error_code ignored;
+      if (serial_port_->is_open())
       {
-        port->close();
+        serial_port_->cancel(ignored);
+        serial_port_->close(ignored);
       }
-      driver_.reset();
+      serial_port_.reset();
     }
 
     packet_handler_.reset();
@@ -221,6 +258,11 @@ namespace auto_serial_bridge
     last_heartbeat_tx_count_ = 0;
     awaiting_heartbeat_ack_ = false;
     heartbeat_ack_received_ = false;
+
+    if (pending_serial_ops_ == 0 && pending_serial_drain_callback_)
+    {
+      notify_serial_ops_drained();
+    }
   }
 
   void SerialController::check_connection()
@@ -233,6 +275,11 @@ namespace auto_serial_bridge
   {
     if (is_connected_)
     {
+      if (!serial_port_ || !serial_port_->is_open())
+      {
+        RCLCPP_WARN(this->get_logger(), "串口意外断开，尝试重连...");
+        reset_serial();
+      }
       return;
     }
 
@@ -242,6 +289,7 @@ namespace auto_serial_bridge
     }
 
     is_connected_ = true;
+    shutdown_requested_ = false;
     if constexpr (config::REQUIRE_HANDSHAKE)
     {
       state_ = State::WAITING_HANDSHAKE;
@@ -251,6 +299,7 @@ namespace auto_serial_bridge
     {
       state_ = State::RUNNING;
       RCLCPP_INFO(this->get_logger(), "Serial connected. Handshake disabled, entering RUNNING.");
+      publish_ready(true);
     }
     start_receive();
   }
@@ -286,6 +335,7 @@ namespace auto_serial_bridge
       awaiting_heartbeat_ack_ = false;
       heartbeat_ack_received_ = false;
       last_heartbeat_ack_time_ = std::chrono::steady_clock::now();
+      publish_ready(true);
     };
 
     switch (validation)
@@ -327,23 +377,74 @@ namespace auto_serial_bridge
 
   void SerialController::start_receive()
   {
-    if (!is_connected_ || !driver_)
+    if (!is_connected_ || !serial_port_)
     {
       return;
     }
 
-    const auto port = driver_->port();
-    if (!port || !port->is_open())
+    const auto port = serial_port_;
+    if (!port->is_open())
     {
       return;
     }
 
-    port->async_receive(
-        [this, port](const std::vector<uint8_t> &buffer, const size_t bytes_read)
-        {
-          post_serial([this, port, buffer, bytes_read]()
-                      { handle_receive(port, buffer, bytes_read); });
-        });
+    const auto generation = connection_generation_;
+    auto buffer = std::make_shared<std::array<uint8_t, 2048>>();
+    ++pending_serial_ops_;
+    try
+    {
+      port->async_read_some(
+          asio::buffer(*buffer),
+          serial_strand_->wrap(
+              [this, port, generation, buffer](
+                  const asio::error_code &error,
+                  const size_t bytes_read)
+              {
+                handle_receive(port, generation, buffer, error, bytes_read);
+              }));
+    }
+    catch (const std::exception &e)
+    {
+      complete_serial_op();
+      RCLCPP_ERROR(
+          this->get_logger(),
+          "Failed to start serial read on '%s': %s",
+          port_.c_str(),
+          e.what());
+      reset_serial();
+    }
+  }
+
+  void SerialController::complete_serial_op()
+  {
+    if (pending_serial_ops_ > 0)
+    {
+      --pending_serial_ops_;
+    }
+
+    if (shutdown_requested_ && pending_serial_ops_ == 0 && pending_serial_drain_callback_)
+    {
+      notify_serial_ops_drained();
+    }
+  }
+
+  void SerialController::notify_serial_ops_drained()
+  {
+    if (!pending_serial_drain_callback_)
+    {
+      return;
+    }
+
+    auto callback = std::move(pending_serial_drain_callback_);
+    pending_serial_drain_callback_ = nullptr;
+
+    if (serial_strand_ && serial_strand_->running_in_this_thread())
+    {
+      serial_strand_->post(std::move(callback));
+      return;
+    }
+
+    callback();
   }
 
   size_t SerialController::ingest_received_bytes(const uint8_t *data, size_t len)
@@ -357,31 +458,53 @@ namespace auto_serial_bridge
   }
 
   void SerialController::handle_receive(
-      const std::shared_ptr<drivers::serial_driver::SerialPort> &port,
-      const std::vector<uint8_t> &buffer,
+      const std::shared_ptr<asio::serial_port> &port,
+      uint64_t generation,
+      const std::shared_ptr<std::array<uint8_t, 2048>> &buffer,
+      const asio::error_code &error,
       size_t bytes_read)
   {
-    if (!driver_ || driver_->port() != port)
+    complete_serial_op();
+
+    if (generation != connection_generation_ || serial_port_ != port)
     {
       return;
     }
 
-    const auto follow_up = detail::classify_receive_result(bytes_read, port->is_open());
-    if (follow_up == detail::ReceiveFollowUpAction::ResetConnection)
+    if (error)
     {
-      RCLCPP_ERROR(this->get_logger(), "Read error/close.");
+      if (error == asio::error::operation_aborted)
+      {
+        return;
+      }
+
+      RCLCPP_ERROR(
+          this->get_logger(),
+          "Serial read error on '%s': %s",
+          port_.c_str(),
+          error.message().c_str());
+      reset_serial();
+      return;
+    }
+
+    const auto receive_action = detail::classify_receive_result(
+        bytes_read,
+        port && port->is_open());
+    if (receive_action == detail::ReceiveFollowUpAction::ResetConnection)
+    {
+      RCLCPP_WARN(this->get_logger(), "串口意外断开，尝试重连...");
       reset_serial();
       return;
     }
 
     if (bytes_read == 0)
     {
-      RCLCPP_DEBUG(this->get_logger(), "Received 0 bytes from serial port, keeping receive loop alive.");
+      RCLCPP_DEBUG(this->get_logger(), "Received 0 bytes from serial port.");
       start_receive();
       return;
     }
 
-    const size_t dropped = ingest_received_bytes(buffer.data(), bytes_read);
+    const size_t dropped = ingest_received_bytes(buffer->data(), bytes_read);
     if (dropped > 0)
     {
       RCLCPP_WARN_THROTTLE(
@@ -395,8 +518,7 @@ namespace auto_serial_bridge
 
   void SerialController::handle_packet(const Packet &pkt)
   {
-    auto *pubs = protocol_impl_.get();
-    if (!pubs)
+    if (!protocol_impl_)
     {
       return;
     }
@@ -417,7 +539,7 @@ namespace auto_serial_bridge
           awaiting_heartbeat_ack_ = false;
           heartbeat_ack_received_ = true;
           last_heartbeat_ack_time_ = std::chrono::steady_clock::now();
-          if constexpr (config::is_debug_log_enabled(PACKET_ID_HEARTBEAT))
+          if (should_log_protocol_debug(PACKET_ID_HEARTBEAT))
           {
             RCLCPP_DEBUG(
                 this->get_logger(),
@@ -426,16 +548,28 @@ namespace auto_serial_bridge
                 state_name());
           }
         }
+        else if (data->count == last_heartbeat_tx_count_)
+        {
+          // 迟到的 ACK: MCU 在超时重置后才回传，计数匹配，视为有效，更新确认时间
+          heartbeat_ack_received_ = true;
+          last_heartbeat_ack_time_ = std::chrono::steady_clock::now();
+          if (should_log_protocol_debug(PACKET_ID_HEARTBEAT))
+          {
+            RCLCPP_DEBUG_THROTTLE(
+                this->get_logger(), *this->get_clock(), 2000,
+                "Heartbeat late ACK (awaiting already reset): count=%u",
+                data->count);
+          }
+        }
         else
         {
           const std::string payload_hex = detail::format_hex_payload(
               pkt.payload.data(), pkt.payload.size());
           RCLCPP_WARN_THROTTLE(
               this->get_logger(), *this->get_clock(), 2000,
-              "忽略不匹配的心跳确认: expected=%u, got=%u, awaiting=%s, state=%s, payload=[%s]",
+              "心跳计数不匹配: expected=%u, got=%u, state=%s, payload=[%s]",
               last_heartbeat_tx_count_,
               data->count,
-              awaiting_heartbeat_ack_ ? "true" : "false",
               state_name(),
               payload_hex.c_str());
         }
@@ -478,22 +612,23 @@ namespace auto_serial_bridge
         {
           process_handshake(pkt);
         }
-        auto_serial_bridge::generated::dispatch_packet(
-            *pubs, static_cast<uint8_t>(pkt.id), dispatch_payload, this->get_logger());
+        dispatch_to_protocol(static_cast<uint8_t>(pkt.id), dispatch_payload);
       }
       else if (state_ == State::RUNNING)
       {
-        auto_serial_bridge::generated::dispatch_packet(
-            *pubs, static_cast<uint8_t>(pkt.id), dispatch_payload, this->get_logger());
+        dispatch_to_protocol(static_cast<uint8_t>(pkt.id), dispatch_payload);
       }
       else
       {
-        RCLCPP_DEBUG_THROTTLE(
-            this->get_logger(), *this->get_clock(), 2000,
-            "Dropping packet while waiting handshake: packet_id=0x%02X, payload_len=%zu, state=%s",
-            static_cast<unsigned int>(pkt.id),
-            pkt.payload.size(),
-            state_name());
+        if (should_log_protocol_debug(pkt.id))
+        {
+          RCLCPP_DEBUG_THROTTLE(
+              this->get_logger(), *this->get_clock(), 2000,
+              "Dropping packet while waiting handshake: packet_id=0x%02X, payload_len=%zu, state=%s",
+              static_cast<unsigned int>(pkt.id),
+              pkt.payload.size(),
+              state_name());
+        }
       }
     }
     else
@@ -502,8 +637,7 @@ namespace auto_serial_bridge
       {
         process_handshake(pkt);
       }
-      auto_serial_bridge::generated::dispatch_packet(
-          *pubs, static_cast<uint8_t>(pkt.id), dispatch_payload, this->get_logger());
+      dispatch_to_protocol(static_cast<uint8_t>(pkt.id), dispatch_payload);
     }
   }
 
@@ -584,11 +718,14 @@ namespace auto_serial_bridge
                 });
   }
 
+  bool SerialController::should_log_protocol_debug(PacketID id) const
+  {
+    return config::is_debug_log_enabled(id);
+  }
 
   bool SerialController::should_log_mcu_tx_raw(PacketID id) const
   {
-    const bool debug_log_enabled = config::is_debug_log_enabled(id);
-    return detail::should_log_raw_tx_frame(debug_raw_frame_, debug_log_enabled);
+    return detail::should_log_raw_tx_frame(debug_raw_frame_, should_log_protocol_debug(id));
   }
 
   void SerialController::log_mcu_tx(const std::vector<uint8_t> &packet_bytes) const
@@ -596,7 +733,7 @@ namespace auto_serial_bridge
     const PacketID id = packet_bytes.size() > 2
                             ? static_cast<PacketID>(packet_bytes[2])
                             : static_cast<PacketID>(0);
-    const bool debug_log_enabled = config::is_debug_log_enabled(id);
+    const bool debug_log_enabled = should_log_protocol_debug(id);
     const bool log_raw_frame = should_log_mcu_tx_raw(id);
     if (packet_bytes.size() < 5)
     {
@@ -605,7 +742,9 @@ namespace auto_serial_bridge
         RCLCPP_DEBUG(
             this->get_logger(),
             "[MCU TX RAW] %s",
-            detail::format_hex_payload(packet_bytes.data(), packet_bytes.size(), packet_bytes.size()).c_str());
+            detail::format_hex_payload(
+                packet_bytes.data(), packet_bytes.size(), packet_bytes.size())
+                .c_str());
       }
       return;
     }
@@ -620,7 +759,14 @@ namespace auto_serial_bridge
       RCLCPP_DEBUG(
           this->get_logger(),
           "[MCU TX RAW] %s",
-          detail::format_hex_payload(packet_bytes.data(), packet_bytes.size(), packet_bytes.size()).c_str());
+          detail::format_hex_payload(
+              packet_bytes.data(), packet_bytes.size(), packet_bytes.size())
+              .c_str());
+    }
+
+    if (!debug_log_enabled)
+    {
+      return;
     }
 
     if (packet_bytes.size() != expected_size)
@@ -635,30 +781,26 @@ namespace auto_serial_bridge
       return;
     }
 
-    if (!debug_log_enabled)
-    {
-      return;
-    }
-
-    std::vector<uint8_t> payload(packet_bytes.begin() + payload_offset, packet_bytes.begin() + payload_offset + payload_len);
+    std::vector<uint8_t> payload(
+        packet_bytes.begin() + payload_offset,
+        packet_bytes.begin() + payload_offset + payload_len);
     RCLCPP_DEBUG(
         this->get_logger(),
         "[MCU TX DECODED] id=0x%02X, len=%u, checksum=0x%02X, %s",
         static_cast<unsigned int>(static_cast<uint8_t>(id)),
         static_cast<unsigned int>(payload_len),
         static_cast<unsigned int>(packet_bytes.back()),
-        auto_serial_bridge::generated::describe_packet(static_cast<PacketID>(id), payload).c_str());
+        describe_protocol_packet(id, payload).c_str());
   }
 
   bool SerialController::async_send_impl(const std::vector<uint8_t> &packet_bytes)
   {
-    if (!is_connected_ || !driver_)
+    if (!is_connected_ || !serial_port_)
     {
       return false;
     }
 
-    const auto port = driver_->port();
-    if (!port || !port->is_open())
+    if (!serial_port_->is_open())
     {
       return false;
     }
@@ -668,13 +810,17 @@ namespace auto_serial_bridge
       if (state_ == State::WAITING_HANDSHAKE && packet_bytes.size() > 2)
       {
         const uint8_t id_byte = packet_bytes[2];
-        if (static_cast<PacketID>(id_byte) != PACKET_ID_HANDSHAKE)
+        const auto id = static_cast<PacketID>(id_byte);
+        if (id != PACKET_ID_HANDSHAKE)
         {
-          RCLCPP_DEBUG_THROTTLE(
-              this->get_logger(), *this->get_clock(), 2000,
-              "Blocked TX before handshake: packet_id=0x%02X, state=%s",
-              static_cast<unsigned int>(id_byte),
-              state_name());
+          if (should_log_protocol_debug(id))
+          {
+            RCLCPP_DEBUG_THROTTLE(
+                this->get_logger(), *this->get_clock(), 2000,
+                "Blocked TX before handshake: packet_id=0x%02X, state=%s",
+                static_cast<unsigned int>(id_byte),
+                state_name());
+          }
           return false;
         }
       }
@@ -683,7 +829,8 @@ namespace auto_serial_bridge
     try
     {
       log_mcu_tx(packet_bytes);
-      port->async_send(packet_bytes);
+      tx_queue_.push_back(std::make_shared<std::vector<uint8_t>>(packet_bytes));
+      start_next_write();
     }
     catch (const std::exception &e)
     {
@@ -693,6 +840,92 @@ namespace auto_serial_bridge
     }
 
     return true;
+  }
+
+  void SerialController::start_next_write()
+  {
+    if (tx_write_in_progress_ || tx_queue_.empty())
+    {
+      return;
+    }
+
+    if (!is_connected_ || !serial_port_ || !serial_port_->is_open())
+    {
+      tx_queue_.clear();
+      tx_write_in_progress_ = false;
+      return;
+    }
+
+    const auto port = serial_port_;
+    const auto generation = connection_generation_;
+    const auto packet_bytes = tx_queue_.front();
+    tx_write_in_progress_ = true;
+    ++pending_serial_ops_;
+
+    try
+    {
+      asio::async_write(
+          *port,
+          asio::buffer(*packet_bytes),
+          serial_strand_->wrap(
+              [this, port, generation, packet_bytes](
+                  const asio::error_code &error,
+                  const size_t bytes_transferred)
+              {
+                handle_write(port, generation, packet_bytes, error, bytes_transferred);
+              }));
+    }
+    catch (const std::exception &e)
+    {
+      complete_serial_op();
+      tx_write_in_progress_ = false;
+      tx_queue_.clear();
+      RCLCPP_ERROR(
+          this->get_logger(),
+          "Failed to start serial write on '%s': %s",
+          port_.c_str(),
+          e.what());
+      reset_serial();
+    }
+  }
+
+  void SerialController::handle_write(
+      const std::shared_ptr<asio::serial_port> &port,
+      uint64_t generation,
+      const std::shared_ptr<std::vector<uint8_t>> &packet_bytes,
+      const asio::error_code &error,
+      size_t)
+  {
+    complete_serial_op();
+
+    if (generation != connection_generation_ || serial_port_ != port)
+    {
+      return;
+    }
+
+    tx_write_in_progress_ = false;
+    if (!tx_queue_.empty() && tx_queue_.front() == packet_bytes)
+    {
+      tx_queue_.pop_front();
+    }
+
+    if (error)
+    {
+      if (error == asio::error::operation_aborted)
+      {
+        return;
+      }
+
+      RCLCPP_ERROR(
+          this->get_logger(),
+          "Serial write error on '%s': %s",
+          port_.c_str(),
+          error.message().c_str());
+      reset_serial();
+      return;
+    }
+
+    start_next_write();
   }
 
 } // namespace auto_serial_bridge

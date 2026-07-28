@@ -1,247 +1,137 @@
-# Auto Serial Bridge
+# auto_serial_bridge
 
-![ROS2](https://img.shields.io/badge/ROS2-Humble-blue)
-![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04-orange)
-![License](https://img.shields.io/badge/License-Apache%202.0-green)
+![ROS 2 Humble](https://img.shields.io/badge/ROS%202-Humble-blue)
+![Ubuntu 22.04](https://img.shields.io/badge/Ubuntu-22.04-orange)
+![Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-green)
 
-## 项目简介
+`auto_serial_bridge` 是面向 ROS 2 Humble 的配置驱动串口桥。仓库自带可运行的中性协议；用户只需修改 `config/protocol.yaml`，重新编译后即可同步生成 ROS 绑定、MCU C 代码和协议文档。
 
-**Auto Serial Bridge** 是一个致力于提升 ROS2 与嵌入式设备之间串口通信开发效率的工具。
+## 能力与限制
 
-鉴于 microROS 在某些场景下的配置繁琐与不稳定，本项目旨在提供一个**轻量级、自动化、可配置**的替代方案。只需在 `protocol.yaml` 配置文件中定义通信协议，即可自动生成 ROS2 端的 C++ 解析代码以及嵌入式端的 C 代码。
-*   **高效开发**：无需花费太多时间在与电控的协议沟通上
-*   **配置即代码**：通过 YAML 文件集中管理协议，修改协议只需改配置并重新编译，实现快速迭代
-*   **无缝对接**：自动生成 ROS2 消息与嵌入式结构体，消除协议不一致带来的隐患, 极高对接电控的效率
+- 双帧头、1 字节消息 ID、1 字节 payload 长度和可选 `NONE/SUM8/XOR8/CRC8` 校验。
+- 支持握手、协议哈希、严格心跳、可靠发送、ACK/重传、串口热插拔和自动重连。
+- YAML 可引用当前 workspace 或 underlay 中已安装的任意 ROS 消息包；CMake 会自动提取包名并执行 `find_package()`。
+- 仅支持代码生成器明确列出的定长 C 类型：`uint8_t`、`uint16_t`、`uint32_t`、`int32_t`、`float`。
+- payload 长度字段为 1 字节；可靠消息附加 seq 后也不得超过 255 字节。
+- 线协议直接使用 packed C 结构体内存布局，要求双方为小端序，定长整数宽度符合 `<stdint.h>`，`float` 为 32 位 IEEE-754。
 
+## 安装与构建
 
-## 项目结构
-
-```text
-auto_serial_bridge/
-├── config/              # 配置文件目录 
-├── include/             # 头文件 (含自动生成的协议头文件)
-├── launch/              # ROS2 Launch 启动文件
-├── mcu_output/          # 自动生成的 MCU 端 C 代码 
-├── scripts/             # 代码生成与辅助脚本
-├── src/                 # 核心源代码
-└── test/                # 单元测试
-└── web/                 # NEW:新增web配置yaml文件
-
-```
-
-## 快速开始
-
-### 1. 环境依赖
-
-仅在`ROS2 Humble`进行过测试
+安装 ROS 2 Humble 后，先安装基础依赖：
 
 ```bash
-sudo apt install ros-humble-serial-driver libasio-dev ros-humble-rclcpp-components ros-humble-io-context 
-sudo apt install python3-serial socat
-sudo apt install ros-humble-asio-cmake-module
+sudo apt update
+sudo apt install python3-colcon-common-extensions python3-yaml \
+  ros-humble-ament-cmake ros-humble-rclcpp ros-humble-rclcpp-components \
+  ros-humble-std-msgs ros-humble-io-context
 ```
 
-### 2. 配置串口权限(可选)
-
-使用本项目提供的脚本自动设置 udev 规则（只需运行一次）：
+在 ROS 2 workspace 的 `src` 目录克隆并直接构建：
 
 ```bash
-cd src/auto_serial_bridge/scripts
-sudo ./auto_udev.sh
-# 重新插拔串口设备后生效
+cd ~/ros2_ws/src
+git clone <repository-url> auto_serial_bridge
+cd ..
+source /opt/ros/humble/setup.bash
+colcon build --packages-select auto_serial_bridge
+source install/setup.bash
 ```
 
-### 2. 配置`protocol.yaml`文件
+仓库已经跟踪 `config/protocol.yaml`，全新 clone 不需要复制配置。修改 `config/protocol.yaml` 后必须重新执行 `colcon build --packages-select auto_serial_bridge`；launch 读取的是安装目录中的配置，未重新编译时仍会使用旧版本。
 
-开源仓库不附带生产环境的 `config/protocol.yaml`。项目提供了一个名为 `config/protocol-sample.yaml` 的示例文件，但它不参与默认构建，也不是运行时 fallback。
+## YAML 结构
 
-`config/protocol-sample.yaml` 仅用于示例和公开自检；真正的本地/私有部署构建前，仍然需要你自行准备 `config/protocol.yaml`（该文件已被加入 `.gitignore`，不会被 Git 追踪，方便你在本地进行自定义配置）：
+`serial_controller.ros__parameters` 是节点运行参数：
 
-```bash
-cp config/protocol-sample.yaml config/protocol.yaml
-```
-
-核心配置文件位于 `config/protocol.yaml`。可通过修改此文件来增删改数据协议，**修改后重新编译即可生效**。如果缺少该文件，真实 `colcon build` 会直接失败。修改 `config/protocol.yaml` 后必须重新 `colcon build`，否则 launch 读到的仍然是 install 目录里的旧值。
-
-当前仓库的构建触发如下：
-
-- 修改 `config/protocol.yaml` 后需要重新编译。
-- 修改 `package.xml` 的 `<version>` 后，同样会触发重新构建流程。
-- 两者都不变时，保留当前增量构建行为，不额外重跑代码生成。
-
-#### 参数配置
 ```yaml
-# ROS2 参数配置
 serial_controller:
   ros__parameters:
     port: "/dev/ttyACM0"
     baudrate: 115200
-    timeout: 0.1
     debug_raw_frame: false
-
-# 全局配置
-config:
-  baudrate: 115200
-  buffer_size: 256
-  head_byte_1: 0x5A      # 双帧头 1
-  head_byte_2: 0xA5      # 双帧头 2
-  checksum: "CRC8"       # 校验算法
-  require_handshake: true
-  enable_heartbeat: true # false = 不发送 Heartbeat, 也不做 ACK 断连检测
-  qos_depth: 10
-  heartbeat_timeout_ms: 3000 # 仅在 enable_heartbeat=true 时参与检测; 0 = 不检测
 ```
 
-#### 消息定义
-可以在 `messages` 列表中定义多个消息类型：
+波特率只在这里定义。`port` 和 `baudrate` 不参与协议哈希；`debug_raw_frame` 只控制日志。
 
-```yaml
-messages:
-  - name: "CmdVel"                 # 消息名称
-    id: 0x04                       # 消息ID (唯一)
-    direction: "tx"                # 传输方向: tx (ROS->MCU), rx (MCU->ROS), both(双向)
-    sub_topic: "/cmd_vel"          # 订阅话题 (仅 tx/both 有效)
-    ros_msg: "geometry_msgs/msg/Twist" # 对应的 ROS 消息类型
-    fields:
-      # proto: 协议字段名 | type: 数据类型 | ros: ROS消息字段映射路径
-      - { proto: "linear_x",  type: "f32", ros: "linear.x" }
-      - { proto: "angular_z", type: "f32", ros: "angular.z" }
-```
+`config` 定义协议与传输行为：
 
-### 3. MCU 端集成与协议文档
+- `buffer_size`：ROS 端环形缓冲区容量，必须容纳最大完整帧。
+- `head_byte_1`、`head_byte_2`：0 至 255 的双帧头字节。
+- `checksum`：`NONE`、`SUM8`、`XOR8` 或 `CRC8`。
+- `require_handshake`：进入 RUNNING 前是否要求握手。
+- `ignore_version_mismatch`：是否允许协议哈希不一致；公共默认值为 `false`。
+- `enable_heartbeat`、`strict_heartbeat`、`heartbeat_timeout_ms`：心跳与严格超时策略。
+- `reliable_retry_interval_ms`、`reliable_max_retries`：可靠消息重传参数。
+- `qos_depth`：自动生成的普通 ROS publisher/subscription 深度。
 
-当你在 ROS2 端运行 `colcon build` 后，`mcu_output` 目录下会自动生成相关文件：
+`type_mappings` 把 YAML 类型别名映射为受支持的定长 C 类型。`messages` 中每项包含：
 
-#### 协议文档 (PROTOCOL_DOC.md)
-`mcu_output/PROTOCOL_DOC.md` 是**自动生成**的通信协议文档，它清晰地列出了：
-*   所有消息的 ID、方向、数据结构定义。
-*   每个字段的字节偏移量和 C 语言类型。
-*   **这是提供给电控开发人员最直接的参考文档。**
+- `name`：合法 C 标识符，生成 `Packet_<name>`。
+- `id`：0 至 255；`0xFD`、`0xFE`、`0xFF` 固定保留给 Ack、Heartbeat、Handshake。
+- `direction`：`tx` 表示 ROS 到 MCU，`rx` 表示 MCU 到 ROS，`both` 表示双向。
+- `sub_topic` / `pub_topic`：按方向必填，建议使用相对话题以支持 namespace 和 remap。
+- `ros_msg`：`package/msg/Type`，例如 `sensor_msgs/msg/Imu`。
+- `reliable`：仅允许用于 `tx` 或 `both`；启用后框架追加 seq 并等待 ACK。
+- `debug_log_mode`：`on` 或 `off`。
+- `fields`：按线协议顺序列出 `proto`、`type` 和 ROS 字段路径 `ros`。
+- `notes`：仅用于文档，不参与协议哈希。
 
-#### 生成的 C 代码
-*   `protocol.c`: 协议打包与解包实现。
-*   `protocol.h`: 协议结构体与函数声明。
+Ack、Heartbeat、Handshake 的名称、ID、方向、字段类型和顺序是框架契约，代码生成阶段会拒绝删除或修改。默认中性示例还提供 `DemoCommand`、`DemoReliableCommand` 和 `DemoTelemetry`。
 
-**电控开发人员集成步骤：**
-1.  将 `mcu_output` 文件夹内容复制到单片机工程中。
-2.  实现 `serial_write` 等底层发送接口。
-3.  调用 `protocol.h` 中的 `pack_*` 和 `unpack_*` 接口进行数据收发。
+自定义 `ros_msg` 对应的消息包必须先能被当前 workspace 或 underlay 的 CMake 找到。例如使用 `sensor_msgs/msg/Imu` 前先安装 `ros-humble-sensor-msgs`，或先在同一 workspace 构建自定义消息包；无需手动修改本包的 `CMakeLists.txt`。
 
-> [!TIP]
-> 代码生成器支持类似 CubeMX 的用户代码保护功能，在 `/* USER CODE BEGIN */` 和 `/* USER CODE END */` 之间的代码在重新生成时不会被覆盖。
+## 启动
 
-> [!IMPORTANT]
-> **握手要求**：当 `require_handshake=true` 时，生成的 MCU `protocol.c` 会在默认 `on_receive_Handshake()` 中对匹配 `PROTOCOL_HASH` 的握手包自动调用 `send_Handshake()` 回包；如需附加业务逻辑，可在对应 `USER CODE` 区块中追加。
->
-> **心跳要求**：当 `enable_heartbeat=true` 时，生成的 MCU `protocol.c` 会在默认 `on_receive_Heartbeat()` 中自动调用 `send_Heartbeat(pkt)`，按原样回同一个 `count` 作为确认；电控不再需要自己实现固定 ACK 逻辑，也不应独立主动发送心跳。
->
-> `enable_heartbeat=true` 且 `heartbeat_timeout_ms>0` 时，ROS 会发送心跳并在 ACK 超时后断开重连；
-> `enable_heartbeat=true` 且 `heartbeat_timeout_ms=0` 时，ROS 仍发送心跳，但不会因 ACK 超时判定断连；
-> `enable_heartbeat=false` 时，ROS 不发送心跳，也不做 ACK 断连检测。
->
-> **重传机制**：当消息设置 `reliable: true` 时（仅限 `tx` / `both`），ROS 端发送时会在Payload末尾**透明地注入 1 字节的序列号 (ack_seq)**，无需在 YAML 或结构体里显式定义该附加字段。
-
-### 4. 编译项目
-
-在你的 ROS2 工作空间根目录下，且已经自行准备好私有 `config/protocol.yaml` 后：
+普通节点：
 
 ```bash
-# 日常编译（跳过测试编译，更快，避免因 YAML 缺失默认包报错）
-colcon build --packages-select auto_serial_bridge --cmake-args -DBUILD_TESTING=OFF
-
-# 开发者/测试人员
-colcon build --packages-select auto_serial_bridge
-colcon test --packages-select auto_serial_bridge
-
-source install/setup.bash
+ros2 launch auto_serial_bridge serial_bridge_by_node.launch.py
+ros2 launch auto_serial_bridge serial_bridge_by_node.launch.py port:=/dev/ttyUSB0 log_level:=debug
 ```
 
-## 5. 运行
-在配置完yaml文件并且编译成功之后, 即可直接通过运行节点的方式启动, 也可以通过launch的方式启动(推荐)
-
-我们提供了两种示例, 一种是使用节点的方式启动, 一种是使用组件化方式启动
-
-## DEBUG说明
-默认日志会在握手/心跳异常时输出可直接定位的问题信息，包括：
-
-- 握手不匹配时的本地 hash 与下位机 hash 对比
-- 心跳 ACK 不匹配时的 expected/got、当前状态与 payload 十六进制摘要
-
-开启该节点的 debug 级别后，还会看到等待握手阶段的收发过滤提示（例如握手前丢弃了哪些非握手包），便于排查“握手没对上但业务包已发送”的问题。
-
-## 测试
-
-本仓库区分两类验证：
-
-1. 公开自检：用于保证示例协议和代码生成脚本没有损坏。
-2. 私有构建/运行验证：依赖你自己的 `config/protocol.yaml`，只在本地或私有环境执行。
-
-公开 CI 只校验 sample 和 codegen，不执行 `colcon build` 或 `colcon test`。
-
-公开自检可直接运行：
-```bash
-tmpdir="$(mktemp -d)"
-python3 scripts/codegen.py config/protocol-sample.yaml "$tmpdir"
-python3 -m pytest -q test/test_codegen_checksum.py test/test_public_ci_contract.py
-```
-
-私有协议已经就绪时，仍可在本地执行完整包级测试：
-```bash
-colcon test --packages-select auto_serial_bridge --event-handlers console_direct+
-```
-
-### socat 串口极端场景回归（推荐）
-
-为了尽量提前发现现场串口问题（分片、粘包、双向并发、大包、端口重开、短突发），建议在改动串口链路后执行基于 `socat` 的回归：
-
-当前 `test/test_scocat.py` 重点覆盖：
-- 大包完整性与双向传输一致性
-- 分片 + 粘包混合输入下的数据顺序保持
-- 全双工并发收发
-- 端口中途重开后的恢复能力
-- 高频短突发稳定性
-- 控制字节透传（raw 模式）
-- 抖动/静默窗口注入后的链路连续性
+组件容器：
 
 ```bash
-python3 -m pytest -q test/test_scocat.py
+ros2 launch auto_serial_bridge serial_bridge_by_component.launch.py
+ros2 launch auto_serial_bridge serial_bridge_by_component.launch.py port:=/dev/ttyUSB0
 ```
 
-做稳定性压力回归时，可连续多轮执行：
+两个入口使用同一个 `SerialController`，因此握手、重连和 ready 行为一致。namespace 和 remap 由标准 ROS 2 启动参数处理。
 
-```bash
-for i in $(seq 1 5); do
-  echo "[socat stress round $i]"
-  python3 -m pytest -q test/test_scocat.py || exit 1
-done
+## Ready 状态
+
+`SerialController` 在相对话题 `auto_serial_bridge/ready` 发布 `std_msgs/msg/Bool`，QoS 为 depth 1、reliable、transient local。无 namespace 时解析为 `/auto_serial_bridge/ready`。
+
+- 节点启动立即发布 `false`。
+- 串口打开并完成握手后发布 `true`。
+- 禁用握手时，串口打开并进入 RUNNING 后发布 `true`。
+- 读取错误、端口关闭、严格心跳超时、连接重置和析构时发布 `false`。
+- 相同值不会重复发布。
+
+## 生成与安装产物
+
+构建目录 `build/auto_serial_bridge/generated/` 包含：
+
+```text
+protocol.h
+protocol.c
+generated_config.hpp
+generated_bindings.hpp
+PROTOCOL_DOC.md
 ```
 
-如果还需要验证 ROS 节点侧握手/心跳/重连行为（默认不在公开 CI 中执行），可启用 PTY 端到端测试：
+安装后公共头位于 `include/auto_serial_bridge/generated/`。MCU 使用的 `protocol.h`、`protocol.c` 和 `PROTOCOL_DOC.md` 位于 `share/auto_serial_bridge/mcu_output/`。源码目录不会产生生成文件。
 
-```bash
-AUTO_SERIAL_BRIDGE_RUN_PTY_INTEGRATION=1 python3 -m pytest -q test/test_main.py
-```
+协议哈希只包含帧头、校验算法、握手/心跳开关、消息 ID、方向、reliable 标志和按顺序解析后的字段 C 类型。串口路径、波特率、ROS topic、ROS 消息路径、QoS、日志、notes、心跳超时、重传参数以及 YAML 格式均不参与哈希。
 
-如果需要分钟级验证“链路短时断开 + 自动恢复 + 数据一致性”（默认关闭，避免影响日常回归时长），可启用长时 socat 用例：
+## 串口权限
 
-```bash
-AUTO_SERIAL_BRIDGE_RUN_LONG_SOAK=1 python3 -m pytest -q test/test_scocat.py -k long_run
-```
+可执行 `sudo ./scripts/auto_udev.sh` 生成 `MODE="0660"`、`GROUP="dialout"` 的规则。脚本会在可用时加入 `uaccess`，并在设备没有序列号时提示同 VID/PID 多设备冲突风险。
 
-## 更新日志
+## Web 编辑器
 
-请参阅此项目文件中的详细 [CHANGELOG.md](CHANGELOG.md) 了解所有版本的完整更新历史。
+直接打开 `web/index.html` 可编辑并导出 YAML。系统消息固定，波特率与 `serial_controller.ros__parameters.baudrate` 保持一致。导出的文件应替换仓库内 `config/protocol.yaml`，随后重新编译。
 
-*   **v1.1 / Recent**: 优化和强化了各项核心功能，并加强了心跳、热插拔和可配置化校验和功能。增加自动化测试，重构了部分代码结构。
-*   **v1.0**: 实现了基于 `protocol.yaml` 的全自动代码生成。
-    *   **核心特性**：
-        *   支持 `protocol.yaml` 配置变化检测，仅在配置更改时触发重新生成。
-        *   自动生成面向电控的协议文档 `PROTOCOL_DOC.md`。
-        *   支持 ROS 主动心跳确认（Heartbeat）与版本哈希握手（Handshake）。
-        *   支持用户代码块保护，增量式开发更友好。
-*   **Beta**: 初始验证版本。
+## 许可证
 
-## TODO
-- 增加多个校验协议可选项
-- 预设多个串口通信配置，用于适配不同场景（如：Easy 模式去掉握手和校验）
-- 支持动态调参
+项目采用 Apache License 2.0。内置 `js-yaml 4.1.0` 使用 MIT License，详见 `THIRD_PARTY_NOTICES.md`。

@@ -2,7 +2,6 @@ const CHECKSUM_OPTIONS = ["NONE", "SUM8", "XOR8", "CRC8"];
 const DIRECTION_OPTIONS = ["tx", "rx", "both"];
 const DEBUG_LOG_MODE_OPTIONS = ["on", "off"];
 const CONFIG_NUMERIC_KEYS = [
-  "baudrate",
   "buffer_size",
   "head_byte_1",
   "head_byte_2",
@@ -11,24 +10,22 @@ const CONFIG_NUMERIC_KEYS = [
   "qos_depth",
   "heartbeat_timeout_ms",
 ];
-const ROS_NUMERIC_KEYS = ["baudrate", "timeout"];
+const ROS_NUMERIC_KEYS = ["baudrate"];
 const DEFAULT_PROTOCOL = Object.freeze({
   serial_controller: {
     ros__parameters: {
       port: "/dev/ttyACM0",
       baudrate: 115200,
-      timeout: 0.1,
       debug_raw_frame: false,
     },
   },
   config: {
-    baudrate: 115200,
-    buffer_size: 256,
+    buffer_size: 1024,
     head_byte_1: 0x5a,
     head_byte_2: 0xa5,
     checksum: "CRC8",
     require_handshake: true,
-    ignore_version_mismatch: true,
+    ignore_version_mismatch: false,
     reliable_retry_interval_ms: 100,
     reliable_max_retries: 3,
     enable_heartbeat: true,
@@ -52,8 +49,8 @@ const SYSTEM_MESSAGES = Object.freeze([
     id: 0xfd,
     direction: "both",
     debug_log_mode: "on",
-    sub_topic: "/task/ack",
-    pub_topic: "/task/ack",
+    sub_topic: "auto_serial_bridge/system/ack",
+    pub_topic: "auto_serial_bridge/system/ack",
     ros_msg: "std_msgs/msg/Int32MultiArray",
     notes:
       "通用 ACK。acked_id 为被确认包的原始 Packet ID，ack_seq 为发送方附加的序列号，用于区分同 ID 的不同版本。",
@@ -67,8 +64,8 @@ const SYSTEM_MESSAGES = Object.freeze([
     id: 0xfe,
     direction: "both",
     debug_log_mode: "on",
-    sub_topic: "/task/heartbeat",
-    pub_topic: "/task/heartbeat",
+    sub_topic: "auto_serial_bridge/system/heartbeat",
+    pub_topic: "auto_serial_bridge/system/heartbeat",
     ros_msg: "std_msgs/msg/UInt32",
     notes:
       "握手完成后，ROS 侧以固定周期下发心跳。电控收到后必须尽快原样回同一个 count 作为确认，但不再独立主动发送心跳。只有与 ROS 最近一次发送值一致的回包才算有效确认。",
@@ -79,8 +76,8 @@ const SYSTEM_MESSAGES = Object.freeze([
     id: 0xff,
     direction: "both",
     debug_log_mode: "on",
-    sub_topic: "/task/handshake",
-    pub_topic: "/task/handshake",
+    sub_topic: "auto_serial_bridge/system/handshake",
+    pub_topic: "auto_serial_bridge/system/handshake",
     ros_msg: "std_msgs/msg/UInt32",
     notes:
       "上电后 ROS 主动发起握手，电控收到后用相同的 protocol_hash 原样回复。握手通过后方可发送其他数据帧，且整个连接周期内只需执行一次。protocol_hash 值见【全局参数】。",
@@ -193,8 +190,8 @@ export function createDefaultMessage(existingMessages = []) {
     direction: "tx",
     debug_log_mode: "on",
     reliable: false,
-    sub_topic: `/task/new_message_${messageIndex}`,
-    pub_topic: `/task/new_message_${messageIndex}`,
+    sub_topic: `demo/new_message_${messageIndex}`,
+    pub_topic: `demo/new_message_${messageIndex}`,
     ros_msg: "std_msgs/msg/UInt32",
     notes: "",
     fields: [createDefaultField()],
@@ -258,7 +255,6 @@ export function normalizeProtocol(rawData = {}) {
   normalized.serial_controller.ros__parameters = {
     port: normalizeString(serialParameters.port || normalized.serial_controller.ros__parameters.port),
     baudrate: toFiniteNumber(serialParameters.baudrate, normalized.serial_controller.ros__parameters.baudrate),
-    timeout: toFiniteNumber(serialParameters.timeout, normalized.serial_controller.ros__parameters.timeout),
     debug_raw_frame: normalizeBoolean(
       serialParameters.debug_raw_frame,
       normalized.serial_controller.ros__parameters.debug_raw_frame,
@@ -266,7 +262,6 @@ export function normalizeProtocol(rawData = {}) {
   };
 
   normalized.config = {
-    baudrate: toInteger(config.baudrate, normalized.config.baudrate),
     buffer_size: toInteger(config.buffer_size, normalized.config.buffer_size),
     head_byte_1: toInteger(config.head_byte_1, normalized.config.head_byte_1),
     head_byte_2: toInteger(config.head_byte_2, normalized.config.head_byte_2),
@@ -461,7 +456,7 @@ export function serializeProtocol(protocol) {
   lines.push("  ros__parameters:");
   for (const [key, value] of orderObjectEntries(
     normalized.serial_controller.ros__parameters,
-    ["port", "baudrate", "timeout", "debug_raw_frame"],
+    ["port", "baudrate", "debug_raw_frame"],
   )) {
     const renderedValue = typeof value === "number" || typeof value === "boolean" ? value : yamlSingleQuote(value);
     lines.push(`    ${key}: ${renderedValue}`);
@@ -473,7 +468,6 @@ export function serializeProtocol(protocol) {
     "config",
     normalized.config,
     [
-      "baudrate",
       "buffer_size",
       "head_byte_1",
       "head_byte_2",
@@ -699,13 +693,6 @@ function initApp() {
         value: rosParameters.baudrate,
       },
       {
-        label: "串口超时 (s)",
-        path: "serial_controller.ros__parameters.timeout",
-        type: "number",
-        step: "0.01",
-        value: rosParameters.timeout,
-      },
-      {
         label: "输出原始数据帧",
         path: "serial_controller.ros__parameters.debug_raw_frame",
         type: "checkbox",
@@ -714,12 +701,6 @@ function initApp() {
     ];
 
     const configFields = [
-      {
-        label: "协议波特率",
-        path: "config.baudrate",
-        type: "number",
-        value: config.baudrate,
-      },
       {
         label: "缓冲区大小",
         path: "config.buffer_size",
@@ -872,9 +853,7 @@ function initApp() {
         } else if (path === "config.head_byte_1" || path === "config.head_byte_2") {
           nextValue = toInteger(event.currentTarget.value, 0);
         } else if (numericPaths.has(path)) {
-          nextValue = path.endsWith(".timeout")
-            ? toFiniteNumber(event.currentTarget.value, 0)
-            : toInteger(event.currentTarget.value, 0);
+          nextValue = toInteger(event.currentTarget.value, 0);
         } else {
           nextValue = event.currentTarget.value;
         }
