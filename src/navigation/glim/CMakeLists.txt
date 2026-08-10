@@ -35,7 +35,10 @@ endif()
 
 if(BUILD_WITH_OPENCV)
   set(GLIM_USE_OPENCV 1)
-  find_package(OpenCV REQUIRED COMPONENTS core)
+  find_package(OpenCV 4.5.4 EXACT REQUIRED COMPONENTS core
+    PATHS "/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/cmake/opencv4"
+    NO_DEFAULT_PATH
+  )
 else()
   set(GLIM_USE_OPENCV 0)
 endif()
