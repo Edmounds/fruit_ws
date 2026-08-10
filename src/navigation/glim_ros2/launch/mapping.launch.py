@@ -40,7 +40,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "dump_path",
-            default_value="/tmp/glim_dump",
+            default_value="/home/rc4/fruit_ws/tmp/glim_dump",
             description="Directory used to save the GLIM map on shutdown",
         ),
         DeclareLaunchArgument(

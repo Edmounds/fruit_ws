@@ -40,6 +40,7 @@ def test_launch_uses_source_config_and_disables_camera_input():
     assert launch_file.is_file()
     launch = launch_file.read_text()
     assert "/home/rc4/fruit_ws/src/navigation/glim/config" in launch
+    assert "/home/rc4/fruit_ws/tmp/glim_dump" in launch
     assert "BUILD_WITH_CV_BRIDGE" not in cmake
     assert "<depend>cv_bridge</depend>" not in package
     assert "<depend>image_transport</depend>" not in package
