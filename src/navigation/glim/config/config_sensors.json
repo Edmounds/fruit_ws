@@ -33,6 +33,7 @@
   //
   // LiDAR-IMU transformations for typical sensors (Do not trust these values blindly!):
   // Ouster OS0: [0.006, -0.012, 0.008, 0.0, 0.0, 0.0, 1.0]
+  // Livox MID360: [0.011, 0.02329, -0.04412, 0, 0, 0, 1]
   // Livox Avia: [0, 0, 0, 0, 0, 0, 1]
   // Realsense L515: [-0.012, 0.016, 0.001, 0, 0, 0, 1]
   // Azure Kinect: [0.003, 0.004, -0.051, -0.476, 0.474, 0.524, 0.525]
@@ -51,9 +52,9 @@
     // LiDAR config
     "global_shutter_lidar": false,
     "T_lidar_imu": [
-      0.006,
-      -0.012,
-      0.008,
+      0.011,
+      0.02329,
+      -0.04412,
       0.0,
       0.0,
       0.0,
