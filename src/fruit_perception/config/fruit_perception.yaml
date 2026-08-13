@@ -1,0 +1,52 @@
+left_camera:
+  ros__parameters:
+    video_device: "/dev/left_cam"
+    framerate: 30.0
+    io_method: "mmap"
+    frame_id: "left_camera"
+    pixel_format: "mjpeg2rgb"
+    image_width: 640
+    image_height: 480
+    camera_name: "left_camera"
+
+right_camera:
+  ros__parameters:
+    video_device: "/dev/right_cam"
+    framerate: 30.0
+    io_method: "mmap"
+    frame_id: "right_camera"
+    pixel_format: "mjpeg2rgb"
+    image_width: 640
+    image_height: 480
+    camera_name: "right_camera"
+
+d435i_camera:
+  ros__parameters:
+    serial_no: "243322073779"
+    enable_color: true
+    rgb_camera.color_profile: "640x480x60"
+    rgb_camera.color_format: "RGB8"
+    enable_depth: false
+    enable_infra: false
+    enable_infra1: false
+    enable_infra2: false
+    enable_gyro: false
+    enable_accel: false
+    pointcloud.enable: false
+    publish_tf: false
+
+fruit_perception_node:
+  ros__parameters:
+    enable_left_camera: false
+    enable_right_camera: false
+    enable_d435i: true
+    left_input_topic: "/left_camera/image_raw"
+    right_input_topic: "/right_camera/image_raw"
+    d435i_input_topic: "/camera/camera/color/image_raw"
+    left_output_topic: "/fruit_perception/left/types"
+    right_output_topic: "/fruit_perception/right/types"
+    d435i_output_topic: "/fruit_perception/d435i/types"
+    left_annotated_topic: "/fruit_perception/left/annotated_image"
+    right_annotated_topic: "/fruit_perception/right/annotated_image"
+    d435i_annotated_topic: "/fruit_perception/d435i/annotated_image"
+    confidence_threshold: 0.50

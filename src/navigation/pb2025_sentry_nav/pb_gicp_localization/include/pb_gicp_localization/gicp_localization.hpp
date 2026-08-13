@@ -13,8 +13,10 @@
 #include <small_gicp/ann/kdtree_omp.hpp>
 #include <small_gicp/factors/gicp_factor.hpp>
 #include <small_gicp/pcl/pcl_point.hpp>
+#include <small_gicp/pcl/pcl_point_traits.hpp>
 #include <small_gicp/registration/reduction_omp.hpp>
 #include <small_gicp/registration/registration.hpp>
+#include <small_gicp/util/normal_estimation_omp.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
 #include "pb_gicp_localization/registration_validation.hpp"

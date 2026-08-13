@@ -3,10 +3,23 @@ build/
 install/
 log/
 
+# ROS 2 runtime data
+.ros/
+rosbag2_*/
+*.bag
+*.db3
+*.mcap
+
 # Python caches
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+.venv/
+venv/
 
 # Editors and operating systems
 .DS_Store
@@ -18,3 +31,9 @@ __pycache__/
 
 # Local caches
 .cache/
+
+# Local RealSense captures
+/rs-save-to-disk-output-*
+
+
+tmp/

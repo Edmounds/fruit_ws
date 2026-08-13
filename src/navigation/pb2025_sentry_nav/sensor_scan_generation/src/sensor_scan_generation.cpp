@@ -14,6 +14,8 @@
 
 #include "sensor_scan_generation/sensor_scan_generation.hpp"
 
+#include "sensor_scan_generation/odometry_math.hpp"
+
 #include "pcl_ros/transforms.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
@@ -132,19 +134,7 @@ void SensorScanGenerationNode::publishOdometry(
     previous_odometry_initialized_ ? (stamp - previous_odometry_time_).seconds() : 0.0;
 
   if (dt > 0.0) {
-    const auto linear_velocity =
-      (transform.getOrigin() - previous_odometry_transform_.getOrigin()) / dt;
-
-    const tf2::Quaternion q_diff =
-      transform.getRotation() * previous_odometry_transform_.getRotation().inverse();
-    const auto angular_velocity = q_diff.getAxis() * q_diff.getAngle() / dt;
-
-    out.twist.twist.linear.x = linear_velocity.x();
-    out.twist.twist.linear.y = linear_velocity.y();
-    out.twist.twist.linear.z = linear_velocity.z();
-    out.twist.twist.angular.x = angular_velocity.x();
-    out.twist.twist.angular.y = angular_velocity.y();
-    out.twist.twist.angular.z = angular_velocity.z();
+    out.twist.twist = calculateBodyTwist(transform, previous_odometry_transform_, dt);
   }
 
   previous_odometry_transform_ = transform;

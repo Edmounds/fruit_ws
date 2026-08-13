@@ -1,3 +1,19 @@
+# Copyright 2025 Lihan Chen
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import ast
+import json
 from pathlib import Path
 
 import yaml
@@ -23,7 +39,8 @@ def test_removed_sentry_packages_and_launches_are_absent():
     ):
         assert not (ROOT / path).exists()
 
-    gitmodules = (ROOT / ".gitmodules").read_text()
+    gitmodules_path = ROOT / ".gitmodules"
+    gitmodules = gitmodules_path.read_text() if gitmodules_path.exists() else ""
     for removed_submodule in (
         "pb_omni_pid_pursuit_controller",
         "pb_teleop_twist_joy",
@@ -71,3 +88,61 @@ def test_mux_and_localization_contract():
     assert '("cmd_vel_out", "cmd_vel")' in launch
     assert "default_nav_to_pose_bt_xml" in launch
     assert "default_nav_through_poses_bt_xml" in launch
+
+
+def test_calibrated_mid360_static_transform_is_launched():
+    launch_path = ROOT / "pb2025_nav_bringup/launch/localization_navigation_launch.py"
+    tree = ast.parse(launch_path.read_text())
+    static_tf = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "Node"
+        and any(
+            keyword.arg == "executable"
+            and ast.literal_eval(keyword.value) == "static_transform_publisher"
+            for keyword in node.keywords
+        )
+    )
+    keywords = {keyword.arg: keyword.value for keyword in static_tf.keywords}
+    assert ast.literal_eval(keywords["package"]) == "tf2_ros"
+    assert ast.literal_eval(keywords["arguments"]) == [
+        "--x",
+        "0.144629969",
+        "--y",
+        "0.0",
+        "--z",
+        "0.0",
+        "--qx",
+        "0.183012702",
+        "--qy",
+        "-0.183012702",
+        "--qz",
+        "-0.683012702",
+        "--qw",
+        "0.683012702",
+        "--frame-id",
+        "base_link",
+        "--child-frame-id",
+        "front_mid360",
+    ]
+
+    package = (ROOT / "pb2025_nav_bringup/package.xml").read_text()
+    assert "<exec_depend>tf2_ros</exec_depend>" in package
+
+
+def test_mid360_runtime_config_matches_live_hardware():
+    params = yaml.safe_load(
+        (ROOT / "pb2025_nav_bringup/config/reality/nav2_params.yaml").read_text()
+    )
+    driver = params["livox_ros_driver2"]["ros__parameters"]
+    assert driver["xfer_format"] == 1
+
+    config = json.loads(
+        (ROOT / "pb2025_nav_bringup/config/reality/mid360_user_config.json").read_text()
+    )
+    host = config["MID360"]["host_net_info"]
+    for key in ("cmd_data_ip", "push_msg_ip", "point_data_ip", "imu_data_ip"):
+        assert host[key] == "192.168.1.5"
+    assert config["lidar_configs"][0]["ip"] == "192.168.1.127"

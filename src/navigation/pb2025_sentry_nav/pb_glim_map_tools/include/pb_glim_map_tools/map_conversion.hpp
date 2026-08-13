@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <exception>
 #include <string>
 #include <vector>
 
@@ -64,8 +65,16 @@ inline bool convertMap(
 
   result.output_points = filtered.size();
   pcl::getMinMax3D(filtered, result.min, result.max);
-  if (pcl::io::savePCDFileBinary(output, filtered) < 0) {
+  try {
+    if (pcl::io::savePCDFileBinary(output, filtered) < 0) {
+      error = "failed to write output PCD: " + output;
+      return false;
+    }
+  } catch (const std::exception & exception) {
     error = "failed to write output PCD: " + output;
+    if (exception.what()[0] != '\0') {
+      error += ": " + std::string(exception.what());
+    }
     return false;
   }
   return true;

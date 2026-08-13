@@ -1,6 +1,6 @@
 livox_ros_driver2:
   ros__parameters:
-    xfer_format: 4
+    xfer_format: 1
     multi_topic: 0
     data_src: 0
     publish_freq: 20.0

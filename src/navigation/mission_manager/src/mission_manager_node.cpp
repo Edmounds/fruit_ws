@@ -239,7 +239,7 @@ void MissionManagerNode::declare_and_load_parameters() {
   }
 
   this->declare_parameter("missions_dir", default_missions_dir);
-  this->declare_parameter("odom_topic", "/Odometry");
+  this->declare_parameter("odom_topic", "odometry");
   this->declare_parameter("frame_id", "map");
   this->declare_parameter("planning_mode", "straight_line");
   this->declare_parameter("pose_avg_duration_sec", 0.5);

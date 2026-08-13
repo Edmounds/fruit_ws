@@ -1,0 +1,4 @@
+fruit_result_bridge:
+  ros__parameters:
+    input_topic: "/fruit_perception/d435i/types"
+    output_topic: "/fruit_hardware_bridge/d435i/result"

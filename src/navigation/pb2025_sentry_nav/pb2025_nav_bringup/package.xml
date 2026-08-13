@@ -38,6 +38,7 @@
   <exec_depend>pb_gicp_localization</exec_depend>
   <exec_depend>loam_interface</exec_depend>
   <exec_depend>sensor_scan_generation</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
   <exec_depend>twist_mux</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>joy</exec_depend>

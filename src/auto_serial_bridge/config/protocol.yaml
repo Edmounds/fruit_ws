@@ -33,7 +33,7 @@ type_mappings:
 
 # 必须保留 messages 列表。Ack、Heartbeat 和 Handshake 是框架必需的系统消息：
 # 不得删除、重命名、调整字段顺序或修改 ID 与方向；普通消息不得占用系统保留的
-# 0xFD 至 0xFF。其他示例消息可以根据实际协议替换。
+# 0xFD 至 0xFF。当前唯一的业务消息是 D435i 水果识别结果。
 messages:
 
 #===========================================================================
@@ -72,45 +72,30 @@ messages:
       - { proto: "protocol_hash", type: "u32", ros: "data" }
 
 #===========================================================================
-  - name: "DemoCommand"
-    id: 0x01
+  - name: "FruitDetection"
+    id: 0x10
     direction: "tx"
-    debug_log_mode: "on"
-    sub_topic: "demo/command"
-    ros_msg: "std_msgs/msg/UInt32"
-    notes: "Neutral best-effort ROS-to-MCU example."
-    fields:
-      - { proto: "value", type: "u32", ros: "data" }
+    reliable: false
+    debug_log_mode: "off"
+    sub_topic: "fruit_hardware_bridge/d435i/result"
+    ros_msg: "std_msgs/msg/UInt8MultiArray"
+    notes: |
+      D435i highest-confidence fruit result. When fruit_id is 0, status is 0 and must be ignored.
 
-  - name: "DemoReliableCommand"
-    id: 0x02
-    direction: "tx"
-    reliable: true
-    debug_log_mode: "on"
-    sub_topic: "demo/reliable_command"
-    ros_msg: "std_msgs/msg/UInt32"
-    notes: "Neutral reliable ROS-to-MCU example."
-    fields:
-      - { proto: "value", type: "u32", ros: "data" }
+      | fruit_id | English | 中文 |
+      | :---: | :--- | :--- |
+      | 0 | no_detection | 未识别到目标 |
+      | 1 | apple | 苹果 |
+      | 2 | chili | 辣椒 |
+      | 3 | pumpkin | 南瓜 |
+      | 4 | onion | 洋葱 |
+      | 5 | pear | 梨 |
+      | 6 | tomato | 西红柿 |
 
-  - name: "DemoTelemetry"
-    id: 0x03
-    direction: "rx"
-    debug_log_mode: "on"
-    pub_topic: "demo/telemetry"
-    ros_msg: "std_msgs/msg/Float32"
-    notes: "Neutral MCU-to-ROS telemetry example."
+      | status | English | 中文 |
+      | :---: | :--- | :--- |
+      | 0 | unripe | 未成熟 |
+      | 1 | ripe | 成熟 |
     fields:
-      - { proto: "value", type: "f32", ros: "data" }
-
-  - name: "VelocityCommand"
-    id: 0x04
-    direction: "tx"
-    debug_log_mode: "on"
-    sub_topic: "cmd_vel"
-    ros_msg: "geometry_msgs/msg/Twist"
-    notes: "Generic velocity command example. The bridge only forwards incoming messages and does not provide command keepalive or timeout behavior."
-    fields:
-      - { proto: "linear_x", type: "f32", ros: "linear.x" }
-      - { proto: "linear_y", type: "f32", ros: "linear.y" }
-      - { proto: "angular_z", type: "f32", ros: "angular.z" }
+      - { proto: "fruit_id", type: "u8", ros: "data[0]" }
+      - { proto: "status", type: "u8", ros: "data[1]" }

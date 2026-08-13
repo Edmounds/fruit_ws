@@ -12,8 +12,8 @@ map -> odom -> base_link -> front_mid360
 
 - `pb_gicp_localization` publishes the only `map -> odom` transform.
 - `sensor_scan_generation` publishes the only `odom -> base_link` transform.
-- The robot URDF or an external static transform publisher must provide the calibrated
-  `base_link -> front_mid360` transform.
+- `localization_navigation_launch.py` publishes the calibrated static
+  `base_link -> front_mid360` transform for the installed MID360.
 - Wheel odometry may be published as `wheel/odom`, but its TF publication must be disabled.
 
 ## Mapping And Map Handoff
