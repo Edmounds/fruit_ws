@@ -12,7 +12,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -30,6 +32,12 @@ namespace
 {
 
 constexpr auto kStatsPeriod = std::chrono::seconds(5);
+
+std::string default_cache_dir()
+{
+  const char * home = std::getenv("HOME");
+  return std::string(home != nullptr ? home : "/tmp") + "/.cache/fruit_perception/openvino";
+}
 
 double percentile(std::vector<double> values, double fraction)
 {
@@ -52,6 +60,7 @@ public:
   {
     const auto package_share = ament_index_cpp::get_package_share_directory("fruit_perception");
     const auto model_path = declare_parameter("model_path", package_share + "/model/best.xml");
+    const auto cache_dir = declare_parameter("openvino_cache_dir", default_cache_dir());
     confidence_threshold_ = static_cast<float>(declare_parameter("confidence_threshold", 0.50));
 
     const bool enable_left = declare_parameter("enable_left_camera", false);
@@ -70,7 +79,7 @@ public:
       throw std::invalid_argument("confidence_threshold must be between 0 and 1");
     }
 
-    initialize_model(model_path, enabled_streams);
+    initialize_model(model_path, cache_dir, enabled_streams);
 
     if (enable_left) {
       add_stream(
@@ -119,24 +128,31 @@ private:
     Stream(
       std::string stream_name, ov::InferRequest infer_request,
       rclcpp::Publisher<msg::FruitTypes>::SharedPtr result_publisher,
-      rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher,
-      const ov::Shape & input_shape)
+      rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher)
     : name(std::move(stream_name)),
       request(std::move(infer_request)),
       result_publisher(std::move(result_publisher)),
       image_publisher(std::move(image_publisher)),
-      input(input_shape[0] * input_shape[1] * input_shape[2] * input_shape[3]),
+      input_image(kModelInputSize, kModelInputSize, CV_8UC3, cv::Scalar(114, 114, 114)),
       last_stats_at(std::chrono::steady_clock::now())
     {
-      request.set_input_tensor(ov::Tensor(ov::element::f32, input_shape, input.data()));
+      // The u8 NHWC tensor wraps the letterbox buffer directly; conversion to
+      // f32 NCHW and the /255 scaling are fused into the compiled model.
+      request.set_input_tensor(
+        ov::Tensor(
+          ov::element::u8,
+          ov::Shape{
+            1U, static_cast<std::size_t>(kModelInputSize),
+            static_cast<std::size_t>(kModelInputSize), 3U},
+          input_image.data));
     }
 
     std::string name;
     ov::InferRequest request;
     rclcpp::Publisher<msg::FruitTypes>::SharedPtr result_publisher;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher;
-    std::vector<float> input;
-    cv::Mat frame;
+    cv::Mat input_image;
+    cv_bridge::CvImageConstPtr frame;
     LetterboxTransform transform{};
     std_msgs::msg::Header header;
     std::chrono::steady_clock::time_point started_at;
@@ -151,7 +167,8 @@ private:
     std::chrono::steady_clock::time_point last_stats_at;
   };
 
-  void initialize_model(const std::string & model_path, std::size_t request_count)
+  void initialize_model(
+    const std::string & model_path, const std::string & cache_dir, std::size_t request_count)
   {
     const auto available_devices = core_.get_available_devices();
     if (std::find(available_devices.begin(), available_devices.end(), "GPU") ==
@@ -160,13 +177,32 @@ private:
       throw std::runtime_error("OpenVINO GPU device is not available; CPU fallback is disabled");
     }
 
-    const auto model = core_.read_model(model_path);
+    if (!cache_dir.empty()) {
+      try {
+        std::filesystem::create_directories(cache_dir);
+        core_.set_property(ov::cache_dir(cache_dir));
+      } catch (const std::exception & error) {
+        RCLCPP_WARN(get_logger(), "Model cache disabled: %s", error.what());
+      }
+    }
+
+    auto model = core_.read_model(model_path);
     const auto input = model->input();
     if (input.get_element_type() != ov::element::f32 ||
       input.get_shape() != ov::Shape{1, 3, kModelInputSize, kModelInputSize})
     {
       throw std::runtime_error("Expected model input f32 [1,3,640,640]");
     }
+
+    // Fold preprocessing into the model so the GPU performs the u8 -> f32
+    // conversion, /255 scaling, and NHWC -> NCHW transpose. The host only
+    // supplies the letterboxed u8 RGB image.
+    ov::preprocess::PrePostProcessor preprocessor(model);
+    auto & input_info = preprocessor.input();
+    input_info.tensor().set_element_type(ov::element::u8).set_layout("NHWC");
+    input_info.preprocess().convert_element_type(ov::element::f32).scale(255.0F);
+    input_info.model().set_layout("NCHW");
+    model = preprocessor.build();
 
     compiled_model_ = core_.compile_model(
       model, "GPU",
@@ -177,13 +213,18 @@ private:
     if (execution_devices.size() != 1 || execution_devices.front() != "GPU.0") {
       throw std::runtime_error("Model did not compile exclusively to GPU.0");
     }
+    if (compiled_model_.input().get_element_type() != ov::element::u8 ||
+      compiled_model_.input().get_shape() !=
+      ov::Shape{1, kModelInputSize, kModelInputSize, 3})
+    {
+      throw std::runtime_error("Expected compiled model input u8 [1,640,640,3]");
+    }
     if (compiled_model_.output().get_element_type() != ov::element::f32 ||
       compiled_model_.output().get_shape() != ov::Shape{1, 300, 6})
     {
       throw std::runtime_error("Expected model output f32 [1,300,6]");
     }
 
-    input_shape_ = compiled_model_.input().get_shape();
     output_shape_ = compiled_model_.output().get_shape();
     RCLCPP_INFO(
       get_logger(), "OpenVINO model compiled successfully; execution device: %s",
@@ -197,8 +238,7 @@ private:
     auto stream = std::make_unique<Stream>(
       name, compiled_model_.create_infer_request(),
       create_publisher<msg::FruitTypes>(output_topic, rclcpp::QoS(10)),
-      create_publisher<sensor_msgs::msg::Image>(annotated_topic, rclcpp::SensorDataQoS()),
-      input_shape_);
+      create_publisher<sensor_msgs::msg::Image>(annotated_topic, rclcpp::SensorDataQoS()));
     auto * stream_ptr = stream.get();
     stream->request.set_callback(
       [this, stream_ptr](std::exception_ptr error) {finish_inference(*stream_ptr, error);});
@@ -233,10 +273,11 @@ private:
     }
 
     try {
-      const auto converted =
-        cv_bridge::toCvCopy(*image, sensor_msgs::image_encodings::BGR8);
-      stream.frame = converted->image;
-      stream.transform = letterbox_to_nchw(stream.frame, stream.input);
+      // toCvShare avoids a full-frame copy when the source already publishes
+      // rgb8 (D435i RGB8 and usb_cam mjpeg2rgb both do); the returned pointer
+      // keeps the message alive for the duration of the inference.
+      stream.frame = cv_bridge::toCvShare(image, sensor_msgs::image_encodings::RGB8);
+      stream.transform = letterbox_image(stream.frame->image, stream.input_image);
       stream.header = image->header;
       stream.started_at = std::chrono::steady_clock::now();
       stream.request.start_async();
@@ -278,11 +319,13 @@ private:
       }
       stream.last_completed_at = now;
 
-      cv::Mat annotated = stream.frame.clone();
-      draw_annotations(annotated, detections, stream.transform, stream.displayed_fps);
-      const auto annotated_message = cv_bridge::CvImage(
-        stream.header, sensor_msgs::image_encodings::BGR8, annotated).toImageMsg();
-      stream.image_publisher->publish(*annotated_message);
+      if (stream.image_publisher->get_subscription_count() > 0U) {
+        cv::Mat annotated = stream.frame->image.clone();
+        draw_annotations(annotated, detections, stream.transform, stream.displayed_fps);
+        const auto annotated_message = cv_bridge::CvImage(
+          stream.header, sensor_msgs::image_encodings::RGB8, annotated).toImageMsg();
+        stream.image_publisher->publish(*annotated_message);
+      }
 
       const auto elapsed =
         std::chrono::duration<double, std::milli>(now - stream.started_at).count();
@@ -343,7 +386,6 @@ private:
 
   ov::Core core_;
   ov::CompiledModel compiled_model_;
-  ov::Shape input_shape_;
   ov::Shape output_shape_;
   float confidence_threshold_{0.50F};
   std::atomic<bool> stopping_{false};

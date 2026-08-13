@@ -21,14 +21,17 @@ struct LetterboxTransform
   int original_height;
 };
 
-LetterboxTransform letterbox_to_nchw(const cv::Mat & bgr, std::vector<float> & input);
+// Letterboxes `source` into the pre-allocated continuous 640x640 8UC3 `letterboxed`
+// buffer, filling the padding with 114. The buffer can be reused across frames;
+// only the regions outside the resized image are rewritten with padding.
+LetterboxTransform letterbox_image(const cv::Mat & source, cv::Mat & letterboxed);
 
 cv::Rect to_original_box(
   const Detection & detection,
   const LetterboxTransform & transform);
 
 void draw_annotations(
-  cv::Mat & bgr,
+  cv::Mat & image,
   const std::vector<Detection> & detections,
   const LetterboxTransform & transform,
   double frames_per_second);

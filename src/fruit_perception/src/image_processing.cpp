@@ -12,44 +12,49 @@
 namespace fruit_perception
 {
 
-LetterboxTransform letterbox_to_nchw(const cv::Mat & bgr, std::vector<float> & input)
+LetterboxTransform letterbox_image(const cv::Mat & source, cv::Mat & letterboxed)
 {
-  constexpr std::size_t kInputElements =
-    3U * static_cast<std::size_t>(kModelInputSize) * kModelInputSize;
-  if (bgr.empty() || bgr.type() != CV_8UC3) {
-    throw std::invalid_argument("letterbox input must be a non-empty BGR8 image");
+  if (source.empty() || source.type() != CV_8UC3) {
+    throw std::invalid_argument("letterbox input must be a non-empty 8UC3 image");
   }
-  if (input.size() != kInputElements) {
-    throw std::invalid_argument("model input buffer must contain 3*640*640 floats");
+  if (letterboxed.rows != kModelInputSize || letterboxed.cols != kModelInputSize ||
+    letterboxed.type() != CV_8UC3 || !letterboxed.isContinuous())
+  {
+    throw std::invalid_argument(
+      "letterbox target must be a continuous 640x640 8UC3 buffer");
   }
 
   const double scale = std::min(
-    static_cast<double>(kModelInputSize) / bgr.cols,
-    static_cast<double>(kModelInputSize) / bgr.rows);
-  const int resized_width = static_cast<int>(std::round(bgr.cols * scale));
-  const int resized_height = static_cast<int>(std::round(bgr.rows * scale));
+    static_cast<double>(kModelInputSize) / source.cols,
+    static_cast<double>(kModelInputSize) / source.rows);
+  const int resized_width = static_cast<int>(std::round(source.cols * scale));
+  const int resized_height = static_cast<int>(std::round(source.rows * scale));
   const int pad_x = (kModelInputSize - resized_width) / 2;
   const int pad_y = (kModelInputSize - resized_height) / 2;
 
-  cv::Mat resized;
-  cv::resize(bgr, resized, cv::Size(resized_width, resized_height));
-  cv::Mat letterboxed(
-    kModelInputSize, kModelInputSize, CV_8UC3, cv::Scalar(114, 114, 114));
-  resized.copyTo(letterboxed(cv::Rect(pad_x, pad_y, resized_width, resized_height)));
+  const cv::Rect roi(pad_x, pad_y, resized_width, resized_height);
+  cv::Mat destination = letterboxed(roi);
+  cv::resize(source, destination, roi.size());
 
-  const std::size_t plane_size =
-    static_cast<std::size_t>(kModelInputSize) * kModelInputSize;
-  for (int row = 0; row < kModelInputSize; ++row) {
-    const auto * pixels = letterboxed.ptr<cv::Vec3b>(row);
-    for (int column = 0; column < kModelInputSize; ++column) {
-      const auto index = static_cast<std::size_t>(row * kModelInputSize + column);
-      input[index] = static_cast<float>(pixels[column][2]) / 255.0F;
-      input[plane_size + index] = static_cast<float>(pixels[column][1]) / 255.0F;
-      input[2 * plane_size + index] = static_cast<float>(pixels[column][0]) / 255.0F;
-    }
+  const cv::Scalar pad_color(114, 114, 114);
+  const int roi_bottom = pad_y + resized_height;
+  const int roi_right = pad_x + resized_width;
+  if (pad_y > 0) {
+    letterboxed(cv::Rect(0, 0, kModelInputSize, pad_y)) = pad_color;
+  }
+  if (roi_bottom < kModelInputSize) {
+    letterboxed(
+      cv::Rect(0, roi_bottom, kModelInputSize, kModelInputSize - roi_bottom)) = pad_color;
+  }
+  if (pad_x > 0) {
+    letterboxed(cv::Rect(0, pad_y, pad_x, resized_height)) = pad_color;
+  }
+  if (roi_right < kModelInputSize) {
+    letterboxed(
+      cv::Rect(roi_right, pad_y, kModelInputSize - roi_right, resized_height)) = pad_color;
   }
 
-  return LetterboxTransform{scale, pad_x, pad_y, bgr.cols, bgr.rows};
+  return LetterboxTransform{scale, pad_x, pad_y, source.cols, source.rows};
 }
 
 cv::Rect to_original_box(
@@ -75,44 +80,45 @@ cv::Rect to_original_box(
 }
 
 void draw_annotations(
-  cv::Mat & bgr,
+  cv::Mat & image,
   const std::vector<Detection> & detections,
   const LetterboxTransform & transform,
   double frames_per_second)
 {
+  // Green and black are symmetric between RGB and BGR channel orders.
   const cv::Scalar color(0, 255, 0);
   for (const auto & detection : detections) {
     const auto box = to_original_box(detection, transform);
     if (box.empty()) {
       continue;
     }
-    cv::rectangle(bgr, box, color, 2);
+    cv::rectangle(image, box, color, 2);
 
     std::ostringstream label;
     label << detection.type << ' ' << std::fixed << std::setprecision(2) << detection.score;
     int baseline = 0;
     const auto text_size = cv::getTextSize(
       label.str(), cv::FONT_HERSHEY_SIMPLEX, 0.55, 1, &baseline);
-    const int text_x = std::clamp(box.x, 0, std::max(0, bgr.cols - text_size.width - 6));
+    const int text_x = std::clamp(box.x, 0, std::max(0, image.cols - text_size.width - 6));
     const int text_y = std::max(box.y - 6, text_size.height + 4);
     cv::rectangle(
-      bgr,
+      image,
       cv::Rect(
         text_x, text_y - text_size.height - 4,
         text_size.width + 6, text_size.height + baseline + 6),
       color, cv::FILLED);
     cv::putText(
-      bgr, label.str(), cv::Point(text_x + 3, text_y),
+      image, label.str(), cv::Point(text_x + 3, text_y),
       cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
   }
 
   std::ostringstream fps_label;
   fps_label << "FPS: " << std::fixed << std::setprecision(1) << frames_per_second;
   cv::putText(
-    bgr, fps_label.str(), cv::Point(10, 28),
+    image, fps_label.str(), cv::Point(10, 28),
     cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0, 0, 0), 4, cv::LINE_AA);
   cv::putText(
-    bgr, fps_label.str(), cv::Point(10, 28),
+    image, fps_label.str(), cv::Point(10, 28),
     cv::FONT_HERSHEY_SIMPLEX, 0.75, color, 2, cv::LINE_AA);
 }
 

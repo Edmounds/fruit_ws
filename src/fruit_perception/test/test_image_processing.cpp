@@ -2,6 +2,7 @@
 
 #include <opencv2/core.hpp>
 
+#include <stdexcept>
 #include <vector>
 
 #include "fruit_perception/detection_parser.hpp"
@@ -10,19 +11,46 @@
 TEST(ImageProcessing, LetterboxPreservesEntireFourByThreeImage)
 {
   const cv::Mat image(480, 640, CV_8UC3, cv::Scalar(10, 20, 30));
-  std::vector<float> input(3U * 640U * 640U);
+  cv::Mat letterboxed(640, 640, CV_8UC3, cv::Scalar(0, 0, 0));
 
-  const auto transform = fruit_perception::letterbox_to_nchw(image, input);
+  const auto transform = fruit_perception::letterbox_image(image, letterboxed);
 
   EXPECT_DOUBLE_EQ(transform.scale, 1.0);
   EXPECT_EQ(transform.pad_x, 0);
   EXPECT_EQ(transform.pad_y, 80);
   EXPECT_EQ(transform.original_width, 640);
   EXPECT_EQ(transform.original_height, 480);
-  EXPECT_NEAR(input[0], 114.0F / 255.0F, 1e-6F);
-  EXPECT_NEAR(input[80U * 640U], 30.0F / 255.0F, 1e-6F);
-  EXPECT_NEAR(input[640U * 640U + 80U * 640U], 20.0F / 255.0F, 1e-6F);
-  EXPECT_NEAR(input[2U * 640U * 640U + 80U * 640U], 10.0F / 255.0F, 1e-6F);
+  EXPECT_EQ(letterboxed.at<cv::Vec3b>(0, 0), cv::Vec3b(114, 114, 114));
+  EXPECT_EQ(letterboxed.at<cv::Vec3b>(79, 639), cv::Vec3b(114, 114, 114));
+  EXPECT_EQ(letterboxed.at<cv::Vec3b>(80, 0), cv::Vec3b(10, 20, 30));
+  EXPECT_EQ(letterboxed.at<cv::Vec3b>(559, 639), cv::Vec3b(10, 20, 30));
+  EXPECT_EQ(letterboxed.at<cv::Vec3b>(560, 0), cv::Vec3b(114, 114, 114));
+}
+
+TEST(ImageProcessing, LetterboxRewritesPaddingWhenBufferIsReused)
+{
+  cv::Mat letterboxed(640, 640, CV_8UC3, cv::Scalar(0, 0, 0));
+  const cv::Mat first(480, 640, CV_8UC3, cv::Scalar(50, 60, 70));
+  fruit_perception::letterbox_image(first, letterboxed);
+
+  const cv::Mat second(400, 200, CV_8UC3, cv::Scalar(1, 2, 3));
+  const auto transform = fruit_perception::letterbox_image(second, letterboxed);
+
+  EXPECT_DOUBLE_EQ(transform.scale, 1.6);
+  EXPECT_EQ(transform.pad_x, 160);
+  EXPECT_EQ(transform.pad_y, 0);
+  EXPECT_EQ(letterboxed.at<cv::Vec3b>(100, 0), cv::Vec3b(114, 114, 114));
+  EXPECT_EQ(letterboxed.at<cv::Vec3b>(100, 320), cv::Vec3b(1, 2, 3));
+  EXPECT_EQ(letterboxed.at<cv::Vec3b>(100, 500), cv::Vec3b(114, 114, 114));
+}
+
+TEST(ImageProcessing, LetterboxRejectsWrongTargetBuffer)
+{
+  const cv::Mat image(480, 640, CV_8UC3, cv::Scalar(0, 0, 0));
+  cv::Mat wrong_size(320, 320, CV_8UC3, cv::Scalar(0, 0, 0));
+
+  EXPECT_THROW(
+    fruit_perception::letterbox_image(image, wrong_size), std::invalid_argument);
 }
 
 TEST(ImageProcessing, MapsLetterboxBoxBackToOriginalImage)
