@@ -38,6 +38,11 @@ if(BUILD_TESTING)
   set(ament_cmake_clang_tidy_CONFIG_FILE "${CMAKE_SOURCE_DIR}/.clang-tidy")
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_extrinsic_math test/test_extrinsic_math.cpp)
+  target_include_directories(test_extrinsic_math PRIVATE include)
+  ament_target_dependencies(test_extrinsic_math tf2)
 endif()
 
 #############

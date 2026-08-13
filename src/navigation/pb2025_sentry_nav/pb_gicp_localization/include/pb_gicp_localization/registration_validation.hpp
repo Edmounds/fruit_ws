@@ -26,6 +26,9 @@ struct ValidationThresholds
   double max_mean_error{1.0};
   double max_translation_jump{0.5};
   double max_rotation_jump{0.35};
+  // Wider gates only for the first accepted lock after startup.
+  double max_translation_jump_initial{1.0};
+  double max_rotation_jump_initial{0.35};
 };
 
 inline double rotationDistance(
@@ -37,7 +40,8 @@ inline double rotationDistance(
 
 inline bool validateRegistration(
   const RegistrationMetrics & metrics, const Eigen::Isometry3d & previous,
-  const ValidationThresholds & thresholds, std::string & reason)
+  const ValidationThresholds & thresholds, std::string & reason,
+  bool first_acceptance = false)
 {
   if (!metrics.converged) {
     reason = "optimizer did not converge";
@@ -61,13 +65,15 @@ inline bool validateRegistration(
     reason = "mean GICP error above threshold";
     return false;
   }
-  if ((metrics.candidate.translation() - previous.translation()).norm() >
-    thresholds.max_translation_jump)
-  {
+  const double max_translation = first_acceptance ?
+    thresholds.max_translation_jump_initial : thresholds.max_translation_jump;
+  const double max_rotation = first_acceptance ?
+    thresholds.max_rotation_jump_initial : thresholds.max_rotation_jump;
+  if ((metrics.candidate.translation() - previous.translation()).norm() > max_translation) {
     reason = "translation jump above threshold";
     return false;
   }
-  if (rotationDistance(previous, metrics.candidate) > thresholds.max_rotation_jump) {
+  if (rotationDistance(previous, metrics.candidate) > max_rotation) {
     reason = "rotation jump above threshold";
     return false;
   }

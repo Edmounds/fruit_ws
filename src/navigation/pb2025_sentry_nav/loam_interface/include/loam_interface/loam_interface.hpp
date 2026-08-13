@@ -17,9 +17,12 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "nav_msgs/msg/odometry.hpp"
+#include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
+#include "tf2/LinearMath/Transform.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
@@ -50,10 +53,14 @@ private:
   std::string odom_frame_;
   std::string lidar_frame_;
   std::string base_frame_;
+  std::string imu_frame_;
+  tf2::Transform lidar_in_imu_;
 
-  bool base_frame_to_lidar_initialized_;
+  bool odom_to_camera_init_initialized_{false};
   bool odometry_initialized_{false};
-  tf2::Transform tf_odom_to_lidar_odom_;
+  // Constant after first successful base->lidar lookup: aligns odom with base at t0
+  // where Point-LIO camera_init coincides with the Mid360 IMU/body frame.
+  tf2::Transform tf_odom_to_camera_init_;
 };
 
 }  // namespace loam_interface

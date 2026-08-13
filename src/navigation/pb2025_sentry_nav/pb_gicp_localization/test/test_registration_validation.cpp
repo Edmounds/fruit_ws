@@ -59,3 +59,24 @@ TEST(RegistrationValidation, RejectsEverySafetyGate)
   EXPECT_FALSE(pb_gicp_localization::validateRegistration(
     metrics, Eigen::Isometry3d::Identity(), thresholds, reason));
 }
+
+TEST(RegistrationValidation, AllowsWiderJumpOnFirstAcceptanceOnly)
+{
+  RegistrationMetrics metrics;
+  metrics.converged = true;
+  metrics.source_points = 2000;
+  metrics.inliers = 1000;
+  metrics.total_error = 500.0;
+  metrics.candidate.translation().x() = 0.8;
+  std::string reason;
+  ValidationThresholds thresholds;
+
+  EXPECT_FALSE(pb_gicp_localization::validateRegistration(
+    metrics, Eigen::Isometry3d::Identity(), thresholds, reason, false));
+  EXPECT_TRUE(pb_gicp_localization::validateRegistration(
+    metrics, Eigen::Isometry3d::Identity(), thresholds, reason, true));
+
+  metrics.candidate.translation().x() = 1.1;
+  EXPECT_FALSE(pb_gicp_localization::validateRegistration(
+    metrics, Eigen::Isometry3d::Identity(), thresholds, reason, true));
+}

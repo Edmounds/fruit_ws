@@ -1,12 +1,17 @@
 #ifndef PB_GICP_LOCALIZATION__GICP_LOCALIZATION_HPP_
 #define PB_GICP_LOCALIZATION__GICP_LOCALIZATION_HPP_
 
+#include <atomic>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <pcl/io/pcd_io.h>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -28,18 +33,25 @@ class GicpLocalizationNode : public rclcpp::Node
 {
 public:
   explicit GicpLocalizationNode(const rclcpp::NodeOptions & options);
+  ~GicpLocalizationNode() override;
 
 private:
   void registeredPcdCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
   void loadGlobalMap(const std::string & file_name);
-  void performRegistration();
+  void requestRegistration();
+  void registrationWorker();
+  void performRegistration(const pcl::PointCloud<pcl::PointXYZ> & scan);
   void publishTransform();
+  void publishAlignedCloud(
+    const pcl::PointCloud<pcl::PointCovariance> & source, const Eigen::Isometry3d & map_to_odom);
   void publishDiagnostic(
     bool accepted, const std::string & message, std::size_t source_points,
-    std::size_t inliers, double mean_error);
+    std::size_t inliers, double mean_error, double inlier_ratio,
+    double translation_jump, double rotation_jump);
 
   int num_threads_;
   int num_neighbors_;
+  int lost_after_rejects_;
   double global_leaf_size_;
   double registered_leaf_size_;
   double max_dist_sq_;
@@ -64,8 +76,24 @@ private:
     small_gicp::Registration<small_gicp::GICPFactor, small_gicp::ParallelReductionOMP>>
     registration_;
 
+  std::atomic<bool> shutdown_{false};
+  std::atomic<bool> registration_busy_{false};
+  std::atomic<bool> has_accepted_once_{false};
+  std::atomic<int> consecutive_rejects_{0};
+  std::mutex worker_mutex_;
+  std::condition_variable worker_cv_;
+  bool registration_pending_{false};
+  pcl::PointCloud<pcl::PointXYZ> pending_scan_;
+  std::thread registration_thread_;
+
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pcd_sub_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr source_cloud_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr aligned_cloud_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr gicp_pose_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr gicp_path_pub_;
+  nav_msgs::msg::Path gicp_path_;
   rclcpp::TimerBase::SharedPtr transform_timer_;
   rclcpp::TimerBase::SharedPtr register_timer_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;

@@ -93,7 +93,7 @@ def test_mux_and_localization_contract():
 def test_calibrated_mid360_static_transform_is_launched():
     launch_path = ROOT / "pb2025_nav_bringup/launch/localization_navigation_launch.py"
     tree = ast.parse(launch_path.read_text())
-    static_tf = next(
+    static_tfs = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
@@ -104,10 +104,15 @@ def test_calibrated_mid360_static_transform_is_launched():
             and ast.literal_eval(keyword.value) == "static_transform_publisher"
             for keyword in node.keywords
         )
-    )
-    keywords = {keyword.arg: keyword.value for keyword in static_tf.keywords}
-    assert ast.literal_eval(keywords["package"]) == "tf2_ros"
-    assert ast.literal_eval(keywords["arguments"]) == [
+    ]
+    assert len(static_tfs) == 2
+
+    by_name = {}
+    for static_tf in static_tfs:
+        keywords = {keyword.arg: keyword.value for keyword in static_tf.keywords}
+        by_name[ast.literal_eval(keywords["name"])] = ast.literal_eval(keywords["arguments"])
+
+    assert by_name["base_to_front_mid360"] == [
         "--x",
         "0.144629969",
         "--y",
@@ -127,9 +132,43 @@ def test_calibrated_mid360_static_transform_is_launched():
         "--child-frame-id",
         "front_mid360",
     ]
+    assert by_name["front_mid360_to_livox_imu"] == [
+        "--x",
+        "0.011",
+        "--y",
+        "0.02329",
+        "--z",
+        "-0.04412",
+        "--qx",
+        "0.0",
+        "--qy",
+        "0.0",
+        "--qz",
+        "0.0",
+        "--qw",
+        "1.0",
+        "--frame-id",
+        "front_mid360",
+        "--child-frame-id",
+        "livox_frame",
+    ]
 
     package = (ROOT / "pb2025_nav_bringup/package.xml").read_text()
     assert "<exec_depend>tf2_ros</exec_depend>" in package
+
+
+def test_loam_interface_uses_mid360_imu_extrinsic():
+    params = yaml.safe_load(
+        (ROOT / "pb2025_nav_bringup/config/reality/nav2_params.yaml").read_text()
+    )
+    loam = params["loam_interface"]["ros__parameters"]
+    assert loam["imu_frame"] == "livox_frame"
+    assert loam["lidar_frame"] == "front_mid360"
+    assert loam["extrinsic_T"] == [-0.011, -0.02329, 0.04412]
+    gicp = params["pb_gicp_localization"]["ros__parameters"]
+    assert gicp["max_translation_jump_initial"] == 1.0
+    assert gicp["lost_after_rejects"] == 10
+    assert params["laserMapping"]["ros__parameters"]["mapping"]["ivox_grid_resolution"] == 0.5
 
 
 def test_mid360_runtime_config_matches_live_hardware():

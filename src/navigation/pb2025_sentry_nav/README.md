@@ -57,9 +57,11 @@ pcd_save:
 ```
 
 `loam_interface` converts Point-LIO's native `camera_init/body` products to odom-frame
-`registered_scan` and `lidar_odometry`. `sensor_scan_generation` uses the calibrated static TF to
-publish Nav2 `odometry`, `sensor_scan`, and `odom -> base_link`. If the static TF is unavailable,
-the synchronized sample is dropped instead of silently using identity.
+`registered_scan` and `lidar_odometry`. Point-LIO `body` is the Mid360 internal IMU frame
+(`livox_frame`), not `front_mid360`; `loam_interface` applies the same LiDAR-in-IMU extrinsic
+as Point-LIO before publishing `odom -> front_mid360`. `sensor_scan_generation` uses the
+calibrated static TF to publish Nav2 `odometry`, `sensor_scan`, and `odom -> base_link`. If the
+static TF is unavailable, the synchronized sample is dropped instead of silently using identity.
 
 `pb_gicp_localization` treats the GLIM PCD as its map-frame target and `registered_scan` as its
 odom-frame source. Set the known startup transform in the selected parameter file:
@@ -70,10 +72,13 @@ pb_gicp_localization:
     initial_map_to_odom: [x, y, z, roll, pitch, yaw]
 ```
 
-Start within roughly 1 m and 20 degrees of that pose. This stack deliberately does not implement
-unknown-position global relocalization or RViz `initialpose` handling. GICP runs at 2 Hz and rejects
-non-convergence, too few inliers, low overlap, excessive mean error, and implausible pose jumps;
-the last accepted transform remains active after a rejected result.
+Start within roughly 1 m and 20 degrees of that pose (`max_translation_jump_initial` /
+`max_rotation_jump_initial`). After the first accepted lock, tighter jump gates apply. GICP runs
+at 2 Hz on a worker thread so `map -> odom` TF keeps publishing at 20 Hz; it rejects
+non-convergence, too few inliers, low overlap, excessive mean error, and implausible pose jumps.
+The last accepted transform remains active after a rejected result; consecutive rejects raise an
+ERROR diagnostic. Debug clouds are published on `gicp/localization_map`, `gicp/source_cloud`, and
+`gicp/aligned_cloud`.
 
 ## Build And Run
 
