@@ -150,15 +150,20 @@ pb_gicp_localization:
     num_neighbors: 20
     global_leaf_size: 0.10
     registered_leaf_size: 0.05
-    max_dist_sq: 1.0
+    # Must stay >= max_translation_jump_initial^2 or the first lock cannot
+    # recover the documented ~1 m startup offset. Tighten only with field data.
+    max_dist_sq: 3.0
     min_inliers: 500
     min_inlier_ratio: 0.20
-    max_mean_error: 0.35
+    # Covariance-weighted (Mahalanobis-like) GICP residual, NOT meters.
+    # Collect the mean_error diagnostic on the real field before tightening.
+    max_mean_error: 1.0
     max_translation_jump: 0.5
     max_rotation_jump: 0.35
     max_translation_jump_initial: 1.0
     max_rotation_jump_initial: 0.35
     lost_after_rejects: 10
+    input_scan_timeout: 2.0
 
 map_server:
   ros__parameters:

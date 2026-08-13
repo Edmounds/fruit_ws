@@ -26,6 +26,16 @@ sensor_msgs::msg::PointCloud2 toMsg(
   msg.header.stamp = stamp;
   return msg;
 }
+
+pcl::PointCloud<pcl::PointXYZ> toXyz(const pcl::PointCloud<pcl::PointCovariance> & cloud)
+{
+  pcl::PointCloud<pcl::PointXYZ> xyz;
+  xyz.reserve(cloud.size());
+  for (const auto & pt : cloud.points) {
+    xyz.push_back(pcl::PointXYZ(pt.x, pt.y, pt.z));
+  }
+  return xyz;
+}
 }  // namespace
 
 GicpLocalizationNode::GicpLocalizationNode(const rclcpp::NodeOptions & options)
@@ -37,6 +47,7 @@ GicpLocalizationNode::GicpLocalizationNode(const rclcpp::NodeOptions & options)
   global_leaf_size_ = declare_parameter("global_leaf_size", 0.10);
   registered_leaf_size_ = declare_parameter("registered_leaf_size", 0.05);
   max_dist_sq_ = declare_parameter("max_dist_sq", 3.0);
+  input_scan_timeout_ = declare_parameter("input_scan_timeout", 2.0);
   map_frame_ = declare_parameter("map_frame", "map");
   odom_frame_ = declare_parameter("odom_frame", "odom");
   localization_map_ = declare_parameter("localization_map", "");
@@ -57,10 +68,12 @@ GicpLocalizationNode::GicpLocalizationNode(const rclcpp::NodeOptions & options)
       "num_threads, num_neighbors, and lost_after_rejects must be positive");
   }
   if (!std::isfinite(global_leaf_size_) || !std::isfinite(registered_leaf_size_) ||
-    !std::isfinite(max_dist_sq_) || global_leaf_size_ <= 0.0 ||
-    registered_leaf_size_ <= 0.0 || max_dist_sq_ <= 0.0)
+    !std::isfinite(max_dist_sq_) || !std::isfinite(input_scan_timeout_) ||
+    global_leaf_size_ <= 0.0 || registered_leaf_size_ <= 0.0 || max_dist_sq_ <= 0.0 ||
+    input_scan_timeout_ <= 0.0)
   {
-    throw std::invalid_argument("voxel leaf sizes and max_dist_sq must be positive");
+    throw std::invalid_argument(
+      "voxel leaf sizes, max_dist_sq, and input_scan_timeout must be positive");
   }
   if (thresholds_.min_inliers == 0 || !std::isfinite(thresholds_.min_inlier_ratio) ||
     !std::isfinite(thresholds_.max_mean_error) ||
@@ -193,21 +206,36 @@ void GicpLocalizationNode::registeredPcdCallback(
 
 void GicpLocalizationNode::requestRegistration()
 {
-  if (registration_busy_.load()) {
-    return;
-  }
   pcl::PointCloud<pcl::PointXYZ> scan;
   {
     std::lock_guard<std::mutex> lock(cloud_mutex_);
     if (accumulated_cloud_->empty()) {
+      rclcpp::Time last_scan;
+      {
+        std::lock_guard<std::mutex> time_lock(scan_time_mutex_);
+        last_scan = last_scan_time_;
+      }
+      // Escalate silence on the input topic so a dead upstream still trips
+      // the localization-lost diagnostic instead of freezing at WARN-free OK.
+      if (last_scan.nanoseconds() != 0 &&
+        (now() - last_scan).seconds() > input_scan_timeout_)
+      {
+        consecutive_rejects_.fetch_add(1);
+        publishDiagnostic(false, "input scan stream stale", 0, 0, 0.0, 0.0, 0.0, 0.0);
+      }
       return;
     }
     scan.swap(*accumulated_cloud_);
   }
   {
     std::lock_guard<std::mutex> lock(worker_mutex_);
-    pending_scan_ = std::move(scan);
-    registration_pending_ = true;
+    if (registration_pending_) {
+      // Worker has not consumed the previous batch yet; merge instead of dropping it.
+      pending_scan_ += scan;
+    } else {
+      pending_scan_ = std::move(scan);
+      registration_pending_ = true;
+    }
   }
   worker_cv_.notify_one();
 }
@@ -226,14 +254,13 @@ void GicpLocalizationNode::registrationWorker()
       scan = std::move(pending_scan_);
       registration_pending_ = false;
     }
-    registration_busy_.store(true);
     try {
       performRegistration(scan);
     } catch (const std::exception & ex) {
+      consecutive_rejects_.fetch_add(1);
       RCLCPP_ERROR(get_logger(), "GICP registration exception: %s", ex.what());
       publishDiagnostic(false, ex.what(), 0, 0, 0.0, 0.0, 0.0, 0.0);
     }
-    registration_busy_.store(false);
   }
 }
 
@@ -285,14 +312,7 @@ void GicpLocalizationNode::performRegistration(const pcl::PointCloud<pcl::PointX
       false, reason, source->size(), result.num_inliers, mean_error, inlier_ratio,
       translation_jump, rotation_jump);
     // Still publish source in odom for tuning even when rejected.
-    {
-      pcl::PointCloud<pcl::PointXYZ> source_xyz;
-      source_xyz.reserve(source->size());
-      for (const auto & pt : source->points) {
-        source_xyz.push_back(pcl::PointXYZ(pt.x, pt.y, pt.z));
-      }
-      source_cloud_pub_->publish(toMsg(source_xyz, odom_frame_, now()));
-    }
+    source_cloud_pub_->publish(toMsg(toXyz(*source), odom_frame_, now()));
     return;
   }
 
@@ -330,11 +350,7 @@ void GicpLocalizationNode::performRegistration(const pcl::PointCloud<pcl::PointX
 void GicpLocalizationNode::publishAlignedCloud(
   const pcl::PointCloud<pcl::PointCovariance> & source, const Eigen::Isometry3d & map_to_odom)
 {
-  pcl::PointCloud<pcl::PointXYZ> source_xyz;
-  source_xyz.reserve(source.size());
-  for (const auto & pt : source.points) {
-    source_xyz.push_back(pcl::PointXYZ(pt.x, pt.y, pt.z));
-  }
+  const pcl::PointCloud<pcl::PointXYZ> source_xyz = toXyz(source);
   source_cloud_pub_->publish(toMsg(source_xyz, odom_frame_, now()));
 
   pcl::PointCloud<pcl::PointXYZ> aligned;
@@ -383,14 +399,12 @@ void GicpLocalizationNode::publishDiagnostic(
   const int rejects = consecutive_rejects_.load();
   if (accepted) {
     status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+    status.message = message;
   } else if (rejects >= lost_after_rejects_) {
     status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     status.message = "localization lost: " + message;
   } else {
     status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
-    status.message = message;
-  }
-  if (accepted) {
     status.message = message;
   }
   auto add = [&status](const std::string & key, const std::string & value) {

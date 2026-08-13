@@ -79,8 +79,10 @@ def _launch_nodes(context):
             ],
             output="screen",
         ),
-        # Mid360 internal IMU frame used by livox_ros_driver2 IMU msgs / Point-LIO body.
-        # extrinsic_T is LiDAR in IMU; publish inverse so parent stays the calibrated LiDAR frame.
+        # livox_ros_driver2 hardcodes the IMU msg frame_id to "livox_frame" (lddc.cpp);
+        # point clouds use the parameterized front_mid360 instead. This TF makes the IMU
+        # frame resolvable and matches Point-LIO's body frame. extrinsic_T is LiDAR-in-IMU,
+        # so publish the inverse with the calibrated front_mid360 as parent.
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",

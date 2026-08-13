@@ -4,7 +4,10 @@ Loads a GLIM-derived PCD in `map`, aligns odom-frame `registered_scan` data at 2
 thread, and publishes `map -> odom` at 20 Hz. Startup uses the configured `initial_map_to_odom`;
 the first accepted lock allows a wider jump window (`max_*_jump_initial`), then tighter gates apply.
 Global search and RViz `initialpose` are intentionally unsupported. Failed quality gates retain the
-last accepted TF; consecutive rejects raise an ERROR diagnostic.
+last accepted TF; consecutive rejects — including registration exceptions and an input scan stream
+silent for longer than `input_scan_timeout` — escalate the diagnostic to ERROR
+(`localization lost`). `max_mean_error` gates the covariance-weighted GICP residual (not meters);
+collect the `mean_error` diagnostic on the real field before tightening it.
 
 Debug topics (Fixed Frame = `map`):
 

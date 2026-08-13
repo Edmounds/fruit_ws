@@ -55,6 +55,7 @@ private:
   double global_leaf_size_;
   double registered_leaf_size_;
   double max_dist_sq_;
+  double input_scan_timeout_;
   std::vector<double> initial_map_to_odom_;
   ValidationThresholds thresholds_;
 
@@ -77,7 +78,6 @@ private:
     registration_;
 
   std::atomic<bool> shutdown_{false};
-  std::atomic<bool> registration_busy_{false};
   std::atomic<bool> has_accepted_once_{false};
   std::atomic<int> consecutive_rejects_{0};
   std::mutex worker_mutex_;
