@@ -1,0 +1,10 @@
+[submodule "src/driver/livox_ros_driver2"]
+	path = src/driver/livox_ros_driver2
+	url = git@github.com:ConQU2026/livox_ros_driver2.git
+[submodule "src/driver/realsense-ros"]
+	path = src/driver/realsense-ros
+	url = git@github.com:realsenseai/realsense-ros.git
+[submodule "src/auto_serial_bridge"]
+	path = src/auto_serial_bridge
+	url = git@github.com:ConQU2026/auto_serial_bridge.git
+	branch = dev

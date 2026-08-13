@@ -1,8 +1,0 @@
-<library path="mission_manager_panel">
-  <class
-      name="mission_manager/MissionManagerPanel"
-      type="mission_manager::MissionManagerPanel"
-      base_class_type="rviz_common::Panel">
-    <description>Mission Manager panel.</description>
-  </class>
-</library>
