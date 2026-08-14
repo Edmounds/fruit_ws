@@ -23,3 +23,12 @@ def test_component_registration_keeps_standalone_executable():
     assert "rclcpp_components_register_node(" in cmake
     assert 'PLUGIN "fruit_perception::FruitPerceptionNode"' in cmake
     assert "EXECUTABLE fruit_perception_node" in cmake
+
+
+def test_serial_port_comes_from_source_protocol_config():
+    launch = (
+        PACKAGE_ROOT / "launch" / "fruit_perception.launch.py"
+    ).read_text(encoding="utf-8")
+
+    assert "/home/rc4/fruit_ws/src/auto_serial_bridge/config/protocol.yaml" in launch
+    assert "serial_parameters['port']" not in launch

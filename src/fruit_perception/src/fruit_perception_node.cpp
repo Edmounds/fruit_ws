@@ -12,9 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <exception>
-#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -32,12 +30,6 @@ namespace
 {
 
 constexpr auto kStatsPeriod = std::chrono::seconds(5);
-
-std::string default_cache_dir()
-{
-  const char * home = std::getenv("HOME");
-  return std::string(home != nullptr ? home : "/tmp") + "/.cache/fruit_perception/openvino";
-}
 
 double percentile(std::vector<double> values, double fraction)
 {
@@ -60,7 +52,6 @@ public:
   {
     const auto package_share = ament_index_cpp::get_package_share_directory("fruit_perception");
     const auto model_path = declare_parameter("model_path", package_share + "/model/best.xml");
-    const auto cache_dir = declare_parameter("openvino_cache_dir", default_cache_dir());
     confidence_threshold_ = static_cast<float>(declare_parameter("confidence_threshold", 0.50));
 
     const bool enable_left = declare_parameter("enable_left_camera", false);
@@ -79,7 +70,7 @@ public:
       throw std::invalid_argument("confidence_threshold must be between 0 and 1");
     }
 
-    initialize_model(model_path, cache_dir, enabled_streams);
+    initialize_model(model_path, enabled_streams);
 
     if (enable_left) {
       add_stream(
@@ -142,8 +133,8 @@ private:
         ov::Tensor(
           ov::element::u8,
           ov::Shape{
-            1U, static_cast<std::size_t>(kModelInputSize),
-            static_cast<std::size_t>(kModelInputSize), 3U},
+          1U, static_cast<std::size_t>(kModelInputSize),
+          static_cast<std::size_t>(kModelInputSize), 3U},
           input_image.data));
     }
 
@@ -167,23 +158,13 @@ private:
     std::chrono::steady_clock::time_point last_stats_at;
   };
 
-  void initialize_model(
-    const std::string & model_path, const std::string & cache_dir, std::size_t request_count)
+  void initialize_model(const std::string & model_path, std::size_t request_count)
   {
     const auto available_devices = core_.get_available_devices();
     if (std::find(available_devices.begin(), available_devices.end(), "GPU") ==
       available_devices.end())
     {
       throw std::runtime_error("OpenVINO GPU device is not available; CPU fallback is disabled");
-    }
-
-    if (!cache_dir.empty()) {
-      try {
-        std::filesystem::create_directories(cache_dir);
-        core_.set_property(ov::cache_dir(cache_dir));
-      } catch (const std::exception & error) {
-        RCLCPP_WARN(get_logger(), "Model cache disabled: %s", error.what());
-      }
     }
 
     auto model = core_.read_model(model_path);

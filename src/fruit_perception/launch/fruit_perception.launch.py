@@ -23,17 +23,14 @@ def generate_launch_description():
         'config',
         'fruit_hardware_bridge.yaml',
     )
-    serial_config_path = os.path.join(
-        get_package_share_directory('auto_serial_bridge'),
-        'config',
-        'protocol.yaml',
+    serial_config_path = (
+        '/home/rc4/fruit_ws/src/auto_serial_bridge/config/protocol.yaml'
     )
     with open(serial_config_path, encoding='utf-8') as config_file:
         serial_config = yaml.safe_load(config_file)
     serial_parameters = dict(
         serial_config['serial_controller']['ros__parameters']
     )
-    serial_parameters['port'] = '/dev/ttyACM0'
     perception_parameters = camera_config[
         'fruit_perception_node'
     ]['ros__parameters']
