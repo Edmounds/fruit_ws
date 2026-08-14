@@ -14,7 +14,6 @@
 #include <cstdint>
 #include <exception>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -26,24 +25,6 @@
 
 namespace fruit_perception
 {
-namespace
-{
-
-constexpr auto kStatsPeriod = std::chrono::seconds(5);
-
-double percentile(std::vector<double> values, double fraction)
-{
-  if (values.empty()) {
-    return 0.0;
-  }
-  std::sort(values.begin(), values.end());
-  const auto index = static_cast<std::size_t>(
-    std::ceil(fraction * static_cast<double>(values.size())) - 1.0);
-  return values[std::min(index, values.size() - 1)];
-}
-
-}  // namespace
-
 class FruitPerceptionNode : public rclcpp::Node
 {
 public:
@@ -97,7 +78,6 @@ public:
           "d435i_annotated_topic", "/fruit_perception/d435i/annotated_image"));
     }
 
-    stats_timer_ = create_wall_timer(kStatsPeriod, [this]() {log_stats();});
     RCLCPP_INFO(
       get_logger(), "Started %zu camera stream(s); confidence threshold %.2f",
       enabled_streams, confidence_threshold_);
@@ -106,7 +86,6 @@ public:
   ~FruitPerceptionNode() override
   {
     stopping_.store(true);
-    stats_timer_.reset();
     subscriptions_.clear();
     for (const auto & stream : streams_) {
       wait_for_stream(stream);
@@ -124,8 +103,7 @@ private:
       request(std::move(infer_request)),
       result_publisher(std::move(result_publisher)),
       image_publisher(std::move(image_publisher)),
-      input_image(kModelInputSize, kModelInputSize, CV_8UC3, cv::Scalar(114, 114, 114)),
-      last_stats_at(std::chrono::steady_clock::now())
+      input_image(kModelInputSize, kModelInputSize, CV_8UC3, cv::Scalar(114, 114, 114))
     {
       // The u8 NHWC tensor wraps the letterbox buffer directly; conversion to
       // f32 NCHW and the /255 scaling are fused into the compiled model.
@@ -146,16 +124,9 @@ private:
     cv_bridge::CvImageConstPtr frame;
     LetterboxTransform transform{};
     std_msgs::msg::Header header;
-    std::chrono::steady_clock::time_point started_at;
     std::chrono::steady_clock::time_point last_completed_at;
     double displayed_fps{0.0};
     std::atomic<bool> busy{false};
-    std::mutex stats_mutex;
-    std::uint64_t received{0};
-    std::uint64_t inferred{0};
-    std::uint64_t dropped{0};
-    std::vector<double> latencies_ms;
-    std::chrono::steady_clock::time_point last_stats_at;
   };
 
   void initialize_model(const std::string & model_path, std::size_t request_count)
@@ -241,15 +212,9 @@ private:
     if (stopping_.load()) {
       return;
     }
-    {
-      std::lock_guard<std::mutex> lock(stream.stats_mutex);
-      ++stream.received;
-    }
 
     bool expected = false;
     if (!stream.busy.compare_exchange_strong(expected, true)) {
-      std::lock_guard<std::mutex> lock(stream.stats_mutex);
-      ++stream.dropped;
       return;
     }
 
@@ -260,14 +225,9 @@ private:
       stream.frame = cv_bridge::toCvShare(image, sensor_msgs::image_encodings::RGB8);
       stream.transform = letterbox_image(stream.frame->image, stream.input_image);
       stream.header = image->header;
-      stream.started_at = std::chrono::steady_clock::now();
       stream.request.start_async();
     } catch (const std::exception & error) {
       RCLCPP_ERROR(get_logger(), "%s frame rejected: %s", stream.name.c_str(), error.what());
-      {
-        std::lock_guard<std::mutex> lock(stream.stats_mutex);
-        ++stream.dropped;
-      }
       stream.busy.store(false);
     }
   }
@@ -307,54 +267,11 @@ private:
           stream.header, sensor_msgs::image_encodings::RGB8, annotated).toImageMsg();
         stream.image_publisher->publish(*annotated_message);
       }
-
-      const auto elapsed =
-        std::chrono::duration<double, std::milli>(now - stream.started_at).count();
-      std::lock_guard<std::mutex> lock(stream.stats_mutex);
-      ++stream.inferred;
-      stream.latencies_ms.push_back(elapsed);
     } catch (const std::exception & callback_error) {
       RCLCPP_ERROR(
         get_logger(), "%s inference failed: %s", stream.name.c_str(), callback_error.what());
-      std::lock_guard<std::mutex> lock(stream.stats_mutex);
-      ++stream.dropped;
     }
     stream.busy.store(false);
-  }
-
-  void log_stats()
-  {
-    for (const auto & stream : streams_) {
-      log_stream_stats(*stream);
-    }
-  }
-
-  void log_stream_stats(Stream & stream)
-  {
-    std::uint64_t received;
-    std::uint64_t inferred;
-    std::uint64_t dropped;
-    std::vector<double> latencies;
-    const auto now = std::chrono::steady_clock::now();
-    double elapsed_seconds;
-    {
-      std::lock_guard<std::mutex> lock(stream.stats_mutex);
-      received = std::exchange(stream.received, 0);
-      inferred = std::exchange(stream.inferred, 0);
-      dropped = std::exchange(stream.dropped, 0);
-      latencies.swap(stream.latencies_ms);
-      elapsed_seconds = std::chrono::duration<double>(now - stream.last_stats_at).count();
-      stream.last_stats_at = now;
-    }
-
-    RCLCPP_INFO(
-      get_logger(),
-      "%s stats: received=%lu inferred=%lu dropped=%lu inference_fps=%.2f "
-      "latency_p50_ms=%.2f latency_p95_ms=%.2f",
-      stream.name.c_str(), static_cast<unsigned long>(received),
-      static_cast<unsigned long>(inferred), static_cast<unsigned long>(dropped),
-      static_cast<double>(inferred) / elapsed_seconds,
-      percentile(latencies, 0.50), percentile(latencies, 0.95));
   }
 
   static void wait_for_stream(const std::unique_ptr<Stream> & stream)
@@ -372,7 +289,6 @@ private:
   std::atomic<bool> stopping_{false};
   std::vector<std::unique_ptr<Stream>> streams_;
   std::vector<rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr> subscriptions_;
-  rclcpp::TimerBase::SharedPtr stats_timer_;
 };
 
 }  // namespace fruit_perception
