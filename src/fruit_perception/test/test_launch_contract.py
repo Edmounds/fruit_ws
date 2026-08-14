@@ -32,3 +32,12 @@ def test_serial_port_comes_from_source_protocol_config():
 
     assert "/home/rc4/fruit_ws/src/auto_serial_bridge/config/protocol.yaml" in launch
     assert "serial_parameters['port']" not in launch
+
+
+def test_serial_bridge_uses_targeted_debug_logging():
+    launch = (
+        PACKAGE_ROOT / "launch" / "fruit_perception.launch.py"
+    ).read_text(encoding="utf-8")
+
+    assert "serial_controller:=debug" in launch
+    assert "'--log-level', 'debug'" not in launch

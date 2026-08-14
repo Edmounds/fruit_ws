@@ -146,6 +146,9 @@ def generate_launch_description():
         output='screen',
         emulate_tty=True,
         parameters=[serial_parameters, {'use_sim_time': use_sim_time}],
+        arguments=[
+            '--ros-args', '--log-level', 'serial_controller:=debug',
+        ],
     )
 
     return LaunchDescription([
