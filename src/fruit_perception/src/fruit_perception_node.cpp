@@ -1,10 +1,13 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <cv_bridge/cv_bridge.h>
+#include <geometry_msgs/msg/point_stamped.hpp>
 #include <openvino/openvino.hpp>
 #include <openvino/runtime/properties.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
+#include <realsense2_camera_msgs/msg/rgbd.hpp>
 #include <sensor_msgs/image_encodings.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
 #include <algorithm>
@@ -22,6 +25,7 @@
 #include "fruit_perception/detection_parser.hpp"
 #include "fruit_perception/image_processing.hpp"
 #include "fruit_perception/msg/fruit_types.hpp"
+#include "fruit_perception/target_localization.hpp"
 
 namespace fruit_perception
 {
@@ -70,12 +74,13 @@ public:
           "right_annotated_topic", "/fruit_perception/right/annotated_image"));
     }
     if (enable_d435i) {
-      add_stream(
-        "d435i",
-        declare_parameter("d435i_input_topic", "/camera/camera/color/image_raw"),
+      add_rgbd_stream(
+        declare_parameter("d435i_rgbd_topic", "/camera/camera/rgbd"),
         declare_parameter("d435i_output_topic", "/fruit_perception/d435i/types"),
         declare_parameter(
-          "d435i_annotated_topic", "/fruit_perception/d435i/annotated_image"));
+          "d435i_annotated_topic", "/fruit_perception/d435i/annotated_image"),
+        declare_parameter(
+          "d435i_target_point_topic", "/fruit_perception/d435i/target_point"));
     }
 
     RCLCPP_INFO(
@@ -120,8 +125,11 @@ private:
     ov::InferRequest request;
     rclcpp::Publisher<msg::FruitTypes>::SharedPtr result_publisher;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher;
+    rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr target_point_publisher;
     cv::Mat input_image;
     cv_bridge::CvImageConstPtr frame;
+    cv_bridge::CvImageConstPtr aligned_depth;
+    sensor_msgs::msg::CameraInfo depth_camera_info;
     LetterboxTransform transform{};
     std_msgs::msg::Header header;
     std::chrono::steady_clock::time_point last_completed_at;
@@ -183,6 +191,32 @@ private:
       execution_devices.front().c_str());
   }
 
+  void add_rgbd_stream(
+    const std::string & input_topic, const std::string & output_topic,
+    const std::string & annotated_topic, const std::string & target_point_topic)
+  {
+    auto stream = std::make_unique<Stream>(
+      "d435i", compiled_model_.create_infer_request(),
+      create_publisher<msg::FruitTypes>(output_topic, rclcpp::QoS(10)),
+      create_publisher<sensor_msgs::msg::Image>(annotated_topic, rclcpp::SensorDataQoS()));
+    stream->target_point_publisher =
+      create_publisher<geometry_msgs::msg::PointStamped>(target_point_topic, rclcpp::QoS(10));
+    auto * stream_ptr = stream.get();
+    stream->request.set_callback(
+      [this, stream_ptr](std::exception_ptr error) {finish_inference(*stream_ptr, error);});
+    streams_.push_back(std::move(stream));
+
+    subscriptions_.push_back(
+      create_subscription<realsense2_camera_msgs::msg::RGBD>(
+        input_topic, rclcpp::SensorDataQoS().keep_last(1),
+        [this, stream_ptr](realsense2_camera_msgs::msg::RGBD::ConstSharedPtr rgbd) {
+          submit_rgbd(*stream_ptr, rgbd);
+        }));
+    RCLCPP_INFO(
+      get_logger(), "d435i: %s -> %s, %s and %s", input_topic.c_str(), output_topic.c_str(),
+      annotated_topic.c_str(), target_point_topic.c_str());
+  }
+
   void add_stream(
     const std::string & name, const std::string & input_topic,
     const std::string & output_topic, const std::string & annotated_topic)
@@ -220,7 +254,7 @@ private:
 
     try {
       // toCvShare avoids a full-frame copy when the source already publishes
-      // rgb8 (D435i RGB8 and usb_cam mjpeg2rgb both do); the returned pointer
+      // rgb8 (usb_cam mjpeg2rgb does); the returned pointer
       // keeps the message alive for the duration of the inference.
       stream.frame = cv_bridge::toCvShare(image, sensor_msgs::image_encodings::RGB8);
       stream.transform = letterbox_image(stream.frame->image, stream.input_image);
@@ -228,6 +262,33 @@ private:
       stream.request.start_async();
     } catch (const std::exception & error) {
       RCLCPP_ERROR(get_logger(), "%s frame rejected: %s", stream.name.c_str(), error.what());
+      stream.busy.store(false);
+    }
+  }
+
+  void submit_rgbd(
+    Stream & stream, const realsense2_camera_msgs::msg::RGBD::ConstSharedPtr & rgbd)
+  {
+    if (stopping_.load()) {
+      return;
+    }
+
+    bool expected = false;
+    if (!stream.busy.compare_exchange_strong(expected, true)) {
+      return;
+    }
+
+    try {
+      stream.frame = cv_bridge::toCvShare(
+        rgbd->rgb, rgbd, sensor_msgs::image_encodings::RGB8);
+      stream.aligned_depth = cv_bridge::toCvShare(
+        rgbd->depth, rgbd, sensor_msgs::image_encodings::TYPE_16UC1);
+      stream.depth_camera_info = rgbd->depth_camera_info;
+      stream.transform = letterbox_image(stream.frame->image, stream.input_image);
+      stream.header = rgbd->rgb.header;
+      stream.request.start_async();
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(get_logger(), "d435i RGBD frame rejected: %s", error.what());
       stream.busy.store(false);
     }
   }
@@ -249,6 +310,20 @@ private:
         result.types.push_back(detection.type);
       }
       stream.result_publisher->publish(result);
+
+      if (stream.target_point_publisher && !detections.empty()) {
+        const auto point = localize_detection_center(
+          detections.front(), stream.transform, stream.aligned_depth->image,
+          stream.depth_camera_info);
+        if (point) {
+          geometry_msgs::msg::PointStamped target;
+          target.header = stream.aligned_depth->header;
+          target.point.x = point->x;
+          target.point.y = point->y;
+          target.point.z = point->z;
+          stream.target_point_publisher->publish(target);
+        }
+      }
 
       const auto now = std::chrono::steady_clock::now();
       if (stream.last_completed_at.time_since_epoch().count() != 0) {
@@ -288,7 +363,7 @@ private:
   float confidence_threshold_{0.50F};
   std::atomic<bool> stopping_{false};
   std::vector<std::unique_ptr<Stream>> streams_;
-  std::vector<rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr> subscriptions_;
+  std::vector<rclcpp::SubscriptionBase::SharedPtr> subscriptions_;
 };
 
 }  // namespace fruit_perception

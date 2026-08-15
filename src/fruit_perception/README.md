@@ -22,8 +22,12 @@ fruit_perception_node:
 ```
 
 The installed D435i serial is configured under `d435i_camera`. The RealSense
-node enables only its 640x480 RGB stream at 60 FPS; depth, infrared, IMU, point cloud, and
-TF output are disabled for this detector.
+node enables 640x480 RGB and depth streams at 60 FPS, synchronizes them, aligns
+depth to RGB, and publishes both images in one RGBD message. Infrared, IMU,
+point cloud, and TF output remain disabled.
+
+These settings follow the RealSense ROS RGBD topic requirements:
+https://github.com/realsenseai/realsense-ros#rgbd-topic
 
 ## Runtime
 
@@ -50,10 +54,17 @@ boot.
 
 The D435i topics are:
 
-- input: `/camera/camera/color/image_raw`
+- synchronized aligned input: `/camera/camera/rgbd`
 - fruit types: `/fruit_perception/d435i/types`
-- annotated BGR8 image: `/fruit_perception/d435i/annotated_image`
+- annotated RGB8 image: `/fruit_perception/d435i/annotated_image`
+- highest-confidence detection center: `/fruit_perception/d435i/target_point`
 - lower-controller result: `/fruit_hardware_bridge/d435i/result`
+
+The target point is a `geometry_msgs/msg/PointStamped` in the D435i color
+optical frame. Coordinates are meters: `x` points right in the image, `y`
+points down, and `z` points forward. The point uses the depth value at the
+center pixel of the highest-confidence detection box. No point is published
+when that center pixel has invalid zero depth.
 
 The annotated image keeps the camera's original aspect ratio. Inference uses a
 centered 640x640 letterbox with value 114, so no source pixels are cropped. Each

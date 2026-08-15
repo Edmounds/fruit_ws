@@ -14,9 +14,11 @@ find_package(
   COMPONENTS core imgproc
 )
 find_package(cv_bridge REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(OpenVINO 2024.6 EXACT REQUIRED COMPONENTS Runtime)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
+find_package(realsense2_camera_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -57,8 +59,10 @@ ament_target_dependencies(
   fruit_perception_component
   ament_index_cpp
   cv_bridge
+  geometry_msgs
   rclcpp
   rclcpp_components
+  realsense2_camera_msgs
   sensor_msgs
   std_msgs
 )

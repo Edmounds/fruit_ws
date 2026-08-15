@@ -13,9 +13,10 @@ def generate_launch_description():
     # ========================================================================
     # 1. 全局配置区
     # ========================================================================
-    my_package_name = 'fruit_perception'
-    my_pkg_share = get_package_share_directory(my_package_name)
-    common_config = os.path.join(my_pkg_share, 'config', 'fruit_perception.yaml')
+    common_config = (
+        '/home/rc4/fruit_ws/src/fruit_perception/config/'
+        'fruit_perception.yaml'
+    )
     with open(common_config, encoding='utf-8') as config_file:
         camera_config = yaml.safe_load(config_file)
     bridge_config = os.path.join(
