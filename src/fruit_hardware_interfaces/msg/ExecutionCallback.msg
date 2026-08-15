@@ -1,0 +1,9 @@
+uint8 CALLBACK_GRIPPER=0
+uint8 CALLBACK_CAMERA_GIMBAL=1
+uint8 CALLBACK_ARM_TARGET=2
+
+uint8 STATUS_COMPLETED=0
+uint8 STATUS_EXECUTING=1
+
+uint8 callback_id
+uint8 callback_status
