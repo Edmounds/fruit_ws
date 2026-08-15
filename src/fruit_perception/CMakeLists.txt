@@ -26,13 +26,19 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES std_msgs
 )
 
-add_library(detection_parser src/detection_parser.cpp src/image_processing.cpp)
+add_library(
+  detection_parser
+  src/detection_parser.cpp
+  src/image_processing.cpp
+  src/target_localization.cpp
+)
 target_include_directories(detection_parser PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
 target_compile_features(detection_parser PUBLIC cxx_std_17)
-target_link_libraries(detection_parser PUBLIC ${OpenCV_LIBRARIES})
+target_link_libraries(detection_parser ${OpenCV_LIBRARIES})
+ament_target_dependencies(detection_parser sensor_msgs)
 
 add_library(fruit_perception_component SHARED src/fruit_perception_node.cpp)
 target_include_directories(fruit_perception_component PUBLIC
@@ -90,6 +96,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_image_processing test/test_image_processing.cpp)
   target_link_libraries(test_image_processing detection_parser ${OpenCV_LIBRARIES})
   target_include_directories(test_image_processing PRIVATE ${OpenCV_INCLUDE_DIRS})
+
+  ament_add_gtest(test_target_localization test/test_target_localization.cpp)
+  target_link_libraries(test_target_localization detection_parser ${OpenCV_LIBRARIES})
+  target_include_directories(test_target_localization PRIVATE ${OpenCV_INCLUDE_DIRS})
+  ament_target_dependencies(test_target_localization sensor_msgs)
 
   ament_add_pytest_test(test_launch_contract test/test_launch_contract.py)
 endif()
