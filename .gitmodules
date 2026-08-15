@@ -4,7 +4,3 @@
 [submodule "src/driver/realsense-ros"]
 	path = src/driver/realsense-ros
 	url = git@github.com:realsenseai/realsense-ros.git
-[submodule "src/auto_serial_bridge"]
-	path = src/auto_serial_bridge
-	url = git@github.com:Edmounds/auto_serial_bridge.git
-	branch = dev

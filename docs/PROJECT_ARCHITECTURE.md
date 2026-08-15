@@ -59,12 +59,20 @@ ros2_ws/src/
 ├── auto_serial_bridge/       # 已拉取，串口协议生成与传输
 ├── glim/                     # 仅用于赛前离线建图
 ├── pb2025_sentry_nav/        # 复用 Livox、Point-LIO、small_gicp 等模块
-├── fruit_interfaces/         # 项目统一 msg/srv/action
+├── fruit_hardware_interfaces/# 上下位机控制与回调 msg
 ├── fruit_bringup/            # 全车 launch、参数、模式切换
 ├── fruit_navigation/         # 本车 Nav2 配置、地图、路线和速度仲裁
 ├── fruit_perception/         # 双侧 UVC、OpenVINO、D435if 最终定位
 ├── fruit_hardware_bridge/    # 语义动作到 task/callback 协议的适配
 └── fruit_mission/            # A/C 状态机、抓取协调、播报和事件日志
+```
+
+`auto_serial_bridge` 不由本仓库作为 Git submodule 管理，而是从 Edmounds fork 的
+`dev` 分支独立克隆；父仓库通过 `.gitignore` 忽略该目录：
+
+```bash
+git clone --branch dev git@github.com:Edmounds/auto_serial_bridge.git src/auto_serial_bridge
+git -C src/auto_serial_bridge pull --ff-only origin dev
 ```
 
 机械臂尺寸确定后再增加 `fruit_description`，保存 URDF、关节限制、相机和雷达外参。现在不要根据未知尺寸编写正式 IK 参数或运动轨迹。
@@ -145,20 +153,26 @@ USB 接线时，D435if 与两台 UVC 相机尽量分配到不同 USB 控制器�
 
 ### 6.1 原始协议
 
-协议方向保持用户现有设计：
+当前业务协议以 `auto_serial_bridge/config/protocol.yaml` 为准：
 
 ```text
-上位机 -> 下位机: task_id, task_status, payload
-下位机 -> 上位机: callback_id, callback_status, payload/error
+上位机 -> 下位机:
+  StateMachineCommand(0x11): task_id, task_status
+  ArmTarget(0x13): target_x, target_y, target_z, z_type
+  VelocityCommand(0x14): linear_x, angular_z
+
+下位机 -> 上位机:
+  ExecutionCallback(0x12): callback_id, callback_status
 ```
 
-- `callback_id` 与对应的 `task_id` 一致。
-- `callback_status` 至少区分 `ACCEPTED`、`RUNNING`、`SUCCEEDED`、`FAILED`。
-- 上位机只有在收到同一任务的 `SUCCEEDED` 或 `FAILED` 后才能结束该动作并推进任务状态机。
+- `task_id=0/1` 分别表示夹爪和摄像头云台；`callback_id=0/1/2` 分别表示夹爪、摄像头云台和机械臂目标。
+- `callback_status=1` 表示开始执行，`callback_status=0` 表示执行完成。
+- 状态机命令和机械臂目标各发布一次，并使用可靠消息保证送达；链路 ACK 只表示收到数据，只有对应的 `ExecutionCallback` 完成状态才能推进任务状态机。
 - 舵机、末端定位等离散动作使用可靠消息；底盘速度属于连续刷新数据，不做历史重传。
 - 上位机重复发送同一离散状态时，下位机不得重复执行已经完成的危险动作。
+- 当前回调未定义失败状态或错误码；上位机不得把通信超时解释为执行完成，故障反馈需要在后续协议中明确扩展。
 
-具体 ID、状态值、字段长度和错误码等待正式通信协议后写入 `auto_serial_bridge/config/protocol.yaml`。在协议冻结前不要把猜测值写进业务节点。
+字段类型、字节偏移和 `z_type=0..15` 的高度索引见构建生成的 `PROTOCOL_DOC.md`。
 
 ### 6.2 上层语义接口
 
@@ -179,7 +193,7 @@ Nav2 的最终差速命令由 `cmd_vel_safety_mux` 发布到 auto_serial_bridge 
 - 心跳超时立即把底盘速度清零；
 - 急停直接切断或禁止所有危险运动；
 - 机械臂关节软限位、硬限位、堵转和超时保护；
-- 舵机和末端动作超时返回 `FAILED`；
+- 舵机和末端动作超时进入硬件安全状态；故障回传需在通信协议增加明确失败状态后接入；
 - 收到非法任务、非法状态或超范围关节角时拒绝执行；
 - 通信恢复后不得自动继续失联前未确认完成的危险动作。
 
@@ -256,4 +270,3 @@ READ_C_QR
 - C 区任务结构固定为 8 项有序队列，失败和跳过都只推进一次。
 - 上层只使用语义化硬件接口，不出现散落的 `task_id` 数字常量。
 - 下位机通信中断时，即使 NUC 任务节点卡死，底盘和机械臂仍由硬件侧进入安全状态。
-
