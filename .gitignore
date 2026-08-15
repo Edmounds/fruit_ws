@@ -32,6 +32,9 @@ venv/
 # Local caches
 .cache/
 
+# Independently cloned ROS packages
+/src/auto_serial_bridge/
+
 # Local RealSense captures
 /rs-save-to-disk-output-*
 

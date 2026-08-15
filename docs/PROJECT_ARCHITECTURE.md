@@ -59,12 +59,20 @@ ros2_ws/src/
 ├── auto_serial_bridge/       # 已拉取，串口协议生成与传输
 ├── glim/                     # 仅用于赛前离线建图
 ├── pb2025_sentry_nav/        # 复用 Livox、Point-LIO、small_gicp 等模块
-├── fruit_interfaces/         # 项目统一 msg/srv/action
+├── fruit_hardware_interfaces/# 上下位机控制与回调 msg
 ├── fruit_bringup/            # 全车 launch、参数、模式切换
 ├── fruit_navigation/         # 本车 Nav2 配置、地图、路线和速度仲裁
 ├── fruit_perception/         # 双侧 UVC、OpenVINO、D435if 最终定位
 ├── fruit_hardware_bridge/    # 语义动作到 task/callback 协议的适配
 └── fruit_mission/            # A/C 状态机、抓取协调、播报和事件日志
+```
+
+`auto_serial_bridge` 不由本仓库作为 Git submodule 管理，而是从 Edmounds fork 的
+`dev` 分支独立克隆；父仓库通过 `.gitignore` 忽略该目录：
+
+```bash
+git clone --branch dev git@github.com:Edmounds/auto_serial_bridge.git src/auto_serial_bridge
+git -C src/auto_serial_bridge pull --ff-only origin dev
 ```
 
 机械臂尺寸确定后再增加 `fruit_description`，保存 URDF、关节限制、相机和雷达外参。现在不要根据未知尺寸编写正式 IK 参数或运动轨迹。
