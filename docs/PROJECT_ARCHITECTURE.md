@@ -239,7 +239,7 @@ READ_C_QR
        [no match/unripe/low confidence] -> ANNOUNCE_SKIP -> ADVANCE
        [ripe candidate] -> LOCK_CHASSIS -> PUBLISH_AC_PICK_DIRECTION_ONCE
                         -> WAIT_AC_PICK_CALLBACK_COMPLETED
-                    -> ANNOUNCE_RESULT -> ADVANCE
+                        -> ANNOUNCE_RESULT -> ADVANCE
   -> LEAVE_C
 ```
 
