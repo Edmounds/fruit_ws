@@ -23,11 +23,11 @@ right_camera:
 d435i_camera:
   ros__parameters:
     serial_no: "243322073779"
-    enable_color: true
-    rgb_camera.color_profile: "640x480x60"
+    enable_color: false
+    rgb_camera.color_profile: "1920x1080x30"
     rgb_camera.color_format: "RGB8"
-    enable_depth: true
-    depth_module.depth_profile: "640x480x60"
+    enable_depth: false
+    depth_module.depth_profile: "1280x720x30"
     depth_module.depth_format: "Z16"
     enable_sync: true
     align_depth.enable: true
@@ -42,8 +42,8 @@ d435i_camera:
 
 fruit_perception_node:
   ros__parameters:
-    enable_left_camera: false
-    enable_right_camera: false
+    enable_left_camera: true
+    enable_right_camera: true
     enable_d435i: true
     left_input_topic: "/left_camera/image_raw"
     right_input_topic: "/right_camera/image_raw"
@@ -55,4 +55,14 @@ fruit_perception_node:
     right_annotated_topic: "/fruit_perception/right/annotated_image"
     d435i_annotated_topic: "/fruit_perception/d435i/annotated_image"
     d435i_target_point_topic: "/fruit_perception/d435i/target_point"
+    d435i_detections_topic: "/fruit_perception/d435i/detections"
+    perception_mode_topic: "/fruit_mission/perception_mode"
     confidence_threshold: 0.50
+
+camera_mode_manager:
+  ros__parameters:
+    perception_mode_topic: "/fruit_mission/perception_mode"
+    active_mode_topic: "/fruit_perception/active_mode"
+    left_capture_service: "/left_camera/set_capture"
+    right_capture_service: "/right_camera/set_capture"
+    d435i_parameter_service: "/camera/camera/set_parameters"

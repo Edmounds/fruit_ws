@@ -24,6 +24,10 @@ def generate_launch_description():
         'config',
         'fruit_hardware_bridge.yaml',
     )
+    qr_config = (
+        '/home/rc4/fruit_ws/src/fruit_qr_planner/config/'
+        'fruit_qr_planner.yaml'
+    )
     serial_config_path = (
         '/home/rc4/fruit_ws/src/auto_serial_bridge/config/protocol.yaml'
     )
@@ -41,13 +45,6 @@ def generate_launch_description():
     right_camera_parameters = dict(
         camera_config['right_camera']['ros__parameters']
     )
-    left_camera_parameters['video_device'] = os.path.realpath(
-        left_camera_parameters['video_device']
-    )
-    right_camera_parameters['video_device'] = os.path.realpath(
-        right_camera_parameters['video_device']
-    )
-
     # ========================================================================
     # 2. 节点清单
     # ========================================================================
@@ -61,6 +58,7 @@ def generate_launch_description():
             'remappings': [
                 ('image_raw', '/left_camera/image_raw'),
                 ('camera_info', '/left_camera/camera_info'),
+                ('/set_capture', '/left_camera/set_capture'),
             ],
         })
     if perception_parameters['enable_right_camera']:
@@ -72,6 +70,7 @@ def generate_launch_description():
             'remappings': [
                 ('image_raw', '/right_camera/image_raw'),
                 ('camera_info', '/right_camera/camera_info'),
+                ('/set_capture', '/right_camera/set_capture'),
             ],
         })
     if perception_parameters['enable_d435i']:
@@ -140,6 +139,22 @@ def generate_launch_description():
         emulate_tty=True,
         parameters=[bridge_config, {'use_sim_time': use_sim_time}],
     )
+    camera_mode_manager = Node(
+        package='fruit_perception',
+        executable='camera_mode_manager',
+        name='camera_mode_manager',
+        output='screen',
+        emulate_tty=True,
+        parameters=[common_config, {'use_sim_time': use_sim_time}],
+    )
+    qr_planner = Node(
+        package='fruit_qr_planner',
+        executable='fruit_qr_planner_node',
+        name='fruit_qr_planner',
+        output='screen',
+        emulate_tty=True,
+        parameters=[qr_config, {'use_sim_time': use_sim_time}],
+    )
     serial_bridge = Node(
         package='auto_serial_bridge',
         executable='serial_node',
@@ -155,6 +170,8 @@ def generate_launch_description():
     return LaunchDescription([
         declare_use_sim_time,
         container,
+        camera_mode_manager,
+        qr_planner,
         fruit_result_bridge,
         serial_bridge,
     ])

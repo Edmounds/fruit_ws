@@ -2,12 +2,13 @@
 
 ## 1. 当前目标
 
-首版只完成省级选拔赛的 A、C 区：
+省级选拔赛范围为 A、B、C 区，D 区暂不接入。当前固定流程契约为：
 
-- A 区按照固定覆盖路线巡检，左右侧相机同时做地面果蔬粗识别；发现允许采收的候选目标后停车，由机械臂转向对应侧，再由末端 D435if 完成最终识别、测深和抓取定位。
-- C 区严格执行二维码给出的 8 项有序任务。导航先到指定位置并稳定停车，再用对应侧相机核验种类和成熟度；不满足条件、置信度不足或抓取失败时均推进到下一项，不重复上一项。
-- 左右侧相机通过下位机控制舵机，在 `GROUND` 和 `TREE` 两种视角之间切换。首版树上模式只完成视角切换、图像采集、YOLO 推理和日志，不接入 B、D 区任务或树上抓取。
-- B、D 区抓取暂不实现，但接口和状态枚举不得把未来扩展堵死。
+- A 区发布 `SIDES`，使用左右 USB 相机完成识别和作业。
+- B 区入口发布 `QR`，连续三帧确认并保存 B 计划，但暂不抓取。
+- 前往 C 区入口时保持 `QR`，确认 C 计划后发布 `SIDES`，按 C 计划严格执行 8 项。
+- 完成 C 后返回 B，发布 `TREE`，D435i 对整树的全部果实进行检测和测深，并按 B 计划位置 1 到 8 作业。
+- B 区完成后发布 `OFF` 并返航。当前仓库只实现话题契约和感知侧，不实现导航与完整任务状态机。
 
 上位机运行在 Intel Core i5/i7 NUC，负责定位、导航、识别、任务决策、机械臂逆解和目标角生成；下位机负责底盘、舵机、关节和末端执行器的实时闭环执行及硬件保护。
 
@@ -16,9 +17,9 @@
 ```text
                     +------------------------+
 二维码识别包 ------> | fruit_mission          |
-                    | A/C 比赛状态机          |
+                    | A/B/C 比赛状态机        |
 侧相机候选 --------> | 顺序、播报、日志、决策  |
-D435if 最终目标 ----> |                        |
+D435i 整树目标 -----> |                        |
                     +-----------+------------+
                                 |
              Nav2 action        | typed hardware actions
@@ -47,7 +48,7 @@ D435if 最终目标 ----> |                        |
 1. 比赛业务节点不直接读写串口字段，只调用有明确语义的 ROS 2 topic、service 或 action。
 2. `fruit_hardware_bridge` 是业务语义与 `task_id/task_status` 协议之间唯一的映射层。
 3. `auto_serial_bridge` 只处理串口帧、代码生成、握手、心跳、校验和可靠传输，不承载比赛流程。
-4. 下位机不决定 A/C 任务顺序和是否采收，只执行上位机给出的状态或关节目标，并通过 callback 返回执行阶段。
+4. 下位机不决定 A/B/C 任务顺序和是否采收，只执行上位机给出的状态或关节目标，并通过 callback 返回执行阶段。
 5. 只有速度仲裁节点能向串口通信层发布最终底盘速度，禁止 Nav2 和任务节点同时直接控制底盘。
 
 ## 3. ROS 2 工作区划分
@@ -62,9 +63,10 @@ ros2_ws/src/
 ├── fruit_hardware_interfaces/# 上下位机控制与回调 msg
 ├── fruit_bringup/            # 全车 launch、参数、模式切换
 ├── fruit_navigation/         # 本车 Nav2 配置、地图、路线和速度仲裁
-├── fruit_perception/         # 双侧 UVC、OpenVINO、D435if 最终定位
+├── fruit_perception/         # 双侧 UVC、D435i、模式管理与 OpenVINO
+├── fruit_qr_planner/         # D435i 彩色图扫码并持久发布 B/C 计划
 ├── fruit_hardware_bridge/    # 语义动作到 task/callback 协议的适配
-└── fruit_mission/            # A/C 状态机、抓取协调、播报和事件日志
+└── fruit_mission/            # A/B/C 状态机（尚未创建）
 ```
 
 `auto_serial_bridge` 不由本仓库作为 Git submodule 管理，而是从 Edmounds fork 的
@@ -113,25 +115,26 @@ git -C src/auto_serial_bridge pull --ff-only origin dev
 
 ### 5.1 双侧相机
 
-左右 USB UVC 相机持续采集，但只启动一个 OpenVINO 推理进程：
+左右 USB UVC 相机只在 `SIDES` 模式采集，且只启动一个 OpenVINO 推理组件：
 
 - 模型只加载一份，使用两个异步推理请求分别处理左、右相机，逻辑上保持双路同时识别。
 - YOLO11n 模型先导出 OpenVINO FP16；只有在真实 NUC 上出现持续算力压力后，再做有代表性标定集的 INT8 量化。
 - 首版目标为每侧约 `5-10 FPS`，输入尺寸先使用 `640`；资源不足时先降低相机采集帧率或推理帧率，不先破坏导航频率。
 - 行驶阶段侧相机只输出粗候选：类别、成熟度、置信度、图像位置、左右侧、相机模式和时间戳。
 - 单帧检测不能直接触发抓取。候选必须经过短时多帧确认，避免晃动、遮挡或曝光变化导致频繁停车。
-- `TREE` 模式首版只产生日志和可视化检测，不向任务状态机发抓取请求。
+- `QR`、`TREE` 模式关闭左右相机，避免三路相机同时采集和推理。
 
-### 5.2 D435if 最终确认
+### 5.2 D435i 扫码与整树识别
 
-侧相机不负责生成机械臂抓取三维位姿。抓取流程为：
+D435i 的固定原生流为 `1920x1080@30 RGB8` 和 `1280x720@30 Z16`，开启同步、
+深度对齐与 RGBD。对齐后的两幅消息均为 1920x1080，但深度信息源仍是
+1280x720。`QR` 与 `TREE` 之间不重启相机：
 
-1. 侧相机产生稳定候选并标记 `LEFT` 或 `RIGHT`。
-2. 任务状态机锁止底盘并等待稳定停车。
-3. 上位机请求下位机把机械臂转到对应侧的观察姿态。
-4. D435if 重新识别目标，检查种类、成熟度和置信度，并用深度生成目标点。
-5. 目标点变换到机械臂基座坐标系，按 4DOF 的受限抓取姿态求解关节角。
-6. 逆解无解、深度无效或目标丢失时立即跳过，不进行盲抓。
+1. `QR` 直接把 D435i 彩色原图送给 Python/OpenCV 扫码节点，按 B 后 C 的顺序各连续确认三帧。
+2. B/C 计划使用 Reliable、Transient Local、深度 1 发布，C 确认后销毁图像订阅。
+3. `TREE` 只执行 D435i RGBD 水果推理，整帧 letterbox 到 640x640，不做分块。
+4. `/fruit_perception/d435i/detections` 发布一帧内的全部目标及 1920x1080 ROI；中心深度无效时保留二维结果。
+5. 原有类型、最高置信度三维点和下位机接口继续保留。
 
 4DOF 机械臂不能按通用 6DOF 末端位姿设计。应固定末端接近方向或腕部姿态，只求解比赛需要的受限位置和姿态。机械尺寸确定后，再选择解析 IK 或轻量数值 IK；首版不必为了发送四个目标角而引入完整 MoveIt 运行栈。
 
@@ -141,13 +144,13 @@ git -C src/auto_serial_bridge pull --ff-only origin dev
 
 1. 串口心跳、急停和底盘速度输出；
 2. Point-LIO、small_gicp、TF 和 Nav2 局部避障；
-3. D435if 停车后的最终识别和测深；
+3. D435i 停车扫码或整树识别和测深；
 4. 左右侧相机 YOLO；
 5. 可视化、图像落盘和调试日志。
 
-抓取时可以暂停或显著降低左右侧 YOLO 频率，把算力让给 D435if。正式比赛不启动 RViz，不持续保存原始图像和完整点云，只记录状态事件、检测摘要和故障证据。
+`QR/TREE` 模式会停止左右侧采集和 YOLO，把带宽与算力让给 D435i。正式比赛不启动 RViz，不持续保存原始图像和完整点云，只记录状态事件、检测摘要和故障证据。
 
-USB 接线时，D435if 与两台 UVC 相机尽量分配到不同 USB 控制器；至少要限制 UVC 分辨率、帧率和像素格式，避免三路视频同时占满一个 USB 总线。
+USB 接线时，D435i 与两台 UVC 相机尽量分配到不同 USB 控制器；两组相机通过模式互斥采集，避免三路视频同时占满一个 USB 总线。
 
 ## 6. 上下位机接口
 
@@ -197,7 +200,7 @@ Nav2 的最终差速命令由 `cmd_vel_safety_mux` 发布到 auto_serial_bridge 
 - 收到非法任务、非法状态或超范围关节角时拒绝执行；
 - 通信恢复后不得自动继续失联前未确认完成的危险动作。
 
-## 7. A、C 区状态机
+## 7. A、B、C 区状态机契约
 
 ### 7.1 A 区
 
@@ -208,8 +211,6 @@ ENTER_A
   -> CONFIRM_SIDE_CANDIDATE
   -> CANCEL_NAV_AND_LOCK_CHASSIS
   -> STABLE_STOP
-  -> MOVE_ARM_TO_LEFT_OR_RIGHT_OBSERVE
-  -> D435_FINAL_CHECK
   -> IK_AND_MOVE_ARM
   -> GRIP
   -> CONFIRM_DETACH
@@ -235,8 +236,8 @@ READ_C_QR
        VERIFY_POSITION_TASK
        SIDE_CAMERA_CHECK
        [no match/unripe/low confidence] -> ANNOUNCE_SKIP -> ADVANCE
-       [candidate] -> LOCK_CHASSIS -> D435_FINAL_CHECK
-                    -> PICK_OR_FAIL -> ANNOUNCE_RESULT -> ADVANCE
+       [candidate] -> LOCK_CHASSIS -> PICK_OR_FAIL
+                    -> ANNOUNCE_RESULT -> ADVANCE
   -> LEAVE_C
 ```
 
@@ -246,6 +247,25 @@ READ_C_QR
 - 导航失败只允许进行有限的局部恢复；仍失败则记录本项失败并推进，避免后续全部错序。
 - 每项任务开始时记录 task index，所有异步 callback 必须验证仍属于当前任务，防止旧反馈污染下一项。
 
+### 7.3 B 区
+
+```text
+USE_SAVED_B_PLAN
+  -> SET_MODE_TREE
+  -> for position_id in 1..8:
+       NAVIGATE_TO_TREE
+       STABLE_STOP
+       DETECT_ALL_FRUITS_IN_FRAME
+       PROCESS_BOTH_FRUITS
+       ADVANCE_ONCE
+  -> SET_MODE_OFF
+  -> RETURN_HOME
+```
+
+- B 计划在首次经过 B 入口时已经扫码保存，完成 C 后由晚启动订阅者读取。
+- 每棵树处理整帧中按置信度排序的全部两个果实，不能只消费旧接口中的最高置信度目标。
+- 无效中心深度的检测保留二维证据，但不得生成三维抓取点。
+
 ## 8. 现在就能完成的工作
 
 在底盘和机械臂尚未完成时，优先做不会因机械尺寸变化而返工的部分：
@@ -253,9 +273,9 @@ READ_C_QR
 1. 建立上述 ROS 2 包骨架及 `fruit_interfaces`，冻结模块边界和 topic/action 名称。
 2. 新建本车专用 Nav2 配置和 launch，移除全向控制器、云台假坐标系及所有手柄遥控启动链路。
 3. 建立 `map -> odom -> base_footprint` 的统一 TF 约定，整理 GLIM 地图到 PCD/栅格地图的离线流程。
-4. 把现有 YOLO11n 导出为 OpenVINO FP16，完成单模型双异步 UVC 输入节点和 `GROUND/TREE` 模式接口。
-5. 定义侧相机粗候选与 D435if 最终目标之间的数据契约，不提前实现未知机械臂尺寸的正式 IK。
-6. 实现 A/C 纯任务状态机、事件日志、播报触发和 C 区严格游标推进逻辑。
+4. 继续用现有 OpenVINO 模型，实机验证 D435i 整树 640x640 letterbox 推理能稳定看见两个果实。
+5. 定义侧相机粗候选与 D435i 全目标输出之间的数据契约，不提前实现未知机械臂尺寸的正式 IK。
+6. 实现 A/B/C 纯任务状态机、事件日志、播报触发和严格游标推进逻辑。
 7. 等通信协议补充后，填写私有 `protocol.yaml`，再实现 `fruit_hardware_bridge` 的 task/callback 映射。
 8. 等机械臂尺寸、关节方向和限位确定后，补 URDF、相机外参、受限 IK 和安全抓取姿态。
 
@@ -263,10 +283,11 @@ READ_C_QR
 
 ## 9. 第一阶段完成标准
 
-- `fruit_bringup` 能明确区分 `mapping`、`navigation`、`perception_only` 和 `competition_ac` 模式。
+- `fruit_bringup` 能明确区分 `mapping`、`navigation`、`perception_only` 和 `competition_abc` 模式。
 - 比赛模式不会启动 GLIM、RViz、手柄遥控或任何全向控制器。
 - 所有底盘命令经过安全仲裁，只输出 `linear.x/angular.z`。
 - 双侧相机共享一份 OpenVINO 模型，能独立报告左右候选和当前视角模式。
 - C 区任务结构固定为 8 项有序队列，失败和跳过都只推进一次。
+- B 区使用先前持久发布的计划，并按位置 1 到 8 处理每棵树的两个果实。
 - 上层只使用语义化硬件接口，不出现散落的 `task_id` 数字常量。
 - 下位机通信中断时，即使 NUC 任务节点卡死，底盘和机械臂仍由硬件侧进入安全状态。

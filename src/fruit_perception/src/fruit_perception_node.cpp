@@ -9,6 +9,7 @@
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -23,9 +24,12 @@
 #include <vector>
 
 #include "fruit_perception/detection_parser.hpp"
+#include "fruit_perception/detection_output.hpp"
 #include "fruit_perception/image_processing.hpp"
+#include "fruit_perception/msg/fruit_detection.hpp"
+#include "fruit_perception/msg/fruit_detections.hpp"
 #include "fruit_perception/msg/fruit_types.hpp"
-#include "fruit_perception/target_localization.hpp"
+#include "fruit_perception/perception_mode.hpp"
 
 namespace fruit_perception
 {
@@ -38,6 +42,20 @@ public:
     const auto package_share = ament_index_cpp::get_package_share_directory("fruit_perception");
     const auto model_path = declare_parameter("model_path", package_share + "/model/best.xml");
     confidence_threshold_ = static_cast<float>(declare_parameter("confidence_threshold", 0.50));
+    const auto perception_mode_topic = declare_parameter(
+      "perception_mode_topic", "/fruit_mission/perception_mode");
+    mode_subscription_ = create_subscription<std_msgs::msg::String>(
+      perception_mode_topic, rclcpp::QoS(1).reliable(),
+      [this](std_msgs::msg::String::ConstSharedPtr message) {
+        const auto mode = parse_perception_mode(message->data);
+        if (!mode) {
+          RCLCPP_ERROR(
+            get_logger(), "Invalid perception mode '%s'; inference mode unchanged",
+            message->data.c_str());
+          return;
+        }
+        perception_mode_.store(*mode);
+      });
 
     const bool enable_left = declare_parameter("enable_left_camera", false);
     const bool enable_right = declare_parameter("enable_right_camera", false);
@@ -80,7 +98,9 @@ public:
         declare_parameter(
           "d435i_annotated_topic", "/fruit_perception/d435i/annotated_image"),
         declare_parameter(
-          "d435i_target_point_topic", "/fruit_perception/d435i/target_point"));
+          "d435i_target_point_topic", "/fruit_perception/d435i/target_point"),
+        declare_parameter(
+          "d435i_detections_topic", "/fruit_perception/d435i/detections"));
     }
 
     RCLCPP_INFO(
@@ -126,6 +146,7 @@ private:
     rclcpp::Publisher<msg::FruitTypes>::SharedPtr result_publisher;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher;
     rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr target_point_publisher;
+    rclcpp::Publisher<msg::FruitDetections>::SharedPtr detections_publisher;
     cv::Mat input_image;
     cv_bridge::CvImageConstPtr frame;
     cv_bridge::CvImageConstPtr aligned_depth;
@@ -193,7 +214,8 @@ private:
 
   void add_rgbd_stream(
     const std::string & input_topic, const std::string & output_topic,
-    const std::string & annotated_topic, const std::string & target_point_topic)
+    const std::string & annotated_topic, const std::string & target_point_topic,
+    const std::string & detections_topic)
   {
     auto stream = std::make_unique<Stream>(
       "d435i", compiled_model_.create_infer_request(),
@@ -201,6 +223,8 @@ private:
       create_publisher<sensor_msgs::msg::Image>(annotated_topic, rclcpp::SensorDataQoS()));
     stream->target_point_publisher =
       create_publisher<geometry_msgs::msg::PointStamped>(target_point_topic, rclcpp::QoS(10));
+    stream->detections_publisher =
+      create_publisher<msg::FruitDetections>(detections_topic, rclcpp::QoS(10));
     auto * stream_ptr = stream.get();
     stream->request.set_callback(
       [this, stream_ptr](std::exception_ptr error) {finish_inference(*stream_ptr, error);});
@@ -213,8 +237,9 @@ private:
           submit_rgbd(*stream_ptr, rgbd);
         }));
     RCLCPP_INFO(
-      get_logger(), "d435i: %s -> %s, %s and %s", input_topic.c_str(), output_topic.c_str(),
-      annotated_topic.c_str(), target_point_topic.c_str());
+      get_logger(), "d435i: %s -> %s, %s, %s and %s", input_topic.c_str(),
+      output_topic.c_str(), annotated_topic.c_str(), target_point_topic.c_str(),
+      detections_topic.c_str());
   }
 
   void add_stream(
@@ -243,7 +268,7 @@ private:
 
   void submit(Stream & stream, const sensor_msgs::msg::Image::ConstSharedPtr & image)
   {
-    if (stopping_.load()) {
+    if (stopping_.load() || !runs_side_inference(perception_mode_.load())) {
       return;
     }
 
@@ -269,7 +294,7 @@ private:
   void submit_rgbd(
     Stream & stream, const realsense2_camera_msgs::msg::RGBD::ConstSharedPtr & rgbd)
   {
-    if (stopping_.load()) {
+    if (stopping_.load() || !runs_d435i_inference(perception_mode_.load())) {
       return;
     }
 
@@ -303,6 +328,14 @@ private:
       const auto detections = parse_detections(
         output.data<const float>(), output_shape_, confidence_threshold_);
 
+      const bool mode_allows_output = stream.target_point_publisher ?
+        runs_d435i_inference(perception_mode_.load()) :
+        runs_side_inference(perception_mode_.load());
+      if (!mode_allows_output) {
+        stream.busy.store(false);
+        return;
+      }
+
       msg::FruitTypes result;
       result.header = stream.header;
       result.types.reserve(detections.size());
@@ -311,16 +344,37 @@ private:
       }
       stream.result_publisher->publish(result);
 
-      if (stream.target_point_publisher && !detections.empty()) {
-        const auto point = localize_detection_center(
-          detections.front(), stream.transform, stream.aligned_depth->image,
+      if (stream.detections_publisher) {
+        msg::FruitDetections all_detections;
+        all_detections.header = stream.aligned_depth->header;
+        const auto outputs = make_detection_outputs(
+          detections, stream.transform, stream.aligned_depth->image,
           stream.depth_camera_info);
-        if (point) {
+        all_detections.detections.reserve(outputs.size());
+        for (const auto & output : outputs) {
+          msg::FruitDetection item;
+          item.type = output.type;
+          item.confidence = output.confidence;
+          item.roi.x_offset = static_cast<std::uint32_t>(output.roi.x);
+          item.roi.y_offset = static_cast<std::uint32_t>(output.roi.y);
+          item.roi.width = static_cast<std::uint32_t>(output.roi.width);
+          item.roi.height = static_cast<std::uint32_t>(output.roi.height);
+          item.has_point = output.has_point;
+          if (output.has_point) {
+            item.point.x = output.point.x;
+            item.point.y = output.point.y;
+            item.point.z = output.point.z;
+          }
+          all_detections.detections.push_back(std::move(item));
+        }
+        stream.detections_publisher->publish(all_detections);
+
+        if (!all_detections.detections.empty() &&
+          all_detections.detections.front().has_point)
+        {
           geometry_msgs::msg::PointStamped target;
           target.header = stream.aligned_depth->header;
-          target.point.x = point->x;
-          target.point.y = point->y;
-          target.point.z = point->z;
+          target.point = all_detections.detections.front().point;
           stream.target_point_publisher->publish(target);
         }
       }
@@ -362,6 +416,8 @@ private:
   ov::Shape output_shape_;
   float confidence_threshold_{0.50F};
   std::atomic<bool> stopping_{false};
+  std::atomic<PerceptionMode> perception_mode_{PerceptionMode::kOff};
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_subscription_;
   std::vector<std::unique_ptr<Stream>> streams_;
   std::vector<rclcpp::SubscriptionBase::SharedPtr> subscriptions_;
 };
