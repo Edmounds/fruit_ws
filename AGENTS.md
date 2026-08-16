@@ -33,6 +33,23 @@
 - 同一容器中的组件必须链接同一套 OpenCV ABI；ROS 2 Humble 节点统一使用系统 OpenCV 4.5.4，禁止与 `/usr/local` 下的其他 OpenCV 版本混用。
 - 第三方节点没有 component 接口时，先说明限制并确认方案，再使用跨进程图像传输。
 
+## Python 与 OpenCV 环境边界
+
+本机同时存在多套计算机视觉环境，不能在同一个 ROS 2 进程中混用：
+
+- ROS Humble 的 `cv_bridge`、apt `python3-opencv` 和本项目 C++ 节点统一使用系统 OpenCV 4.5.4；apt NumPy 为 1.x。
+- `~/.local` 中的 NumPy 2.x、pip OpenCV、Ultralytics 和 OpenVINO Python 工具只用于训练/导出，不得进入 ROS 运行进程。
+- `/usr/local` 中另有 OpenCV 4.10，且其 Python `cv2` 依赖不同的 OpenVINO ABI；ROS 构建和运行均不得从 `/usr/local` 加载 OpenCV、`cv2` 或相关动态库。
+
+执行规则：
+
+- 启动或实机调试本项目之前必须 `source /home/rc4/fruit_ws/setup_fruit_runtime.bash`，不要只 source `install/setup.bash`。正式启动脚本也必须复用该环境脚本。
+- 环境脚本会清除继承的其他工作区、Python 和动态库路径，禁用 Python user site，并检查 Python OpenCV 4.5.4 与 NumPy 1.x 都来自 `/usr/lib/python3/dist-packages`。检查失败时应停止启动并修复环境，禁止临时改 `PYTHONPATH` 绕过。
+- 禁止在系统 Python 或 `~/.local` 执行 `pip install`、`pip install --user`。训练、标注、模型导出等非 ROS Python 工具必须使用项目外独立 venv，并在该 venv 内维护 requirements/lock 文件。
+- 不要在已激活训练 venv 的终端中构建或启动 ROS；退出 venv 后重新 source `setup_fruit_runtime.bash`。
+- ROS Python 包依赖通过 `package.xml` 声明并使用 apt/rosdep 安装。需要与 `sensor_msgs/Image` 交互时优先使用与系统 ABI 一致的 `cv_bridge`；若固定编码可安全直接解析，则必须验证 encoding、step 和数据长度。
+- C++ 包继续通过 CMake 精确限定系统 OpenCV 4.5.4，并在合入前用 `ldd` 确认没有链接 `/usr/local/lib/libopencv*`。
+
 # Worktree Isolation
 
 - Before editing the project, use the `using-git-worktrees` skill to create an isolated worktree.
