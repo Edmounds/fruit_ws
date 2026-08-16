@@ -57,11 +57,12 @@ inline tf2::Transform makeLidarInImuTransform(
   return lidar_in_imu;
 }
 
-// Align odom with base at t0, where camera_init coincides with IMU/body at t0.
+// Align the first LiDAR pose with the calibrated base->LiDAR transform.
 inline tf2::Transform odomToCameraInit(
-  const tf2::Transform & base_to_lidar, const tf2::Transform & lidar_in_imu)
+  const tf2::Transform & base_to_lidar, const tf2::Transform & camera_init_to_body,
+  const tf2::Transform & lidar_in_imu)
 {
-  return base_to_lidar * lidar_in_imu.inverse();
+  return base_to_lidar * (camera_init_to_body * lidar_in_imu).inverse();
 }
 
 // Point-LIO odometry is camera_init -> body(IMU). Convert to odom -> lidar.

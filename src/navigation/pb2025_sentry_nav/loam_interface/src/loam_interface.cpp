@@ -89,13 +89,17 @@ void LoamInterfaceNode::pointCloudCallback(
 void LoamInterfaceNode::odometryCallback(const nav_msgs::msg::Odometry::ConstSharedPtr msg)
 {
   // aft_mapped_to_init pose is camera_init -> body (Mid360 internal IMU), not LiDAR.
+  tf2::Transform tf_camera_init_to_body;
+  tf2::fromMsg(msg->pose.pose, tf_camera_init_to_body);
+
   if (!odom_to_camera_init_initialized_) {
     try {
       auto tf_stamped = tf_buffer_->lookupTransform(
         base_frame_, lidar_frame_, msg->header.stamp, rclcpp::Duration::from_seconds(0.5));
       tf2::Transform tf_base_to_lidar;
       tf2::fromMsg(tf_stamped.transform, tf_base_to_lidar);
-      tf_odom_to_camera_init_ = odomToCameraInit(tf_base_to_lidar, lidar_in_imu_);
+      tf_odom_to_camera_init_ =
+        odomToCameraInit(tf_base_to_lidar, tf_camera_init_to_body, lidar_in_imu_);
       odom_to_camera_init_initialized_ = true;
       RCLCPP_INFO(
         get_logger(),
@@ -107,8 +111,6 @@ void LoamInterfaceNode::odometryCallback(const nav_msgs::msg::Odometry::ConstSha
     }
   }
 
-  tf2::Transform tf_camera_init_to_body;
-  tf2::fromMsg(msg->pose.pose, tf_camera_init_to_body);
   const tf2::Transform tf_odom_to_lidar =
     odomToLidar(tf_odom_to_camera_init_, tf_camera_init_to_body, lidar_in_imu_);
 
