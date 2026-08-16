@@ -5,12 +5,71 @@ set -o pipefail
 
 target_pids=()
 
+# These tokens cover the launch files and executable nodes in the current
+# perception, mapping, localization, navigation, and teleop design.
+target_tokens=(
+  "ros2 launch fruit_perception "
+  "ros2 launch fruit_hardware_bridge "
+  "ros2 launch fruit_qr_planner "
+  "ros2 launch auto_serial_bridge "
+  "ros2 launch glim_ros "
+  "ros2 launch pb2025_nav_bringup "
+  "ros2 launch point_lio "
+  "ros2 launch loam_interface "
+  "ros2 launch sensor_scan_generation "
+  "ros2 launch joy_linux "
+  "ros2 launch livox_ros_driver2 "
+  "__node:=fruit_perception_container"
+  "__node:=auto_serial_bridge_container"
+  "__node:=joy_container"
+  "__node:=base_to_front_mid360"
+  "__node:=front_mid360_to_livox_imu"
+  "/lib/fruit_perception/"
+  "/lib/fruit_qr_planner/"
+  "/lib/fruit_hardware_bridge/"
+  "/lib/auto_serial_bridge/"
+  "/lib/glim_ros/"
+  "/lib/livox_ros_driver2/"
+  "/lib/point_lio/"
+  "/lib/loam_interface/"
+  "/lib/sensor_scan_generation/"
+  "/lib/terrain_analysis/"
+  "/lib/terrain_analysis_ext/"
+  "/lib/pb_gicp_localization/"
+  "/lib/pb_glim_map_tools/"
+  "/lib/nav2_"
+  "/lib/twist_mux/"
+  "/lib/joy_linux/"
+  "/lib/tf2_ros/static_transform_publisher"
+  "/lib/tf2_ros/tf2_echo"
+  "rviz2"
+  "ros2 run fruit_perception "
+  "ros2 run fruit_qr_planner "
+  "ros2 run fruit_hardware_bridge "
+  "ros2 run auto_serial_bridge "
+  "ros2 run glim_ros "
+  "ros2 run livox_ros_driver2 "
+  "ros2 run point_lio "
+  "ros2 run loam_interface "
+  "ros2 run sensor_scan_generation "
+  "ros2 run terrain_analysis "
+  "ros2 run terrain_analysis_ext "
+  "ros2 run pb_gicp_localization "
+  "ros2 run nav2_"
+  "ros2 run joy_linux "
+  "ros2 run rviz2 "
+  "ros2 run pb_glim_map_tools "
+  "ros2 run tf2_ros static_transform_publisher "
+  "ros2 run tf2_ros tf2_echo "
+)
+
 usage() {
   cat <<'EOF'
 Usage: ./kill_fruit_processes.sh [--dry-run]
 
-Stop processes started by start_fruit_perception.sh, including duplicate
-fruit_perception launch instances and their camera/bridge nodes.
+Stop nodes and launch processes in the current fruit robot project design.
+This includes perception, mapping, localization, navigation, teleop, and RViz.
+foxglove_bridge is intentionally excluded.
 
 --dry-run  Print matching processes without sending signals.
 EOF
@@ -18,20 +77,13 @@ EOF
 
 is_target_process() {
   local command_line=$1
+  local token
 
-  case "$command_line" in
-    *"ros2 launch fruit_perception fruit_perception.launch.py"*) return 0 ;;
-    *"component_container"*"__node:=fruit_perception_container"*) return 0 ;;
-    *"/fruit_perception/lib/fruit_perception/camera_mode_manager"*) return 0 ;;
-    *"/fruit_perception/lib/fruit_perception/fruit_perception_node"*) return 0 ;;
-    *"/fruit_qr_planner/lib/fruit_qr_planner/fruit_qr_planner_node"*) return 0 ;;
-    *"/fruit_hardware_bridge/lib/fruit_hardware_bridge/fruit_result_bridge"*) return 0 ;;
-    *"/auto_serial_bridge/lib/auto_serial_bridge/serial_node"*) return 0 ;;
-    *"ros2 run fruit_perception fruit_perception_node"*) return 0 ;;
-    *"ros2 run fruit_qr_planner fruit_qr_planner_node"*) return 0 ;;
-    *"ros2 run fruit_hardware_bridge fruit_result_bridge"*) return 0 ;;
-    *"ros2 run auto_serial_bridge serial_node"*) return 0 ;;
-  esac
+  for token in "${target_tokens[@]}"; do
+    if [[ "$command_line" == *"$token"* ]]; then
+      return 0
+    fi
+  done
 
   return 1
 }
@@ -128,11 +180,11 @@ fi
 refresh_targets
 
 if ((${#target_pids[@]} == 0)); then
-  printf 'No fruit perception processes found.\n'
+  printf 'No project processes found.\n'
   exit 0
 fi
 
-printf 'Matching fruit perception processes:\n'
+printf 'Matching project processes:\n'
 print_targets
 
 if ((${dry_run:-0} == 1)); then
