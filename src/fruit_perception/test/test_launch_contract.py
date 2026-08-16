@@ -54,6 +54,18 @@ def test_serial_bridge_uses_targeted_debug_logging():
     assert "'--log-level', 'debug'" not in launch
 
 
+def test_serial_launch_does_not_forward_d435_results_to_lower_controller():
+    launch = (
+        PACKAGE_ROOT / "launch" / "fruit_perception.launch.py"
+    ).read_text(encoding="utf-8")
+    package_xml = (PACKAGE_ROOT / "package.xml").read_text(encoding="utf-8")
+
+    assert "package='auto_serial_bridge'" in launch
+    assert "fruit_result_bridge" not in launch
+    assert "fruit_hardware_bridge.yaml" not in launch
+    assert "<exec_depend>auto_serial_bridge</exec_depend>" in package_xml
+
+
 def test_d435_rgbd_stream_is_synchronized_and_aligned_to_color():
     config = yaml.safe_load(
         (PACKAGE_ROOT / "config" / "fruit_perception.yaml").read_text(

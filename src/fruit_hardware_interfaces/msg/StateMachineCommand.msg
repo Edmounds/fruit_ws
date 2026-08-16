@@ -1,10 +1,14 @@
 uint8 TASK_GRIPPER=0
 uint8 TASK_CAMERA_GIMBAL=1
+uint8 TASK_AC_PICK=2
 
 uint8 GRIPPER_GRIP=0
 uint8 GRIPPER_OPEN=1
 uint8 GIMBAL_LOOK_DOWN=0
 uint8 GIMBAL_LOOK_UP=1
+uint8 AC_PICK_LEFT=0
+uint8 AC_PICK_RIGHT=1
+uint8 AC_PICK_BOTH=2
 
 uint8 task_id
 uint8 task_status

@@ -10,7 +10,7 @@
 - 完成 C 后返回 B，发布 `TREE`，D435i 对整树的全部果实进行检测和测深，并按 B 计划位置 1 到 8 作业。
 - B 区完成后发布 `OFF` 并返航。当前仓库只实现话题契约和感知侧，不实现导航与完整任务状态机。
 
-上位机运行在 Intel Core i5/i7 NUC，负责定位、导航、识别、任务决策、机械臂逆解和目标角生成；下位机负责底盘、舵机、关节和末端执行器的实时闭环执行及硬件保护。
+上位机运行在 Intel Core i5/i7 NUC，负责定位、导航、识别、任务决策，以及 B/D 区机械臂目标生成；下位机负责底盘、舵机、关节和末端执行器的实时闭环执行及硬件保护，并在收到 A/C 抓取方向后自动完成抓取、放置和复位流程。
 
 ## 2. 总体架构
 
@@ -48,7 +48,7 @@ D435i 整树目标 -----> |                        |
 1. 比赛业务节点不直接读写串口字段，只调用有明确语义的 ROS 2 topic、service 或 action。
 2. `fruit_hardware_bridge` 是业务语义与 `task_id/task_status` 协议之间唯一的映射层。
 3. `auto_serial_bridge` 只处理串口帧、代码生成、握手、心跳、校验和可靠传输，不承载比赛流程。
-4. 下位机不决定 A/B/C 任务顺序和是否采收，只执行上位机给出的状态或关节目标，并通过 callback 返回执行阶段。
+4. 下位机不决定 A/B/C 任务顺序和是否采收；A/C 只执行上位机指定的抓取方向，B/D 执行上位机给出的机械臂目标，并通过 callback 返回执行阶段。
 5. 只有速度仲裁节点能向串口通信层发布最终底盘速度，禁止 Nav2 和任务节点同时直接控制底盘。
 
 ## 3. ROS 2 工作区划分
@@ -168,9 +168,11 @@ USB 接线时，D435i 与两台 UVC 相机尽量分配到不同 USB 控制器；
   ExecutionCallback(0x12): callback_id, callback_status
 ```
 
-- `task_id=0/1` 分别表示夹爪和摄像头云台；`callback_id=0/1/2` 分别表示夹爪、摄像头云台和机械臂目标。
+- 原 `FruitDetection(0x10)` 已删除且 ID 暂不复用；感知结果只留在 ROS 话题中供上位机决策。
+- `task_id=0/1/2` 分别表示夹爪、摄像头云台和 A/C 自动抓放；当 `task_id=2` 时，`task_status=0/1/2` 分别表示抓左侧、右侧和左右两侧。
+- `callback_id=0/1/2/3` 分别表示夹爪、摄像头云台、A/C 自动抓放和 B/D 机械臂目标。
 - `callback_status=1` 表示开始执行，`callback_status=0` 表示执行完成。
-- 状态机命令和机械臂目标各发布一次，并使用可靠消息保证送达；链路 ACK 只表示收到数据，只有对应的 `ExecutionCallback` 完成状态才能推进任务状态机。
+- A/C 抓取命令和 B/D 机械臂目标各发布一次，并使用可靠消息保证送达；链路 ACK 只表示收到数据，只有对应的 `ExecutionCallback` 完成状态才能推进任务状态机。
 - 舵机、末端定位等离散动作使用可靠消息；底盘速度属于连续刷新数据，不做历史重传。
 - 上位机重复发送同一离散状态时，下位机不得重复执行已经完成的危险动作。
 - 当前回调未定义失败状态或错误码；上位机不得把通信超时解释为执行完成，故障反馈需要在后续协议中明确扩展。
@@ -181,6 +183,7 @@ USB 接线时，D435i 与两台 UVC 相机尽量分配到不同 USB 控制器；
 
 业务层不直接构造 `task_id`。建议由 `fruit_hardware_bridge` 暴露以下强类型接口：
 
+- `RunAcPick`: 左侧、右侧或左右两侧；成熟判断通过后只调用一次，等待 A/C 自动抓放回调。
 - `SetCameraMode`: 左/右/双侧，`GROUND` 或 `TREE`，等待舵机到位反馈。
 - `MoveArmJoints`: 四个目标角、速度档或速度比例、超时，持续反馈执行阶段和当前角度。
 - `RunEndEffector`: 夹取、释放、复位等离散动作。
@@ -211,18 +214,16 @@ ENTER_A
   -> CONFIRM_SIDE_CANDIDATE
   -> CANCEL_NAV_AND_LOCK_CHASSIS
   -> STABLE_STOP
-  -> IK_AND_MOVE_ARM
-  -> GRIP
-  -> CONFIRM_DETACH
-  -> STORE
-  -> ARM_STOW
+  -> PUBLISH_AC_PICK_DIRECTION_ONCE
+  -> WAIT_AC_PICK_CALLBACK_COMPLETED
   -> RESUME_COVERAGE_ROUTE
   -> LEAVE_A
 ```
 
 - 没有候选时沿固定覆盖路线继续行驶。
-- 左右同时出现候选时一次只处理一个，优先成熟且置信度更高的目标；另一个候选在第一次抓取完成后必须重新确认，不能依赖旧图像直接抓取。
-- 抓取失败、掉落或拖出后将目标标记为失效，不无限重试。
+- 未检测到成熟目标、目标不成熟或坏水果时，不向下位机发布 A/C 抓取命令。
+- 仅左侧或右侧存在成熟目标时分别发送 `task_status=0/1`；左右两侧都有成熟目标时发送一条 `task_status=2`，由下位机连续完成两侧抓放。
+- 业务层不重复发送抓取命令；`auto_serial_bridge` 负责可靠重传，只有收到 `callback_id=2, callback_status=0` 才恢复路线。
 - 路线必须保存当前段索引，抓取后从安全恢复点继续，而不是从 A 区入口重新开始。
 
 ### 7.2 C 区
@@ -236,14 +237,16 @@ READ_C_QR
        VERIFY_POSITION_TASK
        SIDE_CAMERA_CHECK
        [no match/unripe/low confidence] -> ANNOUNCE_SKIP -> ADVANCE
-       [candidate] -> LOCK_CHASSIS -> PICK_OR_FAIL
-                    -> ANNOUNCE_RESULT -> ADVANCE
+       [ripe candidate] -> LOCK_CHASSIS -> PUBLISH_AC_PICK_DIRECTION_ONCE
+                        -> WAIT_AC_PICK_CALLBACK_COMPLETED
+                        -> ANNOUNCE_RESULT -> ADVANCE
   -> LEAVE_C
 ```
 
 - C 区导航目标由 `(position_id, approach_pose, expected_side)` 配置表提供。
 - 二维码输出只决定严格任务序列，不允许按路线距离重排。
 - 到位后即使没有目标，也完成稳定停车、识别、播报和推进。
+- 不成熟、坏水果或种类不符时不发布 A/C 抓取命令；成熟且种类匹配时按目标所在侧发送一次方向命令。
 - 导航失败只允许进行有限的局部恢复；仍失败则记录本项失败并推进，避免后续全部错序。
 - 每项任务开始时记录 task index，所有异步 callback 必须验证仍属于当前任务，防止旧反馈污染下一项。
 
@@ -265,6 +268,7 @@ USE_SAVED_B_PLAN
 - B 计划在首次经过 B 入口时已经扫码保存，完成 C 后由晚启动订阅者读取。
 - 每棵树处理整帧中按置信度排序的全部两个果实，不能只消费旧接口中的最高置信度目标。
 - 无效中心深度的检测保留二维证据，但不得生成三维抓取点。
+- B 区机械臂目标继续使用 `ArmTarget(0x13)`，并等待 `callback_id=3` 的执行完成状态。
 
 ## 8. 现在就能完成的工作
 
@@ -276,7 +280,7 @@ USE_SAVED_B_PLAN
 4. 继续用现有 OpenVINO 模型，实机验证 D435i 整树 640x640 letterbox 推理能稳定看见两个果实。
 5. 定义侧相机粗候选与 D435i 全目标输出之间的数据契约，不提前实现未知机械臂尺寸的正式 IK。
 6. 实现 A/B/C 纯任务状态机、事件日志、播报触发和严格游标推进逻辑。
-7. 等通信协议补充后，填写私有 `protocol.yaml`，再实现 `fruit_hardware_bridge` 的 task/callback 映射。
+7. 按已冻结的 A/C 方向命令和 task/callback 映射，实现 `fruit_hardware_bridge` 的上层语义接口。
 8. 等机械臂尺寸、关节方向和限位确定后，补 URDF、相机外参、受限 IK 和安全抓取姿态。
 
 用户当前选择暂不做 ROS bag、Gazebo 或假硬件验证，因此这些不作为第一阶段交付物。接口设计仍应允许后续添加回放或模拟下位机，而不修改比赛业务状态机。

@@ -53,9 +53,10 @@ https://github.com/realsenseai/realsense-ros#rgbd-topic
 
 ## Runtime
 
-The project launch starts the D435i component, OpenVINO detector, fruit result
-mapper, and serial bridge together. The serial device is fixed to
-`/dev/ttyACM0`.
+The project launch starts the D435i component, OpenVINO detector, and serial
+bridge together. Perception results remain on ROS topics for the future mission
+node and are not forwarded directly to the lower controller. The serial device
+is fixed to `/dev/ttyACM0`.
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -81,7 +82,6 @@ The D435i topics are:
 - annotated RGB8 image: `/fruit_perception/d435i/annotated_image`
 - highest-confidence detection center: `/fruit_perception/d435i/target_point`
 - every detection in the frame: `/fruit_perception/d435i/detections`
-- lower-controller result: `/fruit_hardware_bridge/d435i/result`
 
 The full detection message is confidence-sorted and contains the model type,
 confidence, ROI in original 1920x1080 color coordinates, `has_point`, and a

@@ -1,8 +1,6 @@
-import os
 import subprocess
 
 import yaml
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
@@ -55,11 +53,6 @@ def generate_launch_description():
     )
     with open(common_config, encoding='utf-8') as config_file:
         camera_config = yaml.safe_load(config_file)
-    bridge_config = os.path.join(
-        get_package_share_directory('fruit_hardware_bridge'),
-        'config',
-        'fruit_hardware_bridge.yaml',
-    )
     qr_config = (
         '/home/rc4/fruit_ws/src/fruit_qr_planner/config/'
         'fruit_qr_planner.yaml'
@@ -175,14 +168,6 @@ def generate_launch_description():
         emulate_tty=True,
     )
 
-    fruit_result_bridge = Node(
-        package='fruit_hardware_bridge',
-        executable='fruit_result_bridge',
-        name='fruit_result_bridge',
-        output='screen',
-        emulate_tty=True,
-        parameters=[bridge_config, {'use_sim_time': use_sim_time}],
-    )
     camera_mode_manager = Node(
         package='fruit_perception',
         executable='camera_mode_manager',
@@ -217,6 +202,5 @@ def generate_launch_description():
         container,
         camera_mode_manager,
         qr_planner,
-        fruit_result_bridge,
         serial_bridge,
     ])
