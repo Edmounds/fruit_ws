@@ -34,7 +34,7 @@ source /opt/ros/humble/setup.bash
 sudo apt-get install -y python3-pyzbar
 rosdep install --from-paths src --ignore-src -r -y --skip-keys python3-pyzbar
 colcon build --symlink-install --packages-select fruit_qr_planner
-source install/setup.bash
+source /home/rc4/fruit_ws/setup_fruit_runtime.bash
 ros2 launch fruit_qr_planner fruit_qr_planner.launch.py
 ```
 
