@@ -31,7 +31,8 @@ and pip OpenCV packages from this process.
 ```bash
 cd /path/to/fruit_ws/ros2_ws
 source /opt/ros/humble/setup.bash
-rosdep install --from-paths src --ignore-src -r -y
+sudo apt-get install -y python3-pyzbar
+rosdep install --from-paths src --ignore-src -r -y --skip-keys python3-pyzbar
 colcon build --symlink-install --packages-select fruit_qr_planner
 source install/setup.bash
 ros2 launch fruit_qr_planner fruit_qr_planner.launch.py
