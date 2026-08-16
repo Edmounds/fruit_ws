@@ -8,6 +8,17 @@ left_camera:
     image_width: 640
     image_height: 480
     camera_name: "left_camera"
+    brightness: 50
+    contrast: 3
+    saturation: 69
+    sharpness: 2
+    gain: 1
+    auto_white_balance: false
+    white_balance: 4600
+    autoexposure: false
+    exposure: 156
+    autofocus: false
+    focus: -1
 
 right_camera:
   ros__parameters:
@@ -19,6 +30,17 @@ right_camera:
     image_width: 640
     image_height: 480
     camera_name: "right_camera"
+    brightness: 50
+    contrast: 3
+    saturation: 69
+    sharpness: 2
+    gain: 1
+    auto_white_balance: false
+    white_balance: 4600
+    autoexposure: false
+    exposure: 156
+    autofocus: false
+    focus: -1
 
 d435i_camera:
   ros__parameters:

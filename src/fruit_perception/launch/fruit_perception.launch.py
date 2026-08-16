@@ -1,12 +1,48 @@
 import os
+import subprocess
 
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.descriptions import ComposableNode
+
+
+def _set_v4l2_control(device, control, value):
+    subprocess.run(
+        [
+            'v4l2-ctl',
+            '--device', device,
+            '--set-ctrl', f'{control}={value}',
+        ],
+        check=True,
+    )
+
+
+def _apply_manual_camera_controls(camera_parameters):
+    device = camera_parameters['video_device']
+    _set_v4l2_control(
+        device,
+        'white_balance_automatic',
+        int(camera_parameters['auto_white_balance']),
+    )
+    if not camera_parameters['auto_white_balance']:
+        _set_v4l2_control(
+            device,
+            'white_balance_temperature',
+            camera_parameters['white_balance'],
+        )
+
+    auto_exposure = camera_parameters['autoexposure']
+    _set_v4l2_control(device, 'auto_exposure', 3 if auto_exposure else 1)
+    if not auto_exposure:
+        _set_v4l2_control(
+            device,
+            'exposure_time_absolute',
+            camera_parameters['exposure'],
+        )
 
 
 def generate_launch_description():
@@ -49,6 +85,7 @@ def generate_launch_description():
     # 2. 节点清单
     # ========================================================================
     nodes_to_launch = []
+    camera_parameters_to_configure = []
     if perception_parameters['enable_left_camera']:
         nodes_to_launch.append({
             'package': 'usb_cam',
@@ -61,6 +98,7 @@ def generate_launch_description():
                 ('/set_capture', '/left_camera/set_capture'),
             ],
         })
+        camera_parameters_to_configure.append(left_camera_parameters)
     if perception_parameters['enable_right_camera']:
         nodes_to_launch.append({
             'package': 'usb_cam',
@@ -73,6 +111,7 @@ def generate_launch_description():
                 ('/set_capture', '/right_camera/set_capture'),
             ],
         })
+        camera_parameters_to_configure.append(right_camera_parameters)
     if perception_parameters['enable_d435i']:
         nodes_to_launch.append({
             'package': 'realsense2_camera',
@@ -103,6 +142,11 @@ def generate_launch_description():
     # ========================================================================
     # 4. 自动生成动作列表
     # ========================================================================
+    def apply_manual_camera_controls(_context):
+        for camera_parameters in camera_parameters_to_configure:
+            _apply_manual_camera_controls(camera_parameters)
+        return []
+
     composable_nodes = []
     for node_cfg in nodes_to_launch:
         final_parameters = [{'use_sim_time': use_sim_time}]
@@ -169,6 +213,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         declare_use_sim_time,
+        OpaqueFunction(function=apply_manual_camera_controls),
         container,
         camera_mode_manager,
         qr_planner,
