@@ -27,6 +27,11 @@
 
 ### 每个功能包都需要有launch去启动
 
+### 测试与配置
+- YAML 配置用于现场调参，普通参数没有永久不变的绝对值。禁止通过测试断言某个普通 YAML 参数必须等于当前数值、开关、分辨率、阈值或话题名，以免正常调参导致测试失败。
+- 配置测试应验证 YAML 可解析、必需字段存在、类型或取值范围有效，以及确有必要的跨字段关系；不要复制一份当前配置值到测试中。
+- 通信协议 ID 等稳定契约应测试其权威接口定义，不要通过读取部署或调参 YAML 后复制当前值来间接测试。
+
 ### 图像处理节点使用进程内通信
 - 相机驱动和订阅其原始图像的 C++ 图像处理节点必须实现为 ROS 2 component，并加载到同一个 `ComposableNodeContainer` 中。
 - 每个相关组件必须设置 `extra_arguments=[{'use_intra_process_comms': True}]`，避免大尺寸 `sensor_msgs/Image` 经过 DDS 跨进程序列化和分片。
@@ -50,12 +55,14 @@
 - ROS Python 包依赖通过 `package.xml` 声明并使用 apt/rosdep 安装。需要与 `sensor_msgs/Image` 交互时优先使用与系统 ABI 一致的 `cv_bridge`；若固定编码可安全直接解析，则必须验证 encoding、step 和数据长度。
 - C++ 包继续通过 CMake 精确限定系统 OpenCV 4.5.4，并在合入前用 `ldd` 确认没有链接 `/usr/local/lib/libopencv*`。
 
-# Worktree Isolation
+# Worktree 使用
 
-- Before editing the project, use the `using-git-worktrees` skill to create an isolated worktree.
-- Each agent must use its own worktree and branch. Never allow multiple agents to edit files in the same worktree.
-- Prefer the project-local `.worktrees/` directory and verify that Git ignores it before creating a worktree.
-- Run the project checks in the worktree before integrating its changes.
+- 只有大工程才要求使用 `using-git-worktrees` skill 建立隔离 worktree，例如跨多个功能包、改动文件较多、风险较高或需要并行开发的任务。
+- 修改配置、文档、单个测试或简单修复等小范围工作，由执行者根据影响范围判断，可以直接在当前工作区和当前分支完成，不需要为了形式额外创建 worktree。
+- 当前工作区存在未提交修改时必须保留无关改动；若任务与这些修改重叠且无法可靠隔离，再创建 worktree。
+- 多个 agent 并行修改代码时，每个 agent 必须使用独立 worktree 和分支，禁止同时编辑同一个工作区。
+- 使用 worktree 完成的工作必须先通过相关检查，再合并进用户当前正在使用的分支，不能只留在功能 worktree 中。
+- 创建 worktree 时优先使用项目内 `.worktrees/` 目录，并先确认 Git 已忽略该目录。
 
 ## 雷达补充
 Point-LIO 的 extrinsic_T 和 extrinsic_R。那组参数描述的是 MID-360 内部“雷达测距坐标系到内置 IMU”的外参，不是 base_link -> front_mid360 的整机安装外参。
