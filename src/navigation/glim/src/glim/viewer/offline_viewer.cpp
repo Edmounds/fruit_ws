@@ -15,7 +15,11 @@
 
 namespace glim {
 
-OfflineViewer::OfflineViewer(const std::string& init_map_path, const std::string& export_map_path) : init_map_path(init_map_path), export_map_path(export_map_path) {}
+OfflineViewer::OfflineViewer(
+  const std::string& init_map_path,
+  const std::string& export_map_path,
+  const Eigen::Isometry3d& T_export_world)
+: init_map_path(init_map_path), export_map_path(export_map_path), T_export_world(T_export_world) {}
 
 OfflineViewer::~OfflineViewer() {}
 
@@ -250,7 +254,7 @@ bool OfflineViewer::export_map(guik::ProgressInterface& progress, const std::str
   }
 
   for (size_t i = 0; i < points->size(); ++i) {
-    ply.vertices.push_back(points->points[i].head<3>().cast<float>());
+    ply.vertices.push_back((T_export_world * points->points[i]).head<3>().cast<float>());
     if (has_intensities) {
       ply.intensities.push_back(points->intensities[i]);
     }

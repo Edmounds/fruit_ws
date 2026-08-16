@@ -24,6 +24,8 @@ def test_mid360_topics_and_internal_extrinsic_are_configured():
 
     assert '"imu_topic": "/livox/imu"' in ros_config
     assert '"points_topic": "/livox/lidar"' in ros_config
+    assert '"base_frame_id": "base_link"' in ros_config
+    assert '"align_world_to_base": true' in ros_config
     assert '"acc_scale": 9.80665' in ros_config
     assert "0.011" in sensor_config
     assert "0.02329" in sensor_config
@@ -41,6 +43,10 @@ def test_launch_uses_source_config_and_disables_camera_input():
     launch = launch_file.read_text()
     assert "/home/rc4/fruit_ws/src/navigation/glim/config" in launch
     assert "/home/rc4/fruit_ws/tmp/glim_dump" in launch
+    assert '"name": "base_to_front_mid360"' in launch
+    assert '"0.183012702"' in launch
+    assert '"-0.183012702"' in launch
+    assert '"name": "front_mid360_to_livox_imu"' in launch
     assert "BUILD_WITH_CV_BRIDGE" not in cmake
     assert "<depend>cv_bridge</depend>" not in package
     assert "<depend>image_transport</depend>" not in package
@@ -59,6 +65,8 @@ def test_offline_viewer_supports_noninteractive_point_export():
     offline_viewer_core = (GLIM_DIR / "src" / "glim" / "viewer" / "offline_viewer.cpp").read_text()
 
     assert '"export_path"' in offline_viewer
-    assert "glim::OfflineViewer viewer(init_map_path, export_map_path);" in offline_viewer
+    assert "glim::OfflineViewer viewer(init_map_path, export_map_path, T_export_world);" in offline_viewer
     assert "guik::ProgressInterface progress;" in offline_viewer_core
     assert 'open<std::string>("auto_export"' not in offline_viewer_core
+    assert "loadBaseFrameAlignment(init_map_path)" in offline_viewer
+    assert "T_export_world * points->points[i]" in offline_viewer_core

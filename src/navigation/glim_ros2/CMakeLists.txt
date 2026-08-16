@@ -86,7 +86,14 @@ if(BUILD_WITH_VIEWER)
 endif()
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
+  find_package(Eigen3 REQUIRED)
+
+  ament_add_gtest(base_frame_alignment_test test/base_frame_alignment_test.cpp)
+  target_include_directories(base_frame_alignment_test PRIVATE include)
+  target_link_libraries(base_frame_alignment_test Eigen3::Eigen)
+
   ament_add_pytest_test(runtime_contract test/test_runtime_contract.py)
 endif()
 

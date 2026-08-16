@@ -2,6 +2,7 @@
 
 #include <any>
 #include <atomic>
+#include <optional>
 #include <thread>
 #include <chrono>
 
@@ -36,6 +37,7 @@ public:
   ~RvizViewer();
 
   virtual std::vector<GenericTopicSubscription::Ptr> create_subscriptions(rclcpp::Node& node) override;
+  virtual void at_exit(const std::string& dump_path) override;
 
 private:
   void set_callbacks();
@@ -44,6 +46,7 @@ private:
   void invoke(const std::function<void()>& task);
 
   void spin_once();
+  Eigen::Isometry3d get_map_world_alignment();
 
 private:
   std::atomic_bool kill_switch;
@@ -60,8 +63,12 @@ private:
   std::string base_frame_id;
   std::string odom_frame_id;
   std::string map_frame_id;
+  bool align_world_to_base;
   bool publish_imu2lidar;
   double tf_time_offset;
+
+  std::mutex base_frame_alignment_mutex;
+  std::optional<Eigen::Isometry3d> T_map_world;
 
   std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> map_pub;
 

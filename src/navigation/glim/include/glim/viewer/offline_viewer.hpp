@@ -14,7 +14,10 @@ namespace glim {
 
 class OfflineViewer : public InteractiveViewer {
 public:
-  OfflineViewer(const std::string& init_map_path = "", const std::string& export_map_path = "");
+  OfflineViewer(
+    const std::string& init_map_path = "",
+    const std::string& export_map_path = "",
+    const Eigen::Isometry3d& T_export_world = Eigen::Isometry3d::Identity());
   virtual ~OfflineViewer() override;
 
 private:
@@ -29,6 +32,7 @@ private:
 private:
   std::string init_map_path;
   std::string export_map_path;
+  Eigen::Isometry3d T_export_world;
   std::unique_ptr<guik::ProgressModal> progress_modal;
 
   std::unordered_set<std::string> imported_shared_libs;

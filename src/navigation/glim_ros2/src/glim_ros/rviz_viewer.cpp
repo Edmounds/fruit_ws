@@ -1,4 +1,5 @@
 #include <glim_ros/rviz_viewer.hpp>
+#include <glim_ros/base_frame_alignment.hpp>
 
 #include <mutex>
 #include <spdlog/spdlog.h>
@@ -27,6 +28,7 @@ RvizViewer::RvizViewer() : logger(create_module_logger("rviz")) {
 
   odom_frame_id = config.param<std::string>("glim_ros", "odom_frame_id", "odom");
   map_frame_id = config.param<std::string>("glim_ros", "map_frame_id", "map");
+  align_world_to_base = config.param<bool>("glim_ros", "align_world_to_base", false);
   publish_imu2lidar = config.param<bool>("glim_ros", "publish_imu2lidar", true);
   tf_time_offset = config.param<double>("glim_ros", "tf_time_offset", 1e-6);
 
@@ -102,6 +104,22 @@ std::vector<GenericTopicSubscription::Ptr> RvizViewer::create_subscriptions(rclc
   return {};
 }
 
+void RvizViewer::at_exit(const std::string& dump_path) {
+  if (!align_world_to_base) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(base_frame_alignment_mutex);
+  if (!T_map_world) {
+    logger->warn("Base frame alignment was not initialized; dump metadata was not written");
+    return;
+  }
+
+  if (!saveBaseFrameAlignment(dump_path, *T_map_world)) {
+    logger->error("Failed to save base frame alignment to {}", dump_path);
+  }
+}
+
 void RvizViewer::set_callbacks() {
   using std::placeholders::_1;
   OdometryEstimationCallbacks::on_new_frame.add([this](const EstimationFrame::ConstPtr& new_frame) { odometry_new_frame(new_frame, false); });
@@ -143,6 +161,27 @@ void RvizViewer::odometry_new_frame(const EstimationFrame::ConstPtr& new_frame, 
     logger->info("base_frame_id is not set. using IMU frame ID '{}' as base frame ID.", imu_frame_id);
   }
 
+  std::optional<Eigen::Isometry3d> T_imu_base;
+  if (base_frame_id == imu_frame_id) {
+    T_imu_base = Eigen::Isometry3d::Identity();
+  } else {
+    try {
+      const auto trans_imu_base = tf_buffer->lookupTransform(imu_frame_id, base_frame_id, from_sec(new_frame->stamp));
+      const auto& t = trans_imu_base.transform.translation;
+      const auto& r = trans_imu_base.transform.rotation;
+
+      T_imu_base = Eigen::Isometry3d::Identity();
+      T_imu_base->translation() << t.x, t.y, t.z;
+      T_imu_base->linear() = Eigen::Quaterniond(r.w, r.x, r.y, r.z).toRotationMatrix();
+    } catch (const tf2::TransformException& e) {
+      logger->warn("Failed to lookup transform from {} to {} (stamp={}.{}): {}", imu_frame_id, base_frame_id, from_sec(new_frame->stamp).sec, from_sec(new_frame->stamp).nanosec, e.what());
+    }
+  }
+
+  if (align_world_to_base && !T_imu_base) {
+    return;
+  }
+
   // Poses at the end of the scan
   double imu_end_time = new_frame->stamp;
   Eigen::Isometry3d T_imubegin_imuend = Eigen::Isometry3d::Identity();
@@ -173,11 +212,21 @@ void RvizViewer::odometry_new_frame(const EstimationFrame::ConstPtr& new_frame, 
     std::lock_guard<std::mutex> lock(trajectory_mutex);
     trajectory->add_odom(new_frame->stamp, new_frame->T_world_imu, 1);
     T_world_odom = trajectory->get_T_world_odom();
-    quat_world_odom = Eigen::Quaterniond(T_world_odom.linear());
 
     T_world_imu = trajectory->odom2world(T_odom_imu);
-    quat_world_imu = Eigen::Quaterniond(T_world_imu.linear());
   }
+
+  if (align_world_to_base) {
+    std::lock_guard<std::mutex> lock(base_frame_alignment_mutex);
+    if (!T_map_world) {
+      T_map_world = baseFrameWorldAlignment(T_world_imu, *T_imu_base);
+      logger->info("Aligned map frame to the initial '{}' pose", base_frame_id);
+    }
+    T_world_odom = *T_map_world * T_world_odom;
+    T_world_imu = *T_map_world * T_world_imu;
+  }
+  quat_world_odom = Eigen::Quaterniond(T_world_odom.linear());
+  quat_world_imu = Eigen::Quaterniond(T_world_imu.linear());
 
   // Publish transforms
   const auto stamp = from_sec(new_frame->stamp);
@@ -201,30 +250,18 @@ void RvizViewer::odometry_new_frame(const EstimationFrame::ConstPtr& new_frame, 
       trans.transform.rotation.z = quat_odom_imu.z();
       trans.transform.rotation.w = quat_odom_imu.w();
       tf_broadcaster->sendTransform(trans);
-    } else {
-      try {
-        const auto trans_imu_base = tf_buffer->lookupTransform(imu_frame_id, base_frame_id, from_sec(new_frame->stamp));
-        const auto& t = trans_imu_base.transform.translation;
-        const auto& r = trans_imu_base.transform.rotation;
+    } else if (T_imu_base) {
+      const Eigen::Isometry3d T_odom_base = T_odom_imu * *T_imu_base;
+      const Eigen::Quaterniond quat_odom_base(T_odom_base.linear());
 
-        Eigen::Isometry3d T_imu_base = Eigen::Isometry3d::Identity();
-        T_imu_base.translation() << t.x, t.y, t.z;
-        T_imu_base.linear() = Eigen::Quaterniond(r.w, r.x, r.y, r.z).toRotationMatrix();
-
-        const Eigen::Isometry3d T_odom_base = T_odom_imu * T_imu_base;
-        const Eigen::Quaterniond quat_odom_base(T_odom_base.linear());
-
-        trans.transform.translation.x = T_odom_base.translation().x();
-        trans.transform.translation.y = T_odom_base.translation().y();
-        trans.transform.translation.z = T_odom_base.translation().z();
-        trans.transform.rotation.x = quat_odom_base.x();
-        trans.transform.rotation.y = quat_odom_base.y();
-        trans.transform.rotation.z = quat_odom_base.z();
-        trans.transform.rotation.w = quat_odom_base.w();
-        tf_broadcaster->sendTransform(trans);
-      } catch (const tf2::TransformException& e) {
-        logger->warn("Failed to lookup transform from {} to {} (stamp={}.{}): {}", imu_frame_id, base_frame_id, stamp.sec, stamp.nanosec, e.what());
-      }
+      trans.transform.translation.x = T_odom_base.translation().x();
+      trans.transform.translation.y = T_odom_base.translation().y();
+      trans.transform.translation.z = T_odom_base.translation().z();
+      trans.transform.rotation.x = quat_odom_base.x();
+      trans.transform.rotation.y = quat_odom_base.y();
+      trans.transform.rotation.z = quat_odom_base.z();
+      trans.transform.rotation.w = quat_odom_base.w();
+      tf_broadcaster->sendTransform(trans);
     }
 
     // World -> Odom
@@ -443,7 +480,23 @@ void RvizViewer::odometry_new_frame(const EstimationFrame::ConstPtr& new_frame, 
         break;
     }
 
-    auto points = frame_to_pointcloud2(frame_id, new_frame->stamp, *new_frame->frame);
+    const auto T_map_world = get_map_world_alignment();
+    std::vector<Eigen::Vector4d> transformed;
+    const gtsam_points::PointCloud* frame = new_frame->frame.get();
+    gtsam_points::PointCloud map_frame;
+    if (new_frame->frame_id == FrameID::WORLD && align_world_to_base) {
+      transformed.resize(new_frame->frame->size());
+      for (int i = 0; i < new_frame->frame->size(); i++) {
+        transformed[i] = T_map_world * new_frame->frame->points[i];
+      }
+      map_frame.num_points = new_frame->frame->size();
+      map_frame.points = transformed.data();
+      map_frame.times = new_frame->frame->times;
+      map_frame.intensities = new_frame->frame->intensities;
+      frame = &map_frame;
+    }
+
+    auto points = frame_to_pointcloud2(frame_id, new_frame->stamp, *frame);
     points_pub->publish(*points);
 
     logger->debug("published points (stamp={} num_points={})", new_frame->stamp, new_frame->frame->size());
@@ -452,9 +505,10 @@ void RvizViewer::odometry_new_frame(const EstimationFrame::ConstPtr& new_frame, 
   auto& aligned_points_pub = !corrected ? this->aligned_points_pub : this->aligned_points_corrected_pub;
   if (aligned_points_pub->get_subscription_count()) {
     // Publish points aligned to the world frame to avoid some visualization issues in Rviz2
+    const auto T_map_world = get_map_world_alignment();
     std::vector<Eigen::Vector4d> transformed(new_frame->frame->size());
     for (int i = 0; i < new_frame->frame->size(); i++) {
-      transformed[i] = new_frame->T_world_sensor() * new_frame->frame->points[i];
+      transformed[i] = T_map_world * new_frame->T_world_sensor() * new_frame->frame->points[i];
     }
 
     gtsam_points::PointCloud frame;
@@ -486,7 +540,8 @@ void RvizViewer::globalmap_on_update_submaps(const std::vector<SubMap::Ptr>& sub
   }
 
   // Invoke a submap concatenation task in the RvizViewer thread
-  invoke([this, latest_submap, submap_poses] {
+  const Eigen::Isometry3d T_map_world = get_map_world_alignment();
+  invoke([this, latest_submap, submap_poses, T_map_world] {
     this->submaps.push_back(latest_submap->frame);
 
     if (!map_pub->get_subscription_count()) {
@@ -516,13 +571,18 @@ void RvizViewer::globalmap_on_update_submaps(const std::vector<SubMap::Ptr>& sub
     int begin = 0;
     for (int i = 0; i < this->submaps.size(); i++) {
       const auto& submap = this->submaps[i];
-      std::transform(submap->points, submap->points + submap->size(), merged->points + begin, [&](const Eigen::Vector4d& p) { return submap_poses[i] * p; });
+      std::transform(submap->points, submap->points + submap->size(), merged->points + begin, [&](const Eigen::Vector4d& p) { return T_map_world * submap_poses[i] * p; });
       begin += submap->size();
     }
 
     auto points_msg = frame_to_pointcloud2(map_frame_id, now.seconds(), *merged);
     map_pub->publish(*points_msg);
   });
+}
+
+Eigen::Isometry3d RvizViewer::get_map_world_alignment() {
+  std::lock_guard<std::mutex> lock(base_frame_alignment_mutex);
+  return T_map_world.value_or(Eigen::Isometry3d::Identity());
 }
 
 void RvizViewer::invoke(const std::function<void()>& task) {
