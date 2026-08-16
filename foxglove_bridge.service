@@ -1,0 +1,20 @@
+[Unit]
+Description=Foxglove Bridge ROS 2 launch
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=rc4
+Group=rc4
+WorkingDirectory=/home/rc4/fruit_ws
+Environment=HOME=/home/rc4
+Environment=ROS_DISTRO=humble
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source /home/rc4/fruit_ws/install/setup.bash && exec ros2 launch foxglove_bridge foxglove_bridge_launch.xml'
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
