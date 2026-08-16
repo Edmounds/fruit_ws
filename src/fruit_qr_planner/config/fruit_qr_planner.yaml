@@ -1,0 +1,4 @@
+fruit_qr_planner:
+  ros__parameters:
+    image_topic: "/camera/camera/color/image_raw"
+    confirm_frames: 3

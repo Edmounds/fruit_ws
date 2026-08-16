@@ -5,25 +5,21 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    image_topic = LaunchConfiguration("image_topic")
-    confirm_frames = LaunchConfiguration("confirm_frames")
+    use_sim_time = LaunchConfiguration("use_sim_time")
+    config_file = (
+        "/home/rc4/fruit_ws/src/fruit_qr_planner/config/"
+        "fruit_qr_planner.yaml"
+    )
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument("image_topic", default_value="/camera/image_raw"),
-            DeclareLaunchArgument("confirm_frames", default_value="3"),
+            DeclareLaunchArgument("use_sim_time", default_value="false"),
             Node(
                 package="fruit_qr_planner",
                 executable="fruit_qr_planner_node",
                 name="fruit_qr_planner",
                 output="screen",
-                parameters=[
-                    {
-                        "image_topic": image_topic,
-                        "confirm_frames": confirm_frames,
-                    }
-                ],
+                parameters=[config_file, {"use_sim_time": use_sim_time}],
             ),
         ]
     )
-
