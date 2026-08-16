@@ -59,7 +59,6 @@
     "base_frame_id": "base_link",
     "odom_frame_id": "odom",
     "map_frame_id": "map",
-    "align_world_to_base": true,
     "publish_imu2lidar": false,
     "tf_time_offset": 1e-6,
     // Extension modules

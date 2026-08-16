@@ -8,7 +8,6 @@
 #include <glim/util/config.hpp>
 #include <glim/util/logging.hpp>
 #include <glim/viewer/offline_viewer.hpp>
-#include <glim_ros/base_frame_alignment.hpp>
 
 int main(int argc, char** argv) {
   using namespace boost::program_options;
@@ -68,12 +67,6 @@ int main(int argc, char** argv) {
     spdlog::info("export_path={}", export_map_path);
   }
 
-  Eigen::Isometry3d T_export_world = Eigen::Isometry3d::Identity();
-  if (const auto alignment = glim::loadBaseFrameAlignment(init_map_path)) {
-    T_export_world = *alignment;
-    spdlog::info("Applying base frame alignment from map dump");
-  }
-
-  glim::OfflineViewer viewer(init_map_path, export_map_path, T_export_world);
+  glim::OfflineViewer viewer(init_map_path, export_map_path);
   viewer.wait();
 }
