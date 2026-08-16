@@ -1,7 +1,4 @@
-import os
-
 import yaml
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -12,30 +9,19 @@ def generate_launch_description():
     # ========================================================================
     # 1. Global configuration
     # ========================================================================
-    package_name = 'fruit_hardware_bridge'
-    package_share = get_package_share_directory(package_name)
-    bridge_config = os.path.join(
-        package_share, 'config', 'fruit_hardware_bridge.yaml'
+    serial_config_path = (
+        '/home/rc4/fruit_ws/src/auto_serial_bridge/config/protocol.yaml'
     )
-
-    serial_share = get_package_share_directory('auto_serial_bridge')
-    serial_config_path = os.path.join(serial_share, 'config', 'protocol.yaml')
     with open(serial_config_path, encoding='utf-8') as config_file:
         serial_config = yaml.safe_load(config_file)
-    serial_parameters = serial_config[
-        'serial_controller'
-    ]['ros__parameters']
+    serial_parameters = dict(
+        serial_config['serial_controller']['ros__parameters']
+    )
 
     # ========================================================================
     # 2. Node list
     # ========================================================================
     nodes_to_launch = [
-        {
-            'package': package_name,
-            'executable': 'fruit_result_bridge',
-            'name': 'fruit_result_bridge',
-            'parameters': [bridge_config],
-        },
         {
             'package': 'auto_serial_bridge',
             'executable': 'serial_node',

@@ -1,28 +1,32 @@
 # fruit_hardware_bridge
 
-Converts the highest-confidence D435i fruit label into the two-byte lower-controller
-representation consumed by `auto_serial_bridge`.
+Provides the project launch entry point for the lower-controller serial bridge.
+The package is reserved for future semantic hardware interfaces; it does not
+currently translate perception results or implement mission behavior.
 
-## Topics
+## Protocol topics
 
-- Input: `/fruit_perception/d435i/types` (`fruit_perception/msg/FruitTypes`)
-- Output: `/fruit_hardware_bridge/d435i/result` (`std_msgs/msg/UInt8MultiArray`)
-- Output layout: `data[0] = fruit_id`, `data[1] = status`
+- Command: `/fruit_hardware_bridge/state_machine/command`
+  (`fruit_hardware_interfaces/msg/StateMachineCommand`)
+- Arm target: `/fruit_hardware_bridge/arm/target`
+  (`fruit_hardware_interfaces/msg/ArmTarget`)
+- Execution callback: `/fruit_hardware_bridge/execution/callback`
+  (`fruit_hardware_interfaces/msg/ExecutionCallback`)
 
-An empty or unknown detection publishes `[0, 0]`. Otherwise only the first label,
-which is the highest-confidence detection, is converted.
+The serial bridge handles reliable delivery for discrete commands. A mission
+node must publish each command once and wait for the matching completed callback.
 
 ## Runtime
 
-The main perception launch starts the D435i pipeline, this result bridge, and
-the serial node together. It uses `/dev/ttyACM0`:
+The main perception launch starts the camera pipeline and serial node together:
 
 ```bash
 ros2 launch fruit_perception fruit_perception.launch.py
 ```
 
-The package launch remains available for serial-only debugging and allows a
-different device:
+This package launch remains available for serial-only debugging and allows a
+different device. It loads the protocol configuration directly from the source
+workspace:
 
 ```bash
 ros2 launch fruit_hardware_bridge fruit_hardware_bridge.launch.py port:=/dev/ttyUSB0
