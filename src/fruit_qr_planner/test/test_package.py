@@ -13,7 +13,14 @@ class PackageMetadataTest(unittest.TestCase):
         dependencies = {element.text for element in root.findall("exec_depend")}
 
         self.assertTrue(
-            {"rclpy", "sensor_msgs", "std_msgs", "python3-opencv", "python3-numpy"}
+            {
+                "rclpy",
+                "sensor_msgs",
+                "std_msgs",
+                "python3-opencv",
+                "python3-numpy",
+                "python3-pyzbar",
+            }
             <= dependencies
         )
 

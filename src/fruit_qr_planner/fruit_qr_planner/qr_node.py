@@ -71,10 +71,17 @@ class FruitQrPlannerNode(Node):
         try:
             import cv2
         except ImportError as exc:
-            raise RuntimeError("OpenCV Python bindings are required to decode QR images") from exc
+            raise RuntimeError("OpenCV Python bindings are required to process QR images") from exc
+
+        try:
+            from pyzbar.pyzbar import decode as decode_barcodes
+        except ImportError as exc:
+            raise RuntimeError(
+                "python3-pyzbar and libzbar0 are required to decode QR images"
+            ) from exc
 
         self._cv2 = cv2
-        self._detector = cv2.QRCodeDetector()
+        self._decode_barcodes = decode_barcodes
         self._sequence = PlanSequence(confirm_frames=confirm_frames)
         self._b_publisher = self.create_publisher(String, "/fruit/b_pick_plan", plan_qos())
         self._c_publisher = self.create_publisher(String, "/fruit/c_pick_plan", plan_qos())
@@ -128,22 +135,15 @@ class FruitQrPlannerNode(Node):
             self._subscription = None
 
     def _decode(self, image: Any) -> Optional[str]:
-        try:
-            detected, decoded_info, _points, _straight = self._detector.detectAndDecodeMulti(image)
-        except (AttributeError, TypeError):
-            detected = False
-            decoded_info = []
-
-        if detected:
-            payload = select_unique_payload(decoded_info)
-            if (
-                payload is not None
-                or sum(bool(item and item.strip()) for item in decoded_info) > 1
-            ):
-                return payload
-
-        decoded, _points, _straight = self._detector.detectAndDecode(image)
-        return decoded.strip() if decoded and decoded.strip() else None
+        payloads = []
+        for barcode in self._decode_barcodes(image):
+            if barcode.type != "QRCODE":
+                continue
+            try:
+                payloads.append(barcode.data.decode("utf-8"))
+            except UnicodeDecodeError as exc:
+                raise ValueError("QR payload is not valid UTF-8") from exc
+        return select_unique_payload(payloads)
 
 
 def main(args=None) -> None:

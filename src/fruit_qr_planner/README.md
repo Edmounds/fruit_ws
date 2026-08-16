@@ -20,7 +20,9 @@ lines followed by one comma-separated line of eight unique positions in the rang
 Allowed names are 苹果、梨子、南瓜、西红柿、辣椒、洋葱.
 
 The fixed D435i `rgb8` image is validated and converted with the system NumPy
-and OpenCV directly. The ROS runtime must be started through
+and OpenCV directly. QR payloads are decoded by the system `python3-pyzbar`
+and `libzbar0` packages, which support UTF-8 Chinese payloads without relying
+on OpenCV's optional QUIRC decoder. The ROS runtime must be started through
 `/home/rc4/fruit_ws/setup_fruit_runtime.bash`, which excludes user-site NumPy 2
 and pip OpenCV packages from this process.
 

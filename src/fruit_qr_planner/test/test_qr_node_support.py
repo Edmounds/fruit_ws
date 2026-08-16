@@ -70,6 +70,10 @@ from fruit_qr_planner.qr_node import (  # noqa: E402
 from fruit_qr_planner.qr_node import FruitQrPlannerNode  # noqa: E402
 
 
+def _decoded_barcode(payload, barcode_type="QRCODE"):
+    return types.SimpleNamespace(type=barcode_type, data=payload.encode("utf-8"))
+
+
 class QrNodeSupportTest(unittest.TestCase):
     def test_selects_one_nonempty_payload(self):
         self.assertEqual(select_unique_payload(["", " 苹果 ", ""]), "苹果")
@@ -135,42 +139,36 @@ class QrNodeSupportTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "rgb8 or bgr8"):
             image_to_bgr(message, object())
 
-    def test_decode_supports_single_qr_detector(self):
+    def test_decode_supports_single_qr_decoder(self):
         node = FruitQrPlannerNode.__new__(FruitQrPlannerNode)
 
-        class Detector:
-            def detectAndDecodeMulti(self, _image):
-                return False, (), None, ()
+        class Decoder:
+            def __call__(self, _image):
+                return [_decoded_barcode(" 苹果 ")]
 
-            def detectAndDecode(self, _image):
-                return " 苹果 ", None, None
-
-        node._detector = Detector()
+        node._decode_barcodes = Decoder()
 
         self.assertEqual(node._decode(object()), "苹果")
 
     def test_decode_rejects_multiple_different_codes(self):
         node = FruitQrPlannerNode.__new__(FruitQrPlannerNode)
 
-        class Detector:
-            def detectAndDecodeMulti(self, _image):
-                return True, ("苹果", "梨子"), None, ()
+        class Decoder:
+            def __call__(self, _image):
+                return [_decoded_barcode("苹果"), _decoded_barcode("梨子")]
 
-        node._detector = Detector()
+        node._decode_barcodes = Decoder()
 
         self.assertIsNone(node._decode(object()))
 
-    def test_decode_falls_back_when_multi_detect_has_no_decoded_text(self):
+    def test_decode_ignores_non_qr_barcodes(self):
         node = FruitQrPlannerNode.__new__(FruitQrPlannerNode)
 
-        class Detector:
-            def detectAndDecodeMulti(self, _image):
-                return True, ("",), None, ()
+        class Decoder:
+            def __call__(self, _image):
+                return [_decoded_barcode("123456", "EAN13"), _decoded_barcode("苹果")]
 
-            def detectAndDecode(self, _image):
-                return "苹果", None, None
-
-        node._detector = Detector()
+        node._decode_barcodes = Decoder()
 
         self.assertEqual(node._decode(object()), "苹果")
 
