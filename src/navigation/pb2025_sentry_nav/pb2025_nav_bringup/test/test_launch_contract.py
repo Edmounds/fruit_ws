@@ -92,8 +92,18 @@ def test_mux_and_localization_contract():
     assert "default_nav_through_poses_bt_xml" in launch
 
 
-def test_calibrated_mid360_static_transform_is_launched():
-    launch_path = ROOT / "pb2025_nav_bringup/launch/localization_navigation_launch.py"
+def test_calibrated_mid360_static_transform_has_one_source():
+    launch_path = ROOT / "pb2025_nav_bringup/launch/sensor_frames.launch.py"
+    localization_launch = (
+        ROOT / "pb2025_nav_bringup/launch/localization_navigation_launch.py"
+    ).read_text()
+    mapping_launch = (ROOT.parents[0] / "glim_ros2/launch/mapping.launch.py").read_text()
+
+    assert "sensor_frames.launch.py" in localization_launch
+    assert "sensor_frames.launch.py" in mapping_launch
+    assert "static_transform_publisher" not in localization_launch
+    assert "static_transform_publisher" not in mapping_launch
+
     tree = ast.parse(launch_path.read_text())
     static_tfs = [
         node
@@ -109,10 +119,19 @@ def test_calibrated_mid360_static_transform_is_launched():
     ]
     assert len(static_tfs) == 2
 
+    arguments_by_variable = {
+        assignment.targets[0].id: ast.literal_eval(assignment.value)
+        for assignment in ast.walk(tree)
+        if isinstance(assignment, ast.Assign)
+        and len(assignment.targets) == 1
+        and isinstance(assignment.targets[0], ast.Name)
+        and assignment.targets[0].id in {"base_to_lidar", "lidar_to_imu"}
+    }
     by_name = {}
     for static_tf in static_tfs:
         keywords = {keyword.arg: keyword.value for keyword in static_tf.keywords}
-        by_name[ast.literal_eval(keywords["name"])] = ast.literal_eval(keywords["arguments"])
+        arguments = keywords["arguments"]
+        by_name[ast.literal_eval(keywords["name"])] = arguments_by_variable[arguments.id]
 
     assert by_name["base_to_front_mid360"] == [
         "--x",

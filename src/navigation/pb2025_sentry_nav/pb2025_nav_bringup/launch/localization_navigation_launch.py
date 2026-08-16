@@ -16,8 +16,9 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from nav2_common.launch import RewrittenYaml
@@ -60,61 +61,11 @@ def _launch_nodes(context):
     )
 
     nodes = [
-        Node(
-            package="tf2_ros",
-            executable="static_transform_publisher",
-            name="base_to_front_mid360",
-            arguments=[
-                "--x",
-                "0.144629969",
-                "--y",
-                "0.0",
-                "--z",
-                "0.0",
-                "--qx",
-                "0.183012702",
-                "--qy",
-                "-0.183012702",
-                "--qz",
-                "-0.683012702",
-                "--qw",
-                "0.683012702",
-                "--frame-id",
-                "base_link",
-                "--child-frame-id",
-                "front_mid360",
-            ],
-            output="screen",
-        ),
-        # livox_ros_driver2 hardcodes the IMU msg frame_id to "livox_frame" (lddc.cpp);
-        # point clouds use the parameterized front_mid360 instead. This TF makes the IMU
-        # frame resolvable and matches Point-LIO's body frame. extrinsic_T is LiDAR-in-IMU,
-        # so publish the inverse with the calibrated front_mid360 as parent.
-        Node(
-            package="tf2_ros",
-            executable="static_transform_publisher",
-            name="front_mid360_to_livox_imu",
-            arguments=[
-                "--x",
-                "0.011",
-                "--y",
-                "0.02329",
-                "--z",
-                "-0.04412",
-                "--qx",
-                "0.0",
-                "--qy",
-                "0.0",
-                "--qz",
-                "0.0",
-                "--qw",
-                "1.0",
-                "--frame-id",
-                "front_mid360",
-                "--child-frame-id",
-                "livox_frame",
-            ],
-            output="screen",
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                "/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/"
+                "pb2025_nav_bringup/launch/sensor_frames.launch.py"
+            )
         ),
         Node(
             package="livox_ros_driver2",

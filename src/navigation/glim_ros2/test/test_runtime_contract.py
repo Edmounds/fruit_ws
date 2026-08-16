@@ -43,10 +43,10 @@ def test_launch_uses_source_config_and_disables_camera_input():
     launch = launch_file.read_text()
     assert "/home/rc4/fruit_ws/src/navigation/glim/config" in launch
     assert "/home/rc4/fruit_ws/tmp/glim_dump" in launch
-    assert '"name": "base_to_front_mid360"' in launch
-    assert '"0.183012702"' in launch
-    assert '"-0.183012702"' in launch
-    assert '"name": "front_mid360_to_livox_imu"' in launch
+    assert "sensor_frames.launch.py" in launch
+    assert "static_transform_publisher" not in launch
+    assert "0.144629969" not in launch
+    assert "0.183012702" not in launch
     assert "BUILD_WITH_CV_BRIDGE" not in cmake
     assert "<depend>cv_bridge</depend>" not in package
     assert "<depend>image_transport</depend>" not in package

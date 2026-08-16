@@ -1,5 +1,6 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -17,56 +18,6 @@ def generate_launch_description():
     # ========================================================================
     nodes_to_launch = [
         {
-            "package": "tf2_ros",
-            "executable": "static_transform_publisher",
-            "name": "base_to_front_mid360",
-            "arguments": [
-                "--x",
-                "0.144629969",
-                "--y",
-                "0.0",
-                "--z",
-                "0.0",
-                "--qx",
-                "0.183012702",
-                "--qy",
-                "-0.183012702",
-                "--qz",
-                "-0.683012702",
-                "--qw",
-                "0.683012702",
-                "--frame-id",
-                "base_link",
-                "--child-frame-id",
-                "front_mid360",
-            ],
-        },
-        {
-            "package": "tf2_ros",
-            "executable": "static_transform_publisher",
-            "name": "front_mid360_to_livox_imu",
-            "arguments": [
-                "--x",
-                "0.011",
-                "--y",
-                "0.02329",
-                "--z",
-                "-0.04412",
-                "--qx",
-                "0.0",
-                "--qy",
-                "0.0",
-                "--qz",
-                "0.0",
-                "--qw",
-                "1.0",
-                "--frame-id",
-                "front_mid360",
-                "--child-frame-id",
-                "livox_frame",
-            ],
-        },
-        {
             "package": "glim_ros",
             "executable": "glim_rosnode",
             "name": "glim_ros",
@@ -83,6 +34,12 @@ def generate_launch_description():
     # 3. Launch arguments
     # ========================================================================
     launch_actions = [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                "/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/"
+                "pb2025_nav_bringup/launch/sensor_frames.launch.py"
+            )
+        ),
         DeclareLaunchArgument(
             "config_path",
             default_value="/home/rc4/fruit_ws/src/navigation/glim/config",
