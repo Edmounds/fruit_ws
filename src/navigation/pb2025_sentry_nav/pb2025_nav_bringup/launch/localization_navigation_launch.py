@@ -42,6 +42,13 @@ def _launch_nodes(context):
         convert_types=True,
     )
     common = {"parameters": [configured_params], "output": "screen"}
+    system_libusb = "/lib/x86_64-linux-gnu/libusb-1.0.so.0"
+    pcl_env = {
+        "LD_PRELOAD": ":".join(
+            value for value in (system_libusb, os.environ.get("LD_PRELOAD")) if value
+        )
+    }
+    pcl_common = {**common, "additional_env": pcl_env}
     behavior_tree_dir = os.path.join(
         get_package_share_directory("pb2025_nav_bringup"), "behavior_trees"
     )
@@ -65,9 +72,9 @@ def _launch_nodes(context):
                 "--z",
                 "0.0",
                 "--qx",
-                "0.183012702",
-                "--qy",
                 "-0.183012702",
+                "--qy",
+                "0.183012702",
                 "--qz",
                 "-0.683012702",
                 "--qw",
@@ -116,30 +123,35 @@ def _launch_nodes(context):
             parameters=[configured_params, {"user_config_path": mid360_config}],
             output="screen",
         ),
-        Node(package="point_lio", executable="pointlio_mapping", name="laserMapping", **common),
+        Node(
+            package="point_lio",
+            executable="pointlio_mapping",
+            name="laserMapping",
+            **pcl_common,
+        ),
         Node(
             package="loam_interface",
             executable="loam_interface_node",
             name="loam_interface",
-            **common,
+            **pcl_common,
         ),
         Node(
             package="sensor_scan_generation",
             executable="sensor_scan_generation_node",
             name="sensor_scan_generation",
-            **common,
+            **pcl_common,
         ),
         Node(
             package="terrain_analysis",
             executable="terrainAnalysis",
             name="terrainAnalysis",
-            **common,
+            **pcl_common,
         ),
         Node(
             package="terrain_analysis_ext",
             executable="terrainAnalysisExt",
             name="terrainAnalysisExt",
-            **common,
+            **pcl_common,
         ),
         Node(
             package="pb_gicp_localization",
@@ -147,6 +159,7 @@ def _launch_nodes(context):
             name="pb_gicp_localization",
             parameters=[configured_params, {"localization_map": localization_map}],
             output="screen",
+            additional_env=pcl_env,
         ),
         Node(package="nav2_map_server", executable="map_server", name="map_server", **common),
         Node(

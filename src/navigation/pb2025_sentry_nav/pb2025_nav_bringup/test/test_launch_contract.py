@@ -84,6 +84,8 @@ def test_mux_and_localization_contract():
     assert params["laserMapping"]["ros__parameters"]["pcd_save"]["pcd_save_en"] is False
     launch = (ROOT / "pb2025_nav_bringup/launch/localization_navigation_launch.py").read_text()
     assert '("cmd_vel", "cmd_vel_nav_raw")' in launch
+    assert 'system_libusb = "/lib/x86_64-linux-gnu/libusb-1.0.so.0"' in launch
+    assert 'os.environ.get("LD_PRELOAD")' in launch
     assert '("cmd_vel_smoothed", "cmd_vel_nav")' in launch
     assert '("cmd_vel_out", "cmd_vel")' in launch
     assert "default_nav_to_pose_bt_xml" in launch
@@ -120,9 +122,9 @@ def test_calibrated_mid360_static_transform_is_launched():
         "--z",
         "0.0",
         "--qx",
-        "0.183012702",
-        "--qy",
         "-0.183012702",
+        "--qy",
+        "0.183012702",
         "--qz",
         "-0.683012702",
         "--qw",
