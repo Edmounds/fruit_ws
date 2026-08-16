@@ -6,13 +6,13 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 def _constants(message_name):
     message = PACKAGE_ROOT / "msg" / message_name
-    return {
-        name: int(value)
-        for line in message.read_text(encoding="utf-8").splitlines()
-        if "=" in line
-        for _, assignment in [line.split(maxsplit=1)]
-        for name, value in [assignment.split("=", maxsplit=1)]
-    }
+    constants = {}
+    for line in message.read_text(encoding="utf-8").splitlines():
+        declaration, separator, value = line.partition("=")
+        if separator:
+            _, name = declaration.split()
+            constants[name] = int(value)
+    return constants
 
 
 def test_state_machine_command_defines_ac_pick_directions():
