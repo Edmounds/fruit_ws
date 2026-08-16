@@ -178,14 +178,24 @@ def test_calibrated_mid360_static_transform_has_one_source():
     assert "<exec_depend>tf2_ros</exec_depend>" in package
 
 
-def test_loam_interface_uses_mid360_imu_extrinsic():
+def test_loam_interface_reads_mid360_extrinsic_from_tf():
     params = yaml.safe_load(
         (ROOT / "pb2025_nav_bringup/config/reality/nav2_params.yaml").read_text()
     )
     loam = params["loam_interface"]["ros__parameters"]
     assert loam["imu_frame"] == "livox_frame"
     assert loam["lidar_frame"] == "front_mid360"
-    assert loam["extrinsic_T"] == [-0.011, -0.02329, 0.04412]
+    assert "extrinsic_T" not in loam
+    assert "extrinsic_R" not in loam
+
+    loam_source = (ROOT / "loam_interface/src/loam_interface.cpp").read_text()
+    loam_launch = (ROOT / "loam_interface/launch/loam_interface_launch.py").read_text()
+    assert 'lookupTransform(\n        imu_frame_, lidar_frame_' in loam_source
+    assert '"extrinsic_T"' not in loam_source
+    assert '"extrinsic_R"' not in loam_source
+    assert '"extrinsic_T"' not in loam_launch
+    assert '"extrinsic_R"' not in loam_launch
+
     gicp = params["pb_gicp_localization"]["ros__parameters"]
     assert gicp["max_translation_jump_initial"] == 1.0
     assert gicp["lost_after_rejects"] == 10

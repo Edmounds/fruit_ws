@@ -49,8 +49,6 @@ def generate_launch_description():
                 "base_frame": "base_link",
                 "lidar_frame": "front_mid360",
                 "imu_frame": "livox_frame",
-                "extrinsic_T": [-0.011, -0.02329, 0.04412],
-                "extrinsic_R": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
             }
         ],
     )

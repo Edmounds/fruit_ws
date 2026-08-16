@@ -31,11 +31,6 @@ LoamInterfaceNode::LoamInterfaceNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<std::string>("base_frame", "");
   this->declare_parameter<std::string>("lidar_frame", "");
   this->declare_parameter<std::string>("imu_frame", "livox_frame");
-  this->declare_parameter<std::vector<double>>(
-    "extrinsic_T", std::vector<double>{-0.011, -0.02329, 0.04412});
-  this->declare_parameter<std::vector<double>>(
-    "extrinsic_R",
-    std::vector<double>{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0});
 
   this->get_parameter("state_estimation_topic", state_estimation_topic_);
   this->get_parameter("registered_scan_topic", registered_scan_topic_);
@@ -43,12 +38,6 @@ LoamInterfaceNode::LoamInterfaceNode(const rclcpp::NodeOptions & options)
   this->get_parameter("base_frame", base_frame_);
   this->get_parameter("lidar_frame", lidar_frame_);
   this->get_parameter("imu_frame", imu_frame_);
-
-  std::vector<double> extrinsic_t;
-  std::vector<double> extrinsic_r;
-  this->get_parameter("extrinsic_T", extrinsic_t);
-  this->get_parameter("extrinsic_R", extrinsic_r);
-  lidar_in_imu_ = makeLidarInImuTransform(extrinsic_t, extrinsic_r);
 
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
@@ -65,9 +54,8 @@ LoamInterfaceNode::LoamInterfaceNode(const rclcpp::NodeOptions & options)
 
   RCLCPP_INFO(
     get_logger(),
-    "Point-LIO body/IMU frame '%s' -> LiDAR frame '%s' using Mid360 extrinsic_T=[%.5f, %.5f, %.5f]",
-    imu_frame_.c_str(), lidar_frame_.c_str(),
-    extrinsic_t[0], extrinsic_t[1], extrinsic_t[2]);
+    "Point-LIO body/IMU frame '%s' -> LiDAR frame '%s' will be read from TF",
+    imu_frame_.c_str(), lidar_frame_.c_str());
 }
 
 void LoamInterfaceNode::pointCloudCallback(
@@ -98,13 +86,19 @@ void LoamInterfaceNode::odometryCallback(const nav_msgs::msg::Odometry::ConstSha
         base_frame_, lidar_frame_, msg->header.stamp, rclcpp::Duration::from_seconds(0.5));
       tf2::Transform tf_base_to_lidar;
       tf2::fromMsg(tf_stamped.transform, tf_base_to_lidar);
+
+      tf_stamped = tf_buffer_->lookupTransform(
+        imu_frame_, lidar_frame_, msg->header.stamp, rclcpp::Duration::from_seconds(0.5));
+      tf2::fromMsg(tf_stamped.transform, lidar_in_imu_);
+
       tf_odom_to_camera_init_ =
         odomToCameraInit(tf_base_to_lidar, tf_camera_init_to_body, lidar_in_imu_);
       odom_to_camera_init_initialized_ = true;
       RCLCPP_INFO(
         get_logger(),
-        "Initialized odom<-camera_init from base->%s and %s->%s extrinsic",
-        lidar_frame_.c_str(), imu_frame_.c_str(), lidar_frame_.c_str());
+        "Initialized odom<-camera_init from TF: %s->%s->%s",
+        base_frame_.c_str(),
+        lidar_frame_.c_str(), imu_frame_.c_str());
     } catch (tf2::TransformException & ex) {
       RCLCPP_WARN(this->get_logger(), "TF lookup failed: %s Retrying...", ex.what());
       return;

@@ -82,9 +82,6 @@ loam_interface:
     base_frame: base_link
     lidar_frame: front_mid360
     imu_frame: livox_frame
-    # Same as Point-LIO / Mid360 internal IMU: LiDAR pose in IMU frame.
-    extrinsic_T: [-0.011, -0.02329, 0.04412]
-    extrinsic_R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
 
 sensor_scan_generation:
   ros__parameters:

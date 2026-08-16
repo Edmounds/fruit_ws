@@ -15,47 +15,10 @@
 #ifndef LOAM_INTERFACE__EXTRINSIC_MATH_HPP_
 #define LOAM_INTERFACE__EXTRINSIC_MATH_HPP_
 
-#include <cmath>
-#include <stdexcept>
-#include <vector>
-
-#include "tf2/LinearMath/Matrix3x3.h"
 #include "tf2/LinearMath/Transform.h"
-#include "tf2/LinearMath/Vector3.h"
 
 namespace loam_interface
 {
-
-// Point-LIO extrinsic: LiDAR pose expressed in the IMU (body) frame.
-inline tf2::Transform makeLidarInImuTransform(
-  const std::vector<double> & extrinsic_t, const std::vector<double> & extrinsic_r)
-{
-  if (extrinsic_t.size() != 3) {
-    throw std::invalid_argument("extrinsic_T must contain 3 values");
-  }
-  if (extrinsic_r.size() != 9) {
-    throw std::invalid_argument("extrinsic_R must contain 9 row-major values");
-  }
-  for (double value : extrinsic_t) {
-    if (!std::isfinite(value)) {
-      throw std::invalid_argument("extrinsic_T values must be finite");
-    }
-  }
-  for (double value : extrinsic_r) {
-    if (!std::isfinite(value)) {
-      throw std::invalid_argument("extrinsic_R values must be finite");
-    }
-  }
-
-  tf2::Matrix3x3 rotation(
-    extrinsic_r[0], extrinsic_r[1], extrinsic_r[2],
-    extrinsic_r[3], extrinsic_r[4], extrinsic_r[5],
-    extrinsic_r[6], extrinsic_r[7], extrinsic_r[8]);
-  tf2::Transform lidar_in_imu;
-  lidar_in_imu.setBasis(rotation);
-  lidar_in_imu.setOrigin(tf2::Vector3(extrinsic_t[0], extrinsic_t[1], extrinsic_t[2]));
-  return lidar_in_imu;
-}
 
 // Align the first LiDAR pose with the calibrated base->LiDAR transform.
 inline tf2::Transform odomToCameraInit(
