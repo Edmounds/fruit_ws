@@ -168,15 +168,13 @@ void OfflineViewer::main_menu() {
   if (async_global_mapping && !export_map_path.empty()) {
     logger->info("Exporting map to {}", export_map_path);
     const std::string path = export_map_path;
-    progress_modal->open<std::string>("auto_export", [this, path = path](guik::ProgressInterface& progress) {
-      export_map(progress, path);
-      return path;
-    });
+    guik::ProgressInterface progress;
+    if (export_map(progress, path)) {
+      logger->info("Exported map to {}", path);
+    } else {
+      logger->error("Failed to export map to {}", path);
+    }
     export_map_path.clear();
-  }
-  auto auto_export_result = progress_modal->run<std::string>("auto_export");
-  if (auto_export_result) {
-    logger->info("Exported map to {}", *auto_export_result);
     request_to_terminate = true;
   }
 

@@ -15,6 +15,7 @@ int main(int argc, char** argv) {
   desc.add_options()                                                               //
     ("help", "produce help message")                                               //
     ("map_path", value<std::string>(), "Input map path (dump directory)")          //
+    ("export_path", value<std::string>(), "Export map points to a PLY file and exit")  //
     ("config_path", value<std::string>()->default_value("config"), "Config path")  //
     ("debug", "Enable debug printing")                                             //
     ;
@@ -56,6 +57,16 @@ int main(int argc, char** argv) {
     spdlog::info("map_path={}", init_map_path);
   }
 
-  glim::OfflineViewer viewer(init_map_path);
+  std::string export_map_path;
+  if (vm.count("export_path")) {
+    if (init_map_path.empty()) {
+      std::cerr << "--export_path requires map_path" << std::endl;
+      return 1;
+    }
+    export_map_path = vm["export_path"].as<std::string>();
+    spdlog::info("export_path={}", export_map_path);
+  }
+
+  glim::OfflineViewer viewer(init_map_path, export_map_path);
   viewer.wait();
 }
