@@ -42,7 +42,6 @@ target_tokens=(
   "/lib/joy_linux/"
   "/lib/tf2_ros/static_transform_publisher"
   "/lib/tf2_ros/tf2_echo"
-  "rviz2"
   "ros2 run fruit_perception "
   "ros2 run fruit_qr_planner "
   "ros2 run fruit_hardware_bridge "
@@ -57,7 +56,6 @@ target_tokens=(
   "ros2 run pb_gicp_localization "
   "ros2 run nav2_"
   "ros2 run joy_linux "
-  "ros2 run rviz2 "
   "ros2 run pb_glim_map_tools "
   "ros2 run tf2_ros static_transform_publisher "
   "ros2 run tf2_ros tf2_echo "
@@ -68,8 +66,8 @@ usage() {
 Usage: ./kill_fruit_processes.sh [--dry-run]
 
 Stop nodes and launch processes in the current fruit robot project design.
-This includes perception, mapping, localization, navigation, teleop, and RViz.
-foxglove_bridge is intentionally excluded.
+This includes perception, mapping, localization, navigation, and teleop.
+RViz and foxglove_bridge are intentionally excluded.
 
 --dry-run  Print matching processes without sending signals.
 EOF
