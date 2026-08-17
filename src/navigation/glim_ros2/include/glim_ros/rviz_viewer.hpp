@@ -2,6 +2,7 @@
 
 #include <any>
 #include <atomic>
+#include <optional>
 #include <thread>
 #include <chrono>
 
@@ -36,12 +37,14 @@ public:
   ~RvizViewer();
 
   virtual std::vector<GenericTopicSubscription::Ptr> create_subscriptions(rclcpp::Node& node) override;
+  virtual void at_exit(const std::string& dump_path) override;
 
 private:
   void set_callbacks();
   void odometry_new_frame(const EstimationFrame::ConstPtr& new_frame, bool corrected);
   void globalmap_on_update_submaps(const std::vector<SubMap::Ptr>& submaps);
   void publish_global_map(const rclcpp::Time& stamp);
+  std::optional<Eigen::Isometry3d> get_map_frame_normalization();
   void invoke(const std::function<void()>& task);
 
   void spin_once();
@@ -71,6 +74,7 @@ private:
 
   std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> aligned_points_pub;
   std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> aligned_points_corrected_pub;
+  std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> aligned_points_odom_pub;
 
   std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Odometry>> odom_pub;
   std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Odometry>> odom_scanend_pub;
@@ -92,6 +96,10 @@ private:
 
   std::mutex trajectory_mutex;
   std::unique_ptr<TrajectoryManager> trajectory;
+
+  std::mutex map_frame_normalization_mutex;
+  std::optional<Eigen::Isometry3d> T_ros_native;
+  std::optional<Eigen::Isometry3d> T_imu_base;
 
   std::vector<gtsam_points::PointCloud::ConstPtr> cached_submaps;
   std::vector<Eigen::Isometry3d, Eigen::aligned_allocator<Eigen::Isometry3d>> cached_submap_poses;

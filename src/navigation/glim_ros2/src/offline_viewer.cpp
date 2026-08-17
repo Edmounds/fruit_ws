@@ -8,6 +8,7 @@
 #include <glim/util/config.hpp>
 #include <glim/util/logging.hpp>
 #include <glim/viewer/offline_viewer.hpp>
+#include <glim_ros/map_frame_normalization.hpp>
 
 int main(int argc, char** argv) {
   using namespace boost::program_options;
@@ -67,6 +68,15 @@ int main(int argc, char** argv) {
     spdlog::info("export_path={}", export_map_path);
   }
 
-  glim::OfflineViewer viewer(init_map_path, export_map_path);
+  Eigen::Isometry3d T_export_world = Eigen::Isometry3d::Identity();
+  if (const auto normalization = glim::loadMapFrameNormalization(init_map_path)) {
+    T_export_world = *normalization;
+    spdlog::info("Applying map frame normalization from map dump");
+  } else if (!export_map_path.empty()) {
+    spdlog::error("Map dump has no valid map_frame_normalization.txt");
+    return 1;
+  }
+
+  glim::OfflineViewer viewer(init_map_path, export_map_path, T_export_world);
   viewer.wait();
 }

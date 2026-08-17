@@ -25,7 +25,9 @@ def test_mid360_topics_and_internal_extrinsic_are_configured():
     assert '"imu_topic": "/livox/imu"' in ros_config
     assert '"points_topic": "/livox/lidar"' in ros_config
     assert '"base_frame_id": "base_link"' in ros_config
-    assert "align_world_to_base" not in ros_config
+    assert "init_T_world_imu" not in (
+        GLIM_DIR / "config" / "config_odometry_cpu.json"
+    ).read_text()
     assert '"acc_scale": 9.80665' in ros_config
     assert "0.011" in sensor_config
     assert "0.02329" in sensor_config
@@ -65,13 +67,26 @@ def test_offline_viewer_supports_noninteractive_point_export():
     offline_viewer_core = (GLIM_DIR / "src" / "glim" / "viewer" / "offline_viewer.cpp").read_text()
 
     assert '"export_path"' in offline_viewer
-    assert "glim::OfflineViewer viewer(init_map_path, export_map_path);" in offline_viewer
+    assert "loadMapFrameNormalization(init_map_path)" in offline_viewer
+    assert "glim::OfflineViewer viewer(init_map_path, export_map_path, T_export_world);" in offline_viewer
     assert "guik::ProgressInterface progress;" in offline_viewer_core
     assert 'open<std::string>("auto_export"' not in offline_viewer_core
-    assert "loadBaseFrameAlignment" not in offline_viewer
-    assert "T_export_world" not in offline_viewer_core
-    assert not (GLIM_ROS_DIR / "include/glim_ros/base_frame_alignment.hpp").exists()
-    assert not (GLIM_ROS_DIR / "test/base_frame_alignment_test.cpp").exists()
+    assert "T_export_world * points->points[i]" in offline_viewer_core
+    assert (GLIM_ROS_DIR / "include/glim_ros/map_frame_normalization.hpp").is_file()
+    assert (GLIM_ROS_DIR / "test/map_frame_normalization_test.cpp").is_file()
+
+
+def test_ros_outputs_share_the_normalized_map_and_odom_frames():
+    rviz_viewer = (GLIM_ROS_DIR / "src" / "glim_ros" / "rviz_viewer.cpp").read_text()
+    rviz_header = (GLIM_ROS_DIR / "include" / "glim_ros" / "rviz_viewer.hpp").read_text()
+
+    assert '"~/aligned_points_odom"' in rviz_viewer
+    assert "planarMapFrameNormalization(T_native_base)" in rviz_viewer
+    assert "normalizedMapToOdom(native_to_ros, T_world_native_odom)" in rviz_viewer
+    assert "native_to_ros * T_native_odom_imu" in rviz_viewer
+    assert "native_to_ros * T_world_native_odom * new_frame->T_world_sensor()" in rviz_viewer
+    assert "saveMapFrameNormalization(dump_path" in rviz_viewer
+    assert "virtual void at_exit(const std::string& dump_path) override;" in rviz_header
 
 
 def test_rviz_map_publication_does_not_require_subscriber_during_submap_update():
