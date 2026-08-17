@@ -49,6 +49,7 @@
 执行规则：
 
 - 启动或实机调试本项目之前必须 `source /home/rc4/fruit_ws/setup_fruit_runtime.bash`，不要只 source `install/setup.bash`。正式启动脚本也必须复用该环境脚本。
+- ROS 环境脚本必须在启用 Bash `nounset`（`set -u`）之前 source；`/opt/ros/humble/setup.bash` 可能读取尚未定义的 `AMENT_TRACE_SETUP_FILES`。启动脚本应先使用 `set -eo pipefail`，source 完整运行环境后再执行 `set -u`。
 - 环境脚本会清除继承的其他工作区、Python 和动态库路径，禁用 Python user site，并检查 Python OpenCV 4.5.4 与 NumPy 1.x 都来自 `/usr/lib/python3/dist-packages`。检查失败时应停止启动并修复环境，禁止临时改 `PYTHONPATH` 绕过。
 - 禁止在系统 Python 或 `~/.local` 执行 `pip install`、`pip install --user`。训练、标注、模型导出等非 ROS Python 工具必须使用项目外独立 venv，并在该 venv 内维护 requirements/lock 文件。
 - 不要在已激活训练 venv 的终端中构建或启动 ROS；退出 venv 后重新 source `setup_fruit_runtime.bash`。

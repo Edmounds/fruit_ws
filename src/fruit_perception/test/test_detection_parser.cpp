@@ -47,37 +47,39 @@ TEST(DetectionParser, FiltersScoresBelowRuntimeThreshold)
 
 TEST(DetectionParser, MapsAllTwelveClassIndices)
 {
-  Output output{};
+  const std::array<std::string, 12> expected_types{
+    "apple_ripe", "apple_unripe", "chili_ripe", "chili_unripe",
+    "pumpkin_ripe", "pumpkin_unripe", "onion_ripe", "onion_unripe",
+    "pear_ripe", "pear_unripe", "tomato_ripe", "tomato_unripe"};
+
   for (std::size_t class_id = 0; class_id < 12; ++class_id) {
-    set_detection(output, class_id, 0.9F, static_cast<float>(class_id));
+    Output output{};
+    set_detection(output, 0, 0.9F, static_cast<float>(class_id));
+    EXPECT_EQ(parse(output), (std::vector<std::string>{expected_types[class_id]}));
   }
-  EXPECT_EQ(
-    parse(output),
-    (std::vector<std::string>{
-      "apple_ripe", "apple_unripe", "chili_ripe", "chili_unripe",
-      "pumpkin_ripe", "pumpkin_unripe", "onion_ripe", "onion_unripe",
-      "pear_ripe", "pear_unripe", "tomato_ripe", "tomato_unripe"}));
 }
 
-TEST(DetectionParser, PreservesDuplicateLabels)
+TEST(DetectionParser, ReturnsOnlyHighestConfidenceDuplicate)
 {
   Output output{};
   set_detection(output, 0, 0.9F, 2.0F);
   set_detection(output, 1, 0.8F, 2.0F);
-  EXPECT_EQ(
-    parse(output),
-    (std::vector<std::string>{"chili_ripe", "chili_ripe"}));
+  EXPECT_EQ(parse(output), (std::vector<std::string>{"chili_ripe"}));
 }
 
-TEST(DetectionParser, SortsLabelsByDescendingConfidence)
+TEST(DetectionParser, ReturnsOnlyHighestConfidenceDetection)
 {
   Output output{};
   set_detection(output, 0, 0.6F, 8.0F);
   set_detection(output, 1, 0.95F, 3.0F);
   set_detection(output, 2, 0.75F, 0.0F);
-  EXPECT_EQ(
-    parse(output),
-    (std::vector<std::string>{"chili_unripe", "apple_ripe", "pear_ripe"}));
+  EXPECT_EQ(parse(output), (std::vector<std::string>{"chili_unripe"}));
+
+  const auto detections = fruit_perception::parse_detections(
+    output.data(), {1, kRows, kColumns}, 0.5F);
+  ASSERT_EQ(detections.size(), 1U);
+  EXPECT_FLOAT_EQ(detections.front().score, 0.95F);
+  EXPECT_EQ(detections.front().type, "chili_unripe");
 }
 
 TEST(DetectionParser, ReturnsBoxScoreAndTypeForAnnotation)

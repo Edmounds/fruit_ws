@@ -8,6 +8,10 @@ target_pids=()
 # These tokens cover the launch files and executable nodes in the current
 # perception, mapping, localization, navigation, and teleop design.
 target_tokens=(
+  "bash ./test_d435i_arm_target.sh"
+  "bash test_d435i_arm_target.sh"
+  "bash /home/rc4/fruit_ws/test_d435i_arm_target.sh"
+  "ros2 topic pub --once --wait-matching-subscriptions 1 /fruit_mission/perception_mode"
   "ros2 launch fruit_perception "
   "ros2 launch fruit_hardware_bridge "
   "ros2 launch fruit_qr_planner "
@@ -65,8 +69,9 @@ usage() {
   cat <<'EOF'
 Usage: ./kill_fruit_processes.sh [--dry-run]
 
-Stop nodes and launch processes in the current fruit robot project design.
-This includes perception, mapping, localization, navigation, and teleop.
+Stop task scripts, helper processes, nodes, and launch processes in the current
+fruit robot project design. This includes perception, mapping, localization,
+navigation, and teleop.
 RViz and foxglove_bridge are intentionally excluded.
 
 --dry-run  Print matching processes without sending signals.
@@ -189,6 +194,7 @@ if ((${dry_run:-0} == 1)); then
   exit 0
 fi
 
+signal_targets CONT
 signal_targets INT
 if wait_for_targets 50; then
   printf 'All matching processes stopped gracefully.\n'

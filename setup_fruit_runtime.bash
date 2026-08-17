@@ -26,7 +26,7 @@ unset PYTHONPATH
 unset ROS_PACKAGE_PATH
 
 source /opt/ros/humble/setup.bash
-source /home/rc4/fruit_ws/install/setup.bash
+source /home/rc4/fruit_ws/install/local_setup.bash
 
 export PYTHONNOUSERSITE=1
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}/usr/lib/python3/dist-packages"

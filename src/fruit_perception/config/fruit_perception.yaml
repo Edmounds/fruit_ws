@@ -51,6 +51,11 @@ d435i_camera:
     enable_color: true
     rgb_camera.color_profile: "1920x1080x30"
     rgb_camera.color_format: "RGB8"
+    rgb_camera.enable_auto_exposure: false
+    rgb_camera.exposure: 166
+    rgb_camera.gain: 64
+    rgb_camera.enable_auto_white_balance: false
+    rgb_camera.white_balance: 4600.0
     enable_depth: true
     depth_module.depth_profile: "1280x720x30"
     depth_module.depth_format: "Z16"
@@ -82,7 +87,7 @@ fruit_perception_node:
     d435i_target_point_topic: "/fruit_perception/d435i/target_point"
     d435i_detections_topic: "/fruit_perception/d435i/detections"
     perception_mode_topic: "/fruit_mission/perception_mode"
-    confidence_threshold: 0.70
+    confidence_threshold: 0.50
 
 camera_mode_manager:
   ros__parameters:

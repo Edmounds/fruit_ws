@@ -220,7 +220,8 @@ private:
     auto stream = std::make_unique<Stream>(
       "d435i", compiled_model_.create_infer_request(),
       create_publisher<msg::FruitTypes>(output_topic, rclcpp::QoS(10)),
-      create_publisher<sensor_msgs::msg::Image>(annotated_topic, rclcpp::SensorDataQoS()));
+      create_publisher<sensor_msgs::msg::Image>(
+        annotated_topic, rclcpp::QoS(1).reliable()));
     stream->target_point_publisher =
       create_publisher<geometry_msgs::msg::PointStamped>(target_point_topic, rclcpp::QoS(10));
     stream->detections_publisher =
@@ -249,7 +250,8 @@ private:
     auto stream = std::make_unique<Stream>(
       name, compiled_model_.create_infer_request(),
       create_publisher<msg::FruitTypes>(output_topic, rclcpp::QoS(10)),
-      create_publisher<sensor_msgs::msg::Image>(annotated_topic, rclcpp::SensorDataQoS()));
+      create_publisher<sensor_msgs::msg::Image>(
+        annotated_topic, rclcpp::QoS(1).reliable()));
     auto * stream_ptr = stream.get();
     stream->request.set_callback(
       [this, stream_ptr](std::exception_ptr error) {finish_inference(*stream_ptr, error);});

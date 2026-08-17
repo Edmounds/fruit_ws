@@ -47,7 +47,7 @@ printf '[save-glim-map] converting localization map...\n'
 ros2 run pb_glim_map_tools glim_ply_to_pcd \
   --input "$EXPORT_DIR/field.ply" \
   --output "$EXPORT_DIR/field.pcd" \
-  --leaf-size 0.10
+  --leaf-size 0.05
 
 cp "$GLIM_DUMP/field.pgm" "$EXPORT_DIR/field.pgm"
 cp "$GLIM_DUMP/field.yaml" "$EXPORT_DIR/field.yaml"

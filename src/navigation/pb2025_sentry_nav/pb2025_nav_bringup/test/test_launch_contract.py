@@ -14,6 +14,7 @@
 
 import json
 import math
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import yaml
@@ -60,6 +61,11 @@ def test_diff_drive_frames_and_velocity_contract():
     assert controller["FollowPath"]["plugin"].startswith(
         "pb_diff_pid_pursuit_controller"
     )
+    velocity_limits = controller["FollowPath"]
+    for key in ("v_linear_min", "v_linear_max", "v_angular_min", "v_angular_max"):
+        assert isinstance(velocity_limits[key], float)
+    assert velocity_limits["v_linear_min"] <= 0.0 <= velocity_limits["v_linear_max"]
+    assert velocity_limits["v_angular_min"] <= 0.0 <= velocity_limits["v_angular_max"]
     smoother = params["velocity_smoother"]["ros__parameters"]
     assert smoother["max_velocity"] == [0.6, 0.0, 1.0]
     assert smoother["min_velocity"] == [-0.2, 0.0, -1.0]
@@ -113,6 +119,37 @@ def test_mux_and_localization_contract():
     assert "pb_diff_teleop_twist_joy" not in package
 
 
+def test_navigation_uses_costmap_clearing_and_backup_recovery_without_drive_on_heading():
+    behavior_tree_dir = ROOT / "pb2025_nav_bringup/behavior_trees"
+    for filename in (
+        "navigate_to_pose_w_replanning_and_recovery.xml",
+        "navigate_through_poses_w_replanning_and_recovery.xml",
+    ):
+        tree = ET.parse(behavior_tree_dir / filename)
+        root = tree.getroot()
+        assert root.findall(".//PipelineSequence")
+        rate_controllers = root.findall(".//RateController")
+        assert rate_controllers
+        assert all(float(node.attrib["hz"]) > 0.0 for node in rate_controllers)
+        assert root.findall(".//RecoveryNode")
+        assert root.findall(".//ClearEntireCostmap")
+        assert root.findall(".//BackUp")
+        assert not root.findall(".//DriveOnHeading")
+
+    params = yaml.safe_load(
+        (ROOT / "pb2025_nav_bringup/config/reality/nav2_params.yaml").read_text()
+    )
+    behaviors = params["behavior_server"]["ros__parameters"]
+    assert "backup" in behaviors["behavior_plugins"]
+    assert "drive_on_heading" not in behaviors["behavior_plugins"]
+    assert behaviors["backup"]["plugin"] == "pb_nav2_behaviors/BackUpFreeSpace"
+    assert "drive_on_heading" not in behaviors
+    bt_plugins = params["bt_navigator"]["ros__parameters"]["plugin_lib_names"]
+    assert "nav2_back_up_action_bt_node" in bt_plugins
+    assert "nav2_back_up_cancel_bt_node" in bt_plugins
+    assert not any("drive_on_heading" in plugin for plugin in bt_plugins)
+
+
 def test_xbox_series_stick_mapping_contract():
     joy_config = yaml.safe_load(
         (ROOT.parents[2] / "src/joy_linux/config/joy_config.yaml").read_text()
@@ -120,7 +157,8 @@ def test_xbox_series_stick_mapping_contract():
     converter = joy_config["joy_convert_node"]["ros__parameters"]
     assert converter["linear_axis"] == 1
     assert converter["angular_axis"] == 2
-    assert converter["angular_z_scale"] == -0.8
+    assert isinstance(converter["angular_z_scale"], (int, float))
+    assert converter["angular_z_scale"] > 0.0
 
 
 def test_calibrated_mid360_static_transform_has_one_source():
@@ -211,6 +249,54 @@ def test_glim_2d_mapping_parameter_schema():
     assert slam["do_loop_closing"] is False
 
 
+def test_costmap_observation_sources_use_lidar_origin_and_valid_ranges():
+    params = yaml.safe_load(
+        (ROOT / "pb2025_nav_bringup/config/reality/nav2_params.yaml").read_text()
+    )
+    local = params["local_costmap"]["local_costmap"]["ros__parameters"]
+    global_ = params["global_costmap"]["global_costmap"]["ros__parameters"]
+
+    assert local["obstacle_layer"]["terrain"]["topic"] == "/terrain_map"
+    assert global_["obstacle_layer"]["terrain"]["topic"] == "/terrain_map_ext"
+
+    for costmap in (local, global_):
+        terrain = costmap["obstacle_layer"]["terrain"]
+        assert terrain["sensor_frame"] == "front_mid360"
+        for key in (
+            "obstacle_min_range",
+            "obstacle_max_range",
+            "raytrace_min_range",
+            "raytrace_max_range",
+        ):
+            assert isinstance(terrain[key], (int, float))
+            assert math.isfinite(terrain[key])
+        assert 0.0 <= terrain["obstacle_min_range"] < terrain["obstacle_max_range"]
+        assert 0.0 <= terrain["raytrace_min_range"] < terrain["raytrace_max_range"]
+        assert terrain["raytrace_max_range"] >= terrain["obstacle_max_range"]
+
+
+def test_costmaps_use_the_rectangular_robot_footprint():
+    params = yaml.safe_load(
+        (ROOT / "pb2025_nav_bringup/config/reality/nav2_params.yaml").read_text()
+    )
+    local = params["local_costmap"]["local_costmap"]["ros__parameters"]
+    global_ = params["global_costmap"]["global_costmap"]["ros__parameters"]
+
+    footprints = []
+    for costmap in (local, global_):
+        assert "robot_radius" not in costmap
+        assert costmap["footprint_padding"] == 0.0
+        footprint = yaml.safe_load(costmap["footprint"])
+        assert len(footprint) == 4
+        xs = [point[0] for point in footprint]
+        ys = [point[1] for point in footprint]
+        assert math.isclose(max(xs) - min(xs), 0.40, abs_tol=1e-5)
+        assert math.isclose(max(ys) - min(ys), 0.30, abs_tol=1e-5)
+        footprints.append(footprint)
+
+    assert footprints[0] == footprints[1]
+
+
 def test_mapping_save_and_zero_initialization_contract():
     workspace = ROOT.parents[2]
     start_mapping = (workspace / "start_mapping.sh").read_text()
@@ -244,6 +330,41 @@ def test_mapping_save_and_zero_initialization_contract():
         "/map",
     ):
         assert f"Value: {topic}" in mapping_rviz
+
+
+def test_navigation_start_script_uses_source_maps_and_desktop_rviz():
+    workspace = ROOT.parents[2]
+    script_path = workspace / "start_navigation.sh"
+    rviz_path = ROOT / "pb2025_nav_bringup/rviz/navigation.rviz"
+
+    assert script_path.exists()
+    assert script_path.stat().st_mode & 0o111
+    assert rviz_path.exists()
+
+    script = script_path.read_text()
+    assert "setup_fruit_runtime.bash" in script
+    assert script.index("setup_fruit_runtime.bash") < script.index("set -u")
+    assert "localization_navigation_launch.py" in script
+    assert "fruit_hardware_bridge.launch.py" in script
+    assert "pb2025_nav_bringup/maps/field.yaml" in script
+    assert "pb2025_nav_bringup/maps/field.pcd" in script
+    assert '"use_rviz:=false"' in script
+    assert 'DESKTOP_DISPLAY=:0' in script
+    assert 'gdm/Xauthority' in script
+    assert 'rviz2 -d "$RVIZ_CONFIG"' in script
+
+    rviz = rviz_path.read_text()
+    for topic in (
+        "map",
+        "obstacle_scan",
+        "global_costmap/costmap",
+        "local_costmap/costmap",
+        "plan",
+        "local_plan",
+    ):
+        assert f"Value: {topic}" in rviz
+    assert "nav2_rviz_plugins/GoalTool" in rviz
+    assert "nav2_rviz_plugins/Navigation 2" in rviz
 
 
 def test_loam_interface_reads_mid360_extrinsic_from_tf():

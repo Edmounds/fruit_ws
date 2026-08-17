@@ -78,14 +78,15 @@ boot.
 The D435i topics are:
 
 - synchronized aligned input: `/camera/camera/rgbd`
-- fruit types: `/fruit_perception/d435i/types`
+- highest-confidence fruit type: `/fruit_perception/d435i/types`
 - annotated RGB8 image: `/fruit_perception/d435i/annotated_image`
 - highest-confidence detection center: `/fruit_perception/d435i/target_point`
-- every detection in the frame: `/fruit_perception/d435i/detections`
+- highest-confidence detection in the frame: `/fruit_perception/d435i/detections`
 
-The full detection message is confidence-sorted and contains the model type,
-confidence, ROI in original 1920x1080 color coordinates, `has_point`, and a
-camera optical-frame point. Invalid center depth keeps the 2D detection with
+The detection message contains at most one item: the highest-confidence model
+result above the configured threshold. It includes the model type, confidence,
+ROI in original 1920x1080 color coordinates, `has_point`, and a camera
+optical-frame point. Invalid center depth keeps the 2D detection with
 `has_point=false`.
 
 The legacy target point is a `geometry_msgs/msg/PointStamped` in the D435i color

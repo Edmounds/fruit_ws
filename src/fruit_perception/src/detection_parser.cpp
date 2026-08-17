@@ -62,6 +62,9 @@ std::vector<Detection> parse_detections(
   std::stable_sort(
     detections.begin(), detections.end(),
     [](const auto & lhs, const auto & rhs) {return lhs.score > rhs.score;});
+  if (detections.size() > 1U) {
+    detections.resize(1U);
+  }
 
   return detections;
 }

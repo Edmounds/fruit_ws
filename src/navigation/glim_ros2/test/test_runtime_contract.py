@@ -1,9 +1,38 @@
+import os
 from pathlib import Path
+import subprocess
 
 
 NAVIGATION_DIR = Path(__file__).resolve().parents[2]
 GLIM_DIR = NAVIGATION_DIR / "glim"
 GLIM_ROS_DIR = NAVIGATION_DIR / "glim_ros2"
+WORKSPACE_DIR = NAVIGATION_DIR.parents[1]
+
+
+def test_runtime_environment_does_not_restore_foreign_workspaces():
+    setup_script = WORKSPACE_DIR / "setup_fruit_runtime.bash"
+    command = (
+        f'source "{setup_script}" >/dev/null && '
+        "printf '%s\\n' \"${AMENT_PREFIX_PATH:-}\" \"${CMAKE_PREFIX_PATH:-}\" "
+        "\"${COLCON_PREFIX_PATH:-}\" \"${LD_LIBRARY_PATH:-}\" "
+        "\"${PYTHONPATH:-}\""
+    )
+    result = subprocess.run(
+        ["bash", "-c", command],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "AMENT_TRACE_SETUP_FILES": ""},
+    )
+
+    foreign_home_paths = {
+        path
+        for line in result.stdout.splitlines()
+        for path in line.split(":")
+        if path.startswith("/home/rc4/")
+        and not path.startswith(f"{WORKSPACE_DIR}/install")
+    }
+    assert foreign_home_paths == set()
 
 
 def test_cpu_backend_is_the_default():
