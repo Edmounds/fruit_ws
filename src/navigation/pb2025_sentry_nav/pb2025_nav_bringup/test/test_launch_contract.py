@@ -102,7 +102,8 @@ def test_mux_and_localization_contract():
     assert 'SOURCE_SHARE = (' in launch
     assert 'get_package_share_directory' not in launch
     assert 'DeclareLaunchArgument("initial_pose_file", default_value="")' in launch
-    assert 'os.path.splitext(localization_map)[0] + ".initial_pose.yaml"' in launch
+    assert 'os.path.splitext(localization_map)[0] + ".initial_pose.yaml"' not in launch
+    assert 'if initial_pose_file:' in launch
     assert '"initial_map_to_odom"' not in launch
     assert "default_nav_to_pose_bt_xml" in launch
     assert "default_nav_through_poses_bt_xml" in launch
@@ -164,11 +165,83 @@ def test_calibrated_mid360_static_transform_has_one_source():
             abs_tol=1e-6,
         )
 
-    pose_tool = (ROOT / "pb2025_nav_bringup/scripts/map_initial_pose.py").read_text()
-    assert 'sensor_frames["base_to_front_mid360"]' in pose_tool
+    assert not (ROOT / "pb2025_nav_bringup/scripts/map_initial_pose.py").exists()
 
     package = (ROOT / "pb2025_nav_bringup/package.xml").read_text()
     assert "<exec_depend>tf2_ros</exec_depend>" in package
+
+
+def test_glim_2d_mapping_launch_contract():
+    launch = (ROOT / "pb2025_nav_bringup/launch/glim_mapping.launch.py").read_text()
+
+    assert "glim_ros2/launch/mapping.launch.py" in launch
+    assert 'package="point_lio"' not in launch
+    assert 'package="terrain_analysis"' in launch
+    assert 'package="terrain_analysis_ext"' in launch
+    assert 'package="pointcloud_to_laserscan"' in launch
+    assert 'package="slam_toolbox"' in launch
+    assert 'executable="sync_slam_toolbox_node"' in launch
+    assert '("registered_scan", "/glim_ros/aligned_points_odom")' in launch
+    assert '("lidar_odometry", "/glim_ros/lidar_odom")' in launch
+    assert '("cloud_in", "/terrain_map_ext")' in launch
+    assert '("scan", "/obstacle_scan")' in launch
+
+
+def test_glim_2d_mapping_parameter_schema():
+    params = yaml.safe_load(
+        (ROOT / "pb2025_nav_bringup/config/reality/nav2_params.yaml").read_text()
+    )
+    cloud_to_scan = params["pointcloud_to_laserscan"]["ros__parameters"]
+    slam = params["slam_toolbox"]["ros__parameters"]
+
+    assert cloud_to_scan["target_frame"] == "base_link"
+    assert isinstance(cloud_to_scan["min_height"], (int, float))
+    assert isinstance(cloud_to_scan["max_height"], (int, float))
+    assert cloud_to_scan["min_height"] < cloud_to_scan["max_height"]
+    assert isinstance(cloud_to_scan["range_min"], (int, float))
+    assert isinstance(cloud_to_scan["range_max"], (int, float))
+    assert 0.0 <= cloud_to_scan["range_min"] < cloud_to_scan["range_max"]
+
+    assert slam["map_frame"] == "map"
+    assert slam["odom_frame"] == "odom"
+    assert slam["base_frame"] == "base_link"
+    assert slam["scan_topic"] == "/obstacle_scan"
+    assert slam["transform_publish_period"] == 0.0
+    assert slam["use_scan_matching"] is False
+    assert slam["do_loop_closing"] is False
+
+
+def test_mapping_save_and_zero_initialization_contract():
+    workspace = ROOT.parents[2]
+    start_mapping = (workspace / "start_mapping.sh").read_text()
+    save_map = (workspace / "save_glim_map.sh").read_text()
+    relocalization = (workspace / "start_relocalization_test.sh").read_text()
+    cmake = (ROOT / "pb2025_nav_bringup/CMakeLists.txt").read_text()
+
+    assert "pb2025_nav_bringup/launch/glim_mapping.launch.py" in start_mapping
+    assert "nav2_map_server map_saver_cli" in start_mapping
+    assert 'save_2d_map' in start_mapping
+    assert '"$GLIM_DUMP_PATH/field"' in start_mapping
+
+    assert "map_frame_normalization.txt" in save_map
+    for map_file in ("field.ply", "field.pcd", "field.pgm", "field.yaml"):
+        assert map_file in save_map
+    assert "map_initial_pose" not in save_map
+    assert "initial_pose.yaml" not in save_map
+
+    assert "INITIAL_POSE_FILE" not in relocalization
+    assert "initial_pose.yaml" not in relocalization
+    assert "initial_map_to_odom uses the identity transform" in relocalization
+    assert "map_initial_pose.py" not in cmake
+
+    mapping_rviz = (ROOT.parents[0] / "glim_ros2/rviz/glim_ros.rviz").read_text()
+    for topic in (
+        "/glim_ros/map",
+        "/glim_ros/aligned_points",
+        "/terrain_map_ext",
+        "/map",
+    ):
+        assert f"Value: {topic}" in mapping_rviz
 
 
 def test_loam_interface_reads_mid360_extrinsic_from_tf():

@@ -33,16 +33,15 @@ def _launch_nodes(context):
     localization_map = LaunchConfiguration("localization_map").perform(context)
     params_file = LaunchConfiguration("params_file").perform(context)
     initial_pose_file = LaunchConfiguration("initial_pose_file").perform(context)
-    if not initial_pose_file:
-        initial_pose_file = os.path.splitext(localization_map)[0] + ".initial_pose.yaml"
     for label, path in (
         ("map", map_file),
         ("localization_map", localization_map),
         ("params_file", params_file),
-        ("initial_pose_file", initial_pose_file),
     ):
         if not os.path.isfile(path):
             raise RuntimeError(f"{label} does not exist: {path}")
+    if initial_pose_file and not os.path.isfile(initial_pose_file):
+        raise RuntimeError(f"initial_pose_file does not exist: {initial_pose_file}")
 
     configured_params = RewrittenYaml(
         source_file=params_file,
@@ -66,6 +65,10 @@ def _launch_nodes(context):
         "mid360_user_config.json",
     )
     joy_config = "/home/rc4/fruit_ws/src/joy_linux/config/joy_config.yaml"
+    localization_parameters = [configured_params]
+    if initial_pose_file:
+        localization_parameters.append(initial_pose_file)
+    localization_parameters.append({"localization_map": localization_map})
 
     nodes = [
         IncludeLaunchDescription(
@@ -115,11 +118,7 @@ def _launch_nodes(context):
             package="pb_gicp_localization",
             executable="pb_gicp_localization_node",
             name="pb_gicp_localization",
-            parameters=[
-                configured_params,
-                initial_pose_file,
-                {"localization_map": localization_map},
-            ],
+            parameters=localization_parameters,
             output="screen",
             additional_env=pcl_env,
         ),

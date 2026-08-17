@@ -6,7 +6,6 @@ WORKSPACE=/home/rc4/fruit_ws
 PARAMS="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/nav2_params.yaml"
 LIVOX_CONFIG="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/mid360_user_config.json"
 LOCALIZATION_MAP="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.pcd"
-INITIAL_POSE_FILE="${LOCALIZATION_MAP%.pcd}.initial_pose.yaml"
 SENSOR_FRAMES_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/sensor_frames.launch.py"
 RVIZ_CONFIG="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/rviz/relocalization_test.rviz"
 PCL_PRELOAD=/lib/x86_64-linux-gnu/libusb-1.0.so.0
@@ -53,7 +52,6 @@ for required_file in \
   "$PARAMS" \
   "$LIVOX_CONFIG" \
   "$LOCALIZATION_MAP" \
-  "$INITIAL_POSE_FILE" \
   "$SENSOR_FRAMES_LAUNCH" \
   "$RVIZ_CONFIG" \
   "$PCL_PRELOAD"; do
@@ -101,7 +99,6 @@ start_process "pb_gicp_localization" \
     ros2 run pb_gicp_localization pb_gicp_localization_node --ros-args \
     -r __node:=pb_gicp_localization \
     --params-file "$PARAMS" \
-    --params-file "$INITIAL_POSE_FILE" \
     -p "localization_map:=$LOCALIZATION_MAP"
 
 start_process "rviz2" \
@@ -113,7 +110,7 @@ start_process "rviz2" \
     rviz2 -d "$RVIZ_CONFIG"
 
 printf '[relocalization-test] all processes started. Press Ctrl-C to stop them.\n'
-printf '[relocalization-test] initial_map_to_odom loaded from %s\n' "$INITIAL_POSE_FILE"
+printf '[relocalization-test] initial_map_to_odom uses the identity transform from nav2_params.yaml\n'
 
 if wait -n "${pids[@]}"; then
   status=0

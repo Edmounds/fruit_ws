@@ -6,8 +6,6 @@ WORKSPACE=/home/rc4/fruit_ws
 GLIM_DUMP="$WORKSPACE/tmp/glim_map"
 MAP_DIR="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps"
 GLIM_CONFIG="$WORKSPACE/src/navigation/glim/config"
-SENSOR_FRAMES="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/sensor_frames.yaml"
-POSE_TOOL="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/scripts/map_initial_pose.py"
 EXPORT_DIR="$WORKSPACE/tmp/glim_map_export_$$"
 DESKTOP_RUNTIME_DIR="/run/user/$(id -u)"
 DESKTOP_DISPLAY=:0
@@ -22,9 +20,9 @@ source "$WORKSPACE/setup_fruit_runtime.bash"
 set -u
 
 for required_file in \
-  "$GLIM_DUMP/traj_lidar.txt" \
-  "$SENSOR_FRAMES" \
-  "$POSE_TOOL" \
+  "$GLIM_DUMP/map_frame_normalization.txt" \
+  "$GLIM_DUMP/field.pgm" \
+  "$GLIM_DUMP/field.yaml" \
   "$DESKTOP_XAUTHORITY"; do
   if [[ ! -r "$required_file" ]]; then
     printf '[save-glim-map] required file is unavailable: %s\n' "$required_file" >&2
@@ -51,16 +49,38 @@ ros2 run pb_glim_map_tools glim_ply_to_pcd \
   --output "$EXPORT_DIR/field.pcd" \
   --leaf-size 0.10
 
-printf '[save-glim-map] calculating mapping-start pose...\n'
-python3 "$POSE_TOOL" \
-  --trajectory "$GLIM_DUMP/traj_lidar.txt" \
-  --sensor-frames "$SENSOR_FRAMES" \
-  --output "$EXPORT_DIR/field.initial_pose.yaml"
+cp "$GLIM_DUMP/field.pgm" "$EXPORT_DIR/field.pgm"
+cp "$GLIM_DUMP/field.yaml" "$EXPORT_DIR/field.yaml"
+
+for exported_file in \
+  "$EXPORT_DIR/field.ply" \
+  "$EXPORT_DIR/field.pcd" \
+  "$EXPORT_DIR/field.pgm" \
+  "$EXPORT_DIR/field.yaml"; do
+  if [[ ! -s "$exported_file" ]]; then
+    printf '[save-glim-map] exported map file is empty or missing: %s\n' "$exported_file" >&2
+    exit 1
+  fi
+done
+
+existing_maps=()
+for extension in ply pcd pgm yaml; do
+  if [[ -e "$MAP_DIR/field.$extension" ]]; then
+    existing_maps+=("$MAP_DIR/field.$extension")
+  fi
+done
+if ((${#existing_maps[@]} > 0)); then
+  archive_dir="$WORKSPACE/tmp/field_map_backup_$(date +%Y%m%d_%H%M%S)_$$"
+  mkdir -p "$archive_dir"
+  mv "${existing_maps[@]}" "$archive_dir/"
+  printf '[save-glim-map] archived previous field map set to %s\n' "$archive_dir"
+fi
 
 mv \
   "$EXPORT_DIR/field.ply" \
   "$EXPORT_DIR/field.pcd" \
-  "$EXPORT_DIR/field.initial_pose.yaml" \
+  "$EXPORT_DIR/field.pgm" \
+  "$EXPORT_DIR/field.yaml" \
   "$MAP_DIR/"
 
 printf '[save-glim-map] saved matched map files in %s\n' "$MAP_DIR"
