@@ -1,414 +1,399 @@
-livox_ros_driver2:
-  ros__parameters:
-    xfer_format: 1
-    multi_topic: 0
-    data_src: 0
-    publish_freq: 20.0
-    output_data_type: 0
-    frame_id: front_mid360
-    lvx_file_path: /home/livox/livox_test.lvx
-    user_config_path: ""
-    cmdline_input_bd_code: livox0000000001
+livox_ros_driver2:  # Livox MID-360 驱动节点
+  ros__parameters:  # 驱动节点的 ROS 2 参数
+    xfer_format: 1  # 点云消息格式：1 表示 Livox CustomMsg
+    multi_topic: 0  # 多雷达话题模式：0 表示所有雷达共用话题
+    data_src: 0  # 数据来源：0 表示实时雷达
+    publish_freq: 20.0  # 点云发布频率，单位 Hz
+    output_data_type: 0  # 输出目标：0 表示发布到 ROS 话题
+    frame_id: front_mid360  # 点云消息使用的坐标系
+    lvx_file_path: /home/livox/livox_test.lvx  # LVX 回放文件路径，实时模式下不使用
+    user_config_path: ""  # Livox JSON 配置路径；空值由 launch 注入
+    cmdline_input_bd_code: livox0000000001  # 通过广播码指定连接的雷达
 
-laserMapping:
-  ros__parameters:
-    use_imu_as_input: false
-    prop_at_freq_of_imu: true
-    check_satu: true
-    init_map_size: 10
-    point_filter_num: 4
-    space_down_sample: true
-    filter_size_surf: 0.25
-    filter_size_map: 0.25
-    ivox_nearby_type: 6
-    runtime_pos_log_enable: false
-    common:
-      lid_topic: livox/lidar
-      imu_topic: livox/imu
-      con_frame: false
-      con_frame_num: 1
-      cut_frame: false
-      cut_frame_time_interval: 0.1
-      time_diff_lidar_to_imu: 0.0
-    prior_pcd:
-      enable: false
-      prior_pcd_map_path: ""
-      init_pose: [0.0, 0.0, 0.0]
-    preprocess:
-      lidar_type: 1
-      scan_line: 4
-      timestamp_unit: 3
-      blind: 0.5
-    mapping:
-      imu_en: true
-      extrinsic_est_en: false
-      imu_time_inte: 0.005
-      lidar_time_inte: 0.1
-      satu_acc: 3.0
-      satu_gyro: 35.0
-      acc_norm: 1.0
-      lidar_meas_cov: 0.01
-      acc_cov_output: 500.0
-      gyr_cov_output: 1000.0
-      b_acc_cov: 0.0001
-      b_gyr_cov: 0.0001
-      imu_meas_acc_cov: 0.01
-      imu_meas_omg_cov: 0.01
-      gyr_cov_input: 0.01
-      acc_cov_input: 0.1
-      plane_thr: 0.1
-      match_s: 81.0
-      ivox_grid_resolution: 0.5
-      gravity: [0.0, 0.0, -9.81]
-      gravity_init: [0.0, 0.0, -9.81]
-      extrinsic_T: [-0.011, -0.02329, 0.04412]
-      extrinsic_R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-    odometry:
-      publish_odometry_without_downsample: false
-    publish:
-      path_en: false
-      scan_publish_en: true
-      scan_bodyframe_pub_en: false
-      tf_send_en: false
-    pcd_save:
-      pcd_save_en: false
-      interval: -1
+laserMapping:  # Point-LIO 激光惯性里程计节点
+  ros__parameters:  # Point-LIO 的 ROS 2 参数
+    use_imu_as_input: false  # 是否以 IMU 到达事件驱动状态传播
+    prop_at_freq_of_imu: true  # 是否按 IMU 频率输出传播后的状态
+    check_satu: true  # 是否检测并处理 IMU 饱和
+    init_map_size: 10  # 初始化局部地图所需的帧数
+    point_filter_num: 4  # 点云按序号间隔抽样的步长
+    space_down_sample: true  # 是否对当前扫描做体素降采样
+    filter_size_surf: 0.25  # 当前扫描体素滤波边长，单位 m
+    filter_size_map: 0.25  # 地图点云体素滤波边长，单位 m
+    ivox_nearby_type: 6  # iVox 邻域类型：6 表示搜索六邻域
+    runtime_pos_log_enable: false  # 是否记录运行时位姿日志
+    common:  # 话题、分帧与时间同步参数
+      lid_topic: livox/lidar  # 输入激光点云话题
+      imu_topic: livox/imu  # 输入 IMU 话题
+      con_frame: false  # 是否合并连续雷达帧
+      con_frame_num: 1  # 每次合并的雷达帧数
+      cut_frame: false  # 是否按时间将单帧点云切片
+      cut_frame_time_interval: 0.1  # 点云切片时长，单位 s
+      time_diff_lidar_to_imu: 0.0  # 雷达时间戳相对 IMU 的补偿量，单位 s
+    prior_pcd:  # 先验点云地图初始化参数
+      enable: false  # 是否加载先验 PCD 初始化地图
+      prior_pcd_map_path: ""  # 先验 PCD 文件路径
+      init_pose: [0.0, 0.0, 0.0]  # 先验地图初始平移 [x, y, z]，单位 m
+    preprocess:  # 原始点云预处理参数
+      lidar_type: 1  # Point-LIO 雷达类型：1 表示 Livox AVIA 格式
+      scan_line: 4  # 雷达扫描线数量
+      timestamp_unit: 3  # 点内时间戳单位编号：3 表示 ns
+      blind: 0.5  # 过滤雷达近距离盲区内的点，单位 m
+    mapping:  # 状态估计与地图匹配参数
+      imu_en: true  # 是否启用激光惯性融合
+      extrinsic_est_en: false  # 是否在线估计雷达到内置 IMU 的外参
+      imu_time_inte: 0.005  # IMU 名义采样间隔，单位 s
+      lidar_time_inte: 0.1  # 雷达名义帧间隔，单位 s
+      satu_acc: 3.0  # 加速度计饱和判定阈值
+      satu_gyro: 35.0  # 陀螺仪饱和判定阈值
+      acc_norm: 1.0  # 加速度归一化尺度
+      lidar_meas_cov: 0.01  # 激光点到平面测量噪声协方差
+      acc_cov_output: 500.0  # 状态模型中加速度输出噪声协方差
+      gyr_cov_output: 1000.0  # 状态模型中角速度输出噪声协方差
+      b_acc_cov: 0.0001  # 加速度计零偏随机游走协方差
+      b_gyr_cov: 0.0001  # 陀螺仪零偏随机游走协方差
+      imu_meas_acc_cov: 0.01  # IMU 加速度测量协方差
+      imu_meas_omg_cov: 0.01  # IMU 角速度测量协方差
+      gyr_cov_input: 0.01  # 作为输入时的角速度噪声协方差
+      acc_cov_input: 0.1  # 作为输入时的加速度噪声协方差
+      plane_thr: 0.1  # 邻域点拟合平面的有效性阈值
+      match_s: 81.0  # 点面匹配残差评分的尺度系数
+      ivox_grid_resolution: 0.5  # iVox 地图网格边长，单位 m
+      gravity: [0.0, 0.0, -9.81]  # 估计采用的重力向量，单位 m/s^2
+      gravity_init: [0.0, 0.0, -9.81]  # 滤波器初始化重力向量，单位 m/s^2
+      extrinsic_T: [-0.011, -0.02329, 0.04412]  # MID-360 测距坐标系到内置 IMU 的平移，单位 m
+      extrinsic_R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]  # MID-360 测距坐标系到内置 IMU 的旋转矩阵
+    odometry:  # 里程计输出参数
+      publish_odometry_without_downsample: false  # 是否使用未降采样点云计算高频里程计
+    publish:  # Point-LIO 发布内容开关
+      path_en: false  # 是否发布累计轨迹
+      scan_publish_en: true  # 是否发布世界坐标系中的配准点云
+      scan_bodyframe_pub_en: false  # 是否发布机体坐标系中的配准点云
+      tf_send_en: false  # 是否由 Point-LIO 发布 TF
+    pcd_save:  # 配准点云保存参数
+      pcd_save_en: false  # 是否将累计点云保存为 PCD
+      interval: -1  # 每个 PCD 包含的扫描帧数；-1 表示全部保存到一个文件
 
-loam_interface:
-  ros__parameters:
-    state_estimation_topic: aft_mapped_to_init
-    registered_scan_topic: cloud_registered
-    odom_frame: odom
-    base_frame: base_link
-    lidar_frame: front_mid360
-    imu_frame: livox_frame
+loam_interface:  # Point-LIO 输出到导航坐标系的适配节点
+  ros__parameters:  # 里程计与点云接口参数
+    state_estimation_topic: aft_mapped_to_init  # 输入 Point-LIO 状态估计话题
+    registered_scan_topic: cloud_registered  # 输入 Point-LIO 配准点云话题
+    odom_frame: odom  # 输出里程计所在坐标系
+    base_frame: base_link  # 机器人机体坐标系
+    lidar_frame: front_mid360  # 雷达安装坐标系
+    imu_frame: livox_frame  # Point-LIO 状态对应的内置 IMU 坐标系
 
-sensor_scan_generation:
-  ros__parameters:
-    lidar_frame: front_mid360
-    base_frame: base_link
+sensor_scan_generation:  # 生成导航所需配准扫描的节点
+  ros__parameters:  # 扫描坐标变换参数
+    lidar_frame: front_mid360  # 输入扫描对应的雷达坐标系
+    base_frame: base_link  # 输出扫描对齐的机器人坐标系
 
-terrainAnalysis:
-  ros__parameters:
-    scanVoxelSize: 0.05
-    decayTime: 1.0
-    noDecayDis: 1.75
-    clearingDis: 8.0
-    useSorting: true
-    quantileZ: 0.25
-    considerDrop: false
-    limitGroundLift: false
-    maxGroundLift: 0.15
-    clearDyObs: true
-    minDyObsDis: 0.3
-    minDyObsAngle: 0.0
-    minDyObsRelZ: -0.3
-    absDyObsRelZThre: 0.2
-    minDyObsVFOV: -28.0
-    maxDyObsVFOV: 33.0
-    minDyObsPointNum: 1
-    noDataObstacle: false
-    noDataBlockSkipNum: 0
-    minBlockPointNum: 10
-    vehicleHeight: 1.5
-    voxelPointUpdateThre: 100
-    voxelTimeUpdateThre: 2.0
-    minRelZ: -1.5
-    maxRelZ: 0.3
-    disRatioZ: 0.2
+terrainAnalysis:  # 近场地形与障碍物分析节点
+  ros__parameters:  # 局部地形图生成参数
+    scanVoxelSize: 0.05  # 输入扫描降采样体素边长，单位 m
+    decayTime: 1.0  # 地形点保留时长，单位 s
+    noDecayDis: 1.75  # 机器人附近不执行时间衰减的半径，单位 m
+    clearingDis: 8.0  # 清图指令生效的半径，单位 m
+    useSorting: true  # 是否通过排序分位数估计地面高度
+    quantileZ: 0.25  # 地面高度采用的 Z 值分位数
+    considerDrop: false  # 是否将明显下落地形判为不可通行
+    limitGroundLift: false  # 是否限制相邻栅格地面高度的突升
+    maxGroundLift: 0.15  # 允许的最大地面突升高度，单位 m
+    clearDyObs: true  # 是否利用当前扫描清除动态障碍残影
+    minDyObsDis: 0.3  # 动态障碍射线判定的最小水平距离，单位 m
+    minDyObsAngle: 0.0  # 动态障碍射线判定的最小仰角，单位度
+    minDyObsRelZ: -0.3  # 动态障碍仰角计算的相对高度基准，单位 m
+    absDyObsRelZThre: 0.2  # 近水平点参与动态障碍清除的高度阈值，单位 m
+    minDyObsVFOV: -28.0  # 动态障碍清除使用的最小垂直视场角，单位度
+    maxDyObsVFOV: 33.0  # 动态障碍清除使用的最大垂直视场角，单位度
+    minDyObsPointNum: 1  # 保留动态障碍所需的最少支持点数
+    noDataObstacle: false  # 是否把无点云数据的栅格视为障碍
+    noDataBlockSkipNum: 0  # 无数据障碍检测时跳过的相邻区块数
+    minBlockPointNum: 10  # 判定栅格有有效地形所需的最少点数
+    vehicleHeight: 1.5  # 过滤机器人本体及上方点使用的车体高度，单位 m
+    voxelPointUpdateThre: 100  # 触发地形体素更新的累计点数
+    voxelTimeUpdateThre: 2.0  # 强制更新地形体素的时间间隔，单位 s
+    minRelZ: -1.5  # 地形点相对机器人高度下限，单位 m
+    maxRelZ: 0.3  # 地形点相对机器人高度上限，单位 m
+    disRatioZ: 0.2  # 高度范围随水平距离扩展的比例
 
-terrainAnalysisExt:
-  ros__parameters:
-    scanVoxelSize: 0.1
-    decayTime: 4.0
-    noDecayDis: 0.0
-    clearingDis: 30.0
-    useSorting: true
-    quantileZ: 0.1
-    vehicleHeight: 1.5
-    voxelPointUpdateThre: 100
-    voxelTimeUpdateThre: 2.0
-    lowerBoundZ: -2.5
-    upperBoundZ: 1.0
-    disRatioZ: 0.1
-    checkTerrainConn: false
-    terrainConnThre: 0.5
-    terrainUnderVehicle: -0.75
-    ceilingFilteringThre: 2.0
-    localTerrainMapRadius: 4.0
+terrainAnalysisExt:  # 扩展范围地形图生成节点
+  ros__parameters:  # 全局障碍点云生成参数
+    scanVoxelSize: 0.1  # 输入扫描降采样体素边长，单位 m
+    decayTime: 4.0  # 扩展地形点保留时长，单位 s
+    noDecayDis: 0.0  # 机器人附近不执行时间衰减的半径，单位 m
+    clearingDis: 30.0  # 清图指令生效的半径，单位 m
+    useSorting: true  # 是否通过排序分位数估计地面高度
+    quantileZ: 0.1  # 地面高度采用的 Z 值分位数
+    vehicleHeight: 1.5  # 过滤机器人本体及上方点使用的车体高度，单位 m
+    voxelPointUpdateThre: 100  # 触发地形体素更新的累计点数
+    voxelTimeUpdateThre: 2.0  # 强制更新地形体素的时间间隔，单位 s
+    lowerBoundZ: -2.5  # 地形点相对机器人高度下限，单位 m
+    upperBoundZ: 1.0  # 地形点相对机器人高度上限，单位 m
+    disRatioZ: 0.1  # 高度范围随水平距离扩展的比例
+    checkTerrainConn: false  # 是否检查栅格与车下地面的高度连通性
+    terrainConnThre: 0.5  # 相邻地形高度允许的连通差值，单位 m
+    terrainUnderVehicle: -0.75  # 车体下方参考地面相对高度，单位 m
+    ceilingFilteringThre: 2.0  # 相对地面高于该值的点按顶棚过滤，单位 m
+    localTerrainMapRadius: 4.0  # 直接采用近场地形图的半径，单位 m
 
-pb_gicp_localization:
-  ros__parameters:
-    map_frame: map
-    odom_frame: odom
-    input_cloud_topic: registered_scan
-    initial_map_to_odom: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    num_threads: 4
-    num_neighbors: 20
-    global_leaf_size: 0.10
-    registered_leaf_size: 0.05
-    # Must stay >= max_translation_jump_initial^2 or the first lock cannot
-    # recover the documented ~1 m startup offset. Tighten only with field data.
-    max_dist_sq: 3.0
-    min_inliers: 500
-    min_inlier_ratio: 0.20
-    # Covariance-weighted (Mahalanobis-like) GICP residual, NOT meters.
-    # Collect the mean_error diagnostic on the real field before tightening.
-    max_mean_error: 1.0
-    max_translation_jump: 0.5
-    max_rotation_jump: 0.35
-    max_translation_jump_initial: 1.0
-    max_rotation_jump_initial: 0.35
-    lost_after_rejects: 10
-    input_scan_timeout: 2.0
+pb_gicp_localization:  # 基于 GICP 的点云地图定位节点
+  ros__parameters:  # GICP 配准与结果校验参数
+    map_frame: map  # 全局点云地图坐标系
+    odom_frame: odom  # 待估计 map 变换对应的里程计坐标系
+    input_cloud_topic: registered_scan  # 输入的里程计系配准点云话题
+    initial_map_to_odom: [-0.009653, -0.141873, 0.051420, -0.004372, 0.014471, 1.569590]  # 仅为兜底值；正常启动由地图同名 .initial_pose.yaml 覆盖
+    num_threads: 4  # GICP 并行计算线程数
+    num_neighbors: 20  # 估计点协方差使用的近邻点数
+    global_leaf_size: 0.10  # 全局地图降采样体素边长，单位 m
+    registered_leaf_size: 0.05  # 输入扫描降采样体素边长，单位 m
+    max_dist_sq: 3.0  # 匹配点最大平方距离；应不小于首次平移跳变阈值的平方，单位 m^2
+    min_inliers: 500  # 接受一次配准所需的最少内点数
+    min_inlier_ratio: 0.20  # 接受一次配准所需的最小内点比例
+    max_mean_error: 2.0  # 最大协方差加权平均残差；收紧前应采集现场 mean_error，量纲不是米
+    max_translation_jump: 0.7  # 已定位后单次允许的最大平移跳变，单位 m
+    max_rotation_jump: 0.45  # 已定位后单次允许的最大旋转跳变，单位 rad
+    max_translation_jump_initial: 3.0  # 首次定位允许的最大平移修正，单位 m
+    max_rotation_jump_initial: 0.55  # 首次定位允许的最大旋转修正，单位 rad
+    lost_after_rejects: 10  # 连续拒绝达到该次数后判定定位丢失
+    input_scan_timeout: 2.0  # 超过该时长未收到扫描即判定输入超时，单位 s
 
-map_server:
-  ros__parameters:
-    yaml_filename: ""
-    topic_name: map
-    frame_id: map
+map_server:  # Nav2 二维栅格地图服务器
+  ros__parameters:  # 静态地图发布参数
+    yaml_filename: ""  # 地图 YAML 路径；空值由 launch 注入
+    topic_name: map  # 栅格地图发布话题
+    frame_id: map  # 栅格地图消息坐标系
 
-controller_server:
-  ros__parameters:
-    controller_frequency: 20.0
-    min_x_velocity_threshold: 0.001
-    min_y_velocity_threshold: 0.0
-    min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
-    progress_checker_plugin: progress_checker
-    goal_checker_plugins: [general_goal_checker]
-    controller_plugins: [FollowPath]
-    progress_checker:
-      plugin: nav2_controller::SimpleProgressChecker
-      required_movement_radius: 0.2
-      movement_time_allowance: 10.0
-    general_goal_checker:
-      stateful: true
-      plugin: nav2_controller::SimpleGoalChecker
-      xy_goal_tolerance: 0.15
-      yaw_goal_tolerance: 0.15
-    FollowPath:
-      plugin: pb_diff_pid_pursuit_controller::DiffPidPursuitController
-      translation_kp: 3.0
-      translation_ki: 0.1
-      translation_kd: 0.3
-      rotation_kp: 3.0
-      rotation_ki: 0.1
-      rotation_kd: 0.3
-      lookahead_dist: 0.3
-      use_velocity_scaled_lookahead_dist: true
-      min_lookahead_dist: 0.2
-      max_lookahead_dist: 1.0
-      lookahead_time: 1.0
-      rotate_to_heading_threshold: 0.7
-      goal_alignment_distance: 0.20
-      v_linear_min: -0.2
-      v_linear_max: 0.6
-      v_angular_min: -1.0
-      v_angular_max: 1.0
-      min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 0.6
-      use_interpolation: true
+controller_server:  # Nav2 路径跟踪控制服务器
+  ros__parameters:  # 控制循环及插件参数
+    controller_frequency: 20.0  # 控制指令计算频率，单位 Hz
+    min_x_velocity_threshold: 0.001  # 小于该值的 X 速度视为零，单位 m/s
+    min_y_velocity_threshold: 0.0  # 小于该值的 Y 速度视为零，单位 m/s
+    min_theta_velocity_threshold: 0.001  # 小于该值的角速度视为零，单位 rad/s
+    failure_tolerance: 0.3  # 控制器报错后允许继续容忍的时长，单位 s
+    progress_checker_plugin: progress_checker  # 当前使用的进度检查器名称
+    goal_checker_plugins: [general_goal_checker]  # 可用的到达目标检查器列表
+    controller_plugins: [FollowPath]  # 可用的路径跟踪控制器列表
+    progress_checker:  # 机器人移动进度检查器配置
+      plugin: nav2_controller::SimpleProgressChecker  # 简单位移进度检查插件
+      required_movement_radius: 0.2  # 时限内要求的最小移动距离，单位 m
+      movement_time_allowance: 10.0  # 完成最小移动允许的时间，单位 s
+    general_goal_checker:  # 通用目标到达检查器配置
+      stateful: true  # 进入位置容差后保持位置已满足状态
+      plugin: nav2_controller::SimpleGoalChecker  # 简单位姿目标检查插件
+      xy_goal_tolerance: 0.15  # 目标平面位置容差，单位 m
+      yaw_goal_tolerance: 0.15  # 目标偏航角容差，单位 rad
+    FollowPath:  # 自定义差速 PID 追踪控制器配置
+      plugin: pb_diff_pid_pursuit_controller::DiffPidPursuitController  # 路径跟踪插件类型
+      translation_kp: 2.2  # 线速度 PID 比例增益
+      translation_ki: 0.1  # 线速度 PID 积分增益
+      translation_kd: 0.3  # 线速度 PID 微分增益
+      rotation_kp: 2.0  # 角速度 PID 比例增益
+      rotation_ki: 0.1  # 角速度 PID 积分增益
+      rotation_kd: 0.3  # 角速度 PID 微分增益
+      lookahead_dist: 0.3  # 固定前视距离，单位 m
+      use_velocity_scaled_lookahead_dist: true  # 是否按当前速度动态计算前视距离
+      min_lookahead_dist: 0.2  # 动态前视距离下限，单位 m
+      max_lookahead_dist: 1.0  # 动态前视距离上限，单位 m
+      lookahead_time: 1.0  # 动态前视距离使用的速度预测时间，单位 s
+      rotate_to_heading_threshold: 0.7  # 超过该航向误差时原地转向，单位 rad
+      goal_alignment_distance: 0.20  # 距目标小于该距离时改为对齐目标朝向，单位 m
+      v_linear_min: -1  # 控制器允许的最小线速度，单位 m/s
+      v_linear_max: 1  # 控制器允许的最大线速度，单位 m/s
+      v_angular_min: -1.5  # 控制器允许的最小角速度，单位 rad/s
+      v_angular_max: 1.5  # 控制器允许的最大角速度，单位 rad/s
+      min_approach_linear_velocity: 0.05  # 接近目标时保留的最小线速度，单位 m/s
+      approach_velocity_scaling_dist: 0.6  # 开始按剩余距离减速的距离，单位 m
+      use_interpolation: true  # 是否在路径点之间插值得到精确前视点
 
-planner_server:
-  ros__parameters:
-    expected_planner_frequency: 5.0
-    planner_plugins: [GridBased]
-    GridBased:
-      plugin: nav2_navfn_planner/NavfnPlanner
-      tolerance: 0.5
-      use_astar: true
-      allow_unknown: true
+planner_server:  # Nav2 全局路径规划服务器
+  ros__parameters:  # 规划频率及插件参数
+    expected_planner_frequency: 5.0  # 期望的最低规划频率，单位 Hz
+    planner_plugins: [GridBased]  # 可用的全局规划器列表
+    GridBased:  # NavFn 栅格规划器配置
+      plugin: nav2_navfn_planner/NavfnPlanner  # NavFn 全局规划插件类型
+      tolerance: 0.5  # 目标不可达时允许替代终点的半径，单位 m
+      use_astar: true  # 是否使用 A*；否则使用 Dijkstra
+      allow_unknown: true  # 是否允许路径穿过未知栅格
 
-smoother_server:
-  ros__parameters:
-    smoother_plugins: [simple_smoother]
-    simple_smoother:
-      plugin: nav2_smoother::SimpleSmoother
-      tolerance: 1.0e-10
-      max_its: 1000
-      do_refinement: true
+smoother_server:  # Nav2 路径平滑服务器
+  ros__parameters:  # 路径平滑插件参数
+    smoother_plugins: [simple_smoother]  # 可用的路径平滑器列表
+    simple_smoother:  # 简单梯度下降平滑器配置
+      plugin: nav2_smoother::SimpleSmoother  # 简单路径平滑插件类型
+      tolerance: 1.0e-10  # 优化收敛判定容差
+      max_its: 1000  # 单次平滑允许的最大迭代次数
+      do_refinement: true  # 是否在首次平滑后继续细化
 
-bt_navigator:
-  ros__parameters:
-    global_frame: map
-    robot_base_frame: base_link
-    odom_topic: odometry
-    bt_loop_duration: 10
-    default_server_timeout: 20
-    plugin_lib_names:
-      - nav2_compute_path_to_pose_action_bt_node
-      - nav2_compute_path_through_poses_action_bt_node
-      - nav2_smooth_path_action_bt_node
-      - nav2_follow_path_action_bt_node
-      - nav2_spin_action_bt_node
-      - nav2_wait_action_bt_node
-      - nav2_back_up_action_bt_node
-      - nav2_drive_on_heading_bt_node
-      - nav2_clear_costmap_service_bt_node
-      - nav2_is_stuck_condition_bt_node
-      - nav2_goal_reached_condition_bt_node
-      - nav2_goal_updated_condition_bt_node
-      - nav2_globally_updated_goal_condition_bt_node
-      - nav2_is_path_valid_condition_bt_node
-      - nav2_rate_controller_bt_node
-      - nav2_distance_controller_bt_node
-      - nav2_speed_controller_bt_node
-      - nav2_truncate_path_action_bt_node
-      - nav2_truncate_path_local_action_bt_node
-      - nav2_goal_updater_node_bt_node
-      - nav2_recovery_node_bt_node
-      - nav2_pipeline_sequence_bt_node
-      - nav2_round_robin_node_bt_node
-      - nav2_transform_available_condition_bt_node
-      - nav2_time_expired_condition_bt_node
-      - nav2_path_expiring_timer_condition
-      - nav2_distance_traveled_condition_bt_node
-      - nav2_single_trigger_bt_node
-      - nav2_goal_updated_controller_bt_node
-      - nav2_is_battery_low_condition_bt_node
-      - nav2_navigate_through_poses_action_bt_node
-      - nav2_navigate_to_pose_action_bt_node
-      - nav2_remove_passed_goals_action_bt_node
-      - nav2_planner_selector_bt_node
-      - nav2_controller_selector_bt_node
-      - nav2_goal_checker_selector_bt_node
-      - nav2_controller_cancel_bt_node
-      - nav2_path_longer_on_approach_bt_node
-      - nav2_wait_cancel_bt_node
-      - nav2_spin_cancel_bt_node
-      - nav2_back_up_cancel_bt_node
-      - nav2_drive_on_heading_cancel_bt_node
-      - nav2_is_battery_charging_condition_bt_node
+bt_navigator:  # Nav2 行为树导航器
+  ros__parameters:  # 行为树执行与插件参数
+    global_frame: map  # 行为树使用的全局坐标系
+    robot_base_frame: base_link  # 行为树使用的机器人坐标系
+    odom_topic: odometry  # 行为树读取的里程计话题
+    bt_loop_duration: 10  # 行为树循环周期，单位 ms
+    default_server_timeout: 20  # 等待行为树服务响应的默认超时，单位 ms
+    plugin_lib_names:  # 行为树运行时加载的节点插件库
+      - nav2_compute_path_to_pose_action_bt_node  # 计算到单个目标路径的动作节点
+      - nav2_compute_path_through_poses_action_bt_node  # 计算途经多目标路径的动作节点
+      - nav2_smooth_path_action_bt_node  # 平滑路径的动作节点
+      - nav2_follow_path_action_bt_node  # 跟踪路径的动作节点
+      - nav2_spin_action_bt_node  # 原地旋转恢复动作节点
+      - nav2_wait_action_bt_node  # 等待动作节点
+      - nav2_back_up_action_bt_node  # 后退恢复动作节点
+      - nav2_drive_on_heading_bt_node  # 沿指定航向直行动作节点
+      - nav2_clear_costmap_service_bt_node  # 清除代价地图的服务节点
+      - nav2_is_stuck_condition_bt_node  # 判断机器人是否卡住的条件节点
+      - nav2_goal_reached_condition_bt_node  # 判断目标是否到达的条件节点
+      - nav2_goal_updated_condition_bt_node  # 判断目标是否更新的条件节点
+      - nav2_globally_updated_goal_condition_bt_node  # 判断全局目标是否更新的条件节点
+      - nav2_is_path_valid_condition_bt_node  # 判断当前路径是否有效的条件节点
+      - nav2_rate_controller_bt_node  # 限制子树执行频率的控制节点
+      - nav2_distance_controller_bt_node  # 按移动距离触发子树的控制节点
+      - nav2_speed_controller_bt_node  # 按机器人速度调节子树频率的控制节点
+      - nav2_truncate_path_action_bt_node  # 从机器人当前位置截短路径的动作节点
+      - nav2_truncate_path_local_action_bt_node  # 按局部范围截短路径的动作节点
+      - nav2_goal_updater_node_bt_node  # 从输入更新导航目标的控制节点
+      - nav2_recovery_node_bt_node  # 编排主动作与恢复动作的控制节点
+      - nav2_pipeline_sequence_bt_node  # 以流水线方式执行子节点的控制节点
+      - nav2_round_robin_node_bt_node  # 轮询执行子节点的控制节点
+      - nav2_transform_available_condition_bt_node  # 检查坐标变换可用性的条件节点
+      - nav2_time_expired_condition_bt_node  # 检查计时是否到期的条件节点
+      - nav2_path_expiring_timer_condition  # 检查路径是否到期的条件节点
+      - nav2_distance_traveled_condition_bt_node  # 检查累计移动距离的条件节点
+      - nav2_single_trigger_bt_node  # 仅首次触发子节点的控制节点
+      - nav2_goal_updated_controller_bt_node  # 目标更新时触发子树的控制节点
+      - nav2_is_battery_low_condition_bt_node  # 检查低电量状态的条件节点
+      - nav2_navigate_through_poses_action_bt_node  # 执行多目标导航的动作节点
+      - nav2_navigate_to_pose_action_bt_node  # 执行单目标导航的动作节点
+      - nav2_remove_passed_goals_action_bt_node  # 移除已通过目标点的动作节点
+      - nav2_planner_selector_bt_node  # 运行时选择规划器的节点
+      - nav2_controller_selector_bt_node  # 运行时选择控制器的节点
+      - nav2_goal_checker_selector_bt_node  # 运行时选择目标检查器的节点
+      - nav2_controller_cancel_bt_node  # 取消路径跟踪动作的节点
+      - nav2_path_longer_on_approach_bt_node  # 判断接近目标时新路径是否变长的节点
+      - nav2_wait_cancel_bt_node  # 取消等待动作的节点
+      - nav2_spin_cancel_bt_node  # 取消旋转动作的节点
+      - nav2_back_up_cancel_bt_node  # 取消后退动作的节点
+      - nav2_drive_on_heading_cancel_bt_node  # 取消沿航向直行动作的节点
+      - nav2_is_battery_charging_condition_bt_node  # 检查充电状态的条件节点
 
-behavior_server:
-  ros__parameters:
-    local_costmap_topic: local_costmap/costmap_raw
-    global_costmap_topic: global_costmap/costmap_raw
-    local_footprint_topic: local_costmap/published_footprint
-    global_footprint_topic: global_costmap/published_footprint
-    cycle_frequency: 10.0
-    behavior_plugins: [spin, backup, drive_on_heading, wait]
-    spin:
-      plugin: nav2_behaviors/Spin
-    backup:
-      plugin: pb_nav2_behaviors/BackUpFreeSpace
-    drive_on_heading:
-      plugin: nav2_behaviors/DriveOnHeading
-    wait:
-      plugin: nav2_behaviors/Wait
-    global_frame: odom
-    robot_base_frame: base_link
-    transform_tolerance: 0.1
-    max_rotational_vel: 1.0
-    min_rotational_vel: 0.2
-    rotational_acc_lim: 2.0
+behavior_server:  # Nav2 恢复与辅助行为服务器
+  ros__parameters:  # 行为插件及运动约束参数
+    local_costmap_topic: local_costmap/costmap_raw  # 恢复行为读取的局部代价地图话题
+    global_costmap_topic: global_costmap/costmap_raw  # 恢复行为读取的全局代价地图话题
+    local_footprint_topic: local_costmap/published_footprint  # 局部代价地图的机器人轮廓话题
+    global_footprint_topic: global_costmap/published_footprint  # 全局代价地图的机器人轮廓话题
+    cycle_frequency: 10.0  # 行为执行循环频率，单位 Hz
+    behavior_plugins: [spin, backup, drive_on_heading, wait]  # 可用的行为插件列表
+    spin:  # 原地旋转行为配置
+      plugin: nav2_behaviors/Spin  # 原地旋转行为插件类型
+    backup:  # 后退行为配置
+      plugin: pb_nav2_behaviors/BackUpFreeSpace  # 自定义自由空间后退插件类型
+    drive_on_heading:  # 沿航向直行行为配置
+      plugin: nav2_behaviors/DriveOnHeading  # 沿航向直行插件类型
+    wait:  # 原地等待行为配置
+      plugin: nav2_behaviors/Wait  # 等待行为插件类型
+    global_frame: odom  # 行为执行使用的全局坐标系
+    robot_base_frame: base_link  # 行为执行使用的机器人坐标系
+    transform_tolerance: 0.1  # 接受坐标变换延迟的容差，单位 s
+    max_rotational_vel: 1.0  # 旋转行为最大角速度，单位 rad/s
+    min_rotational_vel: 0.2  # 旋转行为最小角速度，单位 rad/s
+    rotational_acc_lim: 2.0  # 旋转行为角加速度上限，单位 rad/s^2
 
-waypoint_follower:
-  ros__parameters:
-    loop_rate: 20
-    stop_on_failure: false
-    waypoint_task_executor_plugin: wait_at_waypoint
-    wait_at_waypoint:
-      plugin: nav2_waypoint_follower::WaitAtWaypoint
-      enabled: true
-      waypoint_pause_duration: 0
+waypoint_follower:  # Nav2 航点跟随服务器
+  ros__parameters:  # 航点循环与任务插件参数
+    loop_rate: 20  # 航点执行状态检查频率，单位 Hz
+    stop_on_failure: false  # 单个航点失败后是否终止整条任务
+    waypoint_task_executor_plugin: wait_at_waypoint  # 到达航点后执行的任务插件名称
+    wait_at_waypoint:  # 航点等待任务配置
+      plugin: nav2_waypoint_follower::WaitAtWaypoint  # 到点等待任务插件类型
+      enabled: true  # 是否启用到点等待任务
+      waypoint_pause_duration: 0  # 每个航点暂停时长，单位 ms
 
-velocity_smoother:
-  ros__parameters:
-    smoothing_frequency: 20.0
-    scale_velocities: false
-    feedback: OPEN_LOOP
-    max_velocity: [0.6, 0.0, 1.0]
-    min_velocity: [-0.2, 0.0, -1.0]
-    max_accel: [0.8, 0.0, 2.0]
-    max_decel: [-0.8, 0.0, -2.0]
-    enable_stamped_cmd_vel: false
-    odom_topic: odometry
-    odom_duration: 0.1
-    deadband_velocity: [0.0, 0.0, 0.0]
-    velocity_timeout: 1.0
+velocity_smoother:  # Nav2 速度指令平滑节点
+  ros__parameters:  # 速度、加速度与反馈参数
+    smoothing_frequency: 20.0  # 平滑后速度指令发布频率，单位 Hz
+    scale_velocities: false  # 某轴超限时是否同比缩放其余速度分量
+    feedback: OPEN_LOOP  # 使用上一条指令而非实测里程计作为平滑反馈
+    max_velocity: [0.6, 0.0, 1.0]  # 最大速度 [vx, vy, wz]，单位 m/s、m/s、rad/s
+    min_velocity: [-0.2, 0.0, -1.0]  # 最小速度 [vx, vy, wz]，单位 m/s、m/s、rad/s
+    max_accel: [0.8, 0.0, 2.0]  # 最大加速度 [ax, ay, aw]，单位 m/s^2、m/s^2、rad/s^2
+    max_decel: [-0.8, 0.0, -2.0]  # 最大减速度 [ax, ay, aw]，使用负值
+    enable_stamped_cmd_vel: false  # 是否使用带时间戳的 TwistStamped 指令
+    odom_topic: odometry  # 闭环反馈时读取的里程计话题
+    odom_duration: 0.1  # 估算当前速度使用的里程计时间窗，单位 s
+    deadband_velocity: [0.0, 0.0, 0.0]  # 速度死区 [vx, vy, wz]
+    velocity_timeout: 1.0  # 输入速度超时后制动的等待时间，单位 s
 
-local_costmap:
-  local_costmap:
-    ros__parameters:
-      update_frequency: 10.0
-      publish_frequency: 5.0
-      global_frame: odom
-      robot_base_frame: base_link
-      rolling_window: true
-      width: 8
-      height: 8
-      resolution: 0.05
-      robot_radius: 0.25
-      plugins: [obstacle_layer, inflation_layer]
-      obstacle_layer:
-        plugin: nav2_costmap_2d::ObstacleLayer
-        enabled: true
-        observation_sources: terrain
-        terrain:
-          topic: terrain_map
-          data_type: PointCloud2
-          clearing: true
-          marking: true
-          max_obstacle_height: 2.0
-          min_obstacle_height: -0.3
-      inflation_layer:
-        plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.45
-      always_send_full_costmap: true
+local_costmap:  # 局部代价地图命名空间
+  local_costmap:  # 局部代价地图节点
+    ros__parameters:  # 局部代价地图尺寸与图层参数
+      update_frequency: 10.0  # 代价地图内部更新频率，单位 Hz
+      publish_frequency: 5.0  # 代价地图对外发布频率，单位 Hz
+      global_frame: odom  # 局部代价地图固定坐标系
+      robot_base_frame: base_link  # 机器人机体坐标系
+      rolling_window: true  # 是否让地图窗口跟随机器人移动
+      width: 8  # 局部代价地图宽度，单位 m
+      height: 8  # 局部代价地图高度，单位 m
+      resolution: 0.05  # 单个栅格边长，单位 m
+      robot_radius: 0.25  # 圆形机器人碰撞半径，单位 m
+      plugins: [obstacle_layer, inflation_layer]  # 按顺序加载的局部图层列表
+      obstacle_layer:  # 近场点云障碍图层配置
+        plugin: nav2_costmap_2d::ObstacleLayer  # 标准障碍图层插件类型
+        enabled: true  # 是否启用该障碍图层
+        observation_sources: terrain  # 该图层使用的观测源名称列表
+        terrain:  # 近场地形点云观测源配置
+          topic: terrain_map  # 障碍观测点云话题
+          data_type: PointCloud2  # 障碍观测消息类型
+          clearing: true  # 是否用射线追踪清除空闲栅格
+          marking: true  # 是否把观测点标记为障碍
+          max_obstacle_height: 2.0  # 接受障碍点的最大高度，单位 m
+          min_obstacle_height: -0.3  # 接受障碍点的最小高度，单位 m
+      inflation_layer:  # 障碍物膨胀图层配置
+        plugin: nav2_costmap_2d::InflationLayer  # 标准膨胀图层插件类型
+        cost_scaling_factor: 3.0  # 障碍代价随距离衰减的指数系数
+        inflation_radius: 0.45  # 障碍物向外膨胀的半径，单位 m
+      always_send_full_costmap: true  # 每次发布完整地图而非增量更新
 
-global_costmap:
-  global_costmap:
-    ros__parameters:
-      update_frequency: 2.0
-      publish_frequency: 2.0
-      global_frame: map
-      robot_base_frame: base_link
-      resolution: 0.05
-      robot_radius: 0.25
-      track_unknown_space: true
-      plugins: [static_layer, obstacle_layer, inflation_layer]
-      static_layer:
-        plugin: nav2_costmap_2d::StaticLayer
-        map_subscribe_transient_local: true
-      obstacle_layer:
-        plugin: nav2_costmap_2d::ObstacleLayer
-        enabled: true
-        observation_sources: terrain
-        terrain:
-          topic: terrain_map_ext
-          data_type: PointCloud2
-          clearing: true
-          marking: true
-          max_obstacle_height: 2.0
-          min_obstacle_height: -0.3
-      inflation_layer:
-        plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.45
-      always_send_full_costmap: true
+global_costmap:  # 全局代价地图命名空间
+  global_costmap:  # 全局代价地图节点
+    ros__parameters:  # 全局代价地图坐标系与图层参数
+      update_frequency: 2.0  # 代价地图内部更新频率，单位 Hz
+      publish_frequency: 2.0  # 代价地图对外发布频率，单位 Hz
+      global_frame: map  # 全局代价地图固定坐标系
+      robot_base_frame: base_link  # 机器人机体坐标系
+      resolution: 0.05  # 单个栅格边长，单位 m
+      robot_radius: 0.25  # 圆形机器人碰撞半径，单位 m
+      track_unknown_space: true  # 是否在地图中保留未知区域
+      plugins: [static_layer, obstacle_layer, inflation_layer]  # 按顺序加载的全局图层列表
+      static_layer:  # 静态栅格地图图层配置
+        plugin: nav2_costmap_2d::StaticLayer  # 标准静态地图图层插件类型
+        map_subscribe_transient_local: true  # 使用持久化 QoS 接收已发布的静态地图
+      obstacle_layer:  # 扩展地形点云障碍图层配置
+        plugin: nav2_costmap_2d::ObstacleLayer  # 标准障碍图层插件类型
+        enabled: true  # 是否启用该障碍图层
+        observation_sources: terrain  # 该图层使用的观测源名称列表
+        terrain:  # 扩展地形点云观测源配置
+          topic: terrain_map_ext  # 障碍观测点云话题
+          data_type: PointCloud2  # 障碍观测消息类型
+          clearing: true  # 是否用射线追踪清除空闲栅格
+          marking: true  # 是否把观测点标记为障碍
+          max_obstacle_height: 2.0  # 接受障碍点的最大高度，单位 m
+          min_obstacle_height: -0.3  # 接受障碍点的最小高度，单位 m
+      inflation_layer:  # 障碍物膨胀图层配置
+        plugin: nav2_costmap_2d::InflationLayer  # 标准膨胀图层插件类型
+        cost_scaling_factor: 3.0  # 障碍代价随距离衰减的指数系数
+        inflation_radius: 0.45  # 障碍物向外膨胀的半径，单位 m
+      always_send_full_costmap: true  # 每次发布完整地图而非增量更新
 
-pb_diff_teleop_twist_joy:
-  ros__parameters:
-    enable_button: 4
-    turbo_button: 5
-    linear_axis: 1
-    angular_axis: 0
-    normal_linear_scale: 0.4
-    normal_angular_scale: 0.8
-    turbo_linear_scale: 0.6
-    turbo_angular_scale: 1.0
-
-twist_mux:
-  ros__parameters:
-    topics:
-      navigation:
-        topic: cmd_vel_nav
-        timeout: 0.5
-        priority: 10
-      teleop:
-        topic: cmd_vel_teleop
-        timeout: 0.5
-        priority: 100
+twist_mux:  # 多来源速度指令仲裁节点
+  ros__parameters:  # 速度输入源及优先级参数
+    topics:  # 参与仲裁的速度话题集合
+      navigation:  # 自动导航速度输入源
+        topic: cmd_vel_nav  # 自动导航速度话题
+        timeout: 0.5  # 导航指令超过该时长未更新即失效，单位 s
+        priority: 10  # 导航输入优先级，数值越大越优先
+      teleop:  # 人工遥控速度输入源
+        topic: cmd_vel_teleop  # 人工遥控速度话题
+        timeout: 0.5  # 遥控指令超过该时长未更新即失效，单位 s
+        priority: 100  # 遥控输入优先级，高于自动导航

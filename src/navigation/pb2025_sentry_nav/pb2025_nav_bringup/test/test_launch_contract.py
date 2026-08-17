@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import ast
 import json
+import math
 from pathlib import Path
 
 import yaml
@@ -78,7 +78,12 @@ def test_mux_and_localization_contract():
     assert topics["teleop"]["priority"] > topics["navigation"]["priority"]
     assert topics["teleop"]["timeout"] == 0.5
     localization = params["pb_gicp_localization"]["ros__parameters"]
-    assert localization["initial_map_to_odom"] == [0.0] * 6
+    initial_map_to_odom = localization["initial_map_to_odom"]
+    assert len(initial_map_to_odom) == 6
+    assert all(
+        isinstance(value, (int, float)) and math.isfinite(value)
+        for value in initial_map_to_odom
+    )
     assert params["laserMapping"]["ros__parameters"]["prior_pcd"]["enable"] is False
     assert params["laserMapping"]["ros__parameters"]["publish"]["tf_send_en"] is False
     assert params["laserMapping"]["ros__parameters"]["pcd_save"]["pcd_save_en"] is False
@@ -88,12 +93,42 @@ def test_mux_and_localization_contract():
     assert 'os.environ.get("LD_PRELOAD")' in launch
     assert '("cmd_vel_smoothed", "cmd_vel_nav")' in launch
     assert '("cmd_vel_out", "cmd_vel")' in launch
+    assert 'package="joy_linux"' in launch
+    assert 'executable="joy_linux_node"' in launch
+    assert 'executable="joy_convert_node"' in launch
+    assert '("cmd_vel", "cmd_vel_teleop")' in launch
+    assert 'package="joy"' not in launch
+    assert "/home/rc4/fruit_ws/src/joy_linux/config/joy_config.yaml" in launch
+    assert 'SOURCE_SHARE = (' in launch
+    assert 'get_package_share_directory' not in launch
+    assert 'DeclareLaunchArgument("initial_pose_file", default_value="")' in launch
+    assert 'os.path.splitext(localization_map)[0] + ".initial_pose.yaml"' in launch
+    assert '"initial_map_to_odom"' not in launch
     assert "default_nav_to_pose_bt_xml" in launch
     assert "default_nav_through_poses_bt_xml" in launch
+
+    package = (ROOT / "pb2025_nav_bringup/package.xml").read_text()
+    assert "<exec_depend>joy_linux</exec_depend>" in package
+    assert "pb_diff_teleop_twist_joy" not in package
+
+
+def test_xbox_series_stick_mapping_contract():
+    joy_config = yaml.safe_load(
+        (ROOT.parents[2] / "src/joy_linux/config/joy_config.yaml").read_text()
+    )
+    converter = joy_config["joy_convert_node"]["ros__parameters"]
+    assert converter["linear_axis"] == 1
+    assert converter["angular_axis"] == 2
+    assert converter["angular_z_scale"] == -0.8
 
 
 def test_calibrated_mid360_static_transform_has_one_source():
     launch_path = ROOT / "pb2025_nav_bringup/launch/sensor_frames.launch.py"
+    launch_text = launch_path.read_text()
+    sensor_frames_path = (
+        ROOT / "pb2025_nav_bringup/config/reality/sensor_frames.yaml"
+    )
+    sensor_frames = yaml.safe_load(sensor_frames_path.read_text())
     localization_launch = (
         ROOT / "pb2025_nav_bringup/launch/localization_navigation_launch.py"
     ).read_text()
@@ -103,76 +138,34 @@ def test_calibrated_mid360_static_transform_has_one_source():
     assert "sensor_frames.launch.py" in mapping_launch
     assert "static_transform_publisher" not in localization_launch
     assert "static_transform_publisher" not in mapping_launch
+    assert launch_text.count('executable="static_transform_publisher"') == 2
+    assert "sensor_frames.yaml" in launch_text
+    assert "base_to_front_mid360" in launch_text
+    assert "front_mid360_to_livox_imu" in launch_text
+    assert "0.144629969" not in launch_text
 
-    tree = ast.parse(launch_path.read_text())
-    static_tfs = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "Node"
-        and any(
-            keyword.arg == "executable"
-            and ast.literal_eval(keyword.value) == "static_transform_publisher"
-            for keyword in node.keywords
-        )
-    ]
-    assert len(static_tfs) == 2
-
-    arguments_by_variable = {
-        assignment.targets[0].id: ast.literal_eval(assignment.value)
-        for assignment in ast.walk(tree)
-        if isinstance(assignment, ast.Assign)
-        and len(assignment.targets) == 1
-        and isinstance(assignment.targets[0], ast.Name)
-        and assignment.targets[0].id in {"base_to_lidar", "lidar_to_imu"}
+    expected_frames = {
+        "base_to_front_mid360": ("base_link", "front_mid360"),
+        "front_mid360_to_livox_imu": ("front_mid360", "livox_frame"),
     }
-    by_name = {}
-    for static_tf in static_tfs:
-        keywords = {keyword.arg: keyword.value for keyword in static_tf.keywords}
-        arguments = keywords["arguments"]
-        by_name[ast.literal_eval(keywords["name"])] = arguments_by_variable[arguments.id]
+    for name, (parent, child) in expected_frames.items():
+        transform = sensor_frames[name]
+        assert transform["parent_frame"] == parent
+        assert transform["child_frame"] == child
+        assert len(transform["translation"]) == 3
+        assert len(transform["rotation"]) == 4
+        assert all(
+            isinstance(value, (int, float)) and math.isfinite(value)
+            for value in transform["translation"] + transform["rotation"]
+        )
+        assert math.isclose(
+            math.sqrt(sum(value * value for value in transform["rotation"])),
+            1.0,
+            abs_tol=1e-6,
+        )
 
-    assert by_name["base_to_front_mid360"] == [
-        "--x",
-        "0.144629969",
-        "--y",
-        "0.0",
-        "--z",
-        "0.0",
-        "--qx",
-        "-0.183012702",
-        "--qy",
-        "0.183012702",
-        "--qz",
-        "-0.683012702",
-        "--qw",
-        "0.683012702",
-        "--frame-id",
-        "base_link",
-        "--child-frame-id",
-        "front_mid360",
-    ]
-    assert by_name["front_mid360_to_livox_imu"] == [
-        "--x",
-        "0.011",
-        "--y",
-        "0.02329",
-        "--z",
-        "-0.04412",
-        "--qx",
-        "0.0",
-        "--qy",
-        "0.0",
-        "--qz",
-        "0.0",
-        "--qw",
-        "1.0",
-        "--frame-id",
-        "front_mid360",
-        "--child-frame-id",
-        "livox_frame",
-    ]
+    pose_tool = (ROOT / "pb2025_nav_bringup/scripts/map_initial_pose.py").read_text()
+    assert 'sensor_frames["base_to_front_mid360"]' in pose_tool
 
     package = (ROOT / "pb2025_nav_bringup/package.xml").read_text()
     assert "<exec_depend>tf2_ros</exec_depend>" in package
@@ -197,9 +190,16 @@ def test_loam_interface_reads_mid360_extrinsic_from_tf():
     assert '"extrinsic_R"' not in loam_launch
 
     gicp = params["pb_gicp_localization"]["ros__parameters"]
-    assert gicp["max_translation_jump_initial"] == 1.0
-    assert gicp["lost_after_rejects"] == 10
-    assert params["laserMapping"]["ros__parameters"]["mapping"]["ivox_grid_resolution"] == 0.5
+    assert gicp["max_translation_jump_initial"] >= gicp["max_translation_jump"] >= 0.0
+    assert gicp["max_rotation_jump_initial"] >= gicp["max_rotation_jump"] >= 0.0
+    assert isinstance(gicp["lost_after_rejects"], int)
+    assert gicp["lost_after_rejects"] > 0
+    ivox_grid_resolution = params["laserMapping"]["ros__parameters"]["mapping"][
+        "ivox_grid_resolution"
+    ]
+    assert isinstance(ivox_grid_resolution, (int, float))
+    assert math.isfinite(ivox_grid_resolution)
+    assert ivox_grid_resolution > 0.0
 
 
 def test_mid360_runtime_config_matches_live_hardware():

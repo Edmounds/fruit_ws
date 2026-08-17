@@ -99,8 +99,13 @@ ros2 launch pb2025_nav_bringup localization_navigation_launch.py \
   use_teleop:=false
 ```
 
+The launch file automatically loads `/abs/path/localization.initial_pose.yaml` as
+the final `pb_gicp_localization` parameter override. Generate the PCD and matching
+initial-pose sidecar together with `/home/rc4/fruit_ws/save_glim_map.sh`.
+
 The launch fails immediately when any required map or parameter file is missing. Set
-`use_teleop:=true` to start the PS4 joystick path.
+`use_teleop:=true` to start the Bluetooth Xbox Wireless Controller path. The launch selects the
+controller by its Linux input name and publishes through the existing `twist_mux` safety timeout.
 
 ## Differential Drive Commands
 
@@ -113,11 +118,21 @@ Command arbitration is:
 ```text
 Nav2 velocity smoother -> cmd_vel_nav ----+
                                          +-> twist_mux -> cmd_vel -> base
-PS4 teleop ------------> cmd_vel_teleop -+
+Xbox controller -> joy_linux -> JoyConvert -> cmd_vel_teleop -+
 ```
 
-Teleop has the higher priority and a 0.5 s timeout. Normal limits are 0.4 m/s and 0.8 rad/s;
-turbo limits are 0.6 m/s and 1.0 rad/s.
+Teleop has the higher priority and a 0.5 s timeout. The Xbox configuration limits commands to
+0.4 m/s and 0.8 rad/s, and only uses `linear.x` and `angular.z` for the differential-drive base.
+
+## Relocalization Visualization
+
+Start the launch with `use_rviz:=true`. The default RViz configuration uses `map` as Fixed Frame.
+In the `GICP Localization` group, compare the gray `GICP Map` with the green `GICP Aligned`
+cloud; fixed structures should overlap and `GICP Path` should be continuous without jumps.
+Enable the red `GICP Source Odom` display when the uncorrected odom cloud is needed for comparison.
+The `Global Costmap`, `Local Costmap`, `Path`, and `Local Plan` displays show whether navigation is
+using the corrected robot pose. The full command sequence and diagnostic interpretation are in
+[`MAPPING_NAVIGATION.md`](../../../MAPPING_NAVIGATION.md#5-查看重定位效果).
 
 ## Verification
 

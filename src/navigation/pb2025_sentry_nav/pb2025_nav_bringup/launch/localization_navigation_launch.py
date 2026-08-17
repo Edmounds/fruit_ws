@@ -14,7 +14,6 @@
 
 import os
 
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
@@ -24,14 +23,23 @@ from launch_ros.actions import Node
 from nav2_common.launch import RewrittenYaml
 
 
+SOURCE_SHARE = (
+    "/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup"
+)
+
+
 def _launch_nodes(context):
     map_file = LaunchConfiguration("map").perform(context)
     localization_map = LaunchConfiguration("localization_map").perform(context)
     params_file = LaunchConfiguration("params_file").perform(context)
+    initial_pose_file = LaunchConfiguration("initial_pose_file").perform(context)
+    if not initial_pose_file:
+        initial_pose_file = os.path.splitext(localization_map)[0] + ".initial_pose.yaml"
     for label, path in (
         ("map", map_file),
         ("localization_map", localization_map),
         ("params_file", params_file),
+        ("initial_pose_file", initial_pose_file),
     ):
         if not os.path.isfile(path):
             raise RuntimeError(f"{label} does not exist: {path}")
@@ -50,15 +58,14 @@ def _launch_nodes(context):
         )
     }
     pcl_common = {**common, "additional_env": pcl_env}
-    behavior_tree_dir = os.path.join(
-        get_package_share_directory("pb2025_nav_bringup"), "behavior_trees"
-    )
+    behavior_tree_dir = os.path.join(SOURCE_SHARE, "behavior_trees")
     mid360_config = os.path.join(
-        get_package_share_directory("pb2025_nav_bringup"),
+        SOURCE_SHARE,
         "config",
         "reality",
         "mid360_user_config.json",
     )
+    joy_config = "/home/rc4/fruit_ws/src/joy_linux/config/joy_config.yaml"
 
     nodes = [
         IncludeLaunchDescription(
@@ -108,7 +115,11 @@ def _launch_nodes(context):
             package="pb_gicp_localization",
             executable="pb_gicp_localization_node",
             name="pb_gicp_localization",
-            parameters=[configured_params, {"localization_map": localization_map}],
+            parameters=[
+                configured_params,
+                initial_pose_file,
+                {"localization_map": localization_map},
+            ],
             output="screen",
             additional_env=pcl_env,
         ),
@@ -198,18 +209,19 @@ def _launch_nodes(context):
             output="screen",
         ),
         Node(
-            package="joy",
-            executable="joy_node",
-            name="joy_node",
+            package="joy_linux",
+            executable="joy_linux_node",
+            name="joy_linux_node",
             condition=IfCondition(LaunchConfiguration("use_teleop")),
-            parameters=[{"deadzone": 0.3, "autorepeat_rate": 20.0}],
+            parameters=[joy_config],
         ),
         Node(
-            package="pb_diff_teleop_twist_joy",
-            executable="pb_diff_teleop_twist_joy_node",
-            name="pb_diff_teleop_twist_joy",
+            package="joy_linux",
+            executable="joy_convert_node",
+            name="joy_convert_node",
             condition=IfCondition(LaunchConfiguration("use_teleop")),
-            parameters=[configured_params],
+            parameters=[joy_config],
+            remappings=[("cmd_vel", "cmd_vel_teleop")],
         ),
         Node(
             package="rviz2",
@@ -223,22 +235,24 @@ def _launch_nodes(context):
 
 
 def generate_launch_description():
-    share = get_package_share_directory("pb2025_nav_bringup")
     return LaunchDescription(
         [
             DeclareLaunchArgument("map", description="Absolute path to the Nav2 map YAML"),
             DeclareLaunchArgument(
                 "localization_map", description="Absolute path to the GLIM-derived PCD"
             ),
+            DeclareLaunchArgument("initial_pose_file", default_value=""),
             DeclareLaunchArgument(
                 "params_file",
-                default_value=os.path.join(share, "config", "reality", "nav2_params.yaml"),
+                default_value=os.path.join(
+                    SOURCE_SHARE, "config", "reality", "nav2_params.yaml"
+                ),
             ),
             DeclareLaunchArgument("use_teleop", default_value="false"),
             DeclareLaunchArgument("use_rviz", default_value="true"),
             DeclareLaunchArgument(
                 "rviz_config",
-                default_value=os.path.join(share, "rviz", "nav2_default_view.rviz"),
+                default_value=os.path.join(SOURCE_SHARE, "rviz", "nav2_default_view.rviz"),
             ),
             OpaqueFunction(function=_launch_nodes),
         ]

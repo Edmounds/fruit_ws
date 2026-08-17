@@ -41,6 +41,7 @@ private:
   void set_callbacks();
   void odometry_new_frame(const EstimationFrame::ConstPtr& new_frame, bool corrected);
   void globalmap_on_update_submaps(const std::vector<SubMap::Ptr>& submaps);
+  void publish_global_map(const rclcpp::Time& stamp);
   void invoke(const std::function<void()>& task);
 
   void spin_once();
@@ -92,7 +93,8 @@ private:
   std::mutex trajectory_mutex;
   std::unique_ptr<TrajectoryManager> trajectory;
 
-  std::vector<gtsam_points::PointCloud::ConstPtr> submaps;
+  std::vector<gtsam_points::PointCloud::ConstPtr> cached_submaps;
+  std::vector<Eigen::Isometry3d, Eigen::aligned_allocator<Eigen::Isometry3d>> cached_submap_poses;
 
   std::mutex invoke_queue_mutex;
   std::vector<std::function<void()>> invoke_queue;

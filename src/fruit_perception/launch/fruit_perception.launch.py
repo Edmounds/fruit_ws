@@ -19,8 +19,13 @@ def _set_v4l2_control(device, control, value):
     )
 
 
-def _apply_manual_camera_controls(camera_parameters):
+def _apply_manual_camera_controls(camera_parameters, v4l2_controls):
     device = camera_parameters['video_device']
+    _set_v4l2_control(
+        device,
+        'backlight_compensation',
+        v4l2_controls['backlight_compensation'],
+    )
     _set_v4l2_control(
         device,
         'white_balance_automatic',
@@ -68,11 +73,24 @@ def generate_launch_description():
     perception_parameters = camera_config[
         'fruit_perception_node'
     ]['ros__parameters']
+    usb_camera_controls = camera_config[
+        'usb_camera_controls'
+    ]['ros__parameters']
     left_camera_parameters = dict(
         camera_config['left_camera']['ros__parameters']
     )
+    left_camera_controls = dict(
+        backlight_compensation=usb_camera_controls[
+            'left_backlight_compensation'
+        ]
+    )
     right_camera_parameters = dict(
         camera_config['right_camera']['ros__parameters']
+    )
+    right_camera_controls = dict(
+        backlight_compensation=usb_camera_controls[
+            'right_backlight_compensation'
+        ]
     )
     # ========================================================================
     # 2. 节点清单
@@ -91,7 +109,9 @@ def generate_launch_description():
                 ('/set_capture', '/left_camera/set_capture'),
             ],
         })
-        camera_parameters_to_configure.append(left_camera_parameters)
+        camera_parameters_to_configure.append(
+            (left_camera_parameters, left_camera_controls)
+        )
     if perception_parameters['enable_right_camera']:
         nodes_to_launch.append({
             'package': 'usb_cam',
@@ -104,7 +124,9 @@ def generate_launch_description():
                 ('/set_capture', '/right_camera/set_capture'),
             ],
         })
-        camera_parameters_to_configure.append(right_camera_parameters)
+        camera_parameters_to_configure.append(
+            (right_camera_parameters, right_camera_controls)
+        )
     if perception_parameters['enable_d435i']:
         nodes_to_launch.append({
             'package': 'realsense2_camera',
@@ -136,8 +158,8 @@ def generate_launch_description():
     # 4. 自动生成动作列表
     # ========================================================================
     def apply_manual_camera_controls(_context):
-        for camera_parameters in camera_parameters_to_configure:
-            _apply_manual_camera_controls(camera_parameters)
+        for camera_parameters, v4l2_controls in camera_parameters_to_configure:
+            _apply_manual_camera_controls(camera_parameters, v4l2_controls)
         return []
 
     composable_nodes = []

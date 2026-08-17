@@ -8,17 +8,16 @@ left_camera:
     image_width: 640
     image_height: 480
     camera_name: "left_camera"
-    brightness: 50
+    camera_info_url: "file:///home/rc4/fruit_ws/src/fruit_perception/config/left_camera_calibration.yaml"
+    brightness: 0
     contrast: 3
     saturation: 69
     sharpness: 2
     gain: 1
     auto_white_balance: false
-    white_balance: 4600
+    white_balance: 5400
     autoexposure: false
-    exposure: 156
-    autofocus: false
-    focus: -1
+    exposure: 25
 
 right_camera:
   ros__parameters:
@@ -30,25 +29,29 @@ right_camera:
     image_width: 640
     image_height: 480
     camera_name: "right_camera"
-    brightness: 50
+    camera_info_url: "file:///home/rc4/fruit_ws/src/fruit_perception/config/right_camera_calibration.yaml"
+    brightness: 0
     contrast: 3
     saturation: 69
     sharpness: 2
     gain: 1
-    auto_white_balance: false
+    auto_white_balance: true
     white_balance: 4600
     autoexposure: false
-    exposure: 156
-    autofocus: false
-    focus: -1
+    exposure: 25
+
+usb_camera_controls:
+  ros__parameters:
+    left_backlight_compensation: 0
+    right_backlight_compensation: 0
 
 d435i_camera:
   ros__parameters:
     serial_no: "243322073779"
-    enable_color: false
+    enable_color: true
     rgb_camera.color_profile: "1920x1080x30"
     rgb_camera.color_format: "RGB8"
-    enable_depth: false
+    enable_depth: true
     depth_module.depth_profile: "1280x720x30"
     depth_module.depth_format: "Z16"
     enable_sync: true
@@ -79,7 +82,7 @@ fruit_perception_node:
     d435i_target_point_topic: "/fruit_perception/d435i/target_point"
     d435i_detections_topic: "/fruit_perception/d435i/detections"
     perception_mode_topic: "/fruit_mission/perception_mode"
-    confidence_threshold: 0.50
+    confidence_threshold: 0.70
 
 camera_mode_manager:
   ros__parameters:

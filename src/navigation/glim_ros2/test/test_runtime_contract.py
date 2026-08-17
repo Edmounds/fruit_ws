@@ -72,3 +72,20 @@ def test_offline_viewer_supports_noninteractive_point_export():
     assert "T_export_world" not in offline_viewer_core
     assert not (GLIM_ROS_DIR / "include/glim_ros/base_frame_alignment.hpp").exists()
     assert not (GLIM_ROS_DIR / "test/base_frame_alignment_test.cpp").exists()
+
+
+def test_rviz_map_publication_does_not_require_subscriber_during_submap_update():
+    rviz_viewer = (GLIM_ROS_DIR / "src" / "glim_ros" / "rviz_viewer.cpp").read_text()
+    rviz_header = (GLIM_ROS_DIR / "include" / "glim_ros" / "rviz_viewer.hpp").read_text()
+
+    assert "void publish_global_map(const rclcpp::Time& stamp);" in rviz_header
+    assert "std::vector<gtsam_points::PointCloud::ConstPtr> cached_submaps;" in rviz_header
+    assert "cached_submap_poses" in rviz_header
+    assert "this->cached_submaps = submap_frames;" in rviz_viewer
+    assert "publish_global_map(now);" in rviz_viewer
+    assert "!map_pub || !map_pub->get_subscription_count()" in rviz_viewer
+    assert (
+        "map_pub && map_pub->get_subscription_count() && !cached_submaps.empty()"
+        in rviz_viewer
+    )
+    assert "this->submaps.push_back(latest_submap->frame);" not in rviz_viewer
