@@ -85,6 +85,8 @@ def test_ros_outputs_share_the_normalized_map_and_odom_frames():
     assert "normalizedMapToOdom(native_to_ros, T_world_native_odom)" in rviz_viewer
     assert "native_to_ros * T_native_odom_imu" in rviz_viewer
     assert "native_to_ros * T_world_native_odom * new_frame->T_world_sensor()" in rviz_viewer
+    assert "new_frame->T_world_lidar.inverse()" in rviz_viewer
+    assert "frame_to_pointcloud2(lidar_frame_id" in rviz_viewer
     assert "saveMapFrameNormalization(dump_path" in rviz_viewer
     assert "virtual void at_exit(const std::string& dump_path) override;" in rviz_header
 

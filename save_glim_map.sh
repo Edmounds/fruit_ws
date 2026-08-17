@@ -64,10 +64,9 @@ for exported_file in \
 done
 
 existing_maps=()
-for extension in ply pcd pgm yaml; do
-  if [[ -e "$MAP_DIR/field.$extension" ]]; then
-    existing_maps+=("$MAP_DIR/field.$extension")
-  fi
+for map_file in "$MAP_DIR"/field.*; do
+  [[ -e "$map_file" ]] || continue
+  existing_maps+=("$map_file")
 done
 if ((${#existing_maps[@]} > 0)); then
   archive_dir="$WORKSPACE/tmp/field_map_backup_$(date +%Y%m%d_%H%M%S)_$$"

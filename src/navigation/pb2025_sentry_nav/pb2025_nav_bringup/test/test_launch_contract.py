@@ -222,6 +222,8 @@ def test_mapping_save_and_zero_initialization_contract():
     assert "nav2_map_server map_saver_cli" in start_mapping
     assert 'save_2d_map' in start_mapping
     assert '"$GLIM_DUMP_PATH/field"' in start_mapping
+    assert 'archive_existing_field_maps' in start_mapping
+    assert '"$MAP_DIR"/field.*' in start_mapping
 
     assert "map_frame_normalization.txt" in save_map
     for map_file in ("field.ply", "field.pcd", "field.pgm", "field.yaml"):

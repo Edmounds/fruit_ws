@@ -4,6 +4,7 @@ set -eo pipefail
 
 WORKSPACE=/home/rc4/fruit_ws
 GLIM_DUMP_PATH="$WORKSPACE/tmp/glim_map"
+MAP_DIR="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps"
 LIVOX_CONFIG="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/mid360_user_config.json"
 RVIZ_CONFIG="$WORKSPACE/src/navigation/glim_ros2/rviz/glim_ros.rviz"
 DESKTOP_RUNTIME_DIR="/run/user/$(id -u)"
@@ -80,6 +81,24 @@ start_process() {
   pids+=("$!")
 }
 
+archive_existing_field_maps() {
+  local existing_maps=()
+  local map_file
+  for map_file in "$MAP_DIR"/field.*; do
+    [[ -e "$map_file" ]] || continue
+    existing_maps+=("$map_file")
+  done
+
+  if ((${#existing_maps[@]} == 0)); then
+    return
+  fi
+
+  local archive_dir="$WORKSPACE/tmp/field_map_backup_$(date +%Y%m%d_%H%M%S)_$$"
+  mkdir -p "$archive_dir"
+  mv "${existing_maps[@]}" "$archive_dir/"
+  printf '[mapping] archived previous field map set to %s\n' "$archive_dir"
+}
+
 trap handle_signal INT TERM
 trap stop_children EXIT
 
@@ -91,6 +110,8 @@ if [[ ! -r "$DESKTOP_XAUTHORITY" ]]; then
   printf '[mapping] log in to the local desktop before starting mapping.\n' >&2
   exit 1
 fi
+
+archive_existing_field_maps
 
 if [[ -d "$GLIM_DUMP_PATH" ]] && [[ -n "$(find "$GLIM_DUMP_PATH" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
   previous_dump_path="${GLIM_DUMP_PATH}_$(date +%Y%m%d_%H%M%S)"

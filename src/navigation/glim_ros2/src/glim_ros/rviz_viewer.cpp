@@ -466,36 +466,34 @@ void RvizViewer::odometry_new_frame(const EstimationFrame::ConstPtr& new_frame, 
 
   auto& points_pub = !corrected ? this->points_pub : this->points_corrected_pub;
   if (points_pub->get_subscription_count()) {
-    // Publish points in their own coordinate frame
-    std::string frame_id;
+    Eigen::Isometry3d T_lidar_frame = Eigen::Isometry3d::Identity();
     switch (new_frame->frame_id) {
       case FrameID::LIDAR:
-        frame_id = lidar_frame_id;
         break;
       case FrameID::IMU:
-        frame_id = imu_frame_id;
+        T_lidar_frame = T_lidar_imu;
         break;
       case FrameID::WORLD:
-        frame_id = map_frame_id;
+        T_lidar_frame = new_frame->T_world_lidar.inverse();
         break;
     }
 
     std::vector<Eigen::Vector4d> transformed;
     const gtsam_points::PointCloud* frame = new_frame->frame.get();
-    gtsam_points::PointCloud normalized_frame;
-    if (new_frame->frame_id == FrameID::WORLD) {
+    gtsam_points::PointCloud lidar_frame;
+    if (new_frame->frame_id != FrameID::LIDAR) {
       transformed.resize(new_frame->frame->size());
       for (int i = 0; i < new_frame->frame->size(); i++) {
-        transformed[i] = native_to_ros * new_frame->frame->points[i];
+        transformed[i] = T_lidar_frame * new_frame->frame->points[i];
       }
-      normalized_frame.num_points = new_frame->frame->size();
-      normalized_frame.points = transformed.data();
-      normalized_frame.times = new_frame->frame->times;
-      normalized_frame.intensities = new_frame->frame->intensities;
-      frame = &normalized_frame;
+      lidar_frame.num_points = new_frame->frame->size();
+      lidar_frame.points = transformed.data();
+      lidar_frame.times = new_frame->frame->times;
+      lidar_frame.intensities = new_frame->frame->intensities;
+      frame = &lidar_frame;
     }
 
-    auto points = frame_to_pointcloud2(frame_id, new_frame->stamp, *frame);
+    auto points = frame_to_pointcloud2(lidar_frame_id, new_frame->stamp, *frame);
     points_pub->publish(*points);
 
     logger->debug("published points (stamp={} num_points={})", new_frame->stamp, new_frame->frame->size());
