@@ -34,21 +34,11 @@ def generate_launch_description():
     dump_path = LaunchConfiguration("dump_path")
     use_sim_time = LaunchConfiguration("use_sim_time")
 
-    system_libusb = "/lib/x86_64-linux-gnu/libusb-1.0.so.0"
-    pcl_env = {
-        "LD_PRELOAD": ":".join(
-            value for value in (system_libusb, os.environ.get("LD_PRELOAD")) if value
-        )
-    }
     common = {
         "parameters": [params_file, {"use_sim_time": use_sim_time}],
         "output": "screen",
         "emulate_tty": True,
     }
-    terrain_remappings = [
-        ("registered_scan", "/glim_ros/aligned_points_odom"),
-        ("lidar_odometry", "/glim_ros/lidar_odom"),
-    ]
 
     return LaunchDescription(
         [
@@ -78,27 +68,11 @@ def generate_launch_description():
                 }.items(),
             ),
             Node(
-                package="terrain_analysis",
-                executable="terrainAnalysis",
-                name="terrainAnalysis",
-                remappings=terrain_remappings,
-                additional_env=pcl_env,
-                **common,
-            ),
-            Node(
-                package="terrain_analysis_ext",
-                executable="terrainAnalysisExt",
-                name="terrainAnalysisExt",
-                remappings=terrain_remappings,
-                additional_env=pcl_env,
-                **common,
-            ),
-            Node(
                 package="pointcloud_to_laserscan",
                 executable="pointcloud_to_laserscan_node",
                 name="pointcloud_to_laserscan",
                 remappings=[
-                    ("cloud_in", "/terrain_map_ext"),
+                    ("cloud_in", "/glim_ros/aligned_points_odom"),
                     ("scan", "/obstacle_scan"),
                 ],
                 **common,

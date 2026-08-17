@@ -19,8 +19,6 @@
   <depend>livox_ros_driver2</depend>
   <depend>pb_nav2_plugins</depend>
   <depend>point_lio</depend>
-  <depend>terrain_analysis</depend>
-  <depend>terrain_analysis_ext</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

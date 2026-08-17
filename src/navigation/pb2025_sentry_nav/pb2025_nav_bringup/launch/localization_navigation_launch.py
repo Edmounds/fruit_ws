@@ -103,16 +103,14 @@ def _launch_nodes(context):
             **pcl_common,
         ),
         Node(
-            package="terrain_analysis",
-            executable="terrainAnalysis",
-            name="terrainAnalysis",
-            **pcl_common,
-        ),
-        Node(
-            package="terrain_analysis_ext",
-            executable="terrainAnalysisExt",
-            name="terrainAnalysisExt",
-            **pcl_common,
+            package="pointcloud_to_laserscan",
+            executable="pointcloud_to_laserscan_node",
+            name="pointcloud_to_laserscan",
+            remappings=[
+                ("cloud_in", "/sensor_scan"),
+                ("scan", "/obstacle_scan"),
+            ],
+            **common,
         ),
         Node(
             package="pb_gicp_localization",
@@ -179,6 +177,13 @@ def _launch_nodes(context):
             **common,
         ),
         Node(
+            package="nav2_collision_monitor",
+            executable="collision_monitor",
+            name="collision_monitor",
+            parameters=[configured_params],
+            output="screen",
+        ),
+        Node(
             package="nav2_lifecycle_manager",
             executable="lifecycle_manager",
             name="lifecycle_manager_navigation",
@@ -194,6 +199,7 @@ def _launch_nodes(context):
                         "bt_navigator",
                         "waypoint_follower",
                         "velocity_smoother",
+                        "collision_monitor",
                     ]
                 },
             ],
@@ -204,7 +210,7 @@ def _launch_nodes(context):
             executable="twist_mux",
             name="twist_mux",
             parameters=[configured_params],
-            remappings=[("cmd_vel_out", "cmd_vel")],
+            remappings=[("cmd_vel_out", "cmd_vel_muxed")],
             output="screen",
         ),
         Node(

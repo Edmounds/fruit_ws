@@ -74,14 +74,12 @@ TOPICS=(
   /Laser_map
   /aft_mapped_to_init
 
-  # Navigation-frame conversion and terrain pipeline.
+  # Navigation-frame conversion and obstacle scan.
   /registered_scan
   /lidar_odometry
   /wheel/odom
   /sensor_scan
   /odometry
-  /terrain_map
-  /terrain_map_ext
   /obstacle_scan
 
   # GICP localization result and debug visualization.
@@ -113,7 +111,11 @@ TOPICS=(
   /cmd_vel_nav_raw
   /cmd_vel_nav
   /cmd_vel_teleop
+  /cmd_vel_muxed
   /cmd_vel
+  /polygon_slow_front
+  /polygon_stop_front
+  /polygon_stop_rear
   /fruit_hardware_bridge/state_machine/command
   /fruit_hardware_bridge/arm/target
   /fruit_hardware_bridge/execution/callback
@@ -136,6 +138,7 @@ TOPICS=(
   /bt_navigator/transition_event
   /waypoint_follower/transition_event
   /velocity_smoother/transition_event
+  /collision_monitor/transition_event
   /lifecycle_manager_navigation/transition_event
 )
 

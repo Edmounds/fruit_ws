@@ -88,56 +88,7 @@ sensor_scan_generation:  # 生成导航所需配准扫描的节点
     lidar_frame: front_mid360  # 输入扫描对应的雷达坐标系
     base_frame: base_link  # 输出扫描对齐的机器人坐标系
 
-terrainAnalysis:  # 近场地形与障碍物分析节点
-  ros__parameters:  # 局部地形图生成参数
-    scanVoxelSize: 0.05  # 输入扫描降采样体素边长，单位 m
-    decayTime: 240.0  # 地形点保留时长，单位 s
-    noDecayDis: 0.0  # 所有旧点都按 decayTime 衰减，避免近场障碍永久残留
-    clearingDis: 8.0  # 清图指令生效的半径，单位 m
-    useSorting: true  # 是否通过排序分位数估计地面高度
-    quantileZ: 0.10  # 地面高度采用的 Z 值分位数
-    considerDrop: false  # 是否将明显下落地形判为不可通行
-    limitGroundLift: false  # 是否限制相邻栅格地面高度的突升
-    maxGroundLift: 0.15  # 允许的最大地面突升高度，单位 m
-    clearDyObs: true  # 是否利用当前扫描清除动态障碍残影
-    minDyObsDis: 0.3  # 动态障碍射线判定的最小水平距离，单位 m
-    minDyObsAngle: 0.0  # 动态障碍射线判定的最小仰角，单位度
-    minDyObsRelZ: -0.3  # 动态障碍仰角计算的相对高度基准，单位 m
-    absDyObsRelZThre: 0.2  # 近水平点参与动态障碍清除的高度阈值，单位 m
-    minDyObsVFOV: -28.0  # 动态障碍清除使用的最小垂直视场角，单位度
-    maxDyObsVFOV: 33.0  # 动态障碍清除使用的最大垂直视场角，单位度
-    minDyObsPointNum: 1  # 保留动态障碍所需的最少支持点数
-    noDataObstacle: false  # 是否把无点云数据的栅格视为障碍
-    noDataBlockSkipNum: 0  # 无数据障碍检测时跳过的相邻区块数
-    minBlockPointNum: 1  # 判定栅格有有效地形所需的最少点数
-    vehicleHeight: 1.5  # 过滤机器人本体及上方点使用的车体高度，单位 m
-    voxelPointUpdateThre: 100  # 触发地形体素更新的累计点数
-    voxelTimeUpdateThre: 2.0  # 强制更新地形体素的时间间隔，单位 s
-    minRelZ: -1.5  # 地形点相对机器人高度下限，单位 m
-    maxRelZ: 0.8  # 地形点相对机器人高度上限，单位 m
-    disRatioZ: 0.2  # 高度范围随水平距离扩展的比例
-
-terrainAnalysisExt:  # 扩展范围地形图生成节点
-  ros__parameters:  # 全局障碍点云生成参数
-    scanVoxelSize: 0.05  # 输入扫描降采样体素边长，单位 m
-    decayTime: 4.0  # 扩展地形点保留时长，单位 s
-    noDecayDis: 0.0  # 机器人附近不执行时间衰减的半径，单位 m
-    clearingDis: 30.0  # 清图指令生效的半径，单位 m
-    useSorting: true  # 是否通过排序分位数估计地面高度
-    quantileZ: 0.1  # 地面高度采用的 Z 值分位数
-    vehicleHeight: 1.5  # 过滤机器人本体及上方点使用的车体高度，单位 m
-    voxelPointUpdateThre: 100  # 触发地形体素更新的累计点数
-    voxelTimeUpdateThre: 2.0  # 强制更新地形体素的时间间隔，单位 s
-    lowerBoundZ: -2.5  # 地形点相对机器人高度下限，单位 m
-    upperBoundZ: 0.8  # 地形点相对机器人高度上限，单位 m
-    disRatioZ: 0.0  # 高度范围随水平距离扩展的比例
-    checkTerrainConn: false  # 是否检查栅格与车下地面的高度连通性
-    terrainConnThre: 0.2  # 相邻地形高度允许的连通差值，单位 m
-    terrainUnderVehicle: -0.75  # 车体下方参考地面相对高度，单位 m
-    ceilingFilteringThre: 2.0  # 相对地面高于该值的点按顶棚过滤，单位 m
-    localTerrainMapRadius: 4.0  # 直接采用近场地形图的半径，单位 m
-
-pointcloud_to_laserscan:  # 将扩展地形障碍点云投影为二维激光扫描
+pointcloud_to_laserscan:  # 将当前配准点云投影为二维障碍扫描
   ros__parameters:
     target_frame: base_link  # 在机器人本体坐标系内执行高度和角度筛选
     transform_tolerance: 0.05  # 等待 odom 到 base_link TF 的最长时间，单位 s
@@ -145,10 +96,10 @@ pointcloud_to_laserscan:  # 将扩展地形障碍点云投影为二维激光扫�
     max_height: 0.8  # 参与投影的最高点高度，单位 m
     angle_min: -3.141592654  # 激光扫描起始角，单位 rad
     angle_max: 3.141592654  # 激光扫描结束角，单位 rad
-    angle_increment: 0.002  # 激光角分辨率，单位 rad
-    scan_time: 0.1  # 对应 10 Hz GLIM 输入，单位 s
+    angle_increment: 0.01  # 激光角分辨率，单位 rad
+    scan_time: 0.1  # 对应 10 Hz 点云输入，单位 s
     range_min: 0.3  # 最小有效距离，单位 m
-    range_max: 10.0  # 最大有效距离，单位 m
+    range_max: 4.0  # 最大有效距离，覆盖局部避障窗口
     use_inf: true  # 无障碍方向使用正无穷距离
     inf_epsilon: 1.0  # 无穷距离相对 range_max 的偏移量
 
@@ -370,6 +321,48 @@ velocity_smoother:  # Nav2 速度指令平滑节点
     deadband_velocity: [0.0, 0.0, 0.0]  # 速度死区 [vx, vy, wz]
     velocity_timeout: 1.0  # 输入速度超时后制动的等待时间，单位 s
 
+collision_monitor:  # Nav2 末级碰撞监控节点
+  ros__parameters:  # 在 twist_mux 之后强制限速/停车
+    base_frame_id: base_link  # 机器人机体坐标系
+    odom_frame_id: odom  # 速度预测使用的里程计坐标系
+    cmd_vel_in_topic: cmd_vel_muxed  # twist_mux 输出速度
+    cmd_vel_out_topic: cmd_vel  # 最终底盘速度
+    transform_tolerance: 0.1  # 接受坐标变换延迟的容差，单位 s
+    source_timeout: 1.0  # 障碍扫描超时后停止信任输入，单位 s
+    base_shift_correction: true  # 根据当前速度修正机器人基座位置
+    stop_pub_timeout: 2.0  # 停车指令保持发布时长，单位 s
+    polygons: [SlowFront, StopFront, StopRear]  # 保护区列表
+    SlowFront:  # 前方减速区，窄通道内不因侧边树体误停
+      type: polygon
+      points: [0.65, 0.23, 0.65, -0.23, 0.0, -0.23, 0.0, 0.23]
+      action_type: slowdown
+      max_points: 0
+      slowdown_ratio: 0.35
+      visualize: true
+      polygon_pub_topic: polygon_slow_front
+      enabled: true
+    StopFront:  # 前方硬停车区
+      type: polygon
+      points: [0.35, 0.19, 0.35, -0.19, 0.02, -0.19, 0.02, 0.19]
+      action_type: stop
+      max_points: 0
+      visualize: true
+      polygon_pub_topic: polygon_stop_front
+      enabled: true
+    StopRear:  # 后退硬停车区
+      type: polygon
+      points: [0.0, 0.19, 0.0, -0.19, -0.25, -0.19, -0.25, 0.19]
+      action_type: stop
+      max_points: 0
+      visualize: true
+      polygon_pub_topic: polygon_stop_rear
+      enabled: true
+    observation_sources: [scan]  # 使用二维障碍扫描作为防撞输入
+    scan:
+      type: scan
+      topic: /obstacle_scan
+      enabled: true
+
 local_costmap:  # 局部代价地图命名空间
   local_costmap:  # 局部代价地图节点
     ros__parameters:  # 局部代价地图尺寸与图层参数
@@ -384,27 +377,26 @@ local_costmap:  # 局部代价地图命名空间
       footprint: "[[0.14463, 0.15], [0.14463, -0.15], [-0.25537, -0.15], [-0.25537, 0.15]]"  # 以 base_link 为原点的 0.40 m x 0.30 m 矩形轮廓
       footprint_padding: 0.0  # 极窄通道按实际外形碰撞，不额外放大
       plugins: [obstacle_layer, inflation_layer]  # 按顺序加载的局部图层列表
-      obstacle_layer:  # 近场点云障碍图层配置
+      obstacle_layer:  # 近场障碍扫描图层配置
         plugin: nav2_costmap_2d::ObstacleLayer  # 标准障碍图层插件类型
         enabled: true  # 是否启用该障碍图层
-        observation_sources: terrain  # 该图层使用的观测源名称列表
-        terrain:  # 近场地形点云观测源配置
-          topic: /terrain_map  # 根话题；避免被解析到 /local_costmap 命名空间
-          sensor_frame: front_mid360  # 点云在 odom 中，显式指定实际射线原点
-          data_type: PointCloud2  # 障碍观测消息类型
-          observation_persistence: 0.0  # Nav2 只保留最新一帧，旧点由 terrainAnalysis 管理
+        observation_sources: scan  # 该图层使用的观测源名称列表
+        scan:  # 当前二维障碍扫描观测源配置
+          topic: /obstacle_scan  # 根话题；避免被解析到 /local_costmap 命名空间
+          data_type: LaserScan  # 障碍观测消息类型
+          observation_persistence: 0.2  # 给 MID-360 非重复扫描保留短时记忆
           clearing: true  # 是否用射线追踪清除空闲栅格
           marking: true  # 是否把观测点标记为障碍
-          obstacle_min_range: 0.5  # 标记障碍的最小距离，单位 m
-          obstacle_max_range: 4.0  # 标记障碍的最大距离，覆盖局部窗口半径
+          obstacle_min_range: 0.0  # 标记障碍的最小距离，单位 m
+          obstacle_max_range: 3.0  # 标记障碍的最大距离，单位 m
           raytrace_min_range: 0.0  # 射线清除的最小距离，单位 m
-          raytrace_max_range: 4.5  # 射线清除的最大距离，略超出局部窗口边缘
+          raytrace_max_range: 3.5  # 射线清除的最大距离，略大于标记距离
           max_obstacle_height: 2.0  # 接受障碍点的最大高度，单位 m
           min_obstacle_height: -0.65  # 排除地面，同时保留 0.4/0.6 m 模拟树
       inflation_layer:  # 障碍物膨胀图层配置
         plugin: nav2_costmap_2d::InflationLayer  # 标准膨胀图层插件类型
         cost_scaling_factor: 2.0  # 障碍代价随距离衰减的指数系数
-        inflation_radius: 0.10  # 障碍物向外膨胀的半径，单位 m
+        inflation_radius: 0.05  # 窄通道优先保证可通过，安全制动由 collision_monitor 兜底
       always_send_full_costmap: true  # 每次发布完整地图而非增量更新
 
 global_costmap:  # 全局代价地图命名空间
@@ -422,27 +414,26 @@ global_costmap:  # 全局代价地图命名空间
       static_layer:  # 静态栅格地图图层配置
         plugin: nav2_costmap_2d::StaticLayer  # 标准静态地图图层插件类型
         map_subscribe_transient_local: true  # 使用持久化 QoS 接收已发布的静态地图
-      obstacle_layer:  # 扩展地形点云障碍图层配置
+      obstacle_layer:  # 全局障碍扫描图层配置
         plugin: nav2_costmap_2d::ObstacleLayer  # 标准障碍图层插件类型
         enabled: true  # 是否启用该障碍图层
-        observation_sources: terrain  # 该图层使用的观测源名称列表
-        terrain:  # 扩展地形点云观测源配置
-          topic: /terrain_map_ext  # 根话题；避免被解析到 /global_costmap 命名空间
-          sensor_frame: front_mid360  # 点云在 odom 中，显式指定实际射线原点
-          data_type: PointCloud2  # 障碍观测消息类型
-          observation_persistence: 0.0  # Nav2 只保留最新一帧，旧点由 terrainAnalysisExt 管理
+        observation_sources: scan  # 该图层使用的观测源名称列表
+        scan:  # 当前二维障碍扫描观测源配置
+          topic: /obstacle_scan  # 根话题；避免被解析到 /global_costmap 命名空间
+          data_type: LaserScan  # 障碍观测消息类型
+          observation_persistence: 0.0  # 全局图层使用当前扫描更新，不额外缓存观测
           clearing: true  # 是否用射线追踪清除空闲栅格
           marking: true  # 是否把观测点标记为障碍
-          obstacle_min_range: 0.5  # 标记障碍的最小距离，单位 m
-          obstacle_max_range: 10.0  # 全局动态障碍的最大标记距离，单位 m
+          obstacle_min_range: 0.0  # 标记障碍的最小距离，单位 m
+          obstacle_max_range: 4.0  # 全局随机障碍的最大标记距离，单位 m
           raytrace_min_range: 0.0  # 射线清除的最小距离，单位 m
-          raytrace_max_range: 10.0  # 全局动态障碍的最大清除距离，单位 m
+          raytrace_max_range: 4.0  # 全局随机障碍的最大清除距离，单位 m
           max_obstacle_height: 2.0  # 接受障碍点的最大高度，单位 m
           min_obstacle_height: -0.65  # 排除地面，同时保留 0.4/0.6 m 模拟树
       inflation_layer:  # 障碍物膨胀图层配置
         plugin: nav2_costmap_2d::InflationLayer  # 标准膨胀图层插件类型
         cost_scaling_factor: 3.0  # 障碍代价随距离衰减的指数系数
-        inflation_radius: 0.10  # 障碍物向外膨胀的半径，单位 m
+        inflation_radius: 0.05  # 窄通道优先保证可通过，安全制动由 collision_monitor 兜底
       always_send_full_costmap: true  # 每次发布完整地图而非增量更新
 
 twist_mux:  # 多来源速度指令仲裁节点

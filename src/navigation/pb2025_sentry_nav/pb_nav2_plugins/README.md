@@ -71,7 +71,7 @@ ros__parameters:
 
 #### 2.2.1 IntensityVoxelLayer
 
-`IntensityVoxelLayer` 是一个用于处理点云数据中障碍物强度信息的代价地图层。它可以根据点云数据中的强度值来标记障碍物，并将这些障碍物信息添加到代价地图中，本插件推荐配合 [terrain_analysis](https://github.com/SMBU-PolarBear-Robotics-Team/terrain_analysis) 功能包使用。
+`IntensityVoxelLayer` 是一个用于处理点云数据中障碍物强度信息的代价地图层。它可以根据点云数据中的强度值来标记障碍物，并将这些障碍物信息添加到代价地图中。
 
 **Parameters:**
 
@@ -112,10 +112,10 @@ local_costmap:
         max_obstacle_height: 2.0
         min_obstacle_intensity: 0.1
         max_obstacle_intensity: 2.0
-        observation_sources: terrain_map
-        terrain_map:
+        observation_sources: obstacle_cloud
+        obstacle_cloud:
           data_type: PointCloud2
-          topic: /terrain_map
+          topic: /obstacle_cloud
           min_obstacle_height: 0.0
           max_obstacle_height: 2.0
           obstacle_max_range: 5.0

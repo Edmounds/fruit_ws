@@ -98,7 +98,9 @@ def test_mux_and_localization_contract():
     assert 'system_libusb = "/lib/x86_64-linux-gnu/libusb-1.0.so.0"' in launch
     assert 'os.environ.get("LD_PRELOAD")' in launch
     assert '("cmd_vel_smoothed", "cmd_vel_nav")' in launch
-    assert '("cmd_vel_out", "cmd_vel")' in launch
+    assert '("cmd_vel_out", "cmd_vel_muxed")' in launch
+    assert 'package="nav2_collision_monitor"' in launch
+    assert 'executable="collision_monitor"' in launch
     assert 'package="joy_linux"' in launch
     assert 'executable="joy_linux_node"' in launch
     assert 'executable="joy_convert_node"' in launch
@@ -116,7 +118,16 @@ def test_mux_and_localization_contract():
 
     package = (ROOT / "pb2025_nav_bringup/package.xml").read_text()
     assert "<exec_depend>joy_linux</exec_depend>" in package
+    assert "<exec_depend>nav2_collision_monitor</exec_depend>" in package
     assert "pb_diff_teleop_twist_joy" not in package
+
+    collision_monitor = params["collision_monitor"]["ros__parameters"]
+    assert collision_monitor["cmd_vel_in_topic"] == "cmd_vel_muxed"
+    assert collision_monitor["cmd_vel_out_topic"] == "cmd_vel"
+    assert collision_monitor["observation_sources"] == ["scan"]
+    assert collision_monitor["scan"]["topic"] == "/obstacle_scan"
+    for polygon in ("SlowFront", "StopFront", "StopRear"):
+        assert collision_monitor[polygon]["max_points"] == 0
 
 
 def test_navigation_uses_costmap_clearing_and_backup_recovery_without_drive_on_heading():
@@ -214,14 +225,10 @@ def test_glim_2d_mapping_launch_contract():
 
     assert "glim_ros2/launch/mapping.launch.py" in launch
     assert 'package="point_lio"' not in launch
-    assert 'package="terrain_analysis"' in launch
-    assert 'package="terrain_analysis_ext"' in launch
     assert 'package="pointcloud_to_laserscan"' in launch
     assert 'package="slam_toolbox"' in launch
     assert 'executable="sync_slam_toolbox_node"' in launch
-    assert '("registered_scan", "/glim_ros/aligned_points_odom")' in launch
-    assert '("lidar_odometry", "/glim_ros/lidar_odom")' in launch
-    assert '("cloud_in", "/terrain_map_ext")' in launch
+    assert '("cloud_in", "/glim_ros/aligned_points_odom")' in launch
     assert '("scan", "/obstacle_scan")' in launch
 
 
@@ -239,6 +246,8 @@ def test_glim_2d_mapping_parameter_schema():
     assert isinstance(cloud_to_scan["range_min"], (int, float))
     assert isinstance(cloud_to_scan["range_max"], (int, float))
     assert 0.0 <= cloud_to_scan["range_min"] < cloud_to_scan["range_max"]
+    assert cloud_to_scan["range_max"] == 4.0
+    assert cloud_to_scan["angle_increment"] == 0.01
 
     assert slam["map_frame"] == "map"
     assert slam["odom_frame"] == "odom"
@@ -249,30 +258,46 @@ def test_glim_2d_mapping_parameter_schema():
     assert slam["do_loop_closing"] is False
 
 
-def test_costmap_observation_sources_use_lidar_origin_and_valid_ranges():
+def test_costmap_observation_sources_use_obstacle_scan_and_valid_ranges():
     params = yaml.safe_load(
         (ROOT / "pb2025_nav_bringup/config/reality/nav2_params.yaml").read_text()
     )
     local = params["local_costmap"]["local_costmap"]["ros__parameters"]
     global_ = params["global_costmap"]["global_costmap"]["ros__parameters"]
 
-    assert local["obstacle_layer"]["terrain"]["topic"] == "/terrain_map"
-    assert global_["obstacle_layer"]["terrain"]["topic"] == "/terrain_map_ext"
-
     for costmap in (local, global_):
-        terrain = costmap["obstacle_layer"]["terrain"]
-        assert terrain["sensor_frame"] == "front_mid360"
+        obstacle_source = costmap["obstacle_layer"]["scan"]
+        assert costmap["obstacle_layer"]["observation_sources"] == "scan"
+        assert obstacle_source["topic"] == "/obstacle_scan"
+        assert obstacle_source["data_type"] == "LaserScan"
+        assert obstacle_source["marking"] is True
+        assert obstacle_source["clearing"] is True
         for key in (
             "obstacle_min_range",
             "obstacle_max_range",
             "raytrace_min_range",
             "raytrace_max_range",
         ):
-            assert isinstance(terrain[key], (int, float))
-            assert math.isfinite(terrain[key])
-        assert 0.0 <= terrain["obstacle_min_range"] < terrain["obstacle_max_range"]
-        assert 0.0 <= terrain["raytrace_min_range"] < terrain["raytrace_max_range"]
-        assert terrain["raytrace_max_range"] >= terrain["obstacle_max_range"]
+            assert isinstance(obstacle_source[key], (int, float))
+            assert math.isfinite(obstacle_source[key])
+        assert (
+            0.0
+            <= obstacle_source["obstacle_min_range"]
+            < obstacle_source["obstacle_max_range"]
+        )
+        assert (
+            0.0
+            <= obstacle_source["raytrace_min_range"]
+            < obstacle_source["raytrace_max_range"]
+        )
+        assert (
+            obstacle_source["raytrace_max_range"]
+            >= obstacle_source["obstacle_max_range"]
+        )
+
+    assert local["obstacle_layer"]["scan"]["observation_persistence"] == 0.2
+    assert local["inflation_layer"]["inflation_radius"] == 0.05
+    assert global_["inflation_layer"]["inflation_radius"] == 0.05
 
 
 def test_costmaps_use_the_rectangular_robot_footprint():
@@ -326,7 +351,7 @@ def test_mapping_save_and_zero_initialization_contract():
     for topic in (
         "/glim_ros/map",
         "/glim_ros/aligned_points",
-        "/terrain_map_ext",
+        "/obstacle_scan",
         "/map",
     ):
         assert f"Value: {topic}" in mapping_rviz
