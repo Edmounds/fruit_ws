@@ -8,6 +8,7 @@ from rclpy.clock import ClockType
 from rclpy.time import Time
 
 from fruit_navigation.axis_waypoint_action_server import AxisWaypointActionServer
+from fruit_navigation.axis_planner import AxisPose
 
 
 class FakeLogger:
@@ -32,10 +33,12 @@ class FakeTransformBuffer:
 
 
 class FakeGoalHandle:
-    def __init__(self, active=True):
+    def __init__(self, active=True, cancel_requested=False):
         self.request = SimpleNamespace(poses=[PoseStamped()])
         self.is_active = active
+        self.is_cancel_requested = cancel_requested
         self.abort_count = 0
+        self.canceled_count = 0
         self.succeed_count = 0
         self.feedback = []
 
@@ -49,6 +52,18 @@ class FakeGoalHandle:
     def succeed(self):
         self.succeed_count += 1
         self.is_active = False
+
+    def canceled(self):
+        self.canceled_count += 1
+        self.is_active = False
+
+
+class FakePublisher:
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, message):
+        self.messages.append(message)
 
 
 def bare_server(localization_ready=True):
@@ -141,3 +156,62 @@ def test_lookup_pose_rejects_a_transform_older_than_tf_timeout():
 
     assert server._lookup_pose() is None
     assert stop_bursts == [True]
+
+
+def test_localization_error_blocks_goals_until_a_new_accepted_registration():
+    server = bare_server()
+
+    server._on_diagnostics(diagnostic(DiagnosticStatus.ERROR, "0", "1"))
+    assert server._on_goal(valid_goal()) == GoalResponse.REJECT
+
+    server._on_diagnostics(diagnostic(DiagnosticStatus.WARN, "0", "1"))
+    assert server._on_goal(valid_goal()) == GoalResponse.REJECT
+
+    server._on_diagnostics(diagnostic(DiagnosticStatus.OK, "1", "1"))
+    assert server._on_goal(valid_goal()) == GoalResponse.ACCEPT
+
+
+def test_cancel_request_marks_goal_canceled_and_publishes_stop():
+    server = bare_server()
+    stop_bursts = []
+    server._publish_stop_burst = lambda: stop_bursts.append(True)
+    goal_handle = FakeGoalHandle(cancel_requested=True)
+
+    assert server._should_stop(goal_handle) is True
+    assert goal_handle.canceled_count == 1
+    assert stop_bursts == [True]
+
+
+def test_drive_axis_only_populates_linear_x_and_angular_z(monkeypatch):
+    server = bare_server()
+    server._control_frequency = 20.0
+    server._progress_timeout_sec = 5.0
+    server._progress_min_delta = 0.01
+    server._position_tolerance = 0.05
+    server._linear_gain = 0.8
+    server._min_linear_speed = 0.05
+    server._max_linear_speed = 0.35
+    server._yaw_gain = 1.8
+    server._lateral_gain = 0.8
+    server._max_angular_speed = 0.8
+    server._cmd_vel = FakePublisher()
+    poses = iter((AxisPose(0.0, 0.1, 0.0), AxisPose(1.0, 0.0, 0.0)))
+    server._lookup_pose = lambda: next(poses)
+    server._should_stop = lambda _goal_handle: False
+    monkeypatch.setattr(
+        "fruit_navigation.axis_waypoint_action_server.rclpy.ok",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "fruit_navigation.axis_waypoint_action_server.time.sleep",
+        lambda _period: None,
+    )
+
+    assert server._drive_axis(FakeGoalHandle(), "x", 1.0, 0.0, 0.0) is True
+
+    command = server._cmd_vel.messages[0]
+    assert command.linear.x > 0.0
+    assert command.linear.y == 0.0
+    assert command.linear.z == 0.0
+    assert command.angular.x == 0.0
+    assert command.angular.y == 0.0
