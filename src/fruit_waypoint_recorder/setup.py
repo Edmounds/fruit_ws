@@ -22,7 +22,7 @@ setup(
     zip_safe=True,
     maintainer="fruit_ws team",
     maintainer_email="fruit-ws@example.com",
-    description="Record map-frame robot poses from joystick input and ROS services.",
+    description="Record fixed competition route templates from RViz SetGoal clicks.",
     license="Apache-2.0",
     extras_require={
         "test": [

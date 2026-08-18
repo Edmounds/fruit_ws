@@ -1,16 +1,20 @@
-"""Pure joystick edge detection and waypoint persistence logic."""
+# Copyright 2026 fruit_ws team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
 
-import math
+"""Route-template recording helpers for the fixed competition field."""
+
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Optional
 
-import yaml
+from fruit_navigation.route_model import AnchorSession, PoseData
 
 
 def new_session_path(output_directory: Path, now: datetime) -> Path:
-    """Return a timestamped session path without replacing an existing file."""
-    stem = f"waypoints_{now.strftime('%Y%m%d_%H%M%S')}"
+    """Return a timestamped route-template path without replacing a file."""
+    stem = f"competition_waypoints_{now.strftime('%Y%m%d_%H%M%S')}"
     candidate = output_directory / f"{stem}.yaml"
     suffix = 1
     while candidate.exists():
@@ -19,103 +23,35 @@ def new_session_path(output_directory: Path, now: datetime) -> Path:
     return candidate
 
 
-class JoyEdgeDetector:
-    """Detect rising edges for the configured save button and undo axis."""
+class WaypointTemplateStore:
+    """Maintain one eleven-anchor recording session and save generated points."""
 
-    def __init__(
-        self,
-        save_button: int,
-        undo_axis: int,
-        undo_direction: float,
-        axis_threshold: float,
-    ) -> None:
-        self._save_button = save_button
-        self._undo_axis = undo_axis
-        self._undo_direction = undo_direction
-        self._axis_threshold = axis_threshold
-        self._save_was_pressed = False
-        self._undo_was_pressed = False
-
-    def observe(
-        self, buttons: Sequence[int], axes: Sequence[float]
-    ) -> Tuple[bool, bool]:
-        """Return save and undo rising edges for one Joy sample."""
-        save_pressed = (
-            0 <= self._save_button < len(buttons)
-            and buttons[self._save_button] != 0
-        )
-        undo_pressed = (
-            0 <= self._undo_axis < len(axes)
-            and axes[self._undo_axis] * self._undo_direction
-            >= self._axis_threshold
-        )
-        save_edge = save_pressed and not self._save_was_pressed
-        undo_edge = undo_pressed and not self._undo_was_pressed
-        self._save_was_pressed = save_pressed
-        self._undo_was_pressed = undo_pressed
-        return save_edge, undo_edge
-
-
-class WaypointStore:
-    """Persist an ordered waypoint session to one YAML file."""
-
-    def __init__(
-        self,
-        output_path: Path,
-        frame_id: str,
-        child_frame_id: str,
-        created_at: datetime,
-    ) -> None:
+    def __init__(self, output_path: Path, yaw_tolerance: float) -> None:
         self.output_path = output_path
-        self._document = {
-            "frame_id": frame_id,
-            "child_frame_id": child_frame_id,
-            "created_at": created_at.isoformat(),
-            "waypoints": [],
-        }
-        self._write()
+        self._session = AnchorSession(yaw_tolerance=yaw_tolerance)
 
-    def append(
-        self,
-        translation: Dict[str, float],
-        rotation: Dict[str, float],
-        recorded_at: datetime,
-    ) -> Dict[str, object]:
-        """Append one transform and return the generated waypoint entry."""
-        index = len(self._document["waypoints"]) + 1
-        waypoint = {
-            "name": f"waypoint_{index:03d}",
-            "recorded_at": recorded_at.isoformat(),
-            "position": {key: float(translation[key]) for key in ("x", "y", "z")},
-            "orientation": {key: float(rotation[key]) for key in ("x", "y", "z", "w")},
-            "yaw": round(self._yaw(rotation), 6),
-        }
-        self._document["waypoints"].append(waypoint)
-        self._write()
-        return waypoint
+    @property
+    def prompt(self) -> str:
+        """Return the next click prompt."""
+        return self._session.next_prompt()
 
-    def undo(self) -> Optional[Dict[str, object]]:
-        """Remove and return the last waypoint, or return None when empty."""
-        if not self._document["waypoints"]:
-            return None
-        waypoint = self._document["waypoints"].pop()
-        self._write()
-        return waypoint
+    @property
+    def anchors(self):
+        """Return recorded anchors in click order."""
+        return self._session.anchors
 
-    @staticmethod
-    def _yaw(rotation: Dict[str, float]) -> float:
-        x = float(rotation["x"])
-        y = float(rotation["y"])
-        z = float(rotation["z"])
-        w = float(rotation["w"])
-        return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    def append(self, pose: PoseData) -> PoseData:
+        """Append one RViz-clicked pose as the next canonical anchor."""
+        return self._session.append(pose)
 
-    def _write(self) -> None:
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.output_path.open("w", encoding="utf-8") as output:
-            yaml.safe_dump(
-                self._document,
-                output,
-                allow_unicode=True,
-                sort_keys=False,
-            )
+    def undo(self) -> Optional[PoseData]:
+        """Undo the latest anchor."""
+        return self._session.undo()
+
+    def clear(self) -> None:
+        """Clear the current session."""
+        self._session.clear()
+
+    def save(self) -> None:
+        """Validate anchors, generate points, and write YAML."""
+        self._session.save(self.output_path)

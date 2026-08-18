@@ -15,7 +15,7 @@ def generate_launch_description():
         {
             "package": package_name,
             "executable": "waypoint_recorder_node",
-            "name": "waypoint_recorder",
+            "name": "fruit_waypoint_recorder",
             "parameters": [config_file],
         },
     ]

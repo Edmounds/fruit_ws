@@ -1,11 +1,7 @@
-waypoint_recorder:
+fruit_waypoint_recorder:
   ros__parameters:
-    joy_topic: "/joy"
+    goal_topic: "/goal_pose"
     frame_id: "map"
-    child_frame_id: "base_link"
     output_directory: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints"
-    save_button: 0
-    undo_axis: 6
-    undo_direction: 1.0
-    axis_threshold: 0.5
-    transform_timeout_sec: 1.0
+    output_file: "competition_waypoints.yaml"
+    yaw_tolerance: 0.35

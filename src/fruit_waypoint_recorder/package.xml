@@ -3,14 +3,16 @@
 <package format="3">
   <name>fruit_waypoint_recorder</name>
   <version>0.1.0</version>
-  <description>Record map-frame robot poses from joystick input and ROS services.</description>
+  <description>Record fixed competition route templates from RViz SetGoal clicks.</description>
   <maintainer email="fruit-ws@example.com">fruit_ws team</maintainer>
   <license>Apache-2.0</license>
 
+  <depend>fruit_navigation</depend>
+  <depend>geometry_msgs</depend>
   <depend>rclpy</depend>
-  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>std_srvs</depend>
-  <depend>tf2_ros</depend>
+  <depend>visualization_msgs</depend>
   <depend>python3-yaml</depend>
 
   <test_depend>ament_flake8</test_depend>

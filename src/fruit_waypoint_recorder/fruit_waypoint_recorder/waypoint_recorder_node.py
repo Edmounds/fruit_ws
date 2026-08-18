@@ -1,21 +1,30 @@
-"""ROS 2 node for recording the current map-to-base transform."""
+# Copyright 2026 fruit_ws team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+
+"""ROS 2 node for recording a fixed eleven-anchor route template."""
 
 from datetime import datetime
 from pathlib import Path
-from typing import Tuple
 
 import rclpy
-from rclpy.duration import Duration
+from geometry_msgs.msg import PoseStamped
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.time import Time
-from sensor_msgs.msg import Joy
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
+from std_msgs.msg import ColorRGBA, String
 from std_srvs.srv import Trigger
-from tf2_ros import Buffer, TransformException, TransformListener
+from visualization_msgs.msg import Marker, MarkerArray
 
+from fruit_navigation.route_model import PoseData
 from fruit_waypoint_recorder.recorder import (
-    JoyEdgeDetector,
-    WaypointStore,
+    WaypointTemplateStore,
     new_session_path,
 )
 
@@ -23,142 +32,127 @@ from fruit_waypoint_recorder.recorder import (
 DEFAULT_OUTPUT_DIRECTORY = "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints"
 
 
+def latched_qos() -> QoSProfile:
+    """Return transient local QoS for operator prompts."""
+    return QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
+
+
 class WaypointRecorderNode(Node):
-    """Record base_link poses through a service or joystick controls."""
+    """Record route anchors from RViz SetGoal clicks."""
 
     def __init__(self) -> None:
-        super().__init__("waypoint_recorder")
-        self.declare_parameter("joy_topic", "/joy")
+        super().__init__("fruit_waypoint_recorder")
+        self.declare_parameter("goal_topic", "/goal_pose")
         self.declare_parameter("frame_id", "map")
-        self.declare_parameter("child_frame_id", "base_link")
         self.declare_parameter("output_directory", DEFAULT_OUTPUT_DIRECTORY)
-        self.declare_parameter("save_button", 0)
-        self.declare_parameter("undo_axis", 6)
-        self.declare_parameter("undo_direction", 1.0)
-        self.declare_parameter("axis_threshold", 0.5)
-        self.declare_parameter("transform_timeout_sec", 1.0)
+        self.declare_parameter("output_file", "competition_waypoints.yaml")
+        self.declare_parameter("yaw_tolerance", 0.35)
 
-        joy_topic = self.get_parameter("joy_topic").value
         self._frame_id = self.get_parameter("frame_id").value
-        self._child_frame_id = self.get_parameter("child_frame_id").value
-        output_directory_value = self.get_parameter("output_directory").value
-        save_button = self.get_parameter("save_button").value
-        undo_axis = self.get_parameter("undo_axis").value
-        undo_direction = self.get_parameter("undo_direction").value
-        axis_threshold = self.get_parameter("axis_threshold").value
-        self._transform_timeout_sec = self.get_parameter("transform_timeout_sec").value
-        self._validate_parameters(
-            joy_topic,
-            output_directory_value,
-            save_button,
-            undo_axis,
-            undo_direction,
-            axis_threshold,
-        )
+        output_directory = Path(self.get_parameter("output_directory").value)
+        output_file = str(self.get_parameter("output_file").value)
+        yaw_tolerance = float(self.get_parameter("yaw_tolerance").value)
+        if output_file:
+            output_path = output_directory / output_file
+        else:
+            output_path = new_session_path(output_directory, datetime.now().astimezone())
+        self._store = WaypointTemplateStore(output_path, yaw_tolerance)
 
-        started_at = datetime.now().astimezone()
-        output_directory = Path(output_directory_value)
-        output_path = new_session_path(output_directory, started_at)
-        self._store = WaypointStore(
-            output_path,
-            self._frame_id,
-            self._child_frame_id,
-            started_at,
-        )
-        self._edges = JoyEdgeDetector(
-            save_button,
-            undo_axis,
-            undo_direction,
-            axis_threshold,
-        )
-        self._tf_buffer = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, self)
-        self._joy_subscription = self.create_subscription(
-            Joy,
-            joy_topic,
-            self._on_joy,
+        self._subscription = self.create_subscription(
+            PoseStamped,
+            self.get_parameter("goal_topic").value,
+            self._on_goal_pose,
             10,
         )
-        self._save_service = self.create_service(
-            Trigger,
-            "~/save",
-            self._on_save_service,
+        self._prompt_publisher = self.create_publisher(
+            String,
+            "~/prompt",
+            latched_qos(),
         )
-        self.get_logger().info(f"Waypoint session file: {output_path}")
-        self.get_logger().info(
-            f"A/save button index {save_button}; D-pad undo axis {undo_axis} "
-            f"direction {undo_direction:+.0f}"
+        self._marker_publisher = self.create_publisher(
+            MarkerArray,
+            "~/markers",
+            1,
         )
+        self._undo_service = self.create_service(Trigger, "~/undo", self._on_undo)
+        self._clear_service = self.create_service(Trigger, "~/clear", self._on_clear)
+        self._save_service = self.create_service(Trigger, "~/save", self._on_save)
+        self._publish_state()
+        self.get_logger().info(f"Recording route template to {output_path}")
 
-    def _validate_parameters(
-        self,
-        joy_topic: str,
-        output_directory: str,
-        save_button: int,
-        undo_axis: int,
-        undo_direction: float,
-        axis_threshold: float,
-    ) -> None:
-        if not joy_topic or not self._frame_id or not self._child_frame_id:
-            raise ValueError("joy_topic and TF frame IDs must not be empty")
-        if not output_directory:
-            raise ValueError("output_directory must not be empty")
-        if save_button < 0 or undo_axis < 0:
-            raise ValueError("joystick indexes must not be negative")
-        if undo_direction not in (-1.0, 1.0):
-            raise ValueError("undo_direction must be -1.0 or 1.0")
-        if axis_threshold <= 0.0 or axis_threshold > 1.0:
-            raise ValueError("axis_threshold must be in (0.0, 1.0]")
-        if self._transform_timeout_sec <= 0.0:
-            raise ValueError("transform_timeout_sec must be greater than zero")
+    def _on_goal_pose(self, message: PoseStamped) -> None:
+        if message.header.frame_id != self._frame_id:
+            self.get_logger().error(
+                f"Rejected goal in {message.header.frame_id}; expected {self._frame_id}"
+            )
+            return
+        try:
+            pose = self._store.append(PoseData.from_pose_stamped("", message))
+        except ValueError as error:
+            self.get_logger().error(str(error))
+            return
+        self.get_logger().info(f"Recorded {pose.name}; {self._store.prompt}")
+        self._publish_state()
 
-    def _on_joy(self, message: Joy) -> None:
-        save_edge, undo_edge = self._edges.observe(message.buttons, message.axes)
-        if save_edge:
-            success, result = self._save_current_pose()
-            if success:
-                self.get_logger().info(result)
-            else:
-                self.get_logger().error(result)
-        if undo_edge:
-            removed = self._store.undo()
-            if removed is None:
-                self.get_logger().warning("No waypoint to undo")
-            else:
-                self.get_logger().info(
-                    f"Removed {removed['name']} from {self._store.output_path}"
-                )
-
-    def _on_save_service(
-        self,
-        _request: Trigger.Request,
-        response: Trigger.Response,
-    ) -> Trigger.Response:
-        response.success, response.message = self._save_current_pose()
+    def _on_undo(self, _request, response):
+        removed = self._store.undo()
+        response.success = removed is not None
+        response.message = (
+            f"Removed {removed.name}; {self._store.prompt}"
+            if removed is not None
+            else "No anchor to undo"
+        )
+        self._publish_state()
         return response
 
-    def _save_current_pose(self) -> Tuple[bool, str]:
-        try:
-            transform = self._tf_buffer.lookup_transform(
-                self._frame_id,
-                self._child_frame_id,
-                Time(),
-                timeout=Duration(seconds=self._transform_timeout_sec),
-            )
-        except TransformException as error:
-            return False, (
-                f"Cannot save waypoint: {self._frame_id} -> "
-                f"{self._child_frame_id} unavailable: {error}"
-            )
+    def _on_clear(self, _request, response):
+        self._store.clear()
+        response.success = True
+        response.message = self._store.prompt
+        self._publish_state()
+        return response
 
-        translation = transform.transform.translation
-        rotation = transform.transform.rotation
-        waypoint = self._store.append(
-            translation={"x": translation.x, "y": translation.y, "z": translation.z},
-            rotation={"x": rotation.x, "y": rotation.y, "z": rotation.z, "w": rotation.w},
-            recorded_at=datetime.now().astimezone(),
-        )
-        return True, f"Saved {waypoint['name']} to {self._store.output_path}"
+    def _on_save(self, _request, response):
+        try:
+            self._store.save()
+        except ValueError as error:
+            response.success = False
+            response.message = str(error)
+            return response
+        response.success = True
+        response.message = f"Saved route template to {self._store.output_path}"
+        self._publish_state()
+        return response
+
+    def _publish_state(self) -> None:
+        prompt = String()
+        prompt.data = self._store.prompt
+        self._prompt_publisher.publish(prompt)
+        self._marker_publisher.publish(self._markers())
+
+    def _markers(self) -> MarkerArray:
+        markers = []
+        for index, pose in enumerate(self._store.anchors):
+            marker = Marker()
+            marker.header.frame_id = self._frame_id
+            marker.header.stamp = self.get_clock().now().to_msg()
+            marker.ns = "fruit_waypoint_recorder"
+            marker.id = index
+            marker.type = Marker.TEXT_VIEW_FACING
+            marker.action = Marker.ADD
+            marker.pose.position.x = pose.x
+            marker.pose.position.y = pose.y
+            marker.pose.position.z = pose.z + 0.2
+            marker.scale.z = 0.18
+            marker.color = ColorRGBA(r=1.0, g=0.75, b=0.0, a=1.0)
+            marker.text = f"{index + 1}: {pose.name} yaw={pose.yaw:.2f}"
+            markers.append(marker)
+        return MarkerArray(markers=markers)
 
 
 def main(args=None) -> None:

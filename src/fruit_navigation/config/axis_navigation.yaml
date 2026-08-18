@@ -1,0 +1,27 @@
+axis_waypoint_action_server:
+  ros__parameters:
+    map_frame: "map"
+    base_frame: "base_link"
+    cmd_vel_topic: "/cmd_vel_nav"
+    control_frequency: 20.0
+    max_linear_speed: 0.35
+    min_linear_speed: 0.05
+    max_angular_speed: 0.8
+    position_tolerance: 0.05
+    yaw_tolerance: 0.08
+    linear_gain: 0.8
+    yaw_gain: 1.8
+    lateral_gain: 0.8
+    tf_timeout_sec: 0.3
+    progress_timeout_sec: 5.0
+    progress_min_delta: 0.01
+    diagnostics_topic: "/diagnostics"
+
+route_marker_node:
+  ros__parameters:
+    route_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/competition_waypoints.yaml"
+    publish_period_sec: 1.0
+
+route_file_client:
+  ros__parameters:
+    route_file: ""
