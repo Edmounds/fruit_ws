@@ -44,15 +44,15 @@ public:
     const auto b_model_path = declare_parameter("b_model_path", package_share + "/model/B.onnx");
     confidence_threshold_ = static_cast<float>(declare_parameter("confidence_threshold", 0.50));
     nms_iou_threshold_ = static_cast<float>(declare_parameter("nms_iou_threshold", 0.45));
-    const auto perception_mode_topic = declare_parameter(
-      "perception_mode_topic", "/fruit_mission/perception_mode");
+    const auto active_mode_topic = declare_parameter(
+      "active_mode_topic", "/fruit_perception/active_mode");
     mode_subscription_ = create_subscription<std_msgs::msg::String>(
-      perception_mode_topic, rclcpp::QoS(1).reliable(),
+      active_mode_topic, rclcpp::QoS(1).reliable(),
       [this](std_msgs::msg::String::ConstSharedPtr message) {
         const auto mode = parse_perception_mode(message->data);
         if (!mode) {
           RCLCPP_ERROR(
-            get_logger(), "Invalid perception mode '%s'; inference mode unchanged",
+            get_logger(), "Invalid active perception mode '%s'; inference mode unchanged",
             message->data.c_str());
           return;
         }
@@ -61,7 +61,7 @@ public:
     const auto current_area_topic = declare_parameter(
       "current_area_topic", "/fruit_mission/current_area");
     current_area_subscription_ = create_subscription<std_msgs::msg::String>(
-      current_area_topic, rclcpp::QoS(1).reliable().transient_local(),
+      current_area_topic, rclcpp::QoS(1).reliable(),
       [this](std_msgs::msg::String::ConstSharedPtr message) {
         if (message->data == "A" || message->data == "B" ||
           message->data == "C" || message->data == "D")

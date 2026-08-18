@@ -75,7 +75,7 @@ For normal operation, use the workspace entry point:
 The installed `fruit-perception.service` invokes this script automatically at
 boot.
 
-The D435i fruit detector chooses its model from the latched
+The D435i fruit detector chooses its model from the current
 `/fruit_mission/current_area` string. Area `B` uses `B.onnx` for apple/pear.
 All other areas, including A-zone closed-loop picking, use `C.onnx`.
 

@@ -417,10 +417,18 @@ class MissionContext:
         callback_id: int,
         recover_on_failure: bool = True,
     ) -> bool:
+        if not self._wait_for_hardware_bridge_endpoints(
+            str(self.config["state_command_topic"])
+        ):
+            return False
         self._begin_callback_wait(callback_id)
         command = StateMachineCommand()
         command.task_id = task_id
         command.task_status = task_status
+        self.node.get_logger().info(
+            f"发送下位机状态命令 task_id={task_id}, task_status={task_status}, "
+            f"等待 callback_id={callback_id}"
+        )
         self._command_publisher.publish(command)
         return self._finish_callback_wait(
             callback_id,
@@ -430,18 +438,46 @@ class MissionContext:
 
     def _send_arm_target_and_wait(self, point: PointStamped) -> bool:
         callback_id = ExecutionCallback.CALLBACK_ARM_TARGET
+        if not self._wait_for_hardware_bridge_endpoints(
+            str(self.config["arm_target_topic"])
+        ):
+            return False
         self._begin_callback_wait(callback_id)
         target = ArmTarget()
         target.target_x = float(point.point.x)
         target.target_y = float(point.point.y)
         target.target_z = float(point.point.z)
         target.z_type = ArmTarget.Z_GROUND
+        self.node.get_logger().info(
+            "发送下位机抓取目标 "
+            f"x={target.target_x:.3f}, y={target.target_y:.3f}, "
+            f"z={target.target_z:.3f}, z_type={target.z_type}, "
+            f"等待 callback_id={callback_id}"
+        )
         self._arm_target_publisher.publish(target)
         return self._finish_callback_wait(
             callback_id,
             "ArmTarget callback",
             True,
         )
+
+    def _wait_for_hardware_bridge_endpoints(self, outbound_topic: str) -> bool:
+        timeout_sec = min(5.0, float(self.config["callback_timeout_sec"]))
+        callback_topic = str(self.config["callback_topic"])
+        deadline = time.monotonic() + timeout_sec
+        while rclpy.ok() and time.monotonic() < deadline:
+            outbound_subscribers = self.node.count_subscribers(outbound_topic)
+            callback_publishers = self.node.count_publishers(callback_topic)
+            if outbound_subscribers > 0 and callback_publishers > 0:
+                return True
+            rclpy.spin_once(self.node, timeout_sec=0.1)
+
+        self.node.get_logger().error(
+            "下位机串口桥 ROS 端点未就绪："
+            f"{outbound_topic} subscribers={self.node.count_subscribers(outbound_topic)}, "
+            f"{callback_topic} publishers={self.node.count_publishers(callback_topic)}"
+        )
+        return False
 
     def _begin_callback_wait(self, callback_id: int) -> None:
         self._pending_callback_id = callback_id
@@ -508,6 +544,16 @@ class MissionContext:
         deadline = time.monotonic() + float(self.config["d435i_detection_timeout_sec"])
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self.node, timeout_sec=0.1)
+            if self._latest_d435i_point is not None:
+                point_message = self._latest_d435i_point
+                stamp = point_message.header.stamp
+                stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
+                if stamp_ns > fresh_after_ns:
+                    return _D435iSelection(
+                        "matched",
+                        _D435iTarget(point_message),
+                    )
+                self._latest_d435i_point = None
             if self._latest_d435i_detections is None:
                 continue
             detection_message = self._latest_d435i_detections
@@ -517,8 +563,6 @@ class MissionContext:
                 self._latest_d435i_detections = None
                 continue
             for detection in detection_message.detections:
-                if expected_type is not None and detection.type != expected_type:
-                    continue
                 if not detection.has_point:
                     continue
                 target_point = PointStamped()

@@ -87,6 +87,7 @@ fruit_perception_node:
     d435i_target_point_topic: "/fruit_perception/d435i/target_point"
     d435i_detections_topic: "/fruit_perception/d435i/detections"
     perception_mode_topic: "/fruit_mission/perception_mode"
+    active_mode_topic: "/fruit_perception/active_mode"
     current_area_topic: "/fruit_mission/current_area"
     c_model_path: "/home/rc4/fruit_ws/src/fruit_perception/model/C.onnx"
     b_model_path: "/home/rc4/fruit_ws/src/fruit_perception/model/B.onnx"

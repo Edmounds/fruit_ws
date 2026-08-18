@@ -21,6 +21,7 @@ ORCHESTRATOR_LOG="$RUN_DIR/orchestrator.log"
 
 child_pids=()
 child_names=()
+child_logs=()
 debug_pids=()
 stopped=0
 
@@ -98,6 +99,7 @@ start_process() {
   pid=$!
   child_pids+=("$pid")
   child_names+=("$name")
+  child_logs+=("$log_file")
   printf '%s\t%s\t%s\n' "$name" "$pid" "$log_file" >> "$RUN_DIR/processes.tsv"
   log "STARTED $name pid=$pid log=$log_file"
 }
@@ -329,6 +331,68 @@ wait_for_active_off() {
   die "timeout waiting for camera mode manager active=OFF"
 }
 
+wait_for_topic_endpoint_count() {
+  local label=$1
+  local topic=$2
+  local endpoint=$3
+  local expected_count=$4
+  local timeout_sec=$5
+  local deadline=$((SECONDS + timeout_sec))
+  local field
+
+  case "$endpoint" in
+    publishers)
+      field="Publisher count:"
+      ;;
+    subscribers)
+      field="Subscription count:"
+      ;;
+    *)
+      die "unsupported topic endpoint kind: $endpoint"
+      ;;
+  esac
+
+  log "WAIT $label topic=$topic $endpoint>=$expected_count timeout=${timeout_sec}s"
+  while ((SECONDS < deadline)); do
+    all_children_alive || die "$label process exited before readiness"
+    if ros2 topic info "$topic" 2>/dev/null | awk -v field="$field" -v expected="$expected_count" '
+      index($0, field) == 1 && ($3 + 0) >= expected { found = 1 }
+      END { exit(found ? 0 : 1) }
+    '; then
+      log "READY $label topic=$topic $endpoint>=$expected_count"
+      return 0
+    fi
+    sleep 1
+  done
+  die "timeout waiting for $label topic=$topic $endpoint>=$expected_count"
+}
+
+wait_for_serial_bridge_running() {
+  local timeout_sec=$1
+  local log_file="$RUN_DIR/perception.log"
+  local deadline=$((SECONDS + timeout_sec))
+
+  log "WAIT serial bridge RUNNING timeout=${timeout_sec}s"
+  while ((SECONDS < deadline)); do
+    all_children_alive || die "serial bridge process exited before readiness"
+    if grep -Eq "Serial connected.*RUNNING|Handshake SUCCESS.*RUNNING" "$log_file" 2>/dev/null; then
+      log "READY serial bridge RUNNING"
+      return 0
+    fi
+    sleep 1
+  done
+  die "timeout waiting for serial bridge RUNNING; see $log_file"
+}
+
+log_recent_child_output() {
+  local name=$1
+  local log_file=$2
+
+  [[ -r "$log_file" ]] || return 0
+  log "EXIT recent $name output from $log_file"
+  tail -n 80 "$log_file" | sed "s/^/[$name] /" | tee -a "$ORCHESTRATOR_LOG"
+}
+
 stop_children() {
   local pid
   local index
@@ -521,6 +585,19 @@ wait_for_nodes "perception readiness" 120 \
   /fruit_perception_node \
   /camera_mode_manager \
   /fruit_qr_planner
+wait_for_serial_bridge_running 30
+wait_for_topic_endpoint_count \
+  "state command bridge subscription" \
+  "/fruit_hardware_bridge/state_machine/command" \
+  subscribers \
+  1 \
+  30
+wait_for_topic_endpoint_count \
+  "execution callback bridge publisher" \
+  "/fruit_hardware_bridge/execution/callback" \
+  publishers \
+  1 \
+  30
 wait_for_active_off 60
 
 log "READY navigation and perception stack; starting mission"
@@ -533,5 +610,19 @@ set +e
 wait -n "${child_pids[@]}"
 status=$?
 set -e
-log "EXIT one child process ended with status=$status; stopping remaining processes"
+ended_child_found=0
+for index in "${!child_pids[@]}"; do
+  if ! process_alive "${child_pids[index]}"; then
+    ended_child_found=1
+    log "EXIT ${child_names[index]} pid=${child_pids[index]} status=$status log=${child_logs[index]}"
+    log_recent_child_output "${child_names[index]}" "${child_logs[index]}"
+    if ((status == 0)) && grep -Eq '\[(ERROR|FATAL)\]|(ERROR|FATAL):' "${child_logs[index]}"; then
+      status=1
+      log "EXIT ${child_names[index]} log contains error output; treating exit as failure"
+    fi
+  fi
+done
+if ((ended_child_found == 0)); then
+  log "EXIT one child process ended with status=$status; stopping remaining processes"
+fi
 exit "$status"

@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, Optional
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import ExternalShutdownException
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
@@ -152,7 +153,7 @@ def main(args=None) -> None:
     try:
         node = FruitQrPlannerNode()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         if node is not None:
