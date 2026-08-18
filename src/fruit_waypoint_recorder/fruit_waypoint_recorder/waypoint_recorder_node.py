@@ -136,7 +136,11 @@ class WaypointRecorderNode(Node):
         self._marker_publisher.publish(self._markers())
 
     def _markers(self) -> MarkerArray:
-        markers = []
+        clear = Marker()
+        clear.header.frame_id = self._frame_id
+        clear.header.stamp = self.get_clock().now().to_msg()
+        clear.action = Marker.DELETEALL
+        markers = [clear]
         for index, pose in enumerate(self._store.anchors):
             marker = Marker()
             marker.header.frame_id = self._frame_id

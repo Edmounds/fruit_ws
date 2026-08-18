@@ -199,6 +199,17 @@ class RouteMarkerNode(Node):
         line.color = self._color(1.0, 1.0, 1.0, 0.85)
         line.points = [self._point(pose) for pose in route]
         markers.append(line)
+        for sequence, pose in enumerate(route, start=1):
+            order = self._base_marker(marker_id, Marker.TEXT_VIEW_FACING)
+            marker_id += 1
+            order.ns = "route_order"
+            order.pose.position.x = pose.x
+            order.pose.position.y = pose.y
+            order.pose.position.z = pose.z + 0.42
+            order.scale.z = 0.2
+            order.color = self._color(1.0, 1.0, 0.0, 1.0)
+            order.text = str(sequence)
+            markers.append(order)
         return marker_id
 
     def _path(self, route: Iterable[PoseData]) -> NavPath:
