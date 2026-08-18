@@ -18,7 +18,6 @@ from visualization_msgs.msg import Marker, MarkerArray
 from fruit_navigation.route_model import (
     PickTask,
     PoseData,
-    build_c_route,
     load_route_template,
     mission_route,
     parse_c_pick_plan,

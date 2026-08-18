@@ -11,32 +11,19 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_auto</buildtool_depend>
 
-  <build_depend>navigation2</build_depend>
-  <build_depend>nav2_common</build_depend>
   <build_depend>launch_ros</build_depend>
 
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
-  <exec_depend>nav2_controller</exec_depend>
-  <exec_depend>nav2_smoother</exec_depend>
-  <exec_depend>nav2_planner</exec_depend>
-  <exec_depend>nav2_behaviors</exec_depend>
-  <exec_depend>nav2_bt_navigator</exec_depend>
-  <exec_depend>nav2_waypoint_follower</exec_depend>
-  <exec_depend>nav2_velocity_smoother</exec_depend>
-  <exec_depend>nav2_collision_monitor</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
-  <exec_depend>navigation2</exec_depend>
-  <exec_depend>nav2_common</exec_depend>
-  <exec_depend>pb_nav2_plugins</exec_depend>
+  <exec_depend>fruit_navigation</exec_depend>
   <exec_depend>joy_linux</exec_depend>
   <exec_depend>livox_ros_driver2</exec_depend>
   <exec_depend>glim_ros</exec_depend>
   <exec_depend>point_lio</exec_depend>
   <exec_depend>pointcloud_to_laserscan</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
-  <exec_depend>pb_diff_pid_pursuit_controller</exec_depend>
   <exec_depend>pb_gicp_localization</exec_depend>
   <exec_depend>loam_interface</exec_depend>
   <exec_depend>sensor_scan_generation</exec_depend>

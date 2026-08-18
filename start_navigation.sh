@@ -5,7 +5,9 @@ set -eo pipefail
 WORKSPACE=/home/rc4/fruit_ws
 NAV_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/localization_navigation_launch.py"
 HARDWARE_LAUNCH="$WORKSPACE/src/fruit_hardware_bridge/launch/fruit_hardware_bridge.launch.py"
-PARAMS="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/nav2_params.yaml"
+PARAMS="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/localization_params.yaml"
+AXIS_PARAMS="$WORKSPACE/src/fruit_navigation/config/axis_navigation.yaml"
+ROUTE_FILE="$WORKSPACE/src/fruit_waypoint_recorder/waypoints/competition_waypoints.yaml"
 MAP="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.yaml"
 LOCALIZATION_MAP="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.pcd"
 RVIZ_CONFIG="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/rviz/navigation.rviz"
@@ -54,6 +56,7 @@ for required_file in \
   "$NAV_LAUNCH" \
   "$HARDWARE_LAUNCH" \
   "$PARAMS" \
+  "$AXIS_PARAMS" \
   "$MAP" \
   "$LOCALIZATION_MAP" \
   "$RVIZ_CONFIG"; do
@@ -72,11 +75,14 @@ fi
 start_process "serial bridge" \
   ros2 launch "$HARDWARE_LAUNCH"
 
-start_process "Nav2 and localization" \
+start_process "axis navigation and localization" \
   ros2 launch "$NAV_LAUNCH" \
     "map:=$MAP" \
     "localization_map:=$LOCALIZATION_MAP" \
     "params_file:=$PARAMS" \
+    "axis_params_file:=$AXIS_PARAMS" \
+    "route_file:=$ROUTE_FILE" \
+    "start_route_client:=false" \
     "use_teleop:=false" \
     "use_rviz:=false"
 
@@ -88,7 +94,7 @@ start_process "rviz2" \
     "DBUS_SESSION_BUS_ADDRESS=unix:path=$DESKTOP_RUNTIME_DIR/bus" \
     rviz2 -d "$RVIZ_CONFIG"
 
-printf '[navigation] navigation, serial bridge, and RViz started. Press Ctrl-C to stop them.\n'
+printf '[navigation] axis navigation, serial bridge, and RViz started. Press Ctrl-C to stop them.\n'
 
 if wait -n "${pids[@]}"; then
   status=0

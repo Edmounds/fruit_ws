@@ -1,9 +1,0 @@
-<class_libraries>
-    <library path="pb_diff_pid_pursuit_controller">
-        <class type="pb_diff_pid_pursuit_controller::DiffPidPursuitController" base_class_type="nav2_core::Controller">
-            <description>
-                pb_diff_pid_pursuit_controller
-            </description>
-        </class>
-    </library>
-</class_libraries>

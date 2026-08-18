@@ -45,9 +45,9 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "params_file",
                 default_value=os.path.join(
-                    SOURCE_SHARE, "config", "reality", "nav2_params.yaml"
+                    SOURCE_SHARE, "config", "reality", "localization_params.yaml"
                 ),
-                description="Absolute path to the source navigation parameters",
+                description="Absolute path to the source mapping/localization parameters",
             ),
             DeclareLaunchArgument(
                 "dump_path",

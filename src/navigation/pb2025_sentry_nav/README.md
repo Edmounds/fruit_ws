@@ -95,7 +95,7 @@ Launch the one supported real-robot entrypoint:
 ros2 launch pb2025_nav_bringup localization_navigation_launch.py \
   map:=/abs/path/map.yaml \
   localization_map:=/abs/path/localization.pcd \
-  params_file:=/abs/path/nav2_params.yaml \
+  params_file:=/abs/path/localization_params.yaml \
   use_teleop:=false
 ```
 

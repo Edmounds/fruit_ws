@@ -20,7 +20,6 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from nav2_common.launch import RewrittenYaml
 
 
 SOURCE_SHARE = (
@@ -32,24 +31,21 @@ def _launch_nodes(context):
     map_file = LaunchConfiguration("map").perform(context)
     localization_map = LaunchConfiguration("localization_map").perform(context)
     params_file = LaunchConfiguration("params_file").perform(context)
+    axis_params_file = LaunchConfiguration("axis_params_file").perform(context)
     initial_pose_file = LaunchConfiguration("initial_pose_file").perform(context)
+    route_file = LaunchConfiguration("route_file").perform(context)
     for label, path in (
         ("map", map_file),
         ("localization_map", localization_map),
         ("params_file", params_file),
+        ("axis_params_file", axis_params_file),
     ):
         if not os.path.isfile(path):
             raise RuntimeError(f"{label} does not exist: {path}")
     if initial_pose_file and not os.path.isfile(initial_pose_file):
         raise RuntimeError(f"initial_pose_file does not exist: {initial_pose_file}")
 
-    configured_params = RewrittenYaml(
-        source_file=params_file,
-        root_key="",
-        param_rewrites={"yaml_filename": map_file},
-        convert_types=True,
-    )
-    common = {"parameters": [configured_params], "output": "screen"}
+    common = {"parameters": [params_file], "output": "screen"}
     system_libusb = "/lib/x86_64-linux-gnu/libusb-1.0.so.0"
     pcl_env = {
         "LD_PRELOAD": ":".join(
@@ -57,7 +53,6 @@ def _launch_nodes(context):
         )
     }
     pcl_common = {**common, "additional_env": pcl_env}
-    behavior_tree_dir = os.path.join(SOURCE_SHARE, "behavior_trees")
     mid360_config = os.path.join(
         SOURCE_SHARE,
         "config",
@@ -65,23 +60,22 @@ def _launch_nodes(context):
         "mid360_user_config.json",
     )
     joy_config = "/home/rc4/fruit_ws/src/joy_linux/config/joy_config.yaml"
-    localization_parameters = [configured_params]
+    localization_parameters = [params_file]
     if initial_pose_file:
         localization_parameters.append(initial_pose_file)
     localization_parameters.append({"localization_map": localization_map})
 
-    nodes = [
+    return [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
-                "/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/"
-                "pb2025_nav_bringup/launch/sensor_frames.launch.py"
+                os.path.join(SOURCE_SHARE, "launch", "sensor_frames.launch.py")
             )
         ),
         Node(
             package="livox_ros_driver2",
             executable="livox_ros_driver2_node",
             name="livox_ros_driver2",
-            parameters=[configured_params, {"user_config_path": mid360_config}],
+            parameters=[params_file, {"user_config_path": mid360_config}],
             output="screen",
         ),
         Node(
@@ -103,16 +97,6 @@ def _launch_nodes(context):
             **pcl_common,
         ),
         Node(
-            package="pointcloud_to_laserscan",
-            executable="pointcloud_to_laserscan_node",
-            name="pointcloud_to_laserscan",
-            remappings=[
-                ("cloud_in", "/sensor_scan"),
-                ("scan", "/obstacle_scan"),
-            ],
-            **common,
-        ),
-        Node(
             package="pb_gicp_localization",
             executable="pb_gicp_localization_node",
             name="pb_gicp_localization",
@@ -120,97 +104,51 @@ def _launch_nodes(context):
             output="screen",
             additional_env=pcl_env,
         ),
-        Node(package="nav2_map_server", executable="map_server", name="map_server", **common),
         Node(
-            package="nav2_controller",
-            executable="controller_server",
-            name="controller_server",
-            remappings=[("cmd_vel", "cmd_vel_nav_raw")],
-            **common,
-        ),
-        Node(
-            package="nav2_smoother",
-            executable="smoother_server",
-            name="smoother_server",
-            **common,
-        ),
-        Node(package="nav2_planner", executable="planner_server", name="planner_server", **common),
-        Node(
-            package="nav2_behaviors",
-            executable="behavior_server",
-            name="behavior_server",
-            **common,
-        ),
-        Node(
-            package="nav2_bt_navigator",
-            executable="bt_navigator",
-            name="bt_navigator",
-            parameters=[
-                configured_params,
-                {
-                    "default_nav_to_pose_bt_xml": os.path.join(
-                        behavior_tree_dir,
-                        "navigate_to_pose_w_replanning_and_recovery.xml",
-                    ),
-                    "default_nav_through_poses_bt_xml": os.path.join(
-                        behavior_tree_dir,
-                        "navigate_through_poses_w_replanning_and_recovery.xml",
-                    ),
-                },
-            ],
-            output="screen",
-        ),
-        Node(
-            package="nav2_waypoint_follower",
-            executable="waypoint_follower",
-            name="waypoint_follower",
-            **common,
-        ),
-        Node(
-            package="nav2_velocity_smoother",
-            executable="velocity_smoother",
-            name="velocity_smoother",
-            remappings=[
-                ("cmd_vel", "cmd_vel_nav_raw"),
-                ("cmd_vel_smoothed", "cmd_vel_nav"),
-            ],
-            **common,
-        ),
-        Node(
-            package="nav2_collision_monitor",
-            executable="collision_monitor",
-            name="collision_monitor",
-            parameters=[configured_params],
+            package="nav2_map_server",
+            executable="map_server",
+            name="map_server",
+            parameters=[params_file, {"yaml_filename": map_file}],
             output="screen",
         ),
         Node(
             package="nav2_lifecycle_manager",
             executable="lifecycle_manager",
-            name="lifecycle_manager_navigation",
+            name="lifecycle_manager_map",
             parameters=[
                 {"autostart": True},
-                {
-                    "node_names": [
-                        "map_server",
-                        "controller_server",
-                        "smoother_server",
-                        "planner_server",
-                        "behavior_server",
-                        "bt_navigator",
-                        "waypoint_follower",
-                        "velocity_smoother",
-                        "collision_monitor",
-                    ]
-                },
+                {"node_names": ["map_server"]},
             ],
+            output="screen",
+        ),
+        Node(
+            package="fruit_navigation",
+            executable="axis_waypoint_action_server",
+            name="axis_waypoint_action_server",
+            parameters=[axis_params_file],
+            output="screen",
+        ),
+        Node(
+            package="fruit_navigation",
+            executable="route_marker_node",
+            name="route_marker_node",
+            parameters=[axis_params_file, {"route_file": route_file}],
+            output="screen",
+        ),
+        Node(
+            package="fruit_navigation",
+            executable="route_file_client",
+            name="route_file_client",
+            condition=IfCondition(LaunchConfiguration("start_route_client")),
+            parameters=[axis_params_file, {"route_file": route_file}],
             output="screen",
         ),
         Node(
             package="twist_mux",
             executable="twist_mux",
             name="twist_mux",
-            parameters=[configured_params],
-            remappings=[("cmd_vel_out", "cmd_vel_muxed")],
+            parameters=[params_file],
+            remappings=[("cmd_vel_out", "cmd_vel")],
             output="screen",
         ),
         Node(
@@ -236,28 +174,35 @@ def _launch_nodes(context):
             arguments=["-d", LaunchConfiguration("rviz_config")],
         ),
     ]
-    return nodes
 
 
 def generate_launch_description():
     return LaunchDescription(
         [
-            DeclareLaunchArgument("map", description="Absolute path to the Nav2 map YAML"),
+            DeclareLaunchArgument("map", description="Absolute path to the map YAML"),
             DeclareLaunchArgument(
-                "localization_map", description="Absolute path to the GLIM-derived PCD"
+                "localization_map",
+                description="Absolute path to the GLIM-derived PCD",
             ),
             DeclareLaunchArgument("initial_pose_file", default_value=""),
+            DeclareLaunchArgument("route_file", default_value=""),
+            DeclareLaunchArgument("start_route_client", default_value="false"),
             DeclareLaunchArgument(
                 "params_file",
                 default_value=os.path.join(
-                    SOURCE_SHARE, "config", "reality", "nav2_params.yaml"
+                    SOURCE_SHARE, "config", "reality", "localization_params.yaml"
                 ),
+            ),
+            DeclareLaunchArgument(
+                "axis_params_file",
+                default_value="/home/rc4/fruit_ws/src/fruit_navigation/config/"
+                "axis_navigation.yaml",
             ),
             DeclareLaunchArgument("use_teleop", default_value="false"),
             DeclareLaunchArgument("use_rviz", default_value="true"),
             DeclareLaunchArgument(
                 "rviz_config",
-                default_value=os.path.join(SOURCE_SHARE, "rviz", "nav2_default_view.rviz"),
+                default_value=os.path.join(SOURCE_SHARE, "rviz", "navigation.rviz"),
             ),
             OpaqueFunction(function=_launch_nodes),
         ]

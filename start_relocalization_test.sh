@@ -3,7 +3,7 @@
 set -eo pipefail
 
 WORKSPACE=/home/rc4/fruit_ws
-PARAMS="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/nav2_params.yaml"
+PARAMS="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/localization_params.yaml"
 LIVOX_CONFIG="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/mid360_user_config.json"
 LOCALIZATION_MAP="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.pcd"
 SENSOR_FRAMES_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/sensor_frames.launch.py"
@@ -110,7 +110,7 @@ start_process "rviz2" \
     rviz2 -d "$RVIZ_CONFIG"
 
 printf '[relocalization-test] all processes started. Press Ctrl-C to stop them.\n'
-printf '[relocalization-test] initial_map_to_odom uses the identity transform from nav2_params.yaml\n'
+printf '[relocalization-test] initial_map_to_odom uses the identity transform from localization_params.yaml\n'
 
 if wait -n "${pids[@]}"; then
   status=0
