@@ -298,6 +298,14 @@ class AxisWaypointActionServer(Node):
             self.get_logger().error(f"Aborting waypoint goal: TF unavailable: {error}")
             self._publish_stop_burst()
             return None
+        transform_time = Time.from_msg(transform.header.stamp)
+        transform_age = (self.get_clock().now() - transform_time).nanoseconds / 1e9
+        if transform_age > self._tf_timeout_sec:
+            self.get_logger().error(
+                f"Aborting waypoint goal: TF is {transform_age:.3f}s old"
+            )
+            self._publish_stop_burst()
+            return None
         translation = transform.transform.translation
         rotation = transform.transform.rotation
         return AxisPose(

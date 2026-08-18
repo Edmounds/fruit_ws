@@ -2,8 +2,10 @@ import threading
 from types import SimpleNamespace
 
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
 from rclpy.action import GoalResponse
+from rclpy.clock import ClockType
+from rclpy.time import Time
 
 from fruit_navigation.axis_waypoint_action_server import AxisWaypointActionServer
 
@@ -11,6 +13,22 @@ from fruit_navigation.axis_waypoint_action_server import AxisWaypointActionServe
 class FakeLogger:
     def error(self, _message):
         pass
+
+
+class FakeClock:
+    def __init__(self, seconds):
+        self._now = Time(seconds=seconds, clock_type=ClockType.ROS_TIME)
+
+    def now(self):
+        return self._now
+
+
+class FakeTransformBuffer:
+    def __init__(self, transform):
+        self._transform = transform
+
+    def lookup_transform(self, *_args, **_kwargs):
+        return self._transform
 
 
 class FakeGoalHandle:
@@ -107,3 +125,19 @@ def test_execute_succeeds_and_releases_goal_reservation():
     assert list(result.missed_waypoints) == []
     assert goal_handle.succeed_count == 1
     assert server._active_goal is False
+
+
+def test_lookup_pose_rejects_a_transform_older_than_tf_timeout():
+    server = bare_server()
+    transform = TransformStamped()
+    transform.header.stamp.sec = 9
+    transform.transform.rotation.w = 1.0
+    server._tf_buffer = FakeTransformBuffer(transform)
+    server._base_frame = "base_link"
+    server._tf_timeout_sec = 0.3
+    server.get_clock = lambda: FakeClock(10.0)
+    stop_bursts = []
+    server._publish_stop_burst = lambda: stop_bursts.append(True)
+
+    assert server._lookup_pose() is None
+    assert stop_bursts == [True]
