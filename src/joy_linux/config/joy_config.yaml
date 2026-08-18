@@ -1,0 +1,18 @@
+joy_linux_node:
+  ros__parameters:
+    dev: "/dev/input/js0"
+    dev_name: "Xbox Wireless Controller"
+    dev_ff: ""
+    deadzone: 0.05
+    autorepeat_rate: 20.0
+
+joy_convert_node:
+  ros__parameters:
+    linear_axis: 1
+    angular_axis: 2
+    ac_pick_left_button: 3
+    ac_pick_right_button: 1
+    return_initial_pose_button: 4
+    linear_x_scale: 0.4
+    angular_z_scale: 0.8
+    dead_zone: 0.1
