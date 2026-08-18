@@ -1,4 +1,5 @@
 # 本机sudo密码是222331
+# 不要写任何tests
 # 比赛相关
 ## 比赛项目说明
 
@@ -20,6 +21,11 @@
 常使用ros2 cli 能用这个解决的问题就不要自己写
 ## 创建新功能包
 使用ros2 cli创建新功能包
+
+## GUI 调试显示
+- 本机经常通过远程终端调试；凡是需要打开 GUI 窗口的脚本或命令，默认显示到机器人实际连接的桌面屏幕。
+- GUI 启动环境按现有启动脚本约定设置：`DISPLAY=:0`、`XDG_RUNTIME_DIR=/run/user/$(id -u)`、`XAUTHORITY=/run/user/$(id -u)/gdm/Xauthority`、`DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus`。
+- Python/Tkinter 等单文件 GUI 工具应在创建窗口前设置上述环境变量，避免远程终端没有 `DISPLAY` 时窗口无法打开。
 
 ## 代码规范
 ### launch都按照`template.launch.py`这个模版来写

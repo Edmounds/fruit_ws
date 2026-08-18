@@ -53,4 +53,5 @@ source /home/rc4/fruit_ws/setup_fruit_runtime.bash
 脚本会自动发送心跳，并对状态命令和机械臂目标进行可靠重试。可靠帧收到的
 `Ack` 只表示下位机已收到，动作是否完成要看回传的
 `ExecutionCallback`：`executing` 表示执行中，`completed` 表示完成。
+默认不显示心跳收发和心跳超时日志；需要调试心跳时加 `--show-heartbeat`。
 `vel` 只发送一帧，不会持续刷新速度。

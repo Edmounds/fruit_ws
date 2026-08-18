@@ -2,6 +2,7 @@
 #define PB_GICP_LOCALIZATION__GICP_LOCALIZATION_HPP_
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -56,6 +57,8 @@ private:
   double registered_leaf_size_;
   double max_dist_sq_;
   double input_scan_timeout_;
+  double initial_registration_delay_sec_;
+  bool registration_once_;
   std::vector<double> initial_map_to_odom_;
   ValidationThresholds thresholds_;
 
@@ -80,6 +83,7 @@ private:
   std::atomic<bool> shutdown_{false};
   std::atomic<bool> has_accepted_once_{false};
   std::atomic<int> consecutive_rejects_{0};
+  std::chrono::steady_clock::time_point registration_start_time_;
   std::mutex worker_mutex_;
   std::condition_variable worker_cv_;
   bool registration_pending_{false};

@@ -3,9 +3,11 @@ import subprocess
 import yaml
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.descriptions import ComposableNode
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _set_v4l2_control(device, control, value):
@@ -148,10 +150,16 @@ def generate_launch_description():
     # 3. 声明 Launch 参数
     # ========================================================================
     use_sim_time = LaunchConfiguration('use_sim_time')
+    serial_debug_raw_frame = LaunchConfiguration('serial_debug_raw_frame')
     declare_use_sim_time = DeclareLaunchArgument(
         'use_sim_time',
         default_value='false',
         description='Use simulation clock if true',
+    )
+    declare_serial_debug_raw_frame = DeclareLaunchArgument(
+        'serial_debug_raw_frame',
+        default_value='false',
+        description='Print auto_serial_bridge raw TX/RX frames if true',
     )
 
     # ========================================================================
@@ -188,6 +196,7 @@ def generate_launch_description():
         composable_node_descriptions=composable_nodes,
         output='screen',
         emulate_tty=True,
+        arguments=['--ros-args', '--log-level', 'warn'],
     )
 
     camera_mode_manager = Node(
@@ -197,6 +206,7 @@ def generate_launch_description():
         output='screen',
         emulate_tty=True,
         parameters=[common_config, {'use_sim_time': use_sim_time}],
+        arguments=['--ros-args', '--log-level', 'warn'],
     )
     qr_planner = Node(
         package='fruit_qr_planner',
@@ -206,7 +216,20 @@ def generate_launch_description():
         emulate_tty=True,
         parameters=[qr_config, {'use_sim_time': use_sim_time}],
     )
+    serial_parameters['debug_raw_frame'] = ParameterValue(
+        serial_debug_raw_frame,
+        value_type=bool,
+    )
     serial_bridge = Node(
+        package='auto_serial_bridge',
+        executable='serial_node',
+        name='serial_controller',
+        output='screen',
+        emulate_tty=True,
+        parameters=[serial_parameters, {'use_sim_time': use_sim_time}],
+        condition=UnlessCondition(serial_debug_raw_frame),
+    )
+    serial_bridge_debug = Node(
         package='auto_serial_bridge',
         executable='serial_node',
         name='serial_controller',
@@ -216,13 +239,16 @@ def generate_launch_description():
         arguments=[
             '--ros-args', '--log-level', 'serial_controller:=debug',
         ],
+        condition=IfCondition(serial_debug_raw_frame),
     )
 
     return LaunchDescription([
         declare_use_sim_time,
+        declare_serial_debug_raw_frame,
         OpaqueFunction(function=apply_manual_camera_controls),
         container,
         camera_mode_manager,
         qr_planner,
         serial_bridge,
+        serial_bridge_debug,
     ])

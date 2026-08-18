@@ -248,3 +248,42 @@ def test_kill_script_resumes_stopped_targets_before_interrupting_them():
     )
 
     assert script.index("signal_targets CONT") < script.index("signal_targets INT")
+
+
+def test_kill_script_finds_navigation_and_mapping_processes():
+    command_lines = (
+        "bash ./start_mapping.sh",
+        "bash ./start_navigation.sh",
+        "ros2 launch /home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/"
+        "pb2025_nav_bringup/launch/glim_mapping.launch.py",
+        "/opt/ros/humble/lib/pointcloud_to_laserscan/"
+        "pointcloud_to_laserscan_node",
+        "/opt/ros/humble/lib/slam_toolbox/sync_slam_toolbox_node",
+    )
+    processes = [
+        subprocess.Popen(
+            [
+                "bash",
+                "-c",
+                f"exec -a '{command_line}' sleep 30",
+            ],
+            start_new_session=True,
+        )
+        for command_line in command_lines
+    ]
+
+    try:
+        result = subprocess.run(
+            [str(WORKSPACE_ROOT / "kill_fruit_processes.sh"), "--dry-run"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        for process in processes:
+            assert str(process.pid) in result.stdout
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)

@@ -48,6 +48,8 @@ GicpLocalizationNode::GicpLocalizationNode(const rclcpp::NodeOptions & options)
   registered_leaf_size_ = declare_parameter("registered_leaf_size", 0.05);
   max_dist_sq_ = declare_parameter("max_dist_sq", 3.0);
   input_scan_timeout_ = declare_parameter("input_scan_timeout", 2.0);
+  initial_registration_delay_sec_ = declare_parameter("initial_registration_delay_sec", 0.0);
+  registration_once_ = declare_parameter("registration_once", false);
   map_frame_ = declare_parameter("map_frame", "map");
   odom_frame_ = declare_parameter("odom_frame", "odom");
   localization_map_ = declare_parameter("localization_map", "");
@@ -69,11 +71,13 @@ GicpLocalizationNode::GicpLocalizationNode(const rclcpp::NodeOptions & options)
   }
   if (!std::isfinite(global_leaf_size_) || !std::isfinite(registered_leaf_size_) ||
     !std::isfinite(max_dist_sq_) || !std::isfinite(input_scan_timeout_) ||
+    !std::isfinite(initial_registration_delay_sec_) ||
     global_leaf_size_ <= 0.0 || registered_leaf_size_ <= 0.0 || max_dist_sq_ <= 0.0 ||
-    input_scan_timeout_ <= 0.0)
+    input_scan_timeout_ <= 0.0 || initial_registration_delay_sec_ < 0.0)
   {
     throw std::invalid_argument(
-      "voxel leaf sizes, max_dist_sq, and input_scan_timeout must be positive");
+      "voxel leaf sizes, max_dist_sq, input_scan_timeout, and initial_registration_delay_sec "
+      "must be valid");
   }
   if (thresholds_.min_inliers == 0 || !std::isfinite(thresholds_.min_inlier_ratio) ||
     !std::isfinite(thresholds_.max_mean_error) ||
@@ -106,9 +110,21 @@ GicpLocalizationNode::GicpLocalizationNode(const rclcpp::NodeOptions & options)
 
   accumulated_cloud_ = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
   global_map_ = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
+  registration_start_time_ = std::chrono::steady_clock::now();
   registration_ = std::make_shared<
     small_gicp::Registration<small_gicp::GICPFactor, small_gicp::ParallelReductionOMP>>();
   loadGlobalMap(localization_map_);
+  RCLCPP_INFO(
+    get_logger(),
+    "GICP localization config: input_cloud_topic=%s, map_frame=%s, odom_frame=%s, "
+    "initial_delay=%.2fs, registration_once=%s, min_inliers=%zu, min_inlier_ratio=%.3f, "
+    "max_mean_error=%.3f, max_translation_jump=%.3f, max_rotation_jump=%.3f, "
+    "initial_max_translation_jump=%.3f, initial_max_rotation_jump=%.3f",
+    input_cloud_topic_.c_str(), map_frame_.c_str(), odom_frame_.c_str(),
+    initial_registration_delay_sec_, registration_once_ ? "true" : "false",
+    thresholds_.min_inliers, thresholds_.min_inlier_ratio, thresholds_.max_mean_error,
+    thresholds_.max_translation_jump, thresholds_.max_rotation_jump,
+    thresholds_.max_translation_jump_initial, thresholds_.max_rotation_jump_initial);
 
   target_ = small_gicp::voxelgrid_sampling_omp<
     pcl::PointCloud<pcl::PointXYZ>, pcl::PointCloud<pcl::PointCovariance>>(
@@ -121,7 +137,11 @@ GicpLocalizationNode::GicpLocalizationNode(const rclcpp::NodeOptions & options)
     target_, small_gicp::KdTreeBuilderOMP(num_threads_));
 
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(this);
-  diagnostics_pub_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>("diagnostics", 10);
+  rclcpp::QoS diagnostics_qos(1);
+  diagnostics_qos.reliable();
+  diagnostics_qos.transient_local();
+  diagnostics_pub_ =
+    create_publisher<diagnostic_msgs::msg::DiagnosticArray>("diagnostics", diagnostics_qos);
   rclcpp::QoS latched_cloud_qos(1);
   latched_cloud_qos.transient_local();
   map_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
@@ -206,6 +226,20 @@ void GicpLocalizationNode::registeredPcdCallback(
 
 void GicpLocalizationNode::requestRegistration()
 {
+  if (registration_once_ && has_accepted_once_.load()) {
+    return;
+  }
+  if (!has_accepted_once_.load()) {
+    const auto elapsed = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - registration_start_time_).count();
+    if (elapsed < initial_registration_delay_sec_) {
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Waiting before first GICP registration: elapsed=%.2fs target=%.2fs",
+        elapsed, initial_registration_delay_sec_);
+      return;
+    }
+  }
   pcl::PointCloud<pcl::PointXYZ> scan;
   {
     std::lock_guard<std::mutex> lock(cloud_mutex_);
@@ -215,12 +249,22 @@ void GicpLocalizationNode::requestRegistration()
         std::lock_guard<std::mutex> time_lock(scan_time_mutex_);
         last_scan = last_scan_time_;
       }
+      if (last_scan.nanoseconds() == 0) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "GICP waiting: no scan received yet on topic '%s' in frame '%s'",
+          input_cloud_topic_.c_str(), odom_frame_.c_str());
+        return;
+      }
       // Escalate silence on the input topic so a dead upstream still trips
       // the localization-lost diagnostic instead of freezing at WARN-free OK.
-      if (last_scan.nanoseconds() != 0 &&
-        (now() - last_scan).seconds() > input_scan_timeout_)
-      {
-        consecutive_rejects_.fetch_add(1);
+      const double scan_age = (now() - last_scan).seconds();
+      if (scan_age > input_scan_timeout_) {
+        const int rejects = consecutive_rejects_.fetch_add(1) + 1;
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "GICP retry: input scan stream stale age=%.2fs timeout=%.2fs rejects=%d/%d",
+          scan_age, input_scan_timeout_, rejects, lost_after_rejects_);
         publishDiagnostic(false, "input scan stream stale", 0, 0, 0.0, 0.0, 0.0, 0.0);
       }
       return;
@@ -231,6 +275,10 @@ void GicpLocalizationNode::requestRegistration()
     std::lock_guard<std::mutex> lock(worker_mutex_);
     if (registration_pending_) {
       // Worker has not consumed the previous batch yet; merge instead of dropping it.
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "GICP worker busy: merging scan batch pending_points=%zu new_points=%zu",
+        pending_scan_.size(), scan.size());
       pending_scan_ += scan;
     } else {
       pending_scan_ = std::move(scan);
@@ -266,11 +314,19 @@ void GicpLocalizationNode::registrationWorker()
 
 void GicpLocalizationNode::performRegistration(const pcl::PointCloud<pcl::PointXYZ> & scan)
 {
+  if (registration_once_ && has_accepted_once_.load()) {
+    return;
+  }
   auto source = small_gicp::voxelgrid_sampling_omp<
     pcl::PointCloud<pcl::PointXYZ>, pcl::PointCloud<pcl::PointCovariance>>(
     scan, registered_leaf_size_, num_threads_);
   if (!source || source->size() < static_cast<std::size_t>(num_neighbors_)) {
-    consecutive_rejects_.fetch_add(1);
+    const int rejects = consecutive_rejects_.fetch_add(1) + 1;
+    RCLCPP_WARN(
+      get_logger(),
+      "GICP retry: source scan too small raw_points=%zu downsampled_points=%zu "
+      "required_neighbors=%d rejects=%d/%d",
+      scan.size(), source ? source->size() : 0, num_neighbors_, rejects, lost_after_rejects_);
     publishDiagnostic(
       false, "source scan too small", source ? source->size() : 0, 0, 0.0, 0.0, 0.0, 0.0);
     return;
@@ -302,12 +358,30 @@ void GicpLocalizationNode::performRegistration(const pcl::PointCloud<pcl::PointX
     (metrics.candidate.translation() - previous.translation()).norm();
   const double rotation_jump = rotationDistance(previous, metrics.candidate);
   const bool first_acceptance = !has_accepted_once_.load();
+  const double max_translation = first_acceptance ?
+    thresholds_.max_translation_jump_initial : thresholds_.max_translation_jump;
+  const double max_rotation = first_acceptance ?
+    thresholds_.max_rotation_jump_initial : thresholds_.max_rotation_jump;
+  RCLCPP_INFO(
+    get_logger(),
+    "GICP attempt: first_acceptance=%s, converged=%s, source_points=%zu, inliers=%zu, "
+    "inlier_ratio=%.3f, mean_error=%.6f, translation_jump=%.3f/%.3f, "
+    "rotation_jump=%.3f/%.3f",
+    first_acceptance ? "true" : "false", result.converged ? "true" : "false",
+    source->size(), result.num_inliers, inlier_ratio, mean_error,
+    translation_jump, max_translation, rotation_jump, max_rotation);
   if (!validateRegistration(metrics, previous, thresholds_, reason, first_acceptance)) {
     const int rejects = consecutive_rejects_.fetch_add(1) + 1;
-    RCLCPP_WARN_THROTTLE(
-      get_logger(), *get_clock(), 5000,
-      "Rejected GICP result: %s (inliers=%zu/%zu, mean_error=%.3f, rejects=%d)",
-      reason.c_str(), result.num_inliers, source->size(), mean_error, rejects);
+    RCLCPP_WARN(
+      get_logger(),
+      "GICP retry: rejected result reason='%s', converged=%s, inliers=%zu/%zu, "
+      "inlier_ratio=%.3f threshold=%.3f, mean_error=%.6f threshold=%.3f, "
+      "translation_jump=%.3f threshold=%.3f, rotation_jump=%.3f threshold=%.3f, "
+      "rejects=%d/%d",
+      reason.c_str(), result.converged ? "true" : "false", result.num_inliers,
+      source->size(), inlier_ratio, thresholds_.min_inlier_ratio, mean_error,
+      thresholds_.max_mean_error, translation_jump, max_translation, rotation_jump,
+      max_rotation, rejects, lost_after_rejects_);
     publishDiagnostic(
       false, reason, source->size(), result.num_inliers, mean_error, inlier_ratio,
       translation_jump, rotation_jump);
@@ -326,6 +400,11 @@ void GicpLocalizationNode::performRegistration(const pcl::PointCloud<pcl::PointX
   publishDiagnostic(
     true, first_acceptance ? "initial registration accepted" : "registration accepted",
     source->size(), result.num_inliers, mean_error, inlier_ratio, translation_jump, rotation_jump);
+  RCLCPP_INFO(
+    get_logger(), "%s: inliers=%zu/%zu, mean_error=%.6f, translation_jump=%.3f, "
+    "rotation_jump=%.3f",
+    first_acceptance ? "initial registration accepted" : "registration accepted",
+    result.num_inliers, source->size(), mean_error, translation_jump, rotation_jump);
 
   geometry_msgs::msg::PoseStamped pose;
   pose.header.stamp = now();
@@ -345,6 +424,10 @@ void GicpLocalizationNode::performRegistration(const pcl::PointCloud<pcl::PointX
     gicp_path_.poses.erase(gicp_path_.poses.begin(), gicp_path_.poses.begin() + 500);
   }
   gicp_path_pub_->publish(gicp_path_);
+  if (registration_once_ && first_acceptance && register_timer_) {
+    register_timer_->cancel();
+    RCLCPP_INFO(get_logger(), "GICP registration locked after initial accepted result");
+  }
 }
 
 void GicpLocalizationNode::publishAlignedCloud(
@@ -422,6 +505,16 @@ void GicpLocalizationNode::publishDiagnostic(
   add("mean_error", std::to_string(mean_error));
   add("translation_jump", std::to_string(translation_jump));
   add("rotation_jump", std::to_string(rotation_jump));
+  add("input_cloud_topic", input_cloud_topic_);
+  add("min_inliers", std::to_string(thresholds_.min_inliers));
+  add("min_inlier_ratio_threshold", std::to_string(thresholds_.min_inlier_ratio));
+  add("max_mean_error_threshold", std::to_string(thresholds_.max_mean_error));
+  add("max_translation_jump_threshold", std::to_string(thresholds_.max_translation_jump));
+  add("max_rotation_jump_threshold", std::to_string(thresholds_.max_rotation_jump));
+  add(
+    "max_translation_jump_initial_threshold",
+    std::to_string(thresholds_.max_translation_jump_initial));
+  add("max_rotation_jump_initial_threshold", std::to_string(thresholds_.max_rotation_jump_initial));
   array.status.push_back(status);
   diagnostics_pub_->publish(array);
 }

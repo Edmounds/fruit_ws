@@ -1,3 +1,5 @@
+import os
+
 import rclpy
 from visualization_msgs.msg import Marker
 
@@ -36,6 +38,39 @@ def test_final_route_line_includes_an_order_marker_for_every_target():
             (1.0, 1.0),
             (2.0, 1.0),
         ]
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+def test_route_marker_node_reloads_when_route_file_changes(tmp_path, monkeypatch):
+    rclpy.init()
+    node = RouteMarkerNode()
+    try:
+        route_file = tmp_path / "competition_waypoints.yaml"
+        route_file.write_text("one", encoding="utf-8")
+        node._route_file = route_file
+        loaded = []
+
+        def fake_load(path):
+            loaded.append(path.read_text(encoding="utf-8"))
+            return {
+                "anchors": {},
+                "generated": {"A": [], "B": [], "C": {}},
+            }
+
+        monkeypatch.setattr(
+            "fruit_navigation.route_marker_node.load_route_template",
+            fake_load,
+        )
+
+        assert node._ensure_template_current()
+        first_mtime = route_file.stat().st_mtime
+        route_file.write_text("two", encoding="utf-8")
+        os.utime(route_file, (first_mtime + 2.0, first_mtime + 2.0))
+        assert node._ensure_template_current()
+
+        assert loaded == ["one", "two"]
     finally:
         node.destroy_node()
         rclpy.shutdown()

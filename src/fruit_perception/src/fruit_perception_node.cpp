@@ -74,6 +74,9 @@ public:
     }
 
     initialize_model(model_path, enabled_streams);
+    if (!rclcpp::ok(get_node_base_interface()->get_context())) {
+      return;
+    }
 
     if (enable_left) {
       add_stream(
@@ -330,7 +333,7 @@ private:
       const auto detections = parse_detections(
         output.data<const float>(), output_shape_, confidence_threshold_);
 
-      const bool mode_allows_output = stream.target_point_publisher ?
+      const bool mode_allows_output = stream.detections_publisher ?
         runs_d435i_inference(perception_mode_.load()) :
         runs_side_inference(perception_mode_.load());
       if (!mode_allows_output) {

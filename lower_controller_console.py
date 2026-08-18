@@ -791,10 +791,17 @@ class ConsoleOutput:
 
 
 class SerialSession:
-    def __init__(self, serial_port, protocol: ProtocolConfig, output: ConsoleOutput):
+    def __init__(
+        self,
+        serial_port,
+        protocol: ProtocolConfig,
+        output: ConsoleOutput,
+        show_heartbeat: bool = False,
+    ):
         self.serial_port = serial_port
         self.protocol = protocol
         self.output = output
+        self.show_heartbeat = show_heartbeat
         self.stop_event = threading.Event()
         self.write_lock = threading.Lock()
         self.parser = FrameParser(protocol)
@@ -836,7 +843,13 @@ class SerialSession:
         frame, _ = encode_outgoing(self.protocol, message)
         self._write_frame(frame, f"TX {message.name} ({len(frame)} bytes)", "blue")
 
-    def _write_frame(self, frame: bytes, description: str, color: str) -> None:
+    def _write_frame(
+        self,
+        frame: bytes,
+        description: str,
+        color: str,
+        show_output: bool = True,
+    ) -> None:
         try:
             with self.write_lock:
                 written = self.serial_port.write(frame)
@@ -847,7 +860,8 @@ class SerialSession:
             self.output.line(f"Serial write failed: {exc}", "red")
             self.stop_event.set()
             return
-        self.output.line(f"{description}: {frame.hex(' ')}", color)
+        if show_output:
+            self.output.line(f"{description}: {frame.hex(' ')}", color)
 
     def _send_reliable(self, entry: PendingReliable, retry: bool) -> None:
         action = "retry" if retry else "send"
@@ -863,6 +877,7 @@ class SerialSession:
             frame,
             f"TX {'heartbeat retry' if retry else 'heartbeat'} count={count}",
             "yellow" if retry else "blue",
+            show_output=self.show_heartbeat,
         )
 
     def _on_reliable_warning(self, entry: PendingReliable) -> None:
@@ -873,7 +888,8 @@ class SerialSession:
         )
 
     def _on_heartbeat_timeout(self, count: int) -> None:
-        self.output.line(f"Heartbeat timeout: count={count}", "red")
+        if self.show_heartbeat:
+            self.output.line(f"Heartbeat timeout: count={count}", "red")
         if self.protocol.strict_heartbeat:
             self.stop_event.set()
 
@@ -896,7 +912,8 @@ class SerialSession:
 
     def _handle_frame(self, frame: Frame) -> None:
         decoded = decode_frame(self.protocol, frame)
-        self.output.line(decoded.text, decoded.color)
+        if decoded.kind != "heartbeat" or self.show_heartbeat:
+            self.output.line(decoded.text, decoded.color)
         if decoded.kind == "ack":
             matched = self.reliable.handle_ack(
                 int(decoded.fields["acked_id"]),
@@ -957,6 +974,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="disable ANSI colors",
     )
+    parser.add_argument(
+        "--show-heartbeat",
+        action="store_true",
+        help="show heartbeat TX/RX and heartbeat timeout messages",
+    )
     return parser
 
 
@@ -999,10 +1021,16 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         "green",
     )
     output.line(
-        "Automatic heartbeat and reliable retries are enabled. Type help for commands.",
+        "Automatic heartbeat is enabled but hidden; reliable retries are enabled. "
+        "Type help for commands.",
         "cyan",
     )
-    session = SerialSession(serial_port, protocol, output)
+    session = SerialSession(
+        serial_port,
+        protocol,
+        output,
+        show_heartbeat=args.show_heartbeat,
+    )
     session.start()
     try:
         while not session.stop_event.is_set():

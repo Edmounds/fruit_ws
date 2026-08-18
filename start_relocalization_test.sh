@@ -14,6 +14,7 @@ DESKTOP_DISPLAY=:0
 DESKTOP_XAUTHORITY="$DESKTOP_RUNTIME_DIR/gdm/Xauthority"
 
 pids=()
+debug_pids=()
 stopped=0
 
 stop_children() {
@@ -24,14 +25,17 @@ stop_children() {
   fi
   stopped=1
 
-  if ((${#pids[@]} == 0)); then
+  if ((${#pids[@]} == 0 && ${#debug_pids[@]} == 0)); then
     return
   fi
 
   printf '\n[relocalization-test] stopping launched processes...\n'
-  kill -INT "${pids[@]}" 2>/dev/null || true
-  wait "${pids[@]}" 2>/dev/null || true
+  ((${#pids[@]} == 0)) || kill -INT "${pids[@]}" 2>/dev/null || true
+  ((${#debug_pids[@]} == 0)) || kill -INT "${debug_pids[@]}" 2>/dev/null || true
+  ((${#pids[@]} == 0)) || wait "${pids[@]}" 2>/dev/null || true
+  ((${#debug_pids[@]} == 0)) || wait "${debug_pids[@]}" 2>/dev/null || true
   pids=()
+  debug_pids=()
 }
 
 start_process() {
@@ -41,6 +45,12 @@ start_process() {
   printf '[relocalization-test] starting %s\n' "$name"
   "$@" &
   pids+=("$!")
+}
+
+start_debug_monitor() {
+  printf '[relocalization-test] starting robot debug monitor\n'
+  "$WORKSPACE/robot_debug_monitor.sh" relocalization-test &
+  debug_pids+=("$!")
 }
 
 trap stop_children INT TERM EXIT
@@ -54,6 +64,7 @@ for required_file in \
   "$LOCALIZATION_MAP" \
   "$SENSOR_FRAMES_LAUNCH" \
   "$RVIZ_CONFIG" \
+  "$WORKSPACE/robot_debug_monitor.sh" \
   "$PCL_PRELOAD"; do
   if [[ ! -r "$required_file" ]]; then
     printf '[relocalization-test] required file is unavailable: %s\n' "$required_file" >&2
@@ -100,6 +111,8 @@ start_process "pb_gicp_localization" \
     -r __node:=pb_gicp_localization \
     --params-file "$PARAMS" \
     -p "localization_map:=$LOCALIZATION_MAP"
+
+start_debug_monitor
 
 start_process "rviz2" \
   env \

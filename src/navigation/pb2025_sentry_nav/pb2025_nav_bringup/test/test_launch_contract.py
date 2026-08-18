@@ -177,6 +177,35 @@ def test_navigation_start_script_uses_source_maps_axis_nav_and_desktop_rviz():
     assert "obstacle_scan" not in rviz
 
 
+def test_waypoints_maker_uses_panel_rviz_config_and_source_paths():
+    script_path = WORKSPACE / "waypoints_maker.sh"
+    rviz_path = ROOT / "pb2025_nav_bringup/rviz/waypoints_maker.rviz"
+    script = script_path.read_text()
+    rviz = rviz_path.read_text()
+
+    assert script_path.stat().st_mode & 0o111
+    assert "setup_fruit_runtime.bash" in script
+    assert script.index("setup_fruit_runtime.bash") < script.index("set -u")
+    assert "waypoint_recorder.launch.py" in script
+    assert "waypoints_maker.rviz" in script
+    assert 'rviz2 -d "$RVIZ_CONFIG"' in script
+    assert "SetGoal" not in script
+    assert "Waypoint Maker panel" in script
+
+    assert "fruit_waypoint_rviz_plugin/WaypointMakerPanel" in rviz
+    assert "Value: /fruit/waypoint_maker/markers" in rviz
+    assert "Value: /fruit/navigation_markers" in rviz
+    assert "Value: /fruit/final_route" in rviz
+
+
+def test_mapping_start_leaves_existing_maps_until_explicit_save():
+    mapping_script = (WORKSPACE / "start_mapping.sh").read_text()
+    save_script = (WORKSPACE / "save_glim_map.sh").read_text()
+
+    assert "archive_existing_field_maps" not in mapping_script
+    assert 'mv "${existing_maps[@]}" "$archive_dir/"' in save_script
+
+
 def test_mid360_and_gicp_runtime_config_matches_live_hardware():
     params = yaml.safe_load(PARAMS.read_text())
     driver = params["livox_ros_driver2"]["ros__parameters"]

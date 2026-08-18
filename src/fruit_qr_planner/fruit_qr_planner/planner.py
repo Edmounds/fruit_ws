@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 PRODUCE_NAMES = frozenset({"苹果", "梨子", "南瓜", "西红柿", "辣椒", "洋葱"})
+TREE_FRUIT_NAMES = frozenset({"苹果", "梨子"})
+VEGETABLE_NAMES = PRODUCE_NAMES - TREE_FRUIT_NAMES
 B_STAGES = ["navigate", "identify", "announce", "pick_or_skip", "advance"]
 C_STAGES = [
     "navigate",
@@ -25,10 +27,10 @@ def _normalized_lines(payload: str) -> List[str]:
     return [line.strip() for line in normalized.split("\n") if line.strip()]
 
 
-def _validate_names(names: List[str]) -> None:
+def _validate_names(names: List[str], allowed_names=PRODUCE_NAMES) -> None:
     if len(names) != 8:
         raise ParseError("expected exactly 8 produce names")
-    unknown = [name for name in names if name not in PRODUCE_NAMES]
+    unknown = [name for name in names if name not in allowed_names]
     if unknown:
         raise ParseError(f"unknown produce name: {unknown[0]}")
 
@@ -45,7 +47,7 @@ def _plan(zone: str, scan_index: int, tasks: List[Dict[str, Any]]) -> Dict[str, 
 
 def build_b_plan(payload: str) -> Dict[str, Any]:
     names = _normalized_lines(payload)
-    _validate_names(names)
+    _validate_names(names, TREE_FRUIT_NAMES)
     tasks = [
         {
             "sequence": index,
@@ -64,7 +66,7 @@ def build_c_plan(payload: str) -> Dict[str, Any]:
         raise ParseError("expected 8 produce names followed by one position line")
 
     names = lines[:8]
-    _validate_names(names)
+    _validate_names(names, VEGETABLE_NAMES)
     position_tokens = [token.strip() for token in re.split("[,，]", lines[8])]
     if len(position_tokens) != 8 or any(not token.isdigit() for token in position_tokens):
         raise ParseError("expected exactly 8 numeric position IDs")

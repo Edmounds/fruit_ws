@@ -84,14 +84,26 @@ def choose_axis_segments(
     current: AxisPose,
     goal: AxisPose,
     position_tolerance: float,
+    axis_segment_min_distance: float = 0.0,
 ) -> List[AxisSegment]:
     """Split a target pose into X/Y moves, trying the easiest heading first."""
-    candidates = []
     dx = goal.x - current.x
     dy = goal.y - current.y
-    if abs(dx) > position_tolerance:
+    split_x = abs(dx) > position_tolerance
+    split_y = abs(dy) > position_tolerance
+    if split_x and split_y and axis_segment_min_distance > position_tolerance:
+        if abs(dx) < axis_segment_min_distance and abs(dy) < axis_segment_min_distance:
+            split_x = abs(dx) >= abs(dy)
+            split_y = not split_x
+        elif abs(dx) < axis_segment_min_distance:
+            split_x = False
+        elif abs(dy) < axis_segment_min_distance:
+            split_y = False
+
+    candidates = []
+    if split_x:
         candidates.append(("x", goal.x, 0.0 if dx > 0.0 else math.pi, abs(dx)))
-    if abs(dy) > position_tolerance:
+    if split_y:
         candidates.append(("y", goal.y, math.pi / 2.0 if dy > 0.0 else -math.pi / 2.0, abs(dy)))
 
     candidates.sort(key=lambda item: abs(normalize_angle(item[2] - current.yaw)))
@@ -100,10 +112,10 @@ def choose_axis_segments(
     working_y = current.y
     for axis, target, heading, distance in candidates:
         if axis == "x":
-            lateral_target = working_y
+            lateral_target = working_y if split_y else goal.y
             working_x = goal.x
         else:
-            lateral_target = working_x
+            lateral_target = working_x if split_x else goal.x
             working_y = goal.y
         segments.append(
             AxisSegment(

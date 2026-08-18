@@ -22,7 +22,7 @@ setup(
     zip_safe=True,
     maintainer="fruit_ws team",
     maintainer_email="fruit-ws@example.com",
-    description="Record fixed competition route templates from RViz SetGoal clicks.",
+    description="Record competition and test waypoints from the RViz waypoint-maker panel.",
     license="Apache-2.0",
     extras_require={
         "test": [

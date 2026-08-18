@@ -10,7 +10,7 @@
 - 完成 C 后返回 B，发布 `TREE`，D435i 对整树的全部果实进行检测和测深，并按 B 计划位置 1 到 8 作业。
 - B 区完成后发布 `OFF` 并返航。当前仓库只实现话题契约和感知侧，不实现导航与完整任务状态机。
 
-上位机运行在 Intel Core i5/i7 NUC，负责定位、导航、识别、任务决策，以及 B/D 区机械臂目标生成；下位机负责底盘、舵机、关节和末端执行器的实时闭环执行及硬件保护，并在收到左右观察位置命令后执行对应位置动作。
+上位机运行在 Intel Core i5/i7 NUC，负责定位、导航、识别、任务决策，以及 B/D 区机械臂目标生成；下位机负责底盘、舵机、关节和末端执行器的实时闭环执行及硬件保护，并在收到当前区域和左右抓取方向命令后执行对应位置动作。
 
 ## 2. 总体架构
 
@@ -48,7 +48,7 @@ D435i 整树目标 -----> |                        |
 1. 比赛业务节点不直接读写串口字段，只调用有明确语义的 ROS 2 topic、service 或 action。
 2. `fruit_hardware_bridge` 是业务语义与 `task_id/task_status` 协议之间唯一的映射层。
 3. `auto_serial_bridge` 只处理串口帧、代码生成、握手、心跳、校验和可靠传输，不承载比赛流程。
-4. 下位机不决定 A/B/C 任务顺序和是否采收；左右观察位置只执行上位机指定的方向，B/D 执行上位机给出的机械臂目标，并通过 callback 返回执行阶段。
+4. 下位机不决定 A/B/C 任务顺序和是否采收；上位机只上报所在区域并指定左/右抓取方向，下位机按当前区域解释 A/B/C 不同的识别和动作方向；B/D 执行上位机给出的机械臂目标，并通过 callback 返回执行阶段。
 5. 只有速度仲裁节点能向串口通信层发布最终底盘速度，禁止 Nav2 和任务节点同时直接控制底盘。
 
 ## 3. ROS 2 工作区划分
@@ -169,12 +169,14 @@ USB 接线时，D435i 与两台 UVC 相机尽量分配到不同 USB 控制器；
 ```
 
 - 原 `FruitDetection(0x10)` 已删除且 ID 暂不复用；感知结果只留在 ROS 话题中供上位机决策。
-- `task_id=0/1/2` 分别表示夹爪、摄像头云台和左右观察位置；当 `task_id=2` 时，`task_status=0/1` 分别表示左侧和右侧观察位置。
+- `task_id=0/1/2` 分别表示夹爪、摄像头云台和 ABC 通用抓取方向；当 `task_id=2` 时，`task_status=0/1` 分别表示左侧和右侧，具体识别/动作方向由下位机结合最近一次 `task_id=5` 所在区域判断。
 - `task_id=4` 表示进入二维码识别姿态，当前仅定义 `task_status=0`。
 - `task_id=5` 表示机器人所在区域，`task_status=0/1/2/3` 分别表示 A/B/C/D 区。
-- `callback_id=0/1/2/3/4/5` 分别表示夹爪、摄像头云台、左右观察位置、B/D 机械臂目标、二维码识别姿态和所在区域。
+- `task_id=6` 表示返回初始姿态，当前仅定义 `task_status=0`。
+- `task_id=7` 表示机械臂收缩姿态，当前仅定义 `task_status=0`，用于转弯通过狭窄通道前收回机械臂。
+- `callback_id=0/1/2/3/4/5/6/7` 分别表示夹爪、摄像头云台、ABC 通用抓取方向、B/D 机械臂目标、二维码识别姿态、所在区域、返回初始姿态和机械臂收缩姿态。
 - `callback_status=1` 表示开始执行，`callback_status=0` 表示执行完成。
-- 左右观察位置命令和 B/D 机械臂目标各发布一次，并使用可靠消息保证送达；链路 ACK 只表示收到数据，只有对应的 `ExecutionCallback` 完成状态才能推进任务状态机。
+- 左右抓取方向命令和 B/D 机械臂目标各发布一次，并使用可靠消息保证送达；链路 ACK 只表示收到数据，只有对应的 `ExecutionCallback` 完成状态才能推进任务状态机。
 - 舵机、末端定位等离散动作使用可靠消息；底盘速度属于连续刷新数据，不做历史重传。
 - 上位机重复发送同一离散状态时，下位机不得重复执行已经完成的危险动作。
 - 当前回调未定义失败状态或错误码；上位机不得把通信超时解释为执行完成，故障反馈需要在后续协议中明确扩展。
@@ -185,7 +187,7 @@ USB 接线时，D435i 与两台 UVC 相机尽量分配到不同 USB 控制器；
 
 业务层不直接构造 `task_id`。建议由 `fruit_hardware_bridge` 暴露以下强类型接口：
 
-- `SetSideObservationPosition`: 左侧或右侧；侧相机确认目标后只调用一次，等待左右观察位置回调。
+- `SetPickDirection`: 左侧或右侧；侧相机确认目标后只调用一次，等待抓取方向回调。下位机用最近一次所在区域区分 A/B/C 的识别和动作方向。
 - `SetCameraMode`: 左/右/双侧，`GROUND` 或 `TREE`，等待舵机到位反馈。
 - `MoveArmJoints`: 四个目标角、速度档或速度比例、超时，持续反馈执行阶段和当前角度。
 - `RunEndEffector`: 夹取、释放、复位等离散动作。
@@ -216,16 +218,16 @@ ENTER_A
   -> CONFIRM_SIDE_CANDIDATE
   -> CANCEL_NAV_AND_LOCK_CHASSIS
   -> STABLE_STOP
-  -> PUBLISH_SIDE_OBSERVATION_POSITION_ONCE
-  -> WAIT_SIDE_OBSERVATION_CALLBACK_COMPLETED
+  -> PUBLISH_PICK_DIRECTION_ONCE
+  -> WAIT_PICK_DIRECTION_CALLBACK_COMPLETED
   -> RESUME_COVERAGE_ROUTE
   -> LEAVE_A
 ```
 
 - 没有候选时沿固定覆盖路线继续行驶。
-- 未检测到成熟目标、目标不成熟或坏水果时，不向下位机发布左右观察位置命令。
-- 仅左侧或右侧存在成熟目标时分别发送 `task_status=0/1`，让下位机移动到对应观察位置。
-- 业务层不重复发送观察位置命令；`auto_serial_bridge` 负责可靠重传，只有收到 `callback_id=2, callback_status=0` 才恢复路线。
+- 未检测到成熟目标、目标不成熟或坏水果时，不向下位机发布左右抓取方向命令。
+- 仅左侧或右侧存在成熟目标时分别发送 `task_status=0/1`，让下位机按当前区域执行对应方向动作。
+- 业务层不重复发送抓取方向命令；`auto_serial_bridge` 负责可靠重传，只有收到 `callback_id=2, callback_status=0` 才恢复路线。
 - 路线必须保存当前段索引，抓取后从安全恢复点继续，而不是从 A 区入口重新开始。
 
 ### 7.2 C 区
@@ -239,8 +241,8 @@ READ_C_QR
        VERIFY_POSITION_TASK
        SIDE_CAMERA_CHECK
        [no match/unripe/low confidence] -> ANNOUNCE_SKIP -> ADVANCE
-       [ripe candidate] -> LOCK_CHASSIS -> PUBLISH_SIDE_OBSERVATION_POSITION_ONCE
-                        -> WAIT_SIDE_OBSERVATION_CALLBACK_COMPLETED
+       [ripe candidate] -> LOCK_CHASSIS -> PUBLISH_PICK_DIRECTION_ONCE
+                        -> WAIT_PICK_DIRECTION_CALLBACK_COMPLETED
                         -> ANNOUNCE_RESULT -> ADVANCE
   -> LEAVE_C
 ```
@@ -248,7 +250,7 @@ READ_C_QR
 - C 区导航目标由 `(position_id, approach_pose, expected_side)` 配置表提供。
 - 二维码输出只决定严格任务序列，不允许按路线距离重排。
 - 到位后即使没有目标，也完成稳定停车、识别、播报和推进。
-- 不成熟、坏水果或种类不符时不发布左右观察位置命令；成熟且种类匹配时按目标所在侧发送一次方向命令。
+- 不成熟、坏水果或种类不符时不发布左右抓取方向命令；成熟且种类匹配时按目标所在侧发送一次方向命令。
 - 导航失败只允许进行有限的局部恢复；仍失败则记录本项失败并推进，避免后续全部错序。
 - 每项任务开始时记录 task index，所有异步 callback 必须验证仍属于当前任务，防止旧反馈污染下一项。
 
@@ -282,7 +284,7 @@ USE_SAVED_B_PLAN
 4. 继续用现有 OpenVINO 模型，实机验证 D435i 整树 640x640 letterbox 推理能稳定看见两个果实。
 5. 定义侧相机粗候选与 D435i 全目标输出之间的数据契约，不提前实现未知机械臂尺寸的正式 IK。
 6. 实现 A/B/C 纯任务状态机、事件日志、播报触发和严格游标推进逻辑。
-7. 按已冻结的左右观察位置命令和 task/callback 映射，实现 `fruit_hardware_bridge` 的上层语义接口。
+7. 按已冻结的 ABC 通用抓取方向命令和 task/callback 映射，实现 `fruit_hardware_bridge` 的上层语义接口。
 8. 等机械臂尺寸、关节方向和限位确定后，补 URDF、相机外参、受限 IK 和安全抓取姿态。
 
 用户当前选择暂不做 ROS bag、Gazebo 或假硬件验证，因此这些不作为第一阶段交付物。接口设计仍应允许后续添加回放或模拟下位机，而不修改比赛业务状态机。

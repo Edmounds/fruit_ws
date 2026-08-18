@@ -22,7 +22,8 @@ class RouteFileClient(Node):
     def __init__(self) -> None:
         super().__init__("route_file_client")
         self.declare_parameter("route_file", "")
-        self._route_file = Path(self.get_parameter("route_file").value)
+        route_file = str(self.get_parameter("route_file").value).strip()
+        self._route_file = Path(route_file) if route_file else None
         self._client = ActionClient(self, FollowWaypoints, "/follow_waypoints")
         self._timer = self.create_timer(0.5, self._send_once)
         self._sent = False
@@ -31,7 +32,7 @@ class RouteFileClient(Node):
         if self._sent:
             return
         self._sent = True
-        if not str(self._route_file):
+        if self._route_file is None:
             self.get_logger().info("route_file is empty; waiting for external goals")
             return
         template = load_route_template(self._route_file)

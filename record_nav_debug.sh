@@ -4,6 +4,7 @@ set -eo pipefail
 
 WORKSPACE=/home/rc4/fruit_ws
 BAG_ROOT="$WORKSPACE/tmp/nav_bags"
+GICP_DEBUG_PID=""
 
 usage() {
   cat <<'EOF'
@@ -45,6 +46,16 @@ fi
 
 source "$WORKSPACE/setup_fruit_runtime.bash"
 set -u
+
+cleanup()
+{
+  if [[ -n "$GICP_DEBUG_PID" ]]; then
+    kill -INT "$GICP_DEBUG_PID" 2>/dev/null || true
+    wait "$GICP_DEBUG_PID" 2>/dev/null || true
+  fi
+}
+
+trap cleanup EXIT INT TERM
 
 mkdir -p "$BAG_ROOT"
 
@@ -145,6 +156,9 @@ TOPICS=(
 printf '[nav-bag] output: %s\n' "$BAG_PATH"
 printf '[nav-bag] recording raw LiDAR and point-cloud topics; monitor free disk space.\n'
 printf '[nav-bag] press Ctrl-C once when the failure has been captured.\n'
+
+"$WORKSPACE/robot_debug_monitor.sh" nav-bag &
+GICP_DEBUG_PID=$!
 
 ros2 bag record \
   --output "$BAG_PATH" \

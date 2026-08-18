@@ -36,6 +36,13 @@ def test_state_machine_command_defines_qr_pose_and_current_area():
     assert constants["AREA_D"] == 3
 
 
+def test_state_machine_command_defines_return_initial_pose():
+    constants = _constants("StateMachineCommand.msg")
+
+    assert constants["TASK_RETURN_INITIAL_POSE"] == 6
+    assert constants["RETURN_INITIAL_POSE"] == 0
+
+
 def test_execution_callback_separates_ac_pick_and_arm_target():
     constants = _constants("ExecutionCallback.msg")
 
@@ -50,3 +57,9 @@ def test_execution_callback_defines_qr_pose_and_current_area():
     assert constants["CALLBACK_CURRENT_AREA"] == 5
     assert constants["STATUS_COMPLETED"] == 0
     assert constants["STATUS_EXECUTING"] == 1
+
+
+def test_execution_callback_defines_return_initial_pose():
+    constants = _constants("ExecutionCallback.msg")
+
+    assert constants["CALLBACK_RETURN_INITIAL_POSE"] == 6

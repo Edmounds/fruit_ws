@@ -143,14 +143,16 @@ pb_gicp_localization:
     odom_frame: odom
     input_cloud_topic: registered_scan
     initial_map_to_odom: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    initial_registration_delay_sec: 1.5
+    registration_once: true
     num_threads: 4
     num_neighbors: 20
-    global_leaf_size: 0.10
-    registered_leaf_size: 0.05
+    global_leaf_size: 0.06
+    registered_leaf_size: 0.03
     max_dist_sq: 3.0
     min_inliers: 500
-    min_inlier_ratio: 0.20
-    max_mean_error: 2.0
+    min_inlier_ratio: 0.30
+    max_mean_error: 0.8
     max_translation_jump: 0.7
     max_rotation_jump: 0.45
     max_translation_jump_initial: 3.0

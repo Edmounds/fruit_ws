@@ -16,6 +16,7 @@ DESKTOP_DISPLAY=:0
 DESKTOP_XAUTHORITY="$DESKTOP_RUNTIME_DIR/gdm/Xauthority"
 
 pids=()
+debug_pids=()
 stopped=0
 
 stop_children() {
@@ -26,7 +27,7 @@ stop_children() {
   fi
   stopped=1
 
-  if ((${#pids[@]} == 0)); then
+  if ((${#pids[@]} == 0 && ${#debug_pids[@]} == 0)); then
     return
   fi
 
@@ -34,8 +35,13 @@ stop_children() {
   for pid in "${pids[@]}"; do
     kill -INT -- "-$pid" 2>/dev/null || true
   done
-  wait "${pids[@]}" 2>/dev/null || true
+  for pid in "${debug_pids[@]}"; do
+    kill -INT -- "-$pid" 2>/dev/null || true
+  done
+  ((${#pids[@]} == 0)) || wait "${pids[@]}" 2>/dev/null || true
+  ((${#debug_pids[@]} == 0)) || wait "${debug_pids[@]}" 2>/dev/null || true
   pids=()
+  debug_pids=()
 }
 
 start_process() {
@@ -45,6 +51,12 @@ start_process() {
   printf '[navigation] starting %s\n' "$name"
   setsid "$@" &
   pids+=("$!")
+}
+
+start_debug_monitor() {
+  printf '[navigation] starting robot debug monitor\n'
+  setsid "$WORKSPACE/robot_debug_monitor.sh" navigation &
+  debug_pids+=("$!")
 }
 
 trap stop_children INT TERM EXIT
@@ -59,6 +71,7 @@ for required_file in \
   "$AXIS_PARAMS" \
   "$MAP" \
   "$LOCALIZATION_MAP" \
+  "$WORKSPACE/robot_debug_monitor.sh" \
   "$RVIZ_CONFIG"; do
   if [[ ! -r "$required_file" ]]; then
     printf '[navigation] required file is unavailable: %s\n' "$required_file" >&2
@@ -85,6 +98,8 @@ start_process "axis navigation and localization" \
     "start_route_client:=false" \
     "use_teleop:=false" \
     "use_rviz:=false"
+
+start_debug_monitor
 
 start_process "rviz2" \
   env \

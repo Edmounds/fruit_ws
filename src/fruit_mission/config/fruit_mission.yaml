@@ -1,0 +1,33 @@
+fruit_mission:
+  ros__parameters:
+    stable_stop_sec: 1.0
+    side_observation_timeout_sec: 3.0
+    qr_plan_timeout_sec: 60.0
+    callback_timeout_sec: 60.0
+    active_mode_timeout_sec: 30.0
+    d435i_detection_timeout_sec: 120.0
+    preferred_side: "left"
+    c_distribution_output_dir: "/home/rc4/fruit_ws/tmp/fruit_mission"
+    waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml"
+    follow_waypoints_action: "/follow_waypoints"
+
+    perception_mode_topic: "/fruit_mission/perception_mode"
+    active_mode_topic: "/fruit_perception/active_mode"
+    left_types_topic: "/fruit_perception/left/types"
+    right_types_topic: "/fruit_perception/right/types"
+    d435i_types_topic: "/fruit_perception/d435i/types"
+    d435i_detections_topic: "/fruit_perception/d435i/detections"
+    b_plan_topic: "/fruit/b_pick_plan"
+    c_plan_topic: "/fruit/c_pick_plan"
+    state_command_topic: "/fruit_hardware_bridge/state_machine/command"
+    arm_target_topic: "/fruit_hardware_bridge/arm/target"
+    callback_topic: "/fruit_hardware_bridge/execution/callback"
+
+    tts:
+      piper_executable: "/home/rc4/fruit_ws/.venv/piper-tts/bin/piper"
+      model_path: "/home/rc4/fruit_ws/.cache/piper-tts/zh_CN-huayan-medium/zh_CN-huayan-medium.onnx"
+      config_path: "/home/rc4/fruit_ws/.cache/piper-tts/zh_CN-huayan-medium/zh_CN-huayan-medium.onnx.json"
+      aplay_executable: "/usr/bin/aplay"
+      wav_path: "/home/rc4/fruit_ws/tmp/fruit_mission/tts_latest.wav"
+      generation_timeout_sec: 20.0
+      playback_timeout_sec: 60.0

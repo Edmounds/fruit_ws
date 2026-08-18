@@ -11,6 +11,7 @@ from typing import Iterable, List, Optional, Sequence
 import rclpy
 from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import Path as NavPath
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import ColorRGBA, String
 from visualization_msgs.msg import Marker, MarkerArray
@@ -31,13 +32,14 @@ class RouteMarkerNode(Node):
         super().__init__("route_marker_node")
         self.declare_parameter(
             "route_file",
-            "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/"
-            "competition_waypoints.yaml",
+            "",
         )
         self.declare_parameter("publish_period_sec", 1.0)
-        self._route_file = Path(self.get_parameter("route_file").value)
+        route_file = str(self.get_parameter("route_file").value).strip()
+        self._route_file = Path(route_file) if route_file else None
         period = float(self.get_parameter("publish_period_sec").value)
         self._template = None
+        self._route_file_mtime_ns = None
         self._c_tasks: Optional[List[PickTask]] = None
         self._marker_publisher = self.create_publisher(
             MarkerArray,
@@ -62,6 +64,8 @@ class RouteMarkerNode(Node):
         self._publish()
 
     def _load_template(self) -> bool:
+        if self._route_file is None:
+            return False
         if not self._route_file.exists():
             self.get_logger().warning(
                 f"Route template does not exist yet: {self._route_file}",
@@ -70,13 +74,31 @@ class RouteMarkerNode(Node):
             return False
         try:
             self._template = load_route_template(self._route_file)
+            self._route_file_mtime_ns = self._route_file.stat().st_mtime_ns
             return True
         except Exception as error:
             self.get_logger().error(f"Failed to load route template: {error}")
             return False
 
+    def _ensure_template_current(self) -> bool:
+        if self._route_file is None:
+            return False
+        if not self._route_file.exists():
+            self.get_logger().warning(
+                f"Route template does not exist yet: {self._route_file}",
+                throttle_duration_sec=5.0,
+            )
+            return False
+        current_mtime_ns = self._route_file.stat().st_mtime_ns
+        if (
+            self._template is None
+            or self._route_file_mtime_ns != current_mtime_ns
+        ):
+            return self._load_template()
+        return True
+
     def _publish(self) -> None:
-        if self._template is None and not self._load_template():
+        if not self._ensure_template_current():
             return
         markers = []
         marker_id = 0
@@ -259,7 +281,7 @@ def main(args=None) -> None:
     try:
         node = RouteMarkerNode()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         if node is not None:
