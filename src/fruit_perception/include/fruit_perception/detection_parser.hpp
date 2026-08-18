@@ -21,12 +21,26 @@ struct Detection
 std::vector<Detection> parse_detections(
   const float * output,
   const std::vector<std::size_t> & shape,
+  float confidence_threshold,
+  float nms_iou_threshold);
+
+std::vector<Detection> parse_detections(
+  const float * output,
+  const std::vector<std::size_t> & shape,
   float confidence_threshold);
 
 std::vector<std::string> parse_fruit_types(
   const float * output,
   const std::vector<std::size_t> & shape,
+  float confidence_threshold,
+  float nms_iou_threshold);
+
+std::vector<std::string> parse_fruit_types(
+  const float * output,
+  const std::vector<std::size_t> & shape,
   float confidence_threshold);
+
+bool is_supported_detection_output_shape(const std::vector<std::size_t> & shape);
 
 }  // namespace fruit_perception
 

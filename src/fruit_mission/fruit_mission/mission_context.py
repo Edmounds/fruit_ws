@@ -80,6 +80,11 @@ class MissionContext:
             config["perception_mode_topic"],
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE),
         )
+        self._current_area_publisher = node.create_publisher(
+            String,
+            config["current_area_topic"],
+            _latched_qos(),
+        )
         self._command_publisher = node.create_publisher(
             StateMachineCommand,
             config["state_command_topic"],
@@ -362,11 +367,16 @@ class MissionContext:
 
     def report_current_area(self, area: str) -> bool:
         """Report current competition area to the lower controller."""
-        return self._send_command_and_wait(
+        reported = self._send_command_and_wait(
             StateMachineCommand.TASK_CURRENT_AREA,
             AREA_STATUS[area],
             ExecutionCallback.CALLBACK_CURRENT_AREA,
         )
+        if reported:
+            message = String()
+            message.data = area
+            self._current_area_publisher.publish(message)
+        return reported
 
     def announce(self, text: str) -> bool:
         """Speak text through the configured TTS backend."""

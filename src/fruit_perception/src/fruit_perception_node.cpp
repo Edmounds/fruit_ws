@@ -40,8 +40,10 @@ public:
   : Node("fruit_perception_node", options)
   {
     const auto package_share = ament_index_cpp::get_package_share_directory("fruit_perception");
-    const auto model_path = declare_parameter("model_path", package_share + "/model/best.xml");
+    const auto c_model_path = declare_parameter("c_model_path", package_share + "/model/C.onnx");
+    const auto b_model_path = declare_parameter("b_model_path", package_share + "/model/B.onnx");
     confidence_threshold_ = static_cast<float>(declare_parameter("confidence_threshold", 0.50));
+    nms_iou_threshold_ = static_cast<float>(declare_parameter("nms_iou_threshold", 0.45));
     const auto perception_mode_topic = declare_parameter(
       "perception_mode_topic", "/fruit_mission/perception_mode");
     mode_subscription_ = create_subscription<std_msgs::msg::String>(
@@ -55,6 +57,20 @@ public:
           return;
         }
         perception_mode_.store(*mode);
+      });
+    const auto current_area_topic = declare_parameter(
+      "current_area_topic", "/fruit_mission/current_area");
+    current_area_subscription_ = create_subscription<std_msgs::msg::String>(
+      current_area_topic, rclcpp::QoS(1).reliable().transient_local(),
+      [this](std_msgs::msg::String::ConstSharedPtr message) {
+        if (message->data == "A" || message->data == "B" ||
+          message->data == "C" || message->data == "D")
+        {
+          current_area_.store(message->data.front());
+          return;
+        }
+        RCLCPP_WARN(
+          get_logger(), "Ignoring invalid current area '%s'", message->data.c_str());
       });
 
     const bool enable_left = declare_parameter("enable_left_camera", false);
@@ -72,8 +88,19 @@ public:
     {
       throw std::invalid_argument("confidence_threshold must be between 0 and 1");
     }
+    if (!std::isfinite(nms_iou_threshold_) ||
+      nms_iou_threshold_ < 0.0F || nms_iou_threshold_ > 1.0F)
+    {
+      throw std::invalid_argument("nms_iou_threshold must be between 0 and 1");
+    }
 
-    initialize_model(model_path, enabled_streams);
+    const auto side_request_count =
+      static_cast<std::size_t>(enable_left) + static_cast<std::size_t>(enable_right) +
+      static_cast<std::size_t>(enable_d435i);
+    initialize_model(c_model_, c_model_path, side_request_count, "C");
+    if (enable_d435i) {
+      initialize_model(b_model_, b_model_path, 1U, "B");
+    }
     if (!rclcpp::ok(get_node_base_interface()->get_context())) {
       return;
     }
@@ -81,6 +108,7 @@ public:
     if (enable_left) {
       add_stream(
         "left",
+        c_model_,
         declare_parameter("left_input_topic", "/left_camera/image_raw"),
         declare_parameter("left_output_topic", "/fruit_perception/left/types"),
         declare_parameter(
@@ -89,6 +117,7 @@ public:
     if (enable_right) {
       add_stream(
         "right",
+        c_model_,
         declare_parameter("right_input_topic", "/right_camera/image_raw"),
         declare_parameter("right_output_topic", "/fruit_perception/right/types"),
         declare_parameter(
@@ -96,6 +125,8 @@ public:
     }
     if (enable_d435i) {
       add_rgbd_stream(
+        c_model_,
+        b_model_,
         declare_parameter("d435i_rgbd_topic", "/camera/camera/rgbd"),
         declare_parameter("d435i_output_topic", "/fruit_perception/d435i/types"),
         declare_parameter(
@@ -124,32 +155,31 @@ private:
   struct Stream
   {
     Stream(
-      std::string stream_name, ov::InferRequest infer_request,
+      std::string stream_name,
       rclcpp::Publisher<msg::FruitTypes>::SharedPtr result_publisher,
       rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher)
     : name(std::move(stream_name)),
-      request(std::move(infer_request)),
       result_publisher(std::move(result_publisher)),
       image_publisher(std::move(image_publisher)),
       input_image(kModelInputSize, kModelInputSize, CV_8UC3, cv::Scalar(114, 114, 114))
     {
-      // The u8 NHWC tensor wraps the letterbox buffer directly; conversion to
-      // f32 NCHW and the /255 scaling are fused into the compiled model.
-      request.set_input_tensor(
-        ov::Tensor(
-          ov::element::u8,
-          ov::Shape{
-          1U, static_cast<std::size_t>(kModelInputSize),
-          static_cast<std::size_t>(kModelInputSize), 3U},
-          input_image.data));
     }
 
+    struct RequestSlot
+    {
+      std::string model_name;
+      ov::InferRequest request;
+      ov::Shape output_shape;
+    };
+
     std::string name;
-    ov::InferRequest request;
     rclcpp::Publisher<msg::FruitTypes>::SharedPtr result_publisher;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher;
     rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr target_point_publisher;
     rclcpp::Publisher<msg::FruitDetections>::SharedPtr detections_publisher;
+    std::vector<std::unique_ptr<RequestSlot>> request_slots;
+    RequestSlot * non_b_area_request{nullptr};
+    RequestSlot * b_area_request{nullptr};
     cv::Mat input_image;
     cv_bridge::CvImageConstPtr frame;
     cv_bridge::CvImageConstPtr aligned_depth;
@@ -161,7 +191,18 @@ private:
     std::atomic<bool> busy{false};
   };
 
-  void initialize_model(const std::string & model_path, std::size_t request_count)
+  struct ModelRuntime
+  {
+    ov::CompiledModel compiled_model;
+    ov::Shape output_shape;
+    std::string name;
+  };
+
+  void initialize_model(
+    ModelRuntime & runtime,
+    const std::string & model_path,
+    std::size_t request_count,
+    const std::string & model_name)
   {
     const auto available_devices = core_.get_available_devices();
     if (std::find(available_devices.begin(), available_devices.end(), "GPU") ==
@@ -188,40 +229,44 @@ private:
     input_info.model().set_layout("NCHW");
     model = preprocessor.build();
 
-    compiled_model_ = core_.compile_model(
+    runtime.compiled_model = core_.compile_model(
       model, "GPU",
       ov::hint::performance_mode(ov::hint::PerformanceMode::THROUGHPUT),
       ov::hint::num_requests(static_cast<std::uint32_t>(request_count)));
 
-    const auto execution_devices = compiled_model_.get_property(ov::execution_devices);
+    const auto execution_devices = runtime.compiled_model.get_property(ov::execution_devices);
     if (execution_devices.size() != 1 || execution_devices.front() != "GPU.0") {
       throw std::runtime_error("Model did not compile exclusively to GPU.0");
     }
-    if (compiled_model_.input().get_element_type() != ov::element::u8 ||
-      compiled_model_.input().get_shape() !=
+    if (runtime.compiled_model.input().get_element_type() != ov::element::u8 ||
+      runtime.compiled_model.input().get_shape() !=
       ov::Shape{1, kModelInputSize, kModelInputSize, 3})
     {
       throw std::runtime_error("Expected compiled model input u8 [1,640,640,3]");
     }
-    if (compiled_model_.output().get_element_type() != ov::element::f32 ||
-      compiled_model_.output().get_shape() != ov::Shape{1, 300, 6})
+    if (runtime.compiled_model.output().get_element_type() != ov::element::f32 ||
+      !is_supported_detection_output_shape(runtime.compiled_model.output().get_shape()))
     {
-      throw std::runtime_error("Expected model output f32 [1,300,6]");
+      throw std::runtime_error(
+              "Expected model output f32 [1,300,6] or [1,4+classes,N]");
     }
 
-    output_shape_ = compiled_model_.output().get_shape();
+    runtime.output_shape = runtime.compiled_model.output().get_shape();
+    runtime.name = model_name;
     RCLCPP_INFO(
-      get_logger(), "OpenVINO model compiled successfully; execution device: %s",
-      execution_devices.front().c_str());
+      get_logger(), "OpenVINO model %s compiled successfully; execution device: %s",
+      model_name.c_str(), execution_devices.front().c_str());
   }
 
   void add_rgbd_stream(
+    ModelRuntime & c_model,
+    ModelRuntime & b_model,
     const std::string & input_topic, const std::string & output_topic,
     const std::string & annotated_topic, const std::string & target_point_topic,
     const std::string & detections_topic)
   {
     auto stream = std::make_unique<Stream>(
-      "d435i", compiled_model_.create_infer_request(),
+      "d435i",
       create_publisher<msg::FruitTypes>(output_topic, rclcpp::QoS(10)),
       create_publisher<sensor_msgs::msg::Image>(
         annotated_topic, rclcpp::QoS(1).reliable()));
@@ -230,8 +275,15 @@ private:
     stream->detections_publisher =
       create_publisher<msg::FruitDetections>(detections_topic, rclcpp::QoS(10));
     auto * stream_ptr = stream.get();
-    stream->request.set_callback(
-      [this, stream_ptr](std::exception_ptr error) {finish_inference(*stream_ptr, error);});
+    stream->non_b_area_request = add_request_slot(*stream, c_model);
+    stream->b_area_request = add_request_slot(*stream, b_model);
+    for (auto & slot : stream->request_slots) {
+      auto * slot_ptr = slot.get();
+      slot->request.set_callback(
+        [this, stream_ptr, slot_ptr](std::exception_ptr error) {
+          finish_inference(*stream_ptr, *slot_ptr, error);
+        });
+    }
     streams_.push_back(std::move(stream));
 
     subscriptions_.push_back(
@@ -247,17 +299,21 @@ private:
   }
 
   void add_stream(
-    const std::string & name, const std::string & input_topic,
+    const std::string & name, ModelRuntime & model, const std::string & input_topic,
     const std::string & output_topic, const std::string & annotated_topic)
   {
     auto stream = std::make_unique<Stream>(
-      name, compiled_model_.create_infer_request(),
+      name,
       create_publisher<msg::FruitTypes>(output_topic, rclcpp::QoS(10)),
       create_publisher<sensor_msgs::msg::Image>(
         annotated_topic, rclcpp::QoS(1).reliable()));
     auto * stream_ptr = stream.get();
-    stream->request.set_callback(
-      [this, stream_ptr](std::exception_ptr error) {finish_inference(*stream_ptr, error);});
+    auto * slot_ptr = add_request_slot(*stream, model);
+    stream->non_b_area_request = slot_ptr;
+    slot_ptr->request.set_callback(
+      [this, stream_ptr, slot_ptr](std::exception_ptr error) {
+        finish_inference(*stream_ptr, *slot_ptr, error);
+      });
     streams_.push_back(std::move(stream));
 
     subscriptions_.push_back(
@@ -289,7 +345,7 @@ private:
       stream.frame = cv_bridge::toCvShare(image, sensor_msgs::image_encodings::RGB8);
       stream.transform = letterbox_image(stream.frame->image, stream.input_image);
       stream.header = image->header;
-      stream.request.start_async();
+      stream.non_b_area_request->request.start_async();
     } catch (const std::exception & error) {
       RCLCPP_ERROR(get_logger(), "%s frame rejected: %s", stream.name.c_str(), error.what());
       stream.busy.store(false);
@@ -316,22 +372,26 @@ private:
       stream.depth_camera_info = rgbd->depth_camera_info;
       stream.transform = letterbox_image(stream.frame->image, stream.input_image);
       stream.header = rgbd->rgb.header;
-      stream.request.start_async();
+      auto & request = select_d435i_request(stream);
+      request.request.start_async();
     } catch (const std::exception & error) {
       RCLCPP_ERROR(get_logger(), "d435i RGBD frame rejected: %s", error.what());
       stream.busy.store(false);
     }
   }
 
-  void finish_inference(Stream & stream, std::exception_ptr error)
+  void finish_inference(Stream & stream, Stream::RequestSlot & request, std::exception_ptr error)
   {
     try {
       if (error) {
         std::rethrow_exception(error);
       }
-      const auto output = stream.request.get_output_tensor();
+      const auto output = request.request.get_output_tensor();
       const auto detections = parse_detections(
-        output.data<const float>(), output_shape_, confidence_threshold_);
+        output.data<const float>(),
+        request.output_shape,
+        confidence_threshold_,
+        nms_iou_threshold_);
 
       const bool mode_allows_output = stream.detections_publisher ?
         runs_d435i_inference(perception_mode_.load()) :
@@ -410,19 +470,51 @@ private:
 
   static void wait_for_stream(const std::unique_ptr<Stream> & stream)
   {
-    try {
-      stream->request.wait();
-    } catch (const std::exception &) {
+    for (const auto & slot : stream->request_slots) {
+      try {
+        slot->request.wait();
+      } catch (const std::exception &) {
+      }
     }
   }
 
+  Stream::RequestSlot * add_request_slot(Stream & stream, ModelRuntime & model)
+  {
+    auto slot = std::make_unique<Stream::RequestSlot>();
+    slot->model_name = model.name;
+    slot->request = model.compiled_model.create_infer_request();
+    slot->output_shape = model.output_shape;
+    // The u8 NHWC tensor wraps the letterbox buffer directly; conversion to
+    // f32 NCHW and the /255 scaling are fused into the compiled model.
+    slot->request.set_input_tensor(
+      ov::Tensor(
+        ov::element::u8,
+        ov::Shape{
+        1U, static_cast<std::size_t>(kModelInputSize),
+        static_cast<std::size_t>(kModelInputSize), 3U},
+        stream.input_image.data));
+    stream.request_slots.push_back(std::move(slot));
+    return stream.request_slots.back().get();
+  }
+
+  Stream::RequestSlot & select_d435i_request(Stream & stream) const
+  {
+    if (current_area_.load() == 'B') {
+      return *stream.b_area_request;
+    }
+    return *stream.non_b_area_request;
+  }
+
   ov::Core core_;
-  ov::CompiledModel compiled_model_;
-  ov::Shape output_shape_;
+  ModelRuntime c_model_;
+  ModelRuntime b_model_;
   float confidence_threshold_{0.50F};
+  float nms_iou_threshold_{0.45F};
   std::atomic<bool> stopping_{false};
   std::atomic<PerceptionMode> perception_mode_{PerceptionMode::kOff};
+  std::atomic<char> current_area_{'A'};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_subscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr current_area_subscription_;
   std::vector<std::unique_ptr<Stream>> streams_;
   std::vector<rclcpp::SubscriptionBase::SharedPtr> subscriptions_;
 };

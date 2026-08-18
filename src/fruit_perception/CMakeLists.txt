@@ -11,7 +11,7 @@ find_package(
   OpenCV 4.5.4 EXACT REQUIRED
   PATHS /usr/lib/x86_64-linux-gnu/cmake/opencv4
   NO_DEFAULT_PATH
-  COMPONENTS core imgproc
+  COMPONENTS core dnn imgproc
 )
 find_package(cv_bridge REQUIRED)
 find_package(geometry_msgs REQUIRED)

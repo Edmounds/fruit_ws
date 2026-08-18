@@ -12,10 +12,12 @@ fruit_mission:
     follow_waypoints_action: "/follow_waypoints"
 
     perception_mode_topic: "/fruit_mission/perception_mode"
+    current_area_topic: "/fruit_mission/current_area"
     active_mode_topic: "/fruit_perception/active_mode"
     left_types_topic: "/fruit_perception/left/types"
     right_types_topic: "/fruit_perception/right/types"
     d435i_types_topic: "/fruit_perception/d435i/types"
+    d435i_target_point_topic: "/fruit_perception/d435i/target_point"
     d435i_detections_topic: "/fruit_perception/d435i/detections"
     b_plan_topic: "/fruit/b_pick_plan"
     c_plan_topic: "/fruit/c_pick_plan"
