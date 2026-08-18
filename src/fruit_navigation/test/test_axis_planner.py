@@ -4,6 +4,9 @@ import pytest
 
 from fruit_navigation.axis_planner import (
     AxisPose,
+    ProgressWatchdog,
+    axis_cross_track_error,
+    axis_forward_remaining,
     choose_axis_segments,
     normalize_angle,
     validate_waypoints,
@@ -56,3 +59,65 @@ def test_validate_waypoints_rejects_empty_or_invalid_map_routes():
         validate_waypoints([{"frame_id": "odom", "x": 0.0, "y": 0.0, "yaw": 0.0}])
     with pytest.raises(ValueError):
         validate_waypoints([{"frame_id": "map", "x": math.nan, "y": 0.0, "yaw": 0.0}])
+
+
+@pytest.mark.parametrize(
+    ("axis", "heading", "current", "target", "expected"),
+    (
+        ("x", 0.0, AxisPose(0.25, 0.0, 0.0), 1.0, 0.75),
+        ("x", math.pi, AxisPose(0.25, 0.0, math.pi), -1.0, 1.25),
+        ("y", math.pi / 2.0, AxisPose(0.0, 0.25, math.pi / 2.0), 1.0, 0.75),
+        ("y", -math.pi / 2.0, AxisPose(0.0, 0.25, -math.pi / 2.0), -1.0, 1.25),
+    ),
+)
+def test_axis_forward_remaining_is_positive_in_all_cardinal_directions(
+    axis, heading, current, target, expected
+):
+    assert math.isclose(
+        axis_forward_remaining(axis, target, current, heading),
+        expected,
+    )
+
+
+def test_axis_forward_remaining_is_negative_after_crossing_target():
+    current = AxisPose(x=1.1, y=0.0, yaw=0.0)
+
+    assert axis_forward_remaining("x", 1.0, current, 0.0) < 0.0
+
+
+@pytest.mark.parametrize(
+    ("axis", "heading"),
+    (
+        ("x", 0.0),
+        ("x", math.pi),
+        ("y", math.pi / 2.0),
+        ("y", -math.pi / 2.0),
+    ),
+)
+def test_cross_track_error_has_a_consistent_left_of_heading_sign(axis, heading):
+    left_offset = AxisPose(
+        x=-math.sin(heading) * 0.1,
+        y=math.cos(heading) * 0.1,
+        yaw=heading,
+    )
+
+    error = axis_cross_track_error(axis, left_offset, 0.0, heading)
+
+    assert error > 0.0
+
+
+def test_progress_watchdog_times_out_without_improvement():
+    watchdog = ProgressWatchdog(timeout=2.0, min_delta=0.01, now=10.0)
+
+    assert watchdog.stalled(1.0, now=10.0) is False
+    assert watchdog.stalled(1.0, now=11.9) is False
+    assert watchdog.stalled(1.0, now=12.1) is True
+
+
+def test_progress_watchdog_resets_after_meaningful_improvement():
+    watchdog = ProgressWatchdog(timeout=2.0, min_delta=0.01, now=10.0)
+
+    assert watchdog.stalled(1.0, now=10.0) is False
+    assert watchdog.stalled(0.8, now=11.5) is False
+    assert watchdog.stalled(0.8, now=13.4) is False
+    assert watchdog.stalled(0.8, now=13.6) is True

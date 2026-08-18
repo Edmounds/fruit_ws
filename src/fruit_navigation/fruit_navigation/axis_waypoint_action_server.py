@@ -6,6 +6,7 @@
 """ROS action server for KISS cardinal-axis waypoint following."""
 
 import math
+import threading
 import time
 from typing import Optional
 
@@ -22,6 +23,9 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from fruit_navigation.axis_planner import (
     AxisPose,
+    ProgressWatchdog,
+    axis_cross_track_error,
+    axis_forward_remaining,
     choose_axis_segments,
     normalize_angle,
     pose_from_ros,
@@ -66,7 +70,9 @@ class AxisWaypointActionServer(Node):
             self.get_parameter("progress_timeout_sec").value
         )
         self._progress_min_delta = float(self.get_parameter("progress_min_delta").value)
+        self._goal_lock = threading.Lock()
         self._active_goal = False
+        self._localization_ready = False
         self._localization_error = False
 
         self._validate_parameters()
@@ -99,19 +105,30 @@ class AxisWaypointActionServer(Node):
             raise ValueError("speed limits must be positive")
         if self._min_linear_speed < 0.0:
             raise ValueError("min_linear_speed must not be negative")
+        if self._min_linear_speed > self._max_linear_speed:
+            raise ValueError("min_linear_speed must not exceed max_linear_speed")
         if self._position_tolerance <= 0.0 or self._yaw_tolerance <= 0.0:
             raise ValueError("tolerances must be positive")
         if self._tf_timeout_sec <= 0.0 or self._progress_timeout_sec <= 0.0:
             raise ValueError("timeouts must be positive")
+        if self._progress_min_delta <= 0.0:
+            raise ValueError("progress_min_delta must be positive")
 
     def _on_goal(self, goal_request) -> GoalResponse:
-        if self._active_goal:
-            return GoalResponse.REJECT
         try:
             self._validate_goal(goal_request)
         except ValueError as error:
             self.get_logger().error(f"Rejected waypoint goal: {error}")
             return GoalResponse.REJECT
+        with self._goal_lock:
+            if self._active_goal:
+                return GoalResponse.REJECT
+            if not self._localization_ready or self._localization_error:
+                self.get_logger().error(
+                    "Rejected waypoint goal: GICP localization is not ready"
+                )
+                return GoalResponse.REJECT
+            self._active_goal = True
         return GoalResponse.ACCEPT
 
     def _on_cancel(self, _goal_handle) -> CancelResponse:
@@ -137,7 +154,6 @@ class AxisWaypointActionServer(Node):
                 raise ValueError("pose values must be finite")
 
     def _execute(self, goal_handle):
-        self._active_goal = True
         missed_waypoints = []
         result = FollowWaypoints.Result()
         try:
@@ -147,7 +163,8 @@ class AxisWaypointActionServer(Node):
                 goal_handle.publish_feedback(feedback)
                 if not self._follow_one(goal_handle, pose_from_ros(target)):
                     missed_waypoints.append(index)
-                    goal_handle.abort()
+                    if goal_handle.is_active:
+                        goal_handle.abort()
                     result.missed_waypoints = missed_waypoints
                     self._publish_stop_burst()
                     return result
@@ -156,7 +173,8 @@ class AxisWaypointActionServer(Node):
             self._publish_stop()
             return result
         finally:
-            self._active_goal = False
+            with self._goal_lock:
+                self._active_goal = False
 
     def _follow_one(self, goal_handle, target: AxisPose) -> bool:
         current = self._lookup_pose()
@@ -178,6 +196,11 @@ class AxisWaypointActionServer(Node):
 
     def _rotate_to(self, goal_handle, target_yaw: float) -> bool:
         period = 1.0 / self._control_frequency
+        watchdog = ProgressWatchdog(
+            self._progress_timeout_sec,
+            self._progress_min_delta,
+            time.monotonic(),
+        )
         while rclpy.ok():
             if self._should_stop(goal_handle):
                 return False
@@ -188,6 +211,10 @@ class AxisWaypointActionServer(Node):
             if abs(error) <= self._yaw_tolerance:
                 self._publish_stop()
                 return True
+            if watchdog.stalled(error, time.monotonic()):
+                self.get_logger().error("Aborting waypoint goal: no rotation progress")
+                self._publish_stop_burst()
+                return False
             twist = Twist()
             twist.angular.z = self._clamp(
                 self._yaw_gain * error,
@@ -207,30 +234,34 @@ class AxisWaypointActionServer(Node):
         heading: float,
     ) -> bool:
         period = 1.0 / self._control_frequency
-        best_remaining = float("inf")
-        last_progress = time.monotonic()
+        watchdog = ProgressWatchdog(
+            self._progress_timeout_sec,
+            self._progress_min_delta,
+            time.monotonic(),
+        )
         while rclpy.ok():
             if self._should_stop(goal_handle):
                 return False
             current = self._lookup_pose()
             if current is None:
                 return False
-            remaining = target_value - (current.x if axis == "x" else current.y)
-            if abs(remaining) <= self._position_tolerance:
+            remaining = axis_forward_remaining(axis, target_value, current, heading)
+            if remaining <= self._position_tolerance:
                 self._publish_stop()
                 return True
-            if abs(remaining) < best_remaining - self._progress_min_delta:
-                best_remaining = abs(remaining)
-                last_progress = time.monotonic()
-            if time.monotonic() - last_progress > self._progress_timeout_sec:
+            if watchdog.stalled(remaining, time.monotonic()):
                 self.get_logger().error("Aborting waypoint goal: no progress")
+                self._publish_stop_burst()
                 return False
 
             heading_error = normalize_angle(heading - current.yaw)
-            lateral_error = (
-                current.y - lateral_target if axis == "x" else current.x - lateral_target
+            lateral_error = axis_cross_track_error(
+                axis,
+                current,
+                lateral_target,
+                heading,
             )
-            speed = abs(remaining) * self._linear_gain
+            speed = remaining * self._linear_gain
             speed = self._clamp(speed, self._min_linear_speed, self._max_linear_speed)
             twist = Twist()
             twist.linear.x = speed
@@ -249,7 +280,7 @@ class AxisWaypointActionServer(Node):
             goal_handle.canceled()
             self._publish_stop_burst()
             return True
-        if self._localization_error:
+        if not self._localization_ready or self._localization_error:
             self.get_logger().error("Aborting waypoint goal: GICP localization ERROR")
             self._publish_stop_burst()
             return True
@@ -282,7 +313,16 @@ class AxisWaypointActionServer(Node):
         for status in message.status:
             if status.name != "pb_gicp_localization/registration":
                 continue
-            self._localization_error = status.level == DiagnosticStatus.ERROR
+            values = {item.key: item.value for item in status.values}
+            if status.level == DiagnosticStatus.ERROR:
+                self._localization_error = True
+            elif (
+                status.level == DiagnosticStatus.OK
+                and values.get("accepted") == "1"
+                and values.get("has_accepted_once") == "1"
+            ):
+                self._localization_ready = True
+                self._localization_error = False
 
     def _publish_stop(self) -> None:
         self._cmd_vel.publish(Twist())

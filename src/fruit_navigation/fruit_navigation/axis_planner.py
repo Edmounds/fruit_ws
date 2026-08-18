@@ -6,7 +6,7 @@
 """Pure helpers for cardinal-axis waypoint navigation."""
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, List, Mapping
 
 
@@ -29,6 +29,28 @@ class AxisSegment:
     heading: float
     distance: float
     final_yaw: float
+
+
+@dataclass
+class ProgressWatchdog:
+    """Report stalled motion when an error stops improving."""
+
+    timeout: float
+    min_delta: float
+    now: float
+    best_error: float = field(default=float("inf"), init=False)
+    last_progress: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.last_progress = self.now
+
+    def stalled(self, error: float, now: float) -> bool:
+        """Return true when error has not improved before the deadline."""
+        error = abs(error)
+        if error < self.best_error - self.min_delta:
+            self.best_error = error
+            self.last_progress = now
+        return now - self.last_progress > self.timeout
 
 
 def normalize_angle(angle: float) -> float:
@@ -94,6 +116,34 @@ def choose_axis_segments(
             )
         )
     return segments
+
+
+def axis_forward_remaining(
+    axis: str,
+    target: float,
+    current: AxisPose,
+    heading: float,
+) -> float:
+    """Return remaining distance measured along the segment's forward direction."""
+    if axis == "x":
+        return (target - current.x) * math.cos(heading)
+    if axis == "y":
+        return (target - current.y) * math.sin(heading)
+    raise ValueError(f"unsupported axis: {axis}")
+
+
+def axis_cross_track_error(
+    axis: str,
+    current: AxisPose,
+    lateral_target: float,
+    heading: float,
+) -> float:
+    """Return signed lateral error, positive on the left of the heading."""
+    if axis == "x":
+        return math.cos(heading) * (current.y - lateral_target)
+    if axis == "y":
+        return -math.sin(heading) * (current.x - lateral_target)
+    raise ValueError(f"unsupported axis: {axis}")
 
 
 def pose_from_ros(pose_stamped) -> AxisPose:
