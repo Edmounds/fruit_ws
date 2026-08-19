@@ -2,20 +2,20 @@
 
 ## Preparation
 
-- [ ] Review and approve `tasks/plan.md`.
-- [ ] Record each script's current command, arguments, logs, exit behavior, and
+- [x] Review and approve `tasks/plan.md`.
+- [x] Record each script's current command, arguments, logs, exit behavior, and
       owned child processes as compatibility invariants.
-- [ ] Preserve unrelated dirty-worktree changes.
-- [ ] Capture the reviewed D435i parser fixes as the implementation baseline.
-- [ ] Confirm `.worktrees/` is ignored.
-- [ ] Create an isolated `codex/` feature worktree.
+- [x] Preserve unrelated dirty-worktree changes.
+- [x] Capture the reviewed D435i parser fixes as the implementation baseline.
+- [x] Confirm `.worktrees/` is ignored.
+- [x] Create an isolated `codex/` feature worktree.
 
 ## Typed Client Foundation
 
-- [ ] Add `src/fruit_mission/config/script_ros_clients.yaml`.
-- [ ] Add the shared bridge-ready, endpoint, publish, and callback-wait client.
+- [x] Add `src/fruit_mission/config/script_ros_clients.yaml`.
+- [x] Add the shared bridge-ready, endpoint, publish, and callback-wait client.
 - [ ] Declare only required ROS dependencies and console entry points.
-- [ ] Build and import-check the foundation in `setup_fruit_runtime.bash`.
+- [x] Build and import-check the foundation in `setup_fruit_runtime.bash`.
 
 ## D435i Arm Target
 
