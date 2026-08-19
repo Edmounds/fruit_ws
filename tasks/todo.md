@@ -45,17 +45,17 @@
 
 ## Mission Readiness
 
-- [ ] Add the ROS graph/topic readiness client.
-- [ ] Replace node-list text parsing with graph APIs.
-- [ ] Replace action-list parsing with `ActionClient.wait_for_server()`.
-- [ ] Keep GICP diagnostic acceptance equivalent to current behavior.
-- [ ] Replace serial log matching with `/auto_serial_bridge/ready`.
-- [ ] Replace topic-info counts with graph endpoint counts.
-- [ ] Replace active-mode echo parsing with a typed subscription.
-- [ ] Leave the already typed GICP diagnostic subscription behavior unchanged.
+- [x] Add the ROS graph/topic readiness client.
+- [x] Replace node-list text parsing with graph APIs.
+- [x] Replace action-list parsing with `ActionClient.wait_for_server()`.
+- [x] Keep GICP diagnostic acceptance equivalent to current behavior.
+- [x] Replace serial log matching with `/auto_serial_bridge/ready`.
+- [x] Replace topic-info counts with graph endpoint counts.
+- [x] Replace active-mode echo parsing with a typed subscription.
+- [x] Leave the already typed GICP diagnostic subscription behavior unchanged.
 - [ ] Compare each new read-only readiness result with the old check before
       removing the old check.
-- [ ] Preserve run directories, child logs, startup order, exit behavior, and
+- [x] Preserve run directories, child logs, startup order, exit behavior, and
       Ctrl-C cleanup.
 - [ ] Verify cold start, missing subsystem failure, and cleanup behavior.
 

@@ -13,6 +13,7 @@ AXIS_PARAMS="$WORKSPACE/src/fruit_navigation/config/axis_navigation.yaml"
 MAP="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.yaml"
 LOCALIZATION_MAP="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.pcd"
 MISSION_CONFIG="$WORKSPACE/src/fruit_mission/config/fruit_mission.yaml"
+SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
 
 RUN_ROOT="$WORKSPACE/tmp/fruit_mission/runs"
 RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
@@ -23,6 +24,7 @@ child_pids=()
 child_names=()
 child_logs=()
 debug_pids=()
+readiness_pid=""
 stopped=0
 
 source "$WORKSPACE/setup_fruit_runtime.bash"
@@ -59,15 +61,20 @@ check_device() {
 }
 
 check_no_existing_nodes() {
-  local existing_nodes
+  local -a arguments=(nodes-absent)
   local node_name
+  local status
 
-  existing_nodes="$(ros2 node list --no-daemon 2>/dev/null || true)"
   for node_name in "$@"; do
-    if grep -Fxq "$node_name" <<< "$existing_nodes"; then
-      die "node is already running: $node_name; stop the existing stack first"
-    fi
+    arguments+=(--node "$node_name")
   done
+  if run_readiness_client "${arguments[@]}"; then
+    return 0
+  else
+    status=$?
+  fi
+  ((status != 2)) || die "process exited while checking existing ROS nodes"
+  die "a required node is already running; stop the existing stack first"
 }
 
 process_alive() {
@@ -82,6 +89,27 @@ all_children_alive() {
     process_alive "$pid" || return 1
   done
   return 0
+}
+
+run_readiness_client() {
+  local status=0
+
+  setsid ros2 run fruit_mission stack_readiness_client "$@" \
+    --ros-args --params-file "$SCRIPT_CLIENT_CONFIG" \
+    > >(tee -a "$ORCHESTRATOR_LOG") 2>&1 &
+  readiness_pid=$!
+  while process_alive "$readiness_pid"; do
+    if ! all_children_alive; then
+      kill -TERM -- "-$readiness_pid" 2>/dev/null || true
+      wait "$readiness_pid" 2>/dev/null || true
+      readiness_pid=""
+      return 2
+    fi
+    sleep 0.2
+  done
+  wait "$readiness_pid" || status=$?
+  readiness_pid=""
+  return "$status"
 }
 
 start_process() {
@@ -134,48 +162,38 @@ wait_for_nodes() {
   local label=$1
   local timeout_sec=$2
   shift 2
-  local -a missing=("$@")
-  local -a still_missing=()
-  local deadline=$((SECONDS + timeout_sec))
+  local -a arguments=(nodes --timeout "$timeout_sec")
   local node_name
-  local nodes
+  local status
 
-  log "WAIT $label nodes=${missing[*]} timeout=${timeout_sec}s"
-  while ((SECONDS < deadline)); do
-    all_children_alive || die "$label process exited before readiness"
-    nodes="$(ros2 node list --no-daemon 2>/dev/null || true)"
-    still_missing=()
-    for node_name in "${missing[@]}"; do
-      if grep -Fxq "$node_name" <<< "$nodes"; then
-        log "READY $label node=$node_name"
-      else
-        still_missing+=("$node_name")
-      fi
-    done
-    if ((${#still_missing[@]} == 0)); then
-      return 0
-    fi
-    missing=("${still_missing[@]}")
-    sleep 1
+  for node_name in "$@"; do
+    arguments+=(--node "$node_name")
   done
-  die "timeout waiting for $label nodes=${missing[*]}"
+  log "WAIT $label nodes=$* timeout=${timeout_sec}s"
+  if run_readiness_client "${arguments[@]}"; then
+    log "READY $label nodes=$*"
+    return 0
+  else
+    status=$?
+  fi
+  ((status != 2)) || die "$label process exited before readiness"
+  die "timeout waiting for $label nodes=$*"
 }
 
 wait_for_action() {
   local label=$1
   local action_name=$2
   local timeout_sec=$3
-  local deadline=$((SECONDS + timeout_sec))
+  local status
 
   log "WAIT $label action=$action_name timeout=${timeout_sec}s"
-  while ((SECONDS < deadline)); do
-    all_children_alive || die "$label process exited before readiness"
-    if ros2 action list 2>/dev/null | awk '{print $1}' | grep -Fxq "$action_name"; then
-      log "READY $label action=$action_name"
-      return 0
-    fi
-    sleep 1
-  done
+  if run_readiness_client action --timeout "$timeout_sec"; then
+    log "READY $label action=$action_name"
+    return 0
+  else
+    status=$?
+  fi
+  ((status != 2)) || die "$label process exited before readiness"
   die "timeout waiting for $label action=$action_name"
 }
 
@@ -313,21 +331,16 @@ PY
 
 wait_for_active_off() {
   local timeout_sec=$1
-  local deadline=$((SECONDS + timeout_sec))
+  local status
 
   log "WAIT camera mode manager active=OFF timeout=${timeout_sec}s"
-  while ((SECONDS < deadline)); do
-    all_children_alive || die "perception process exited before camera mode readiness"
-    if timeout 5s ros2 topic echo --once \
-      --qos-reliability reliable \
-      --qos-durability transient_local \
-      --qos-depth 1 \
-      --field data \
-      /fruit_perception/active_mode std_msgs/msg/String 2>/dev/null | grep -Fxq OFF; then
-      log "READY camera mode manager active=OFF"
-      return 0
-    fi
-  done
+  if run_readiness_client active-mode --mode OFF --timeout "$timeout_sec"; then
+    log "READY camera mode manager active=OFF"
+    return 0
+  else
+    status=$?
+  fi
+  ((status != 2)) || die "perception process exited before camera mode readiness"
   die "timeout waiting for camera mode manager active=OFF"
 }
 
@@ -337,15 +350,10 @@ wait_for_topic_endpoint_count() {
   local endpoint=$3
   local expected_count=$4
   local timeout_sec=$5
-  local deadline=$((SECONDS + timeout_sec))
-  local field
+  local status
 
   case "$endpoint" in
-    publishers)
-      field="Publisher count:"
-      ;;
-    subscribers)
-      field="Subscription count:"
+    publishers|subscribers)
       ;;
     *)
       die "unsupported topic endpoint kind: $endpoint"
@@ -353,34 +361,33 @@ wait_for_topic_endpoint_count() {
   esac
 
   log "WAIT $label topic=$topic $endpoint>=$expected_count timeout=${timeout_sec}s"
-  while ((SECONDS < deadline)); do
-    all_children_alive || die "$label process exited before readiness"
-    if ros2 topic info "$topic" 2>/dev/null | awk -v field="$field" -v expected="$expected_count" '
-      index($0, field) == 1 && ($3 + 0) >= expected { found = 1 }
-      END { exit(found ? 0 : 1) }
-    '; then
-      log "READY $label topic=$topic $endpoint>=$expected_count"
-      return 0
-    fi
-    sleep 1
-  done
+  if run_readiness_client endpoint \
+    --topic "$topic" \
+    --kind "$endpoint" \
+    --count "$expected_count" \
+    --timeout "$timeout_sec"; then
+    log "READY $label topic=$topic $endpoint>=$expected_count"
+    return 0
+  else
+    status=$?
+  fi
+  ((status != 2)) || die "$label process exited before readiness"
   die "timeout waiting for $label topic=$topic $endpoint>=$expected_count"
 }
 
 wait_for_serial_bridge_running() {
   local timeout_sec=$1
   local log_file="$RUN_DIR/perception.log"
-  local deadline=$((SECONDS + timeout_sec))
+  local status
 
   log "WAIT serial bridge RUNNING timeout=${timeout_sec}s"
-  while ((SECONDS < deadline)); do
-    all_children_alive || die "serial bridge process exited before readiness"
-    if grep -Eq "Serial connected.*RUNNING|Handshake SUCCESS.*RUNNING" "$log_file" 2>/dev/null; then
-      log "READY serial bridge RUNNING"
-      return 0
-    fi
-    sleep 1
-  done
+  if run_readiness_client bridge --timeout "$timeout_sec"; then
+    log "READY serial bridge RUNNING"
+    return 0
+  else
+    status=$?
+  fi
+  ((status != 2)) || die "serial bridge process exited before readiness"
   die "timeout waiting for serial bridge RUNNING; see $log_file"
 }
 
@@ -403,6 +410,12 @@ stop_children() {
     return 0
   fi
   stopped=1
+
+  if process_alive "$readiness_pid"; then
+    kill -INT -- "-$readiness_pid" 2>/dev/null || true
+    wait "$readiness_pid" 2>/dev/null || true
+    readiness_pid=""
+  fi
 
   if ((${#child_pids[@]} == 0)); then
     return 0
@@ -473,7 +486,8 @@ for required_file in \
   "$MAP" \
   "$LOCALIZATION_MAP" \
   "$WORKSPACE/robot_debug_monitor.sh" \
-  "$MISSION_CONFIG"; do
+  "$MISSION_CONFIG" \
+  "$SCRIPT_CLIENT_CONFIG"; do
   check_file "$required_file"
 done
 
