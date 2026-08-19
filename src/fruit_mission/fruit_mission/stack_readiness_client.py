@@ -79,18 +79,17 @@ class StackReadinessClient(Node):
             )
         return ready
 
-    def wait_for_action(self, timeout_sec: float) -> bool:
-        """Wait for the configured FollowWaypoints action server."""
+    def wait_for_action(self, action_name: str, timeout_sec: float) -> bool:
+        """Wait for the requested FollowWaypoints action server."""
         client = ActionClient(
             self,
             FollowWaypoints,
-            self.follow_waypoints_action,
+            action_name,
         )
         ready = client.wait_for_server(timeout_sec=timeout_sec)
         if not ready:
             self.get_logger().error(
-                "Timed out waiting for action: "
-                f"{self.follow_waypoints_action}"
+                f"Timed out waiting for action: {action_name}"
             )
         return ready
 
@@ -184,6 +183,7 @@ def _parser() -> argparse.ArgumentParser:
     nodes.add_argument("--timeout", type=float, required=True)
 
     action = commands.add_parser("action")
+    action.add_argument("--name")
     action.add_argument("--timeout", type=float, required=True)
 
     bridge = commands.add_parser("bridge")
@@ -215,7 +215,8 @@ def main(args=None) -> None:
         elif options.command == "nodes":
             ready = node.wait_for_nodes(options.node, options.timeout)
         elif options.command == "action":
-            ready = node.wait_for_action(options.timeout)
+            action_name = options.name or node.follow_waypoints_action
+            ready = node.wait_for_action(action_name, options.timeout)
         elif options.command == "bridge":
             ready = node.wait_for_bridge(options.timeout)
         elif options.command == "endpoint":

@@ -187,7 +187,9 @@ wait_for_action() {
   local status
 
   log "WAIT $label action=$action_name timeout=${timeout_sec}s"
-  if run_readiness_client action --timeout "$timeout_sec"; then
+  if run_readiness_client action \
+    --name "$action_name" \
+    --timeout "$timeout_sec"; then
     log "READY $label action=$action_name"
     return 0
   else
