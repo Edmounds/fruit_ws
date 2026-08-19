@@ -16,6 +16,13 @@
     detection_timeout_sec: 120.0
     d435i_target_sample_count: 5
     current_area_delivery_timeout_sec: 1.0
+    perception_mode_min_subscribers: 2
+    cleanup_mode_timeout_sec: 2.0
+    graph_discovery_timeout_sec: 1.0
+    d435i_conflicting_nodes:
+      - "/fruit_perception_container"
+      - "/camera_mode_manager"
+      - "/serial_controller"
 
     follow_waypoints_action: "/follow_waypoints"
     diagnostics_topic: "/diagnostics"

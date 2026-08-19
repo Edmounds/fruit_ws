@@ -14,18 +14,18 @@
 
 - [x] Add `src/fruit_mission/config/script_ros_clients.yaml`.
 - [x] Add the shared bridge-ready, endpoint, publish, and callback-wait client.
-- [ ] Declare only required ROS dependencies and console entry points.
+- [x] Declare only required ROS dependencies and console entry points.
 - [x] Build and import-check the foundation in `setup_fruit_runtime.bash`.
 
 ## D435i Arm Target
 
-- [ ] Add the typed D435i arm-target client.
-- [ ] Use fresh `FruitDetections` for both class and position.
-- [ ] Preserve five-sample averaging and target selection.
-- [ ] Publish current area and wait for callback ID 5.
-- [ ] Publish one ArmTarget and wait for callback ID 3.
-- [ ] Reduce `test_d435i_arm_target.sh` to lifecycle orchestration.
-- [ ] Preserve its argument-free invocation, logs, resident inspection mode,
+- [x] Add the typed D435i arm-target client.
+- [x] Use fresh `FruitDetections` for both class and position.
+- [x] Preserve five-sample averaging and target selection.
+- [x] Publish current area and wait for callback ID 5.
+- [x] Publish one ArmTarget and wait for callback ID 3.
+- [x] Reduce `test_d435i_arm_target.sh` to lifecycle orchestration.
+- [x] Preserve its argument-free invocation, logs, resident inspection mode,
       exit behavior, and Ctrl-C cleanup.
 - [ ] Verify success and `point=NONE` timeout behavior on the robot.
 - [ ] Stop the migration if the original real-robot workflow does not complete.

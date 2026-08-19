@@ -29,6 +29,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'd435i_arm_target_client = '
+            'fruit_mission.d435i_arm_target_client:main',
             'fruit_mission_node = fruit_mission.mission_node:main',
         ],
     },
