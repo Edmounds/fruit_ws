@@ -16,6 +16,10 @@ currently translate perception results or implement mission behavior.
 The serial bridge handles reliable delivery for discrete commands. A mission
 node must publish each command once and wait for the matching completed callback.
 
+Normal project scripts communicate with the lower controller only through these
+ROS topics. `lower_controller_console.py` is reserved for emergency protocol
+diagnostics and must not run while `auto_serial_bridge` owns `/dev/stm32`.
+
 ## Runtime
 
 The main perception launch starts the camera pipeline and serial node together:

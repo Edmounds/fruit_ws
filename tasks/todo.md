@@ -61,12 +61,12 @@
 
 ## Final Audit
 
-- [ ] Audit remaining `ros2` calls and direct `/dev/stm32` access.
-- [ ] Document normal ROS ownership and emergency direct-serial usage.
-- [ ] Run Bash syntax, Python compile/import, diff, and package build checks.
+- [x] Audit remaining `ros2` calls and direct `/dev/stm32` access.
+- [x] Document normal ROS ownership and emergency direct-serial usage.
+- [x] Run Bash syntax, Python compile/import, diff, and package build checks.
 - [ ] Run supervised D435i, area, and mission-start smoke checks.
 - [ ] Re-run the original documented shell commands from a fresh terminal.
-- [ ] Confirm no tests were added or run.
-- [ ] Review the final diff for unrelated changes.
+- [x] Confirm no tests were added or run.
+- [x] Review the final diff for unrelated changes.
 - [ ] Merge into `main`.
 - [ ] Remove the feature worktree and local feature branch.
