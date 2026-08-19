@@ -32,15 +32,15 @@
 
 ## Current Area
 
-- [ ] Add the typed current-area client.
-- [ ] Reuse an existing ready bridge without taking ownership of it.
-- [ ] If a bridge exists but is not ready, wait/fail without starting another.
-- [ ] If no bridge exists, temporarily launch the source-path hardware bridge.
-- [ ] Wait for callback ID 5 before announcing current area.
-- [ ] Keep the transient-local publisher alive long enough for delivery.
-- [ ] Remove direct serial-console use from `zone_witch.sh`.
-- [ ] Stop only a bridge process group started by `zone_witch.sh`.
-- [ ] Preserve `--A|--B|--C|--D` and one-command operation.
+- [x] Add the typed current-area client.
+- [x] Reuse an existing ready bridge without taking ownership of it.
+- [x] If a bridge exists but is not ready, wait/fail without starting another.
+- [x] If no bridge exists, temporarily launch the source-path hardware bridge.
+- [x] Wait for callback ID 5 before announcing current area.
+- [x] Keep the transient-local publisher alive long enough for delivery.
+- [x] Remove direct serial-console use from `zone_witch.sh`.
+- [x] Stop only a bridge process group started by `zone_witch.sh`.
+- [x] Preserve `--A|--B|--C|--D` and one-command operation.
 - [ ] Verify absent, starting, and already-ready bridge cases.
 
 ## Mission Readiness

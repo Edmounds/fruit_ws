@@ -29,6 +29,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'current_area_client = fruit_mission.current_area_client:main',
             'd435i_arm_target_client = '
             'fruit_mission.d435i_arm_target_client:main',
             'fruit_mission_node = fruit_mission.mission_node:main',
