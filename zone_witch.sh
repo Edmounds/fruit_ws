@@ -5,13 +5,15 @@ set -eo pipefail
 WORKSPACE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 RUNTIME_SETUP="${WORKSPACE_DIR}/setup_fruit_runtime.bash"
 CONSOLE="${WORKSPACE_DIR}/lower_controller_console.py"
+CURRENT_AREA_TOPIC="/fruit_mission/current_area"
+STRING_TYPE="std_msgs/msg/String"
 
 usage() {
   cat <<'EOF'
 Usage: ./zone_witch.sh --A|--B|--C|--D
 
-Send the current-area command directly to the lower controller. This does not
-start auto_serial_bridge.
+Send the current-area command directly to the lower controller and publish the
+same area on /fruit_mission/current_area. This does not start auto_serial_bridge.
 EOF
 }
 
@@ -60,3 +62,10 @@ set -u
   sleep 1
   printf 'quit\n'
 } | /usr/bin/python3 "$CONSOLE" --no-color
+
+timeout --foreground 3s ros2 topic pub --once \
+  --qos-reliability reliable \
+  --qos-durability transient_local \
+  --keep-alive 1 \
+  "$CURRENT_AREA_TOPIC" "$STRING_TYPE" "{data: '$AREA'}" >/dev/null
+printf 'Published %s to %s\n' "$AREA" "$CURRENT_AREA_TOPIC"
