@@ -13,19 +13,20 @@ readonly PUBLISH_TIMEOUT_SECONDS=10
 readonly MODE_TIMEOUT_SECONDS=30
 readonly CALLBACK_TIMEOUT_SECONDS=60
 readonly DETECTION_TIMEOUT_SECONDS=120
+readonly TARGET_SAMPLE_COUNT=5
 
 readonly MODE_TOPIC="/fruit_mission/perception_mode"
 readonly ACTIVE_MODE_TOPIC="/fruit_perception/active_mode"
+readonly CURRENT_AREA_TOPIC="/fruit_mission/current_area"
 readonly STATE_COMMAND_TOPIC="/fruit_hardware_bridge/state_machine/command"
 readonly D435I_TYPES_TOPIC="/fruit_perception/d435i/types"
-readonly TARGET_POINT_TOPIC="/fruit_perception/d435i/target_point"
+readonly D435I_DETECTIONS_TOPIC="/fruit_perception/d435i/detections"
 readonly ARM_TARGET_TOPIC="/fruit_hardware_bridge/arm/target"
 readonly CALLBACK_TOPIC="/fruit_hardware_bridge/execution/callback"
 
 readonly MODE_TYPE="std_msgs/msg/String"
 readonly STATE_COMMAND_TYPE="fruit_hardware_interfaces/msg/StateMachineCommand"
 readonly TYPES_TYPE="fruit_perception/msg/FruitTypes"
-readonly TARGET_POINT_TYPE="geometry_msgs/msg/PointStamped"
 readonly ARM_TARGET_TYPE="fruit_hardware_interfaces/msg/ArmTarget"
 readonly CALLBACK_TYPE="fruit_hardware_interfaces/msg/ExecutionCallback"
 readonly TASK_CURRENT_AREA=5
@@ -229,7 +230,8 @@ report_current_area()
   log "Reporting current area A to the lower controller"
   send_command_and_wait "${CURRENT_AREA_CALLBACK_ID}" "current area A" \
     "${STATE_COMMAND_TOPIC}" "${STATE_COMMAND_TYPE}" \
-    "{task_id: ${TASK_CURRENT_AREA}, task_status: ${AREA_A}}"
+    "{task_id: ${TASK_CURRENT_AREA}, task_status: ${AREA_A}}" || return 1
+  publish_once "${CURRENT_AREA_TOPIC}" "${MODE_TYPE}" "{data: 'A'}"
 }
 
 enter_tree_mode()
@@ -248,37 +250,104 @@ import ast
 from pathlib import Path
 import sys
 
-text = Path(sys.argv[1]).read_text(encoding="utf-8").strip().split("\n---", 1)[0]
-try:
-    values = ast.literal_eval(text)
-except (SyntaxError, ValueError):
-    raise SystemExit(1)
-if not isinstance(values, list) or not values or not isinstance(values[0], str):
-    raise SystemExit(1)
-print(values[0])
+document = Path(sys.argv[1]).read_text(encoding="utf-8").split("\n---", 1)[0]
+for line in document.splitlines():
+    try:
+        values = ast.literal_eval(line.strip())
+    except (SyntaxError, ValueError):
+        continue
+    if isinstance(values, list) and values and isinstance(values[0], str):
+        print(values[0])
+        raise SystemExit(0)
+raise SystemExit(1)
 PY
   )
 }
 
-parse_target_point()
+parse_selected_target()
 {
-  read -r TARGET_X TARGET_Y TARGET_Z < <(
-    /usr/bin/python3 - "${RUN_DIR}/target_point.csv" <<'PY'
+  read -r TARGET_TYPE TARGET_X TARGET_Y TARGET_Z < <(
+    /usr/bin/python3 - "${RUN_DIR}/selected_target.csv" <<'PY'
 import csv
 import math
 from pathlib import Path
 import sys
 
-rows = list(csv.reader(Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()))
-if len(rows) != 1 or len(rows[0]) != 3:
-    raise SystemExit(1)
-values = [float(value) for value in rows[0]]
-if not all(math.isfinite(value) for value in values):
-    raise SystemExit(1)
-print(*values)
+rows = csv.reader(Path(sys.argv[1]).read_text(encoding="utf-8").splitlines())
+for row in rows:
+    if len(row) != 4 or not row[0]:
+        continue
+    try:
+        values = [float(value) for value in row[1:]]
+    except ValueError:
+        continue
+    if all(math.isfinite(value) for value in values):
+        print(row[0], *values)
+        raise SystemExit(0)
+raise SystemExit(1)
 PY
   )
-  [[ -n "${TARGET_X}" && -n "${TARGET_Y}" && -n "${TARGET_Z}" ]]
+  [[ -n "${TARGET_TYPE}" && -n "${TARGET_X}" && -n "${TARGET_Y}" && -n "${TARGET_Z}" ]]
+}
+
+sample_d435i_target()
+{
+  timeout --foreground "${DETECTION_TIMEOUT_SECONDS}s" \
+    /usr/bin/python3 - "${D435I_DETECTIONS_TOPIC}" "${TARGET_SAMPLE_COUNT}" \
+    >"${RUN_DIR}/selected_target.csv" 2>"${RUN_DIR}/selected_target.err" <<'PY'
+import csv
+import sys
+
+import rclpy
+from fruit_perception.msg import FruitDetections
+
+topic = sys.argv[1]
+sample_count = int(sys.argv[2])
+samples = []
+latest_type = ""
+
+
+def on_detections(message):
+    global latest_type
+    valid = [detection for detection in message.detections if detection.has_point]
+    if not valid:
+        return
+    selected = min(
+        valid,
+        key=lambda item: (
+            item.point.x * item.point.x + item.point.y * item.point.y,
+            -float(item.confidence),
+        ),
+    )
+    latest_type = selected.type
+    samples.append(
+        (
+            float(selected.point.x),
+            float(selected.point.y),
+            float(selected.point.z),
+        )
+    )
+
+
+rclpy.init()
+node = rclpy.create_node("d435i_arm_target_sampler")
+node.create_subscription(FruitDetections, topic, on_detections, 10)
+try:
+    while rclpy.ok() and len(samples) < sample_count:
+        rclpy.spin_once(node, timeout_sec=0.1)
+    if len(samples) < sample_count:
+        raise SystemExit(1)
+    row = [
+        latest_type,
+        sum(point[0] for point in samples) / sample_count,
+        sum(point[1] for point in samples) / sample_count,
+        sum(point[2] for point in samples) / sample_count,
+    ]
+    csv.writer(sys.stdout).writerow(row)
+finally:
+    node.destroy_node()
+    rclpy.shutdown()
+PY
 }
 
 read_d435i_target()
@@ -305,19 +374,16 @@ read_d435i_target()
     return 1
   }
 
-  timeout --foreground "${DETECTION_TIMEOUT_SECONDS}s" \
-    ros2 topic echo --once "${TARGET_POINT_TOPIC}" "${TARGET_POINT_TYPE}" \
-    --qos-reliability reliable --qos-durability volatile \
-    --field point --csv \
-    >"${RUN_DIR}/target_point.csv" 2>"${RUN_DIR}/target_point.err" || {
-    log "ERROR: no valid D435i target point within ${DETECTION_TIMEOUT_SECONDS}s"
+  sample_d435i_target || {
+    log "ERROR: fewer than ${TARGET_SAMPLE_COUNT} valid D435i detection samples within ${DETECTION_TIMEOUT_SECONDS}s"
+    tail -n 20 "${RUN_DIR}/selected_target.err" >&2 || true
     return 1
   }
-  parse_target_point || {
-    log "ERROR: invalid D435i target point output"
+  parse_selected_target || {
+    log "ERROR: invalid selected D435i target output"
     return 1
   }
-  log "Target ${TARGET_TYPE}: x=${TARGET_X}, y=${TARGET_Y}, z=${TARGET_Z}"
+  log "Averaged ${TARGET_SAMPLE_COUNT} centered D435i samples: ${TARGET_TYPE} x=${TARGET_X}, y=${TARGET_Y}, z=${TARGET_Z}"
 }
 
 send_arm_target()
@@ -396,7 +462,7 @@ main()
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
-  setsid "${START_SCRIPT}" > >(tee -a "${LAUNCH_LOG}") 2>&1 &
+  setsid "${START_SCRIPT}" serial_debug_raw_frame:=true > >(tee -a "${LAUNCH_LOG}") 2>&1 &
   LAUNCH_PID=$!
 
   log "Waiting for the perception stack"
