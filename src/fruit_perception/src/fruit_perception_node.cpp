@@ -40,6 +40,7 @@ public:
   : Node("fruit_perception_node", options)
   {
     const auto package_share = ament_index_cpp::get_package_share_directory("fruit_perception");
+    const auto a_model_path = declare_parameter("a_model_path", package_share + "/model/A.onnx");
     const auto c_model_path = declare_parameter("c_model_path", package_share + "/model/C.onnx");
     const auto b_model_path = declare_parameter("b_model_path", package_share + "/model/B.onnx");
     confidence_threshold_ = static_cast<float>(declare_parameter("confidence_threshold", 0.50));
@@ -94,13 +95,17 @@ public:
       throw std::invalid_argument("nms_iou_threshold must be between 0 and 1");
     }
 
-    const auto side_request_count =
-      static_cast<std::size_t>(enable_left) + static_cast<std::size_t>(enable_right) +
-      static_cast<std::size_t>(enable_d435i);
-    initialize_model(c_model_, c_model_path, side_request_count, "C");
-    if (enable_d435i) {
-      initialize_model(b_model_, b_model_path, 1U, "B");
-    }
+    const auto side_camera_count =
+      static_cast<std::size_t>(enable_left) + static_cast<std::size_t>(enable_right);
+    initialize_model(
+      a_model_, a_model_path, std::max<std::size_t>(1U, side_camera_count + enable_d435i),
+      "A", 2U);
+    initialize_model(
+      b_model_, b_model_path, std::max<std::size_t>(1U, static_cast<std::size_t>(enable_d435i)),
+      "B");
+    initialize_model(
+      c_model_, c_model_path, std::max<std::size_t>(1U, side_camera_count + enable_d435i),
+      "C");
     if (!rclcpp::ok(get_node_base_interface()->get_context())) {
       return;
     }
@@ -108,6 +113,7 @@ public:
     if (enable_left) {
       add_stream(
         "left",
+        a_model_,
         c_model_,
         declare_parameter("left_input_topic", "/left_camera/image_raw"),
         declare_parameter("left_output_topic", "/fruit_perception/left/types"),
@@ -117,6 +123,7 @@ public:
     if (enable_right) {
       add_stream(
         "right",
+        a_model_,
         c_model_,
         declare_parameter("right_input_topic", "/right_camera/image_raw"),
         declare_parameter("right_output_topic", "/fruit_perception/right/types"),
@@ -125,8 +132,9 @@ public:
     }
     if (enable_d435i) {
       add_rgbd_stream(
-        c_model_,
+        a_model_,
         b_model_,
+        c_model_,
         declare_parameter("d435i_rgbd_topic", "/camera/camera/rgbd"),
         declare_parameter("d435i_output_topic", "/fruit_perception/d435i/types"),
         declare_parameter(
@@ -178,8 +186,9 @@ private:
     rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr target_point_publisher;
     rclcpp::Publisher<msg::FruitDetections>::SharedPtr detections_publisher;
     std::vector<std::unique_ptr<RequestSlot>> request_slots;
-    RequestSlot * non_b_area_request{nullptr};
+    RequestSlot * a_area_request{nullptr};
     RequestSlot * b_area_request{nullptr};
+    RequestSlot * c_area_request{nullptr};
     cv::Mat input_image;
     cv_bridge::CvImageConstPtr frame;
     cv_bridge::CvImageConstPtr aligned_depth;
@@ -202,7 +211,8 @@ private:
     ModelRuntime & runtime,
     const std::string & model_path,
     std::size_t request_count,
-    const std::string & model_name)
+    const std::string & model_name,
+    std::size_t required_class_count = 0U)
   {
     const auto available_devices = core_.get_available_devices();
     if (std::find(available_devices.begin(), available_devices.end(), "GPU") ==
@@ -250,6 +260,12 @@ private:
       throw std::runtime_error(
               "Expected model output f32 [1,300,6] or [1,4+classes,N]");
     }
+    if (required_class_count != 0U &&
+      !raw_output_has_class_count(runtime.compiled_model.output().get_shape(), required_class_count))
+    {
+      throw std::runtime_error(
+              "Model " + model_name + " output does not match required class count");
+    }
 
     runtime.output_shape = runtime.compiled_model.output().get_shape();
     runtime.name = model_name;
@@ -259,8 +275,9 @@ private:
   }
 
   void add_rgbd_stream(
-    ModelRuntime & c_model,
+    ModelRuntime & a_model,
     ModelRuntime & b_model,
+    ModelRuntime & c_model,
     const std::string & input_topic, const std::string & output_topic,
     const std::string & annotated_topic, const std::string & target_point_topic,
     const std::string & detections_topic)
@@ -275,8 +292,9 @@ private:
     stream->detections_publisher =
       create_publisher<msg::FruitDetections>(detections_topic, rclcpp::QoS(10));
     auto * stream_ptr = stream.get();
-    stream->non_b_area_request = add_request_slot(*stream, c_model);
+    stream->a_area_request = add_request_slot(*stream, a_model);
     stream->b_area_request = add_request_slot(*stream, b_model);
+    stream->c_area_request = add_request_slot(*stream, c_model);
     for (auto & slot : stream->request_slots) {
       auto * slot_ptr = slot.get();
       slot->request.set_callback(
@@ -299,8 +317,9 @@ private:
   }
 
   void add_stream(
-    const std::string & name, ModelRuntime & model, const std::string & input_topic,
-    const std::string & output_topic, const std::string & annotated_topic)
+    const std::string & name, ModelRuntime & a_model, ModelRuntime & c_model,
+    const std::string & input_topic, const std::string & output_topic,
+    const std::string & annotated_topic)
   {
     auto stream = std::make_unique<Stream>(
       name,
@@ -308,12 +327,15 @@ private:
       create_publisher<sensor_msgs::msg::Image>(
         annotated_topic, rclcpp::QoS(1).reliable()));
     auto * stream_ptr = stream.get();
-    auto * slot_ptr = add_request_slot(*stream, model);
-    stream->non_b_area_request = slot_ptr;
-    slot_ptr->request.set_callback(
-      [this, stream_ptr, slot_ptr](std::exception_ptr error) {
-        finish_inference(*stream_ptr, *slot_ptr, error);
-      });
+    stream->a_area_request = add_request_slot(*stream, a_model);
+    stream->c_area_request = add_request_slot(*stream, c_model);
+    for (auto & slot : stream->request_slots) {
+      auto * slot_ptr = slot.get();
+      slot->request.set_callback(
+        [this, stream_ptr, slot_ptr](std::exception_ptr error) {
+          finish_inference(*stream_ptr, *slot_ptr, error);
+        });
+    }
     streams_.push_back(std::move(stream));
 
     subscriptions_.push_back(
@@ -345,7 +367,12 @@ private:
       stream.frame = cv_bridge::toCvShare(image, sensor_msgs::image_encodings::RGB8);
       stream.transform = letterbox_image(stream.frame->image, stream.input_image);
       stream.header = image->header;
-      stream.non_b_area_request->request.start_async();
+      auto * request = select_side_request(stream);
+      if (request == nullptr) {
+        stream.busy.store(false);
+        return;
+      }
+      request->request.start_async();
     } catch (const std::exception & error) {
       RCLCPP_ERROR(get_logger(), "%s frame rejected: %s", stream.name.c_str(), error.what());
       stream.busy.store(false);
@@ -372,8 +399,12 @@ private:
       stream.depth_camera_info = rgbd->depth_camera_info;
       stream.transform = letterbox_image(stream.frame->image, stream.input_image);
       stream.header = rgbd->rgb.header;
-      auto & request = select_d435i_request(stream);
-      request.request.start_async();
+      auto * request = select_d435i_request(stream);
+      if (request == nullptr) {
+        stream.busy.store(false);
+        return;
+      }
+      request->request.start_async();
     } catch (const std::exception & error) {
       RCLCPP_ERROR(get_logger(), "d435i RGBD frame rejected: %s", error.what());
       stream.busy.store(false);
@@ -497,15 +528,43 @@ private:
     return stream.request_slots.back().get();
   }
 
-  Stream::RequestSlot & select_d435i_request(Stream & stream) const
+  Stream::RequestSlot * select_side_request(Stream & stream) const
   {
-    if (current_area_.load() == 'B') {
-      return *stream.b_area_request;
+    const char area = current_area_.load();
+    if (area == 'A') {
+      return stream.a_area_request;
     }
-    return *stream.non_b_area_request;
+    if (area == 'C') {
+      return stream.c_area_request;
+    }
+    return nullptr;
+  }
+
+  Stream::RequestSlot * select_d435i_request(Stream & stream) const
+  {
+    const char area = current_area_.load();
+    if (area == 'A') {
+      return stream.a_area_request;
+    }
+    if (area == 'B') {
+      return stream.b_area_request;
+    }
+    if (area == 'C') {
+      return stream.c_area_request;
+    }
+    return nullptr;
+  }
+
+  static bool raw_output_has_class_count(
+    const std::vector<std::size_t> & shape,
+    std::size_t class_count)
+  {
+    return shape.size() == 3 && shape[0] == 1 && shape[1] == 4 + class_count &&
+           shape[2] > 0;
   }
 
   ov::Core core_;
+  ModelRuntime a_model_;
   ModelRuntime c_model_;
   ModelRuntime b_model_;
   float confidence_threshold_{0.50F};

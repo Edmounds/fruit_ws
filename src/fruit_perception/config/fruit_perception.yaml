@@ -89,6 +89,7 @@ fruit_perception_node:
     perception_mode_topic: "/fruit_mission/perception_mode"
     active_mode_topic: "/fruit_perception/active_mode"
     current_area_topic: "/fruit_mission/current_area"
+    a_model_path: "/home/rc4/fruit_ws/src/fruit_perception/model/A.onnx"
     c_model_path: "/home/rc4/fruit_ws/src/fruit_perception/model/C.onnx"
     b_model_path: "/home/rc4/fruit_ws/src/fruit_perception/model/B.onnx"
     confidence_threshold: 0.50

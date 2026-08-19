@@ -28,3 +28,6 @@ def validate_config(params: Mapping[str, Any]) -> None:
         raise ValueError("follow_waypoints_action must not be empty")
     if params.get("preferred_side") not in ("left", "right"):
         raise ValueError("preferred_side must be left or right")
+    sample_count = params.get("d435i_target_sample_count")
+    if type(sample_count) is not int or sample_count <= 0:
+        raise ValueError("d435i_target_sample_count must be a positive integer")

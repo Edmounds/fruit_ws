@@ -1,9 +1,9 @@
 # fruit_perception
 
 ROS 2 Humble C++ fruit detection using OpenVINO 2024.6 on Intel `GPU.0`.
-All three camera components and all three infer requests are created once. The
-default runtime mode is `OFF`; mission commands select which camera group and
-consumer are active without reloading the model.
+All enabled camera components and A/B/C model infer requests are created once.
+The default runtime mode is `OFF`; mission commands select which camera group
+and consumer are active without reloading any model.
 
 The enabled camera components and `FruitPerceptionNode` run in one
 `component_container` with intra-process communication enabled. This keeps raw
@@ -59,10 +59,9 @@ node and are not forwarded directly to the lower controller. The serial device
 is fixed to `/dev/ttyACM0`.
 
 ```bash
-source /opt/ros/humble/setup.bash
+source /home/rc4/fruit_ws/setup_fruit_runtime.bash
 colcon build --packages-select fruit_perception \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
-source install/setup.bash
 ros2 launch fruit_perception fruit_perception.launch.py
 ```
 
@@ -75,22 +74,30 @@ For normal operation, use the workspace entry point:
 The installed `fruit-perception.service` invokes this script automatically at
 boot.
 
-The D435i fruit detector chooses its model from the current
-`/fruit_mission/current_area` string. Area `B` uses `B.onnx` for apple/pear.
-All other areas, including A-zone closed-loop picking, use `C.onnx`.
+The detector chooses its model strictly from the current
+`/fruit_mission/current_area` string:
+
+- Area `A`: `model/A.onnx`, two maturity classes only: `ripe` and `unripe`.
+- Area `B`: `model/B.onnx`, apple/pear tree-fruit classes.
+- Area `C`: `model/C.onnx`, side-fruit classes.
+
+The left and right USB cameras create A and C infer requests. `SIDES` mode uses
+the A request in Area A and the C request in Area C. The D435i creates A, B, and
+C infer requests; `TREE` mode uses the request matching the current area. There
+is no fallback where every non-B area silently uses the C model.
 
 The D435i topics are:
 
 - synchronized aligned input: `/camera/camera/rgbd`
-- highest-confidence fruit type: `/fruit_perception/d435i/types`
+- fruit types in confidence order: `/fruit_perception/d435i/types`
 - annotated RGB8 image: `/fruit_perception/d435i/annotated_image`
 - highest-confidence detection center: `/fruit_perception/d435i/target_point`
-- highest-confidence detection in the frame: `/fruit_perception/d435i/detections`
+- all detections in confidence order: `/fruit_perception/d435i/detections`
 
-The detection message contains at most one item: the highest-confidence model
-result above the configured threshold. It includes the model type, confidence,
-ROI in original 1920x1080 color coordinates, `has_point`, and a camera
-optical-frame point. Invalid center depth keeps the 2D detection with
+The detection message contains every model result above the configured
+threshold after NMS, in confidence order. Each item includes the model type,
+confidence, ROI in original 1920x1080 color coordinates, `has_point`, and a
+camera optical-frame point. Invalid center depth keeps the 2D detection with
 `has_point=false`.
 
 The legacy target point is a `geometry_msgs/msg/PointStamped` in the D435i color
@@ -127,6 +134,6 @@ yolo export model=best.pt format=openvino imgsz=640 half=True nms=True \
 ```
 
 Its generated metadata and AGPL-3.0 license declaration are retained in
-`model/metadata.yaml`. The default runtime models are now `model/C.onnx` for
-side cameras and non-B D435i detection, and `model/B.onnx` for B-zone D435i
-detection.
+`model/metadata.yaml`. The runtime models are `model/A.onnx` for Area A
+maturity-only detection, `model/B.onnx` for B-zone D435i tree-fruit detection,
+and `model/C.onnx` for C-zone side-fruit detection.

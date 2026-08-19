@@ -17,60 +17,44 @@ from fruit_mission.logic import without_tree_fruits
 
 def run_mission(ctx) -> None:
     """Run the first A -> B QR -> C QR -> C mission slice."""
+    mission_complete = False
     try:
-        ctx.announce("水果采摘机器人准备开始比赛。")
+        ctx.announce("Bobocup队开始比赛")
         if not run_a_area(ctx):
             return
-        if not _send_arm_retract(ctx, "A区结束机械臂收缩姿态动作超时，任务停止。"):
+        if not ctx.send_arm_retract_pose():
             return
-        if scan_b_qr_and_announce(ctx) is None:
+        if scan_b_qr_and_announce(ctx, announce_before_plan=False) is None:
             return
         c_distribution = scan_c_qr_and_build_table(ctx)
         if c_distribution is not None:
-            run_c_area(ctx, c_distribution)
+            mission_complete = run_c_area(ctx, c_distribution)
     finally:
         ctx.set_perception_mode("OFF")
+        if mission_complete:
+            ctx.announce("任务结束")
 
 
 def run_a_area(ctx) -> bool:
     """Run A-zone stop-and-pick points with side cameras."""
     if not ctx.report_current_area("A"):
-        ctx.announce("A区当前区域上报失败，任务停止。")
         return False
     if not ctx.set_perception_mode("SIDES"):
-        ctx.announce("A区侧相机模式切换失败，任务停止。")
         return False
     for waypoint in ctx.route.a_goal_names():
         if not ctx.go_to(waypoint):
-            ctx.announce("A区导航到当前采摘点失败，跳过。")
             continue
         ctx.stable_stop()
         observation = ctx.observe_sides(float(ctx.config["side_observation_timeout_sec"]))
-        filtered_observation = without_tree_fruits(observation)
         decisions = _a_pick_decisions(
-            filtered_observation,
+            observation,
             preferred_side=str(ctx.config.get("preferred_side", "left")),
         )
         if not decisions:
-            ctx.announce(_a_skip_text(filtered_observation))
             continue
-        for index, decision in enumerate(decisions):
-            result = ctx.execute_closed_loop_pick(decision.side, decision.matched_type)
-            if result.success:
-                ctx.announce(
-                    f"A区识别到{spoken_model_type(decision.matched_type)}，抓取完成。"
-                )
-            else:
-                next_text = (
-                    "继续下一侧。"
-                    if index + 1 < len(decisions)
-                    else "继续下一个采摘点。"
-                )
-                ctx.announce(
-                    f"A区抓取失败，{_pick_failure_text(result.reason_code)}。{next_text}"
-                )
+        for decision in decisions:
+            ctx.execute_closed_loop_pick(decision.side, "ripe")
         if not ctx.set_perception_mode("SIDES"):
-            ctx.announce("A区侧相机模式恢复失败，任务停止。")
             return False
     return True
 
@@ -79,7 +63,7 @@ def _a_pick_decisions(
     observation: SideObservation,
     preferred_side: str,
 ) -> list[PickDecision]:
-    first = choose_side(observation, preferred_side=preferred_side)
+    first = _choose_a_side(observation, preferred_side)
     if not first.should_pick or first.side is None:
         return []
 
@@ -87,46 +71,67 @@ def _a_pick_decisions(
         left=[] if first.side == "left" else observation.left,
         right=[] if first.side == "right" else observation.right,
     )
-    second = choose_side(remaining, preferred_side=preferred_side)
+    second = _choose_a_side(remaining, preferred_side)
     if second.should_pick and second.side is not None:
         return [first, second]
     return [first]
 
 
-def _a_skip_text(observation: SideObservation) -> str:
-    seen_types = list(observation.left) + list(observation.right)
+def _choose_a_side(observation: SideObservation, preferred_side: str) -> PickDecision:
+    if preferred_side not in ("left", "right"):
+        raise ValueError("preferred_side must be left or right")
+    candidates = {
+        "left": list(observation.left),
+        "right": list(observation.right),
+    }
+    for side in (preferred_side, "right" if preferred_side == "left" else "left"):
+        if "ripe" in candidates[side]:
+            return PickDecision(True, side, "matched ripe target", "ripe", "matched")
+    seen_types = [item for group in candidates.values() for item in group]
     if not seen_types:
-        return "A区没有识别到目标，跳过。"
-    if all(item.endswith("_unripe") for item in seen_types):
-        return "A区识别到的目标都不成熟，跳过。"
-    return "A区没有识别到成熟目标，跳过。"
+        return PickDecision(False, None, "no target detected", reason_code="no_detection")
+    if "unripe" in seen_types:
+        return PickDecision(False, None, "only unripe targets", reason_code="target_unripe")
+    return PickDecision(False, None, "no A maturity target", reason_code="type_mismatch")
 
 
-def _send_arm_retract(ctx, failure_text: str) -> bool:
+def _send_arm_retract(
+    ctx,
+    failure_text: str,
+) -> bool:
     if ctx.send_arm_retract_pose():
         return True
     ctx.announce(failure_text)
     return False
 
 
-def scan_b_qr_and_announce(ctx) -> Optional[Dict[str, Any]]:
+def scan_b_qr_and_announce(
+    ctx,
+    *,
+    announce_before_plan: bool = True,
+) -> Optional[Dict[str, Any]]:
     """Scan B QR and announce its ordered plan."""
     if not ctx.go_to(ctx.route.b_qr_name):
-        ctx.announce("B区二维码点导航失败，任务停止。")
+        if announce_before_plan:
+            ctx.announce("B区二维码点导航失败，任务停止。")
         return None
     ctx.stable_stop()
     if not ctx.report_current_area("B"):
-        ctx.announce("B区当前区域上报失败，任务停止。")
+        if announce_before_plan:
+            ctx.announce("B区当前区域上报失败，任务停止。")
         return None
     if not ctx.set_perception_mode("QR"):
-        ctx.announce("B区二维码模式切换失败，任务停止。")
+        if announce_before_plan:
+            ctx.announce("B区二维码模式切换失败，任务停止。")
         return None
     if not ctx.send_qr_pose():
-        ctx.announce("B区二维码识别姿态动作超时，任务停止。")
+        if announce_before_plan:
+            ctx.announce("B区二维码识别姿态动作超时，任务停止。")
         return None
     b_plan = ctx.wait_b_plan()
     if b_plan is None:
-        ctx.announce("B区二维码计划等待超时。")
+        if announce_before_plan:
+            ctx.announce("B区二维码计划等待超时。")
         return None
     _announce_and_wait(ctx, format_b_announcement(b_plan))
     if not _send_arm_retract(ctx, "B区二维码后机械臂收缩姿态动作超时，任务停止。"):

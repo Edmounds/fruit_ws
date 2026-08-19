@@ -21,10 +21,10 @@ from fruit_qr_planner.planner import PlanSequence
 
 
 def select_unique_payload(payloads: Iterable[str]) -> Optional[str]:
-    candidates = {payload.strip() for payload in payloads if payload and payload.strip()}
-    if len(candidates) != 1:
-        return None
-    return candidates.pop()
+    for payload in payloads:
+        if payload and payload.strip():
+            return payload.strip()
+    return None
 
 
 def encode_plan_json(plan: Dict[str, Any]) -> str:
@@ -62,7 +62,7 @@ class FruitQrPlannerNode(Node):
     def __init__(self) -> None:
         super().__init__("fruit_qr_planner")
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
-        self.declare_parameter("confirm_frames", 3)
+        self.declare_parameter("confirm_frames", 1)
 
         image_topic = self.get_parameter("image_topic").get_parameter_value().string_value
         confirm_frames = self.get_parameter("confirm_frames").get_parameter_value().integer_value
@@ -122,11 +122,13 @@ class FruitQrPlannerNode(Node):
         output.data = encode_plan_json(plan)
         if plan["zone"] == "B":
             self._b_publisher.publish(output)
-            self.get_logger().info("Published B-zone pick plan with 8 tasks; now waiting for C")
+            self.get_logger().info(
+                f"Published B-zone pick plan with {plan['task_count']} tasks; now waiting for C"
+            )
         else:
             self._c_publisher.publish(output)
             self.get_logger().info(
-                "Published C-zone pick plan with 8 tasks; QR sequence completed"
+                f"Published C-zone pick plan with {plan['task_count']} tasks; QR sequence completed"
             )
             self._stop_scanning()
 

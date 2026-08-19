@@ -67,7 +67,6 @@ class MissionContext:
         self._latest_left: Optional[list[str]] = None
         self._latest_right: Optional[list[str]] = None
         self._latest_d435i_types: Optional[list[str]] = None
-        self._latest_d435i_point: Optional[PointStamped] = None
         self._latest_d435i_detections: Optional[FruitDetections] = None
         self._latest_b_plan: Optional[Dict[str, Any]] = None
         self._latest_c_plan: Optional[Dict[str, Any]] = None
@@ -122,12 +121,6 @@ class MissionContext:
             FruitTypes,
             config["d435i_types_topic"],
             self._on_d435i_types,
-            QoSProfile(depth=10),
-        )
-        node.create_subscription(
-            PointStamped,
-            config["d435i_target_point_topic"],
-            self._on_d435i_target_point,
             QoSProfile(depth=10),
         )
         node.create_subscription(
@@ -314,14 +307,10 @@ class MissionContext:
             ExecutionCallback.CALLBACK_PICK_DIRECTION,
         )
 
-    def send_side_pick(self, side: str) -> bool:
-        """Compatibility wrapper for older mission code."""
-        return self.send_pick_direction(side)
-
     def execute_closed_loop_pick(
         self,
         side: str,
-        expected_type: Optional[str] = None,
+        expected_type: str,
     ) -> PickExecutionResult:
         """Send pick direction, use D435i depth, and send ArmTarget."""
         if not self.set_perception_mode("SIDES"):
@@ -536,24 +525,16 @@ class MissionContext:
     def _wait_d435i_target(
         self,
         fresh_after_ns: int,
-        expected_type: Optional[str],
+        expected_type: str,
     ) -> _D435iSelection:
         self._latest_d435i_types = None
-        self._latest_d435i_point = None
         self._latest_d435i_detections = None
+        sample_count = int(self.config["d435i_target_sample_count"])
+        samples: list[tuple[float, float, float]] = []
+        latest_header = None
         deadline = time.monotonic() + float(self.config["d435i_detection_timeout_sec"])
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self.node, timeout_sec=0.1)
-            if self._latest_d435i_point is not None:
-                point_message = self._latest_d435i_point
-                stamp = point_message.header.stamp
-                stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
-                if stamp_ns > fresh_after_ns:
-                    return _D435iSelection(
-                        "matched",
-                        _D435iTarget(point_message),
-                    )
-                self._latest_d435i_point = None
             if self._latest_d435i_detections is None:
                 continue
             detection_message = self._latest_d435i_detections
@@ -562,12 +543,29 @@ class MissionContext:
             if stamp_ns <= fresh_after_ns:
                 self._latest_d435i_detections = None
                 continue
-            for detection in detection_message.detections:
-                if not detection.has_point:
-                    continue
+            detection = next(
+                (
+                    item
+                    for item in detection_message.detections
+                    if item.type == expected_type and item.has_point
+                ),
+                None,
+            )
+            if detection is not None:
+                samples.append(
+                    (
+                        float(detection.point.x),
+                        float(detection.point.y),
+                        float(detection.point.z),
+                    )
+                )
+                latest_header = detection_message.header
+            if len(samples) >= sample_count and latest_header is not None:
                 target_point = PointStamped()
-                target_point.header = detection_message.header
-                target_point.point = detection.point
+                target_point.header = latest_header
+                target_point.point.x = sum(point[0] for point in samples) / sample_count
+                target_point.point.y = sum(point[1] for point in samples) / sample_count
+                target_point.point.z = sum(point[2] for point in samples) / sample_count
                 return _D435iSelection(
                     "matched",
                     _D435iTarget(target_point),
@@ -615,9 +613,6 @@ class MissionContext:
 
     def _on_d435i_types(self, message: FruitTypes) -> None:
         self._latest_d435i_types = list(message.types)
-
-    def _on_d435i_target_point(self, message: PointStamped) -> None:
-        self._latest_d435i_point = message
 
     def _on_d435i_detections(self, message: FruitDetections) -> None:
         self._latest_d435i_detections = message

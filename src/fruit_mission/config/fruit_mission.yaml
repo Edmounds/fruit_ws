@@ -6,6 +6,7 @@ fruit_mission:
     callback_timeout_sec: 60.0
     active_mode_timeout_sec: 30.0
     d435i_detection_timeout_sec: 120.0
+    d435i_target_sample_count: 5
     preferred_side: "left"
     c_distribution_output_dir: "/home/rc4/fruit_ws/tmp/fruit_mission"
     waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml"
@@ -17,7 +18,6 @@ fruit_mission:
     left_types_topic: "/fruit_perception/left/types"
     right_types_topic: "/fruit_perception/right/types"
     d435i_types_topic: "/fruit_perception/d435i/types"
-    d435i_target_point_topic: "/fruit_perception/d435i/target_point"
     d435i_detections_topic: "/fruit_perception/d435i/detections"
     b_plan_topic: "/fruit/b_pick_plan"
     c_plan_topic: "/fruit/c_pick_plan"

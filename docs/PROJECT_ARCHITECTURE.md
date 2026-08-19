@@ -4,7 +4,7 @@
 
 省级选拔赛范围为 A、B、C 区，D 区暂不接入。当前固定流程契约为：
 
-- A 区发布 `SIDES`，使用左右 USB 相机完成识别和作业。
+- A 区发布 `SIDES`，左右 USB 相机使用 `A.onnx` 只判断 `ripe/unripe`，不判断水果品种。
 - B 区入口发布 `QR`，连续三帧确认并保存 B 计划，但暂不抓取。
 - 前往 C 区入口时保持 `QR`，确认 C 计划后发布 `SIDES`，按 C 计划严格执行 8 项。
 - 完成 C 后返回 B，发布 `TREE`，D435i 对整树的全部果实进行检测和测深，并按 B 计划位置 1 到 8 作业。
@@ -115,9 +115,12 @@ git -C src/auto_serial_bridge pull --ff-only origin dev
 
 ### 5.1 双侧相机
 
-左右 USB UVC 相机只在 `SIDES` 模式采集，且只启动一个 OpenVINO 推理组件：
+左右 USB UVC 相机只在 `SIDES` 模式采集。OpenVINO 模型在感知节点启动时一次性编译，不在区域切换时重新加载：
 
-- 模型只加载一份，使用两个异步推理请求分别处理左、右相机，逻辑上保持双路同时识别。
+- A 区使用 `fruit_perception/model/A.onnx`，该模型只有 `ripe` 和 `unripe` 两个类别。
+- C 区使用 `fruit_perception/model/C.onnx`，继续输出侧面水果的品种和成熟度类别。
+- 左、右相机分别持有 A/C 两套异步推理请求，当前区域为 A 时使用 A 请求，当前区域为 C 时使用 C 请求。
+- 不保留“所有非 B 区都使用 C 模型”的兜底逻辑；区域不匹配时不输出侧相机推理结果。
 - YOLO11n 模型先导出 OpenVINO FP16；只有在真实 NUC 上出现持续算力压力后，再做有代表性标定集的 INT8 量化。
 - 首版目标为每侧约 `5-10 FPS`，输入尺寸先使用 `640`；资源不足时先降低相机采集帧率或推理帧率，不先破坏导航频率。
 - 行驶阶段侧相机只输出粗候选：类别、成熟度、置信度、图像位置、左右侧、相机模式和时间戳。
@@ -133,8 +136,12 @@ D435i 的固定原生流为 `1920x1080@30 RGB8` 和 `1280x720@30 Z16`，开启�
 1. `QR` 直接把 D435i 彩色原图送给 Python/OpenCV 扫码节点，按 B 后 C 的顺序各连续确认三帧。
 2. B/C 计划使用 Reliable、Transient Local、深度 1 发布，C 确认后销毁图像订阅。
 3. `TREE` 只执行 D435i RGBD 水果推理，整帧 letterbox 到 640x640，不做分块。
+   D435i 在启动时持有 A/B/C 三套推理请求，并严格按 `/fruit_mission/current_area`
+   选择：A 区用 `A.onnx`，B 区用 `B.onnx`，C 区用 `C.onnx`。
 4. `/fruit_perception/d435i/detections` 发布一帧内的全部目标及 1920x1080 ROI；中心深度无效时保留二维结果。
-5. 原有类型、最高置信度三维点和下位机接口继续保留。
+5. 原有类型、最高置信度三维点和下位机接口继续保留；mission 闭环抓取按
+   `/fruit_perception/d435i/detections` 中的有类别目标生成
+   `/fruit_hardware_bridge/arm/target`，不把无类别的 `target_point` 当作抓取判据。
 
 4DOF 机械臂不能按通用 6DOF 末端位姿设计。应固定末端接近方向或腕部姿态，只求解比赛需要的受限位置和姿态。机械尺寸确定后，再选择解析 IK 或轻量数值 IK；首版不必为了发送四个目标角而引入完整 MoveIt 运行栈。
 
@@ -225,8 +232,12 @@ ENTER_A
 ```
 
 - 没有候选时沿固定覆盖路线继续行驶。
+- A 区候选只允许精确字符串 `ripe` 和 `unripe`；`ripe` 才允许抓取，`unripe` 不触发抓取。
+- A 区不接受 `apple_ripe`、`pumpkin_ripe` 等带品种的旧类别，也不做苹果、梨或其他品种过滤。
 - 未检测到成熟目标、目标不成熟或坏水果时，不向下位机发布左右抓取方向命令。
 - 仅左侧或右侧存在成熟目标时分别发送 `task_status=0/1`，让下位机按当前区域执行对应方向动作。
+- 机械臂转向后 D435i 只从 `FruitDetections` 中选择 `type == "ripe"` 且 `has_point == true`
+  的目标；只有 `unripe` 时不得发布 `ArmTarget`。
 - 业务层不重复发送抓取方向命令；`auto_serial_bridge` 负责可靠重传，只有收到 `callback_id=2, callback_status=0` 才恢复路线。
 - 路线必须保存当前段索引，抓取后从安全恢复点继续，而不是从 A 区入口重新开始。
 

@@ -4,9 +4,6 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
-PRODUCE_NAMES = frozenset({"苹果", "梨子", "南瓜", "西红柿", "辣椒", "洋葱"})
-TREE_FRUIT_NAMES = frozenset({"苹果", "梨子"})
-VEGETABLE_NAMES = PRODUCE_NAMES - TREE_FRUIT_NAMES
 B_STAGES = ["navigate", "identify", "announce", "pick_or_skip", "advance"]
 C_STAGES = [
     "navigate",
@@ -27,14 +24,6 @@ def _normalized_lines(payload: str) -> List[str]:
     return [line.strip() for line in normalized.split("\n") if line.strip()]
 
 
-def _validate_names(names: List[str], allowed_names=PRODUCE_NAMES) -> None:
-    if len(names) != 8:
-        raise ParseError("expected exactly 8 produce names")
-    unknown = [name for name in names if name not in allowed_names]
-    if unknown:
-        raise ParseError(f"unknown produce name: {unknown[0]}")
-
-
 def _plan(zone: str, scan_index: int, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "schema_version": 1,
@@ -47,7 +36,8 @@ def _plan(zone: str, scan_index: int, tasks: List[Dict[str, Any]]) -> Dict[str, 
 
 def build_b_plan(payload: str) -> Dict[str, Any]:
     names = _normalized_lines(payload)
-    _validate_names(names, TREE_FRUIT_NAMES)
+    if not names:
+        raise ParseError("expected at least one B QR target line")
     tasks = [
         {
             "sequence": index,
@@ -62,21 +52,10 @@ def build_b_plan(payload: str) -> Dict[str, Any]:
 
 def build_c_plan(payload: str) -> Dict[str, Any]:
     lines = _normalized_lines(payload)
-    if len(lines) != 9:
-        raise ParseError("expected 8 produce names followed by one position line")
+    if not lines:
+        raise ParseError("expected at least one C QR task line")
 
-    names = lines[:8]
-    _validate_names(names, VEGETABLE_NAMES)
-    position_tokens = [token.strip() for token in re.split("[,，]", lines[8])]
-    if len(position_tokens) != 8 or any(not token.isdigit() for token in position_tokens):
-        raise ParseError("expected exactly 8 numeric position IDs")
-
-    positions = [int(token) for token in position_tokens]
-    if len(set(positions)) != 8:
-        raise ParseError("position IDs must be unique")
-    if any(position < 1 or position > 12 for position in positions):
-        raise ParseError("position IDs must be between 1 and 12")
-
+    tasks_data = _parse_c_task_lines(lines)
     tasks = [
         {
             "sequence": index,
@@ -84,19 +63,44 @@ def build_c_plan(payload: str) -> Dict[str, Any]:
             "target": name,
             "stages": list(C_STAGES),
         }
-        for index, (name, position) in enumerate(zip(names, positions), start=1)
+        for index, (name, position) in enumerate(tasks_data, start=1)
     ]
     return _plan("C", 2, tasks)
 
 
+def _parse_c_task_lines(lines: List[str]) -> List[Tuple[str, int]]:
+    position_tokens = _split_position_tokens(lines[-1])
+    if len(lines) > 1 and len(position_tokens) == len(lines) - 1:
+        return list(zip(lines[:-1], position_tokens))
+    return [_parse_c_task_line(line) for line in lines]
+
+
+def _split_position_tokens(line: str) -> List[int]:
+    tokens = [token for token in re.split(r"[\s,，;；]+", line.strip()) if token]
+    if not tokens or any(not token.isdigit() for token in tokens):
+        return []
+    return [int(token) for token in tokens]
+
+
+def _parse_c_task_line(line: str) -> Tuple[str, int]:
+    match = re.search(r"\d+", line)
+    if match is None:
+        raise ParseError(f"C QR task line has no position ID: {line}")
+
+    target = (line[: match.start()] + line[match.end() :]).strip(" \t,，;；:：-")
+    if not target:
+        raise ParseError(f"C QR task line has no target name: {line}")
+    return target, int(match.group())
+
+
 class PlanSequence:
-    """Confirm decoded payloads and enforce the one-shot B-then-C workflow."""
+    """Sequence decoded payloads through the one-shot B-then-C workflow."""
 
     WAITING_FOR_B = "WAITING_FOR_B"
     WAITING_FOR_C = "WAITING_FOR_C"
     COMPLETED = "COMPLETED"
 
-    def __init__(self, confirm_frames: int = 3) -> None:
+    def __init__(self, confirm_frames: int = 1) -> None:
         if confirm_frames <= 0:
             raise ValueError("confirm_frames must be greater than zero")
         self.confirm_frames = confirm_frames
