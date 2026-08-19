@@ -68,5 +68,5 @@
 - [ ] Re-run the original documented shell commands from a fresh terminal.
 - [x] Confirm no tests were added or run.
 - [x] Review the final diff for unrelated changes.
-- [ ] Merge into `main`.
-- [ ] Remove the feature worktree and local feature branch.
+- [x] Merge into `main`.
+- [x] Remove the feature worktree and local feature branch.
