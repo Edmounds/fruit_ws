@@ -24,13 +24,13 @@ from std_msgs.msg import String
 from fruit_hardware_interfaces.msg import ArmTarget
 from fruit_hardware_interfaces.msg import ExecutionCallback
 from fruit_hardware_interfaces.msg import StateMachineCommand
-from fruit_perception.msg import FruitTypes
+from fruit_perception.msg import FruitDecision
 
 from fruit_mission.logic import PickExecutionResult
 from fruit_mission.logic import SideObservation
 from fruit_mission.logic import merge_seen_types
 from fruit_mission.tts import PiperSpeaker
-from fruit_mission.waypoint_route import FormalWaypointRoute
+from fruit_mission.waypoint_route import MissionWaypointRoute
 from fruit_mission.waypoint_route import WaypointPose
 
 
@@ -52,6 +52,7 @@ class _D435iTarget:
 class _D435iSelection:
     reason_code: str
     target: Optional[_D435iTarget] = None
+    matched_type: Optional[str] = None
 
 
 class MissionContext:
@@ -61,13 +62,16 @@ class MissionContext:
         self.node = node
         self.config = config
         self.speaker = speaker or PiperSpeaker(config["tts"], node.get_logger())
-        self.route = FormalWaypointRoute.from_file(Path(str(config["waypoint_file"])))
+        self.route = MissionWaypointRoute.from_file(Path(str(config["waypoint_file"])))
         self._route_cursor = 0
+        self._current_waypoint_name: Optional[str] = None
+        self._current_route_yaw: Optional[float] = None
         self._latest_active_mode: Optional[str] = None
         self._active_mode_generation = 0
         self._latest_left: Optional[list[str]] = None
         self._latest_right: Optional[list[str]] = None
         self._latest_d435i_types: Optional[list[str]] = None
+        self._latest_d435i_types_stamp_ns = 0
         self._latest_d435i_target: Optional[PointStamped] = None
         self._latest_b_plan: Optional[Dict[str, Any]] = None
         self._latest_c_plan: Optional[Dict[str, Any]] = None
@@ -79,6 +83,11 @@ class MissionContext:
             String,
             config["perception_mode_topic"],
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE),
+        )
+        self._expected_fruit_type_publisher = node.create_publisher(
+            String,
+            config["expected_fruit_type_topic"],
+            _latched_qos(),
         )
         self._current_area_publisher = node.create_publisher(
             String,
@@ -107,27 +116,9 @@ class MissionContext:
             _latched_qos(),
         )
         node.create_subscription(
-            FruitTypes,
-            config["left_types_topic"],
-            self._on_left_types,
-            QoSProfile(depth=10),
-        )
-        node.create_subscription(
-            FruitTypes,
-            config["right_types_topic"],
-            self._on_right_types,
-            QoSProfile(depth=10),
-        )
-        node.create_subscription(
-            FruitTypes,
-            config["d435i_types_topic"],
-            self._on_d435i_types,
-            QoSProfile(depth=10),
-        )
-        node.create_subscription(
-            PointStamped,
-            config["d435i_target_point_topic"],
-            self._on_d435i_target,
+            FruitDecision,
+            config["decision_topic"],
+            self._on_decision,
             QoSProfile(depth=10),
         )
         node.create_subscription(
@@ -166,19 +157,40 @@ class MissionContext:
         if not self._send_waypoint_names(names):
             return False
         self._route_cursor = next_cursor
+        self._current_waypoint_name = names[-1]
+        self._current_route_yaw = self._waypoint_yaw(names[-1])
         return True
 
     def go_through(self, waypoint_names: Sequence[str]) -> bool:
-        """Reach the explicitly listed waypoints without YAML-order expansion."""
+        """Reach explicit C-route points with yaw aligned to each XY segment."""
         names = (
             [waypoint_names]
             if isinstance(waypoint_names, str)
             else [str(name) for name in waypoint_names]
         )
-        if not self._send_waypoint_names(names):
+        if not names:
+            return True
+        if self._current_waypoint_name is None:
+            self.node.get_logger().error(
+                "Cannot align C-route yaw before reaching a known waypoint"
+            )
             return False
-        if names:
-            self._route_cursor = self.route.pose(names[-1]).order + 1
+        try:
+            targets, final_name, final_yaw = self.route.path_aligned_targets(
+                self._current_waypoint_name,
+                names,
+                self._current_route_yaw,
+            )
+        except KeyError as error:
+            self.node.get_logger().error(str(error))
+            return False
+        target_names = [name for name, _yaw in targets]
+        target_yaws = [yaw for _name, yaw in targets]
+        if target_names and not self._send_waypoint_names(target_names, target_yaws):
+            return False
+        self._current_waypoint_name = final_name
+        self._current_route_yaw = final_yaw
+        self._route_cursor = self.route.pose(final_name).order + 1
         return True
 
     def _expand_waypoint_names(
@@ -192,11 +204,23 @@ class MissionContext:
             names.extend(segment)
         return names, cursor
 
-    def _send_waypoint_names(self, names: Sequence[str]) -> bool:
+    def _send_waypoint_names(
+        self,
+        names: Sequence[str],
+        yaws: Optional[Sequence[float]] = None,
+    ) -> bool:
         if not names:
             return True
         try:
-            poses = [self._pose_stamped(self.route.pose(name)) for name in names]
+            if yaws is not None and len(yaws) != len(names):
+                raise ValueError("waypoint names and yaw values must have equal length")
+            poses = [
+                self._pose_stamped(
+                    self.route.pose(name),
+                    None if yaws is None else yaws[index],
+                )
+                for index, name in enumerate(names)
+            ]
         except KeyError as error:
             self.node.get_logger().error(str(error))
             return False
@@ -321,24 +345,35 @@ class MissionContext:
     def execute_closed_loop_pick(
         self,
         side: str,
+        expected_type: Optional[str] = None,
     ) -> PickExecutionResult:
-        """Send pick direction, use D435i depth, and send ArmTarget."""
-        if not self.set_perception_mode("SIDES"):
-            return PickExecutionResult(False, "sides_mode_timeout")
+        """Use D435i for the expected type, then send direction and ArmTarget."""
+        self.set_expected_fruit_type(expected_type)
         if not self.send_pick_direction(side):
             return PickExecutionResult(False, "side_pose_timeout")
         fresh_after_ns = self.node.get_clock().now().nanoseconds
         if not self.set_perception_mode("TREE"):
             return PickExecutionResult(False, "tree_mode_timeout")
-        selection = self._wait_d435i_target(fresh_after_ns)
+        selection = self._wait_d435i_target(fresh_after_ns, expected_type)
         if selection.target is None:
-            return PickExecutionResult(False, selection.reason_code)
+            return PickExecutionResult(
+                False,
+                selection.reason_code,
+                selection.matched_type,
+            )
         if not self._send_arm_target_and_wait(selection.target.point):
             return PickExecutionResult(
                 False,
                 "arm_callback_timeout",
+                selection.matched_type,
             )
-        return PickExecutionResult(True, "picked")
+        return PickExecutionResult(True, "picked", selection.matched_type)
+
+    def set_expected_fruit_type(self, expected_type: Optional[str]) -> None:
+        """Set the D435i target class; an empty value disables filtering."""
+        message = String()
+        message.data = str(expected_type or "")
+        self._expected_fruit_type_publisher.publish(message)
 
     def send_qr_pose(self) -> bool:
         """Ask the lower controller to enter QR recognition pose."""
@@ -535,19 +570,25 @@ class MissionContext:
     def _wait_d435i_target(
         self,
         fresh_after_ns: int,
+        expected_type: Optional[str],
     ) -> _D435iSelection:
         self._latest_d435i_target = None
+        self._latest_d435i_types = None
+        self._latest_d435i_types_stamp_ns = 0
+        seen_types: list[str] = []
         latest_stamp_ns = fresh_after_ns
         deadline = time.monotonic() + float(self.config["d435i_detection_timeout_sec"])
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self.node, timeout_sec=0.1)
+            if self._latest_d435i_types_stamp_ns > fresh_after_ns:
+                seen_types = merge_seen_types(seen_types, self._latest_d435i_types or [])
             if self._latest_d435i_target is None:
                 continue
             target = self._latest_d435i_target
-            self._latest_d435i_target = None
             stamp = target.header.stamp
             stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
             if stamp_ns <= latest_stamp_ns:
+                self._latest_d435i_target = None
                 continue
             latest_stamp_ns = stamp_ns
             point = (
@@ -561,8 +602,29 @@ class MissionContext:
                 "D435i target received from the 35-frame perception window: "
                 f"x={point[0]}, y={point[1]}, z={point[2]}"
             )
-            return _D435iSelection("matched", _D435iTarget(target))
-        return _D435iSelection("d435i_target_timeout")
+            if expected_type is None or expected_type in seen_types:
+                self._latest_d435i_target = None
+                return _D435iSelection(
+                    "matched",
+                    _D435iTarget(target),
+                    expected_type,
+                )
+
+        expected_seen = expected_type is not None and expected_type in seen_types
+        matched_type = expected_type if expected_seen else (
+            seen_types[0] if seen_types else None
+        )
+        if not seen_types:
+            reason_code = "no_detection"
+        elif expected_type and not expected_seen:
+            prefix = expected_type.rsplit("_", 1)[0]
+            if f"{prefix}_unripe" in seen_types:
+                reason_code = "target_unripe"
+            else:
+                reason_code = "type_mismatch"
+        else:
+            reason_code = "d435i_target_timeout"
+        return _D435iSelection(reason_code, matched_type=matched_type)
 
     def _wait_until(self, predicate, timeout_sec: float) -> bool:
         deadline = time.monotonic() + timeout_sec
@@ -580,34 +642,57 @@ class MissionContext:
         self.node.get_logger().error("Interrupted while waiting for navigation action")
         return False
 
-    def _pose_stamped(self, pose: WaypointPose) -> PoseStamped:
+    def _waypoint_yaw(self, name: str) -> float:
+        pose = self.route.pose(name)
+        return math.atan2(
+            2.0 * (pose.qw * pose.qz + pose.qx * pose.qy),
+            1.0 - 2.0 * (pose.qy * pose.qy + pose.qz * pose.qz),
+        )
+
+    def _pose_stamped(
+        self,
+        pose: WaypointPose,
+        yaw: Optional[float] = None,
+    ) -> PoseStamped:
         stamped = PoseStamped()
         stamped.header.frame_id = "map"
         stamped.header.stamp = self.node.get_clock().now().to_msg()
         stamped.pose.position.x = pose.x
         stamped.pose.position.y = pose.y
         stamped.pose.position.z = pose.z
-        stamped.pose.orientation.x = pose.qx
-        stamped.pose.orientation.y = pose.qy
-        stamped.pose.orientation.z = pose.qz
-        stamped.pose.orientation.w = pose.qw
+        if yaw is None:
+            stamped.pose.orientation.x = pose.qx
+            stamped.pose.orientation.y = pose.qy
+            stamped.pose.orientation.z = pose.qz
+            stamped.pose.orientation.w = pose.qw
+        else:
+            stamped.pose.orientation.z = math.sin(yaw * 0.5)
+            stamped.pose.orientation.w = math.cos(yaw * 0.5)
         return stamped
 
     def _on_active_mode(self, message: String) -> None:
         self._latest_active_mode = message.data
         self._active_mode_generation += 1
 
-    def _on_left_types(self, message: FruitTypes) -> None:
-        self._latest_left = list(message.types)
+    def _on_decision(self, message: FruitDecision) -> None:
+        if message.source == FruitDecision.SOURCE_LEFT:
+            self._latest_left = list(message.types)
+            return
+        if message.source != FruitDecision.SOURCE_D435I:
+            if message.source == FruitDecision.SOURCE_RIGHT:
+                self._latest_right = list(message.types)
+            return
 
-    def _on_right_types(self, message: FruitTypes) -> None:
-        self._latest_right = list(message.types)
-
-    def _on_d435i_types(self, message: FruitTypes) -> None:
         self._latest_d435i_types = list(message.types)
-
-    def _on_d435i_target(self, message: PointStamped) -> None:
-        self._latest_d435i_target = message
+        stamp = message.header.stamp
+        self._latest_d435i_types_stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
+        if message.has_target:
+            target = PointStamped()
+            target.header = message.header
+            target.point.x = message.target_point.x
+            target.point.y = message.target_point.y
+            target.point.z = message.target_point.z
+            self._latest_d435i_target = target
 
     def _on_b_plan(self, message: String) -> None:
         self._latest_b_plan = json.loads(message.data)

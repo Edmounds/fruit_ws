@@ -6,7 +6,7 @@
 
 - A 区发布 `SIDES`，左右 USB 相机使用 `A.onnx` 只判断 `ripe/unripe`，不判断水果品种。
 - B 区入口发布 `QR`，连续三帧确认并保存 B 计划，但暂不抓取。
-- 前往 C 区入口时保持 `QR`，确认 C 计划后发布 `SIDES`，按 C 计划严格执行 8 项。
+- 前往 C 区入口时保持 `QR`，确认 C 计划后使用 `TREE`，按 C 计划严格执行 8 项。
 - 完成 C 后返回 B，发布 `TREE`，D435i 对整树的全部果实进行检测和测深，并按 B 计划位置 1 到 8 作业。
 - B 区完成后发布 `OFF` 并返航。当前仓库只实现话题契约和感知侧，不实现导航与完整任务状态机。
 
@@ -115,23 +115,24 @@ git -C src/auto_serial_bridge pull --ff-only origin dev
 
 ### 5.1 双侧相机
 
-左右 USB UVC 相机只在 `SIDES` 模式采集。OpenVINO 模型在感知节点启动时一次性编译，不在区域切换时重新加载：
+左右 USB UVC 相机只在 A 区的 `SIDES` 模式采集。OpenVINO 模型在感知节点启动时一次性编译，不在区域切换时重新加载：
 
 - A 区使用 `fruit_perception/model/A.onnx`，该模型只有 `ripe` 和 `unripe` 两个类别。
-- C 区使用 `fruit_perception/model/C.onnx`，继续输出侧面水果的品种和成熟度类别。
-- 左、右相机分别持有 A/C 两套异步推理请求，当前区域为 A 时使用 A 请求，当前区域为 C 时使用 C 请求。
+- C 区不使用左右 USB 相机；C 模型只由 D435i RGBD 流使用。
+- 左、右相机只持有 A 区异步推理请求，当前区域不是 A 时不输出侧相机推理结果。
 - 不保留“所有非 B 区都使用 C 模型”的兜底逻辑；区域不匹配时不输出侧相机推理结果。
 - 左右相机分别完整统计 3 秒内实际完成的推理结果，用同类别 ROI 的 IoU 做跨帧关联，
   不设置最少出现次数。候选按置信度中位数和 ROI 水平居中度中位数以 70%/30% 评分；
   与最高分相差不超过 0.05 时优先置信度中位数更高者。
 - 每个侧相机只在 `/fruit_perception/{left,right}/types` 发布其锁定目标的一个类别；
   获取期间或锁定目标漏检时发布空列表，不用同帧其他目标顶替。标注图仍显示全部原始检测框。
-  A/C 每次正式观察会重新请求 `SIDES`，让感知节点清除沿途旧锁并从停车后的帧重新统计。
+  A 区每次正式观察会重新请求 `SIDES`，让感知节点清除沿途旧锁并从停车后的帧重新统计。
 - YOLO11n 模型先导出 OpenVINO FP16；只有在真实 NUC 上出现持续算力压力后，再做有代表性标定集的 INT8 量化。
 - 首版目标为每侧约 `5-10 FPS`，输入尺寸先使用 `640`；资源不足时先降低相机采集帧率或推理帧率，不先破坏导航频率。
 - 行驶阶段侧相机只输出粗候选：类别、成熟度、置信度、图像位置、左右侧、相机模式和时间戳。
 - 单帧检测不能直接触发抓取。候选必须经过短时多帧确认，避免晃动、遮挡或曝光变化导致频繁停车。
 - `QR`、`TREE` 模式关闭左右相机，避免三路相机同时采集和推理。
+- A 区最后一个点完成后任务节点发布 `OFF`，在进入 B 区二维码前释放两路 USB 采集和侧相机推理资源。
 
 ### 5.2 D435i 扫码与整树识别
 
@@ -144,16 +145,16 @@ D435i 的固定原生流为 `1920x1080@30 RGB8` 和 `1280x720@30 Z16`，开启�
 3. `TREE` 只执行 D435i RGBD 水果推理，整帧 letterbox 到 640x640，不做分块。
    D435i 在启动时持有 A/B/C 三套推理请求，并严格按 `/fruit_mission/current_area`
    选择：A 区用 `A.onnx`，B 区用 `B.onnx`，C 区用 `C.onnx`。
-4. `/fruit_perception/d435i/detections` 发布一帧内的全部目标及原图 ROI；中心深度无效时保留二维结果。
+4. `/fruit_perception/decision` 按 `source` 发布左右相机和 D435i 的统一决策消息；D435i 消息携带一帧内的全部目标及原图 ROI，中心深度无效时保留二维结果。
 5. 感知节点完整连续观察 35 个推理帧，按 3 cm 三维距离把各帧有效检测关联为物理目标；
    不设置最少出现次数。每个目标使用置信度
    中位数和 ROI 水平居中度中位数按 70%/30% 评分；与最高分相差不超过 0.05 时，
    置信度中位数最高者胜出。选中轨迹按逐轴 2σ 剔除坐标离群点，以剩余坐标的均值
    作为目标点。标准差只写入诊断日志，不阻止最高分目标发布。
 6. 选中目标后感知节点锁定其三维位置，并只在锁定当帧发布一次上述 35 帧统计均值到
-   `/fruit_perception/d435i/target_point`；锁定期间的单帧原始点不再发布。锁定目标单帧漏检时不使用其他目标顶替；
+   同一消息的 `has_target=true` 和 `target_point` 字段；锁定期间的单帧原始点不再发布。锁定目标单帧漏检时不使用其他目标顶替；
    连续漏检 8 帧后才清除锁并重新执行多帧获取。TREE 模式或区域改变也会清除旧锁。
-7. 测试客户端和 mission 都只等待一个时间戳新鲜且坐标有限的 `target_point`，直接生成
+7. 测试客户端和 mission 都只等待一个时间戳新鲜、`has_target=true` 且坐标有限的 `decision`，直接生成
    `/fruit_hardware_bridge/arm/target`，不再收集第二个 8 点窗口或重复平均。
 
 4DOF 机械臂不能按通用 6DOF 末端位姿设计。应固定末端接近方向或腕部姿态，只求解比赛需要的受限位置和姿态。机械尺寸确定后，再选择解析 IK 或轻量数值 IK；首版不必为了发送四个目标角而引入完整 MoveIt 运行栈。
@@ -264,18 +265,19 @@ READ_C_QR
        NAVIGATE_TO_POSITION
        STABLE_STOP
        VERIFY_POSITION_TASK
-       SIDE_CAMERA_CHECK
-       [no match/unripe/low confidence] -> ANNOUNCE_SKIP -> ADVANCE
-       [ripe candidate] -> LOCK_CHASSIS -> PUBLISH_PICK_DIRECTION_ONCE
-                        -> WAIT_PICK_DIRECTION_CALLBACK_COMPLETED
-                        -> ANNOUNCE_RESULT -> ADVANCE
+       PUBLISH_PICK_DIRECTION_ONCE
+       -> WAIT_PICK_DIRECTION_CALLBACK_COMPLETED
+       -> TREE_CHECK_EXPECTED_RIPE_TYPE
+       [no match/unripe/type mismatch] -> ANNOUNCE_SKIP -> ADVANCE
+       [expected ripe candidate] -> SEND_ARM_TARGET -> ANNOUNCE_RESULT -> ADVANCE
   -> LEAVE_C
 ```
 
-- C 区导航目标由 `(position_id, approach_pose, expected_side)` 配置表提供。
+- C 区导航目标由 `(position_id, approach_pose, expected_side)` 配置表提供；`expected_side` 会根据停车姿态转换成相对车辆的 `left/right`。
 - 二维码输出只决定严格任务序列，不允许按路线距离重排。
 - 到位后即使没有目标，也完成稳定停车、识别、播报和推进。
-- 不成熟、坏水果或种类不符时不发布左右抓取方向命令；成熟且种类匹配时按目标所在侧发送一次方向命令。
+- 到位后先按停车姿态计算出的车辆相对侧发送一次方向命令，让机械臂从常态前视转到目标侧；随后 D435i 只把当前二维码任务的 `expected_ripe_type` 交给感知节点过滤，并继续使用现有跨帧聚类和综合评分选择目标点。
+- 不成熟、坏水果或种类不符时不发送 ArmTarget；车辆方向命令仍保留，因为它是进入左右观察姿态的必要动作。
 - 导航失败只允许进行有限的局部恢复；仍失败则记录本项失败并推进，避免后续全部错序。
 - 每项任务开始时记录 task index，所有异步 callback 必须验证仍属于当前任务，防止旧反馈污染下一项。
 

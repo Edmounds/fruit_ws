@@ -7,6 +7,27 @@
   source setup_fruit_runtime.bash
   ```
 
+  A、B 是两个独立的场地 profile。场馆在建筑物中的绝对位置不会进入 ROS `map` 坐标系，
+  但只要地图原点、朝向或现场路线需要独立调节，就必须使用对应 profile 的地图、初始位姿
+  和 waypoint YAML。所有现场脚本都要求显式指定 `--map A` 或 `--map B`。
+
+  ```bash
+  ./start_mapping.sh --map A
+  ./save_glim_map.sh --map A
+  ./start_relocalization_test.sh --map A
+  ./waypoints_maker.sh --map A
+  ./start_navigation.sh --map A
+  ./start_fruit_mission.sh --map A
+  ./start_fruit_mission.sh --map A --debug
+  ```
+
+  将命令中的 `A` 替换为 `B` 即可使用另一套场地数据。地图文件位于
+  `src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/{A,B}/`，路径点位于
+  `src/fruit_waypoint_recorder/waypoints/{A,B}/`。
+
+  任务启动命令增加 `--debug` 时，会在导航、摄像头和任务节点启动前自动录制除点云外的
+  ROS 话题，录包保存在项目根目录的 `rosbags/YYYYMMDD_HHMMSS/`，最多保留最新的 5 个录包。
+
   ## 1. 建图
 
   终端 1：启动 MID-360，给 GLIM 发布 `PointCloud2`。
@@ -26,8 +47,7 @@
   终端 2：启动 GLIM 建图。
 
   ```bash
-  ros2 launch glim_ros mapping.launch.py \
-    dump_path:=/home/rc4/fruit_ws/tmp/glim_map
+  ./start_mapping.sh --map A
   ```
 
   `mapping.launch.py` 会同时启动
@@ -56,10 +76,10 @@
   ## 2. 导出定位点云
 
   ```bash
-  ./save_glim_map.sh
+  ./save_glim_map.sh --map A
   ```
 
-  脚本从 `/home/rc4/fruit_ws/tmp/glim_map` 导出同一批次的三个文件：
+  脚本从当前 profile 的 `/home/rc4/fruit_ws/tmp/glim_map/{A,B}` 导出同一批次的文件：
 
   ```text
   field.ply
@@ -83,9 +103,8 @@
   T_map_base_start = T_map_lidar_start * inverse(T_base_lidar)
   ```
 
-  `localization_navigation_launch.py` 会根据 `localization_map` 自动寻找同名侧车
-  文件。例如定位地图为 `field.pcd` 时，自动加载 `field.initial_pose.yaml`，并覆盖
-  `nav2_params.yaml` 中的兜底值。测试脚本 `start_relocalization_test.sh` 使用相同规则。
+  启动脚本会显式传入当前 profile 的 `field.initial_pose.yaml`，覆盖公共定位参数中的
+  初始值。缺失侧车文件时启动会失败，不会静默使用全零初值。
 
   当前 `field.pcd` 自动生成的建图起点初值为：
 
@@ -94,16 +113,23 @@
   ```
 
   其中 yaw 约为 `89.93` 度，主要来自 MID-360 相对 `base_link` 的 `-90` 度
-  安装方向。以后重新建图后只需运行 `./save_glim_map.sh`，不要再手工计算或修改
+  安装方向。以后重新建图后只需运行 `./save_glim_map.sh --map A`（或 `B`），不要再手工计算或修改
   `nav2_params.yaml`。
 
   ## 4. 启动定位导航
 
   ```bash
+  ./start_navigation.sh --map A
+  ```
+
+  直接使用 ROS 2 launch 时仍然传入显式路径，并同时提供初始位姿侧车：
+
+  ```bash
   ros2 launch pb2025_nav_bringup localization_navigation_launch.py \
-    map:=/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.yaml \
-    localization_map:=/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.pcd \
-    params_file:=/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/nav2_params.yaml \
+    map:=/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/A/field.yaml \
+    localization_map:=/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/A/field.pcd \
+    initial_pose_file:=/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/A/field.initial_pose.yaml \
+    params_file:=/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/localization_params.yaml \
     use_teleop:=false \
     use_rviz:=true
   ```

@@ -22,12 +22,3 @@ axis_waypoint_action_server:
     progress_timeout_sec: 5.0
     progress_min_delta: 0.01
     diagnostics_topic: "/diagnostics"
-
-route_marker_node:
-  ros__parameters:
-    route_file: ""
-    publish_period_sec: 1.0
-
-route_file_client:
-  ros__parameters:
-    route_file: ""

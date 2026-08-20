@@ -22,7 +22,7 @@ setup(
     zip_safe=True,
     maintainer="fruit_ws team",
     maintainer_email="fruit-ws@example.com",
-    description="Fixed-field cardinal-axis navigation and route visualization.",
+    description="Fixed-field cardinal-axis waypoint navigation.",
     license="Apache-2.0",
     extras_require={
         "test": [
@@ -33,8 +33,6 @@ setup(
         "console_scripts": [
             "axis_waypoint_action_server = "
             "fruit_navigation.axis_waypoint_action_server:main",
-            "route_marker_node = fruit_navigation.route_marker_node:main",
-            "route_file_client = fruit_navigation.route_file_client:main",
         ],
     },
 )

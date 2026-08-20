@@ -20,7 +20,7 @@
 ## D435i Arm Target
 
 - [x] Add the typed D435i arm-target client.
-- [x] Use fresh `FruitDetections` for both class and position.
+- [x] Use fresh `FruitDecision` messages for both class and position.
 - [x] Preserve five-sample averaging and target selection.
 - [x] Publish current area and wait for callback ID 5.
 - [x] Publish one ArmTarget and wait for callback ID 3.

@@ -3,15 +3,15 @@
 set -eo pipefail
 
 WORKSPACE=/home/rc4/fruit_ws
+MAP_PROFILE_HELPER="$WORKSPACE/scripts/map_profile.sh"
 
 NAV_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/localization_navigation_launch.py"
 PERCEPTION_LAUNCH="$WORKSPACE/src/fruit_perception/launch/fruit_perception.launch.py"
 MISSION_LAUNCH="$WORKSPACE/src/fruit_mission/launch/fruit_mission.launch.py"
+RECORD_SCRIPT="$WORKSPACE/record_nav_debug.sh"
 
 PARAMS="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/localization_params.yaml"
 AXIS_PARAMS="$WORKSPACE/src/fruit_navigation/config/axis_navigation.yaml"
-MAP="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.yaml"
-LOCALIZATION_MAP="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.pcd"
 MISSION_CONFIG="$WORKSPACE/src/fruit_mission/config/fruit_mission.yaml"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
 
@@ -19,6 +19,41 @@ RUN_ROOT="$WORKSPACE/tmp/fruit_mission/runs"
 RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
 RUN_DIR="$RUN_ROOT/$RUN_ID"
 ORCHESTRATOR_LOG="$RUN_DIR/orchestrator.log"
+MAP_ID=""
+DEBUG_ENABLED=0
+
+usage() {
+  cat <<'EOF'
+Usage: ./start_fruit_mission.sh --map A|B [--debug]
+
+Start the complete perception, navigation, and mission stack for a field profile.
+Use --debug to record all non-point-cloud ROS topics under rosbags/.
+EOF
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --map)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      MAP_ID=$2
+      shift 2
+      ;;
+    --debug)
+      DEBUG_ENABLED=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+[[ -n "$MAP_ID" ]] || { usage >&2; exit 2; }
 
 child_pids=()
 child_names=()
@@ -29,6 +64,9 @@ stopped=0
 
 source "$WORKSPACE/setup_fruit_runtime.bash"
 set -u
+source "$MAP_PROFILE_HELPER"
+resolve_map_profile "$WORKSPACE" "$MAP_ID"
+require_map_profile_runtime
 
 mkdir -p "$RUN_DIR"
 
@@ -485,13 +523,18 @@ for required_file in \
   "$MISSION_LAUNCH" \
   "$PARAMS" \
   "$AXIS_PARAMS" \
-  "$MAP" \
+  "$MAP_YAML" \
   "$LOCALIZATION_MAP" \
+  "$INITIAL_POSE_FILE" \
   "$WORKSPACE/robot_debug_monitor.sh" \
   "$MISSION_CONFIG" \
   "$SCRIPT_CLIENT_CONFIG"; do
   check_file "$required_file"
 done
+
+if ((DEBUG_ENABLED)); then
+  [[ -x "$RECORD_SCRIPT" ]] || die "required executable is unavailable: $RECORD_SCRIPT"
+fi
 
 mission_runtime_paths="$(
   python3 - "$MISSION_CONFIG" <<'PY'
@@ -505,28 +548,27 @@ with open(sys.argv[1], encoding="utf-8") as stream:
 params = document["fruit_mission"]["ros__parameters"]
 tts = params["tts"]
 for key in (
-    "waypoint_file",
     "piper_executable",
     "model_path",
     "config_path",
     "aplay_executable",
 ):
-    value = params.get(key) if key == "waypoint_file" else tts.get(key)
+    value = tts.get(key)
     if not value:
         raise ValueError(f"missing mission config value: {key}")
     print(value)
 PY
 )" || die "failed to read mission runtime paths from $MISSION_CONFIG"
 mapfile -t mission_runtime_path_values <<< "$mission_runtime_paths"
-if ((${#mission_runtime_path_values[@]} != 5)); then
+if ((${#mission_runtime_path_values[@]} != 4)); then
   die "mission config returned an unexpected number of runtime paths"
 fi
 
-WAYPOINT_FILE=${mission_runtime_path_values[0]}
-PIPER_EXECUTABLE=${mission_runtime_path_values[1]}
-MODEL_PATH=${mission_runtime_path_values[2]}
-MODEL_CONFIG=${mission_runtime_path_values[3]}
-APLAY_EXECUTABLE=${mission_runtime_path_values[4]}
+WAYPOINT_FILE="$MISSION_WAYPOINT_FILE"
+PIPER_EXECUTABLE=${mission_runtime_path_values[0]}
+MODEL_PATH=${mission_runtime_path_values[1]}
+MODEL_CONFIG=${mission_runtime_path_values[2]}
+APLAY_EXECUTABLE=${mission_runtime_path_values[3]}
 
 for required_file in "$WAYPOINT_FILE" "$MODEL_PATH" "$MODEL_CONFIG"; do
   check_file "$required_file"
@@ -540,12 +582,16 @@ for required_device in /dev/left_cam /dev/right_cam /dev/stm32; do
 done
 
 log "RUN directory: $RUN_DIR"
+log "RUN profile: $MAP_ID"
 log "RUN branch: $(git -C "$WORKSPACE" branch --show-current)"
 log "RUN commit: $(git -C "$WORKSPACE" rev-parse --short HEAD)"
 log "RUN policy: perception owns the only serial bridge; navigation does not launch hardware_bridge"
+if ((DEBUG_ENABLED)); then
+  log "RUN debug bag: enabled; recorder output is under $WORKSPACE/rosbags"
+fi
 
 if ! python3 -c \
-  'from pathlib import Path; import sys; from fruit_mission.waypoint_route import FormalWaypointRoute; FormalWaypointRoute.from_file(Path(sys.argv[1]))' \
+  'from pathlib import Path; import sys; from fruit_mission.waypoint_route import MissionWaypointRoute; MissionWaypointRoute.from_file(Path(sys.argv[1]))' \
   "$WAYPOINT_FILE" >> "$ORCHESTRATOR_LOG" 2>&1; then
   die "mission waypoint validation failed; see $ORCHESTRATOR_LOG"
 fi
@@ -560,7 +606,6 @@ check_no_existing_nodes \
   /lifecycle_manager_map \
   /serial_controller \
   /axis_waypoint_action_server \
-  /route_marker_node \
   /twist_mux \
   /pb_gicp_localization \
   /fruit_perception_container \
@@ -572,13 +617,19 @@ check_no_existing_nodes \
   /fruit_qr_planner \
   /fruit_mission
 
+if ((DEBUG_ENABLED)); then
+  start_process "rosbag" \
+    "$RECORD_SCRIPT" \
+    --no-monitor
+fi
+
 start_process "navigation" \
   ros2 launch "$NAV_LAUNCH" \
-    "map:=$MAP" \
+    "map:=$MAP_YAML" \
     "localization_map:=$LOCALIZATION_MAP" \
     "params_file:=$PARAMS" \
     "axis_params_file:=$AXIS_PARAMS" \
-    "start_route_client:=false" \
+    "initial_pose_file:=$INITIAL_POSE_FILE" \
     "use_teleop:=false" \
     "use_rviz:=false"
 
@@ -619,7 +670,8 @@ wait_for_active_off 60
 log "READY navigation and perception stack; starting mission"
 start_process "mission" \
   ros2 launch "$MISSION_LAUNCH" \
-    "use_sim_time:=false"
+    "use_sim_time:=false" \
+    "waypoint_file:=$WAYPOINT_FILE"
 
 log "RUN mission started; press Ctrl-C to stop the complete stack"
 set +e

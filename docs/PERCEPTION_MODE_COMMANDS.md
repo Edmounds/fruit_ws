@@ -53,11 +53,11 @@ ros2 topic pub --once /fruit_mission/perception_mode std_msgs/msg/String \
 
 ### C 区作业
 
-使用左右 USB 摄像头：
+使用 D435i 检测二维码对应的成熟水果：
 
 ```bash
 ros2 topic pub --once /fruit_mission/perception_mode std_msgs/msg/String \
-  "{data: 'SIDES'}"
+  "{data: 'TREE'}"
 ```
 
 ## 任务结束

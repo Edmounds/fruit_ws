@@ -1,7 +1,6 @@
 #include "fruit_perception/detection_parser.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -15,37 +14,25 @@ namespace
 
 constexpr std::size_t kDetectionRows = 300;
 constexpr std::size_t kDetectionColumns = 6;
-constexpr float kDefaultNmsIouThreshold = 0.45F;
 
-constexpr std::array<const char *, 12> kFruitTypes = {
-  "apple_ripe", "apple_unripe", "chili_ripe", "chili_unripe",
-  "pumpkin_ripe", "pumpkin_unripe", "onion_ripe", "onion_unripe",
-  "pear_ripe", "pear_unripe", "tomato_ripe", "tomato_unripe"};
-
-constexpr std::array<const char *, 2> kMaturityTypes = {"ripe", "unripe"};
-
-constexpr std::array<const char *, 4> kTreeFruitTypes = {
+const std::vector<std::string> kMaturityTypes = {"ripe", "unripe"};
+const std::vector<std::string> kTreeFruitTypes = {
   "apple_ripe", "apple_unripe", "pear_ripe", "pear_unripe"};
-
-constexpr std::array<const char *, 8> kSideFruitTypes = {
+const std::vector<std::string> kSideFruitTypes = {
   "chili_ripe", "chili_unripe", "pumpkin_ripe", "pumpkin_unripe",
   "onion_ripe", "onion_unripe", "tomato_ripe", "tomato_unripe"};
 
-std::vector<std::string> labels_for_class_count(std::size_t class_count)
+const std::vector<std::string> & labels_for_set(DetectionLabelSet label_set)
 {
-  if (class_count == kMaturityTypes.size()) {
-    return {kMaturityTypes.begin(), kMaturityTypes.end()};
+  switch (label_set) {
+    case DetectionLabelSet::kMaturity:
+      return kMaturityTypes;
+    case DetectionLabelSet::kTreeFruit:
+      return kTreeFruitTypes;
+    case DetectionLabelSet::kSideFruit:
+      return kSideFruitTypes;
   }
-  if (class_count == kTreeFruitTypes.size()) {
-    return {kTreeFruitTypes.begin(), kTreeFruitTypes.end()};
-  }
-  if (class_count == kSideFruitTypes.size()) {
-    return {kSideFruitTypes.begin(), kSideFruitTypes.end()};
-  }
-  if (class_count == kFruitTypes.size()) {
-    return {kFruitTypes.begin(), kFruitTypes.end()};
-  }
-  return {};
+  throw std::invalid_argument("Unknown detection label set");
 }
 
 void validate_thresholds(float confidence_threshold, float nms_iou_threshold)
@@ -60,14 +47,9 @@ void validate_thresholds(float confidence_threshold, float nms_iou_threshold)
 
 std::vector<Detection> parse_nms_detections(
   const float * output,
-  const std::vector<std::size_t> & shape,
-  float confidence_threshold)
+  float confidence_threshold,
+  const std::vector<std::string> & labels)
 {
-  if (shape != std::vector<std::size_t>{1, kDetectionRows, kDetectionColumns}) {
-    throw std::invalid_argument("Expected model output shape [1,300,6]");
-  }
-
-  const auto labels = labels_for_class_count(kFruitTypes.size());
   std::vector<Detection> detections;
   for (std::size_t row = 0; row < kDetectionRows; ++row) {
     const auto offset = row * kDetectionColumns;
@@ -102,7 +84,8 @@ std::vector<Detection> parse_raw_yolo_detections(
   const float * output,
   const std::vector<std::size_t> & shape,
   float confidence_threshold,
-  float nms_iou_threshold)
+  float nms_iou_threshold,
+  const std::vector<std::string> & labels)
 {
   if (shape.size() != 3 || shape[0] != 1 || shape[1] < 5 || shape[2] == 0) {
     throw std::invalid_argument("Expected raw YOLO output shape [1,4+classes,N]");
@@ -110,9 +93,8 @@ std::vector<Detection> parse_raw_yolo_detections(
 
   const std::size_t class_count = shape[1] - 4;
   const std::size_t candidate_count = shape[2];
-  const auto labels = labels_for_class_count(class_count);
-  if (labels.empty()) {
-    throw std::invalid_argument("Unsupported raw YOLO class count");
+  if (class_count != labels.size()) {
+    throw std::invalid_argument("Raw YOLO class count does not match model labels");
   }
 
   std::vector<cv::Rect> boxes;
@@ -185,71 +167,57 @@ std::vector<Detection> parse_raw_yolo_detections(
 
 }  // namespace
 
+const char * detection_label_set_name(DetectionLabelSet label_set)
+{
+  switch (label_set) {
+    case DetectionLabelSet::kMaturity:
+      return "maturity";
+    case DetectionLabelSet::kTreeFruit:
+      return "tree-fruit";
+    case DetectionLabelSet::kSideFruit:
+      return "side-fruit";
+  }
+  return "unknown";
+}
+
+std::size_t detection_label_count(DetectionLabelSet label_set)
+{
+  return labels_for_set(label_set).size();
+}
+
 std::vector<Detection> parse_detections(
   const float * output,
   const std::vector<std::size_t> & shape,
+  DetectionLabelSet label_set,
   float confidence_threshold,
   float nms_iou_threshold)
 {
   validate_thresholds(confidence_threshold, nms_iou_threshold);
+  const auto & labels = labels_for_set(label_set);
 
   std::vector<Detection> detections;
   if (shape == std::vector<std::size_t>{1, kDetectionRows, kDetectionColumns}) {
-    detections = parse_nms_detections(output, shape, confidence_threshold);
+    detections = parse_nms_detections(output, confidence_threshold, labels);
   } else {
     detections = parse_raw_yolo_detections(
-      output, shape, confidence_threshold, nms_iou_threshold);
+      output, shape, confidence_threshold, nms_iou_threshold, labels);
   }
 
   std::stable_sort(
     detections.begin(), detections.end(),
     [](const auto & lhs, const auto & rhs) {return lhs.score > rhs.score;});
-
   return detections;
 }
 
-std::vector<Detection> parse_detections(
-  const float * output,
+bool is_supported_detection_output_shape(
   const std::vector<std::size_t> & shape,
-  float confidence_threshold)
-{
-  return parse_detections(output, shape, confidence_threshold, kDefaultNmsIouThreshold);
-}
-
-std::vector<std::string> parse_fruit_types(
-  const float * output,
-  const std::vector<std::size_t> & shape,
-  float confidence_threshold,
-  float nms_iou_threshold)
-{
-  auto detections = parse_detections(
-    output, shape, confidence_threshold, nms_iou_threshold);
-
-  std::vector<std::string> types;
-  types.reserve(detections.size());
-  for (auto & detection : detections) {
-    types.push_back(std::move(detection.type));
-  }
-  return types;
-}
-
-std::vector<std::string> parse_fruit_types(
-  const float * output,
-  const std::vector<std::size_t> & shape,
-  float confidence_threshold)
-{
-  return parse_fruit_types(output, shape, confidence_threshold, kDefaultNmsIouThreshold);
-}
-
-bool is_supported_detection_output_shape(const std::vector<std::size_t> & shape)
+  DetectionLabelSet label_set)
 {
   if (shape == std::vector<std::size_t>{1, kDetectionRows, kDetectionColumns}) {
     return true;
   }
-  if (shape.size() != 3 || shape[0] != 1 || shape[1] < 5 || shape[2] == 0) {
-    return false;
-  }
-  return !labels_for_class_count(shape[1] - 4).empty();
+  return shape.size() == 3 && shape[0] == 1 && shape[2] > 0 &&
+         shape[1] == 4 + detection_label_count(label_set);
 }
 
 }  // namespace fruit_perception

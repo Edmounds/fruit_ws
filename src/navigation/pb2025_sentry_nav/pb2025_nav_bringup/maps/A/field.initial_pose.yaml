@@ -1,0 +1,3 @@
+pb_gicp_localization:
+  ros__parameters:
+    initial_map_to_odom: [-0.009653, -0.141873, 0.051420, -0.004372, 0.014471, 1.569590]

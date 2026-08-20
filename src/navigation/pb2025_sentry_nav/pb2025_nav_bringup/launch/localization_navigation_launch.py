@@ -33,7 +33,6 @@ def _launch_nodes(context):
     params_file = LaunchConfiguration("params_file").perform(context)
     axis_params_file = LaunchConfiguration("axis_params_file").perform(context)
     initial_pose_file = LaunchConfiguration("initial_pose_file").perform(context)
-    route_file = LaunchConfiguration("route_file").perform(context)
     for label, path in (
         ("map", map_file),
         ("localization_map", localization_map),
@@ -42,8 +41,15 @@ def _launch_nodes(context):
     ):
         if not os.path.isfile(path):
             raise RuntimeError(f"{label} does not exist: {path}")
-    if initial_pose_file and not os.path.isfile(initial_pose_file):
+    if not initial_pose_file:
+        raise RuntimeError("initial_pose_file is required; provide a profile sidecar YAML")
+    if not os.path.isfile(initial_pose_file):
         raise RuntimeError(f"initial_pose_file does not exist: {initial_pose_file}")
+    print(
+        "[pb2025_nav_bringup] profile files: "
+        f"map={map_file}, localization_map={localization_map}, "
+        f"initial_pose_file={initial_pose_file}"
+    )
 
     common = {"parameters": [params_file], "output": "screen"}
     system_libusb = "/lib/x86_64-linux-gnu/libusb-1.0.so.0"
@@ -60,9 +66,7 @@ def _launch_nodes(context):
         "mid360_user_config.json",
     )
     joy_config = "/home/rc4/fruit_ws/src/joy_linux/config/joy_config.yaml"
-    localization_parameters = [params_file]
-    if initial_pose_file:
-        localization_parameters.append(initial_pose_file)
+    localization_parameters = [params_file, initial_pose_file]
     localization_parameters.append({"localization_map": localization_map})
 
     return [
@@ -129,21 +133,6 @@ def _launch_nodes(context):
             output="screen",
         ),
         Node(
-            package="fruit_navigation",
-            executable="route_marker_node",
-            name="route_marker_node",
-            parameters=[axis_params_file, {"route_file": route_file}],
-            output="screen",
-        ),
-        Node(
-            package="fruit_navigation",
-            executable="route_file_client",
-            name="route_file_client",
-            condition=IfCondition(LaunchConfiguration("start_route_client")),
-            parameters=[axis_params_file, {"route_file": route_file}],
-            output="screen",
-        ),
-        Node(
             package="twist_mux",
             executable="twist_mux",
             name="twist_mux",
@@ -185,8 +174,6 @@ def generate_launch_description():
                 description="Absolute path to the GLIM-derived PCD",
             ),
             DeclareLaunchArgument("initial_pose_file", default_value=""),
-            DeclareLaunchArgument("route_file", default_value=""),
-            DeclareLaunchArgument("start_route_client", default_value="false"),
             DeclareLaunchArgument(
                 "params_file",
                 default_value=os.path.join(

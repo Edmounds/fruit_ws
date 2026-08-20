@@ -50,9 +50,6 @@ private Q_SLOTS:
   void saveTestPoints();
   void runNextTest();
   void resetTestCursor();
-  void recordFormalPoint();
-  void undoFormalPoint();
-  void saveFormalPoints();
 
 private:
   void recordTestPoint(const QString & point_type);
@@ -67,7 +64,6 @@ private:
 
   QTabWidget * tabs_{nullptr};
   QLabel * status_label_{nullptr};
-  QLabel * formal_label_{nullptr};
   QLabel * test_label_{nullptr};
   QLineEdit * test_file_edit_{nullptr};
   QLineEdit * test_name_edit_{nullptr};
@@ -79,9 +75,6 @@ private:
   QPushButton * save_test_button_{nullptr};
   QPushButton * run_next_button_{nullptr};
   QPushButton * reset_cursor_button_{nullptr};
-  QPushButton * record_formal_button_{nullptr};
-  QPushButton * undo_formal_button_{nullptr};
-  QPushButton * save_formal_button_{nullptr};
 };
 
 }  // namespace fruit_waypoint_rviz_plugin

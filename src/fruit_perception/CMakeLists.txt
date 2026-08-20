@@ -28,6 +28,7 @@ find_package(std_srvs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FruitDetection.msg"
   "msg/FruitDetections.msg"
+  "msg/FruitDecision.msg"
   "msg/FruitTypes.msg"
   DEPENDENCIES geometry_msgs sensor_msgs std_msgs
 )

@@ -22,7 +22,7 @@ setup(
     zip_safe=True,
     maintainer="fruit_ws team",
     maintainer_email="fruit-ws@example.com",
-    description="Record competition and test waypoints from the RViz waypoint-maker panel.",
+    description="Record and exercise configured waypoints from the RViz panel.",
     license="Apache-2.0",
     extras_require={
         "test": [

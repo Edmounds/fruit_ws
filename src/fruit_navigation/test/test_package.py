@@ -36,7 +36,5 @@ def test_package_installs_nodes_config_and_launch():
 
     compile(launch_path.read_text(), str(launch_path), "exec")
     assert "axis_waypoint_action_server" in setup_text
-    assert "route_marker_node" in setup_text
-    assert "route_file_client" in setup_text
     assert 'glob("config/*.yaml")' in setup_text
     assert 'glob("launch/*.launch.py")' in setup_text

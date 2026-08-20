@@ -21,8 +21,10 @@ class FruitMissionNode(Node):
     def __init__(self) -> None:
         super().__init__("fruit_mission")
         self.declare_parameter("config_path", DEFAULT_CONFIG_PATH)
+        self.declare_parameter("waypoint_file", "")
         config_path = self.get_parameter("config_path").value
-        self.config = load_config(str(config_path))
+        waypoint_file = str(self.get_parameter("waypoint_file").value).strip()
+        self.config = load_config(str(config_path), waypoint_file)
         self._mission_context = MissionContext(self, self.config)
 
     def run(self) -> None:

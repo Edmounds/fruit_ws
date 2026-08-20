@@ -13,7 +13,7 @@ from std_msgs.msg import String
 from fruit_hardware_interfaces.msg import ArmTarget
 from fruit_hardware_interfaces.msg import ExecutionCallback
 from fruit_hardware_interfaces.msg import StateMachineCommand
-from fruit_perception.msg import FruitDetections
+from fruit_perception.msg import FruitDecision
 
 from fruit_mission.script_hardware_client import CommandResult
 from fruit_mission.script_hardware_client import HardwareCommandClient
@@ -46,14 +46,7 @@ class D435iArmTargetClient(HardwareCommandClient):
         self.declare_parameter(
             "current_area_topic", "/fruit_mission/current_area"
         )
-        self.declare_parameter(
-            "d435i_target_point_topic",
-            "/fruit_perception/d435i/target_point",
-        )
-        self.declare_parameter(
-            "d435i_detections_topic",
-            "/fruit_perception/d435i/detections",
-        )
+        self.declare_parameter("decision_topic", "/fruit_perception/decision")
         self.declare_parameter("active_mode_timeout_sec", 30.0)
         self.declare_parameter("detection_timeout_sec", 120.0)
         self.declare_parameter("current_area_delivery_timeout_sec", 1.0)
@@ -78,12 +71,7 @@ class D435iArmTargetClient(HardwareCommandClient):
         )
         self.active_mode_topic = self._string_parameter("active_mode_topic")
         self.current_area_topic = self._string_parameter("current_area_topic")
-        self.target_point_topic = self._string_parameter(
-            "d435i_target_point_topic"
-        )
-        self.detections_topic = self._string_parameter(
-            "d435i_detections_topic"
-        )
+        self.decision_topic = self._string_parameter("decision_topic")
         self.active_mode_timeout_sec = self._float_parameter(
             "active_mode_timeout_sec"
         )
@@ -126,23 +114,16 @@ class D435iArmTargetClient(HardwareCommandClient):
             self._on_active_mode,
             latched_qos(),
         )
-        self._target_point_subscription = self.create_subscription(
-            PointStamped,
-            self.target_point_topic,
-            self._on_target_point,
-            reliable_qos(),
+        self._decision_subscription = self.create_subscription(
+            FruitDecision,
+            self.decision_topic,
+            self._on_decision,
+            reliable_qos(depth=100),
         )
-        self._detections_subscription = None
         if self.debug:
-            self._detections_subscription = self.create_subscription(
-                FruitDetections,
-                self.detections_topic,
-                self._on_detections_debug,
-                reliable_qos(depth=100),
-            )
             self.get_logger().info(
                 "D435i per-frame debug logging enabled for "
-                f"{self.detections_topic} and {self.target_point_topic}"
+                f"{self.decision_topic}"
             )
 
     def stack_is_absent(self) -> bool:
@@ -335,18 +316,9 @@ class D435iArmTargetClient(HardwareCommandClient):
     def _on_active_mode(self, message: String) -> None:
         self._active_mode = message.data
 
-    def _on_target_point(self, message: PointStamped) -> None:
-        if self.debug:
-            self.get_logger().info(
-                "[D435I DEBUG] target_point "
-                f"stamp={self._format_stamp(message)} "
-                f"frame={message.header.frame_id!r} "
-                f"point=({message.point.x:.6f},"
-                f"{message.point.y:.6f},{message.point.z:.6f})"
-            )
-        self._latest_target_point = message
-
-    def _on_detections_debug(self, message: FruitDetections) -> None:
+    def _on_decision(self, message: FruitDecision) -> None:
+        if message.source != FruitDecision.SOURCE_D435I:
+            return
         detections = []
         for index, item in enumerate(message.detections):
             point = (
@@ -362,13 +334,30 @@ class D435iArmTargetClient(HardwareCommandClient):
                 f"{item.roi.width},{item.roi.height}) "
                 f"has_point={bool(item.has_point)} point={point}"
             )
-        details = " | ".join(detections) if detections else "<none>"
-        self.get_logger().info(
-            "[D435I DEBUG] detections "
-            f"stamp={self._format_stamp(message)} "
-            f"frame={message.header.frame_id!r} "
-            f"count={len(message.detections)} {details}"
-        )
+        if self.debug:
+            details = " | ".join(detections) if detections else "<none>"
+            self.get_logger().info(
+                "[D435I DEBUG] detections "
+                f"stamp={self._format_stamp(message)} "
+                f"frame={message.header.frame_id!r} "
+                f"count={len(message.detections)} {details}"
+            )
+        if not message.has_target:
+            return
+        target = PointStamped()
+        target.header = message.header
+        target.point.x = message.target_point.x
+        target.point.y = message.target_point.y
+        target.point.z = message.target_point.z
+        if self.debug:
+            self.get_logger().info(
+                "[D435I DEBUG] target_point "
+                f"stamp={self._format_stamp(message)} "
+                f"frame={message.header.frame_id!r} "
+                f"point=({target.point.x:.6f},"
+                f"{target.point.y:.6f},{target.point.z:.6f})"
+            )
+        self._latest_target_point = target
 
     def _string_parameter(self, name: str) -> str:
         return str(self.get_parameter(name).value)
@@ -382,7 +371,7 @@ class D435iArmTargetClient(HardwareCommandClient):
         return stamp.sec * 1_000_000_000 + stamp.nanosec
 
     @staticmethod
-    def _format_stamp(message: PointStamped | FruitDetections) -> str:
+    def _format_stamp(message: FruitDecision) -> str:
         stamp = message.header.stamp
         return f"{stamp.sec}.{stamp.nanosec:09d}"
 

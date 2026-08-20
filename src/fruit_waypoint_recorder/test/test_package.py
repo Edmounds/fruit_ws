@@ -12,7 +12,6 @@ def test_runtime_config_has_valid_required_parameters():
         "fruit_waypoint_recorder"
     ]["ros__parameters"]
 
-    assert isinstance(parameters["goal_topic"], str) and parameters["goal_topic"]
     assert isinstance(parameters["frame_id"], str) and parameters["frame_id"]
     assert parameters["base_frame"] == "base_link"
     assert parameters["command_topic"] == "/fruit/waypoint_maker/command"
@@ -20,11 +19,9 @@ def test_runtime_config_has_valid_required_parameters():
     assert parameters["marker_topic"] == "/fruit/waypoint_maker/markers"
     assert Path(parameters["source_root"]).is_absolute()
     assert parameters["source_root"].endswith("/src")
-    assert Path(parameters["output_directory"]).is_absolute()
-    assert "src/fruit_waypoint_recorder/waypoints" in parameters["output_directory"]
-    assert parameters["output_file"].endswith(".yaml")
-    assert parameters["test_output_file"] == "test_waypoints.yaml"
-    assert 0.0 < parameters["yaw_tolerance"] < 1.0
+    waypoint_file = Path(parameters["waypoint_file"])
+    assert waypoint_file.is_absolute()
+    assert waypoint_file.suffix == ".yaml"
     assert parameters["sample_duration_sec"] == 1.0
     assert parameters["sample_period_sec"] > 0.0
 

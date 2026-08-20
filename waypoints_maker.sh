@@ -3,18 +3,18 @@
 set -eo pipefail
 
 WORKSPACE=/home/rc4/fruit_ws
+MAP_PROFILE_HELPER="$WORKSPACE/scripts/map_profile.sh"
 NAV_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/localization_navigation_launch.py"
 HARDWARE_LAUNCH="$WORKSPACE/src/fruit_hardware_bridge/launch/fruit_hardware_bridge.launch.py"
 RECORDER_LAUNCH="$WORKSPACE/src/fruit_waypoint_recorder/launch/waypoint_recorder.launch.py"
 PARAMS="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/localization_params.yaml"
 AXIS_PARAMS="$WORKSPACE/src/fruit_navigation/config/axis_navigation.yaml"
-MAP="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.yaml"
-LOCALIZATION_MAP="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.pcd"
 RVIZ_CONFIG="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/rviz/waypoints_maker.rviz"
 DESKTOP_RUNTIME_DIR="/run/user/$(id -u)"
 DESKTOP_DISPLAY=:0
 DESKTOP_XAUTHORITY="$DESKTOP_RUNTIME_DIR/gdm/Xauthority"
 USE_TELEOP=false
+MAP_ID=""
 
 pids=()
 debug_pids=()
@@ -22,7 +22,7 @@ stopped=0
 
 usage() {
   cat <<'EOF'
-Usage: ./waypoints_maker.sh [--tele]
+Usage: ./waypoints_maker.sh --map A|B [--tele]
 
 Start localization, axis navigation, RViz, and the waypoint recorder.
 Use --tele when joystick teleop is needed.
@@ -73,6 +73,11 @@ trap stop_children INT TERM EXIT
 
 while (($# > 0)); do
   case "$1" in
+    --map)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      MAP_ID=$2
+      shift 2
+      ;;
     --tele)
       USE_TELEOP=true
       shift
@@ -88,8 +93,12 @@ while (($# > 0)); do
   esac
 done
 
+[[ -n "$MAP_ID" ]] || { usage >&2; exit 2; }
 source "$WORKSPACE/setup_fruit_runtime.bash"
 set -u
+source "$MAP_PROFILE_HELPER"
+resolve_map_profile "$WORKSPACE" "$MAP_ID"
+require_map_profile_runtime
 
 for required_file in \
   "$NAV_LAUNCH" \
@@ -97,8 +106,10 @@ for required_file in \
   "$RECORDER_LAUNCH" \
   "$PARAMS" \
   "$AXIS_PARAMS" \
-  "$MAP" \
+  "$MAP_YAML" \
+  "$RECORDER_WAYPOINT_FILE" \
   "$LOCALIZATION_MAP" \
+  "$INITIAL_POSE_FILE" \
   "$WORKSPACE/robot_debug_monitor.sh" \
   "$RVIZ_CONFIG"; do
   if [[ ! -r "$required_file" ]]; then
@@ -124,11 +135,11 @@ fi
 
 start_process "$nav_process_name" \
   ros2 launch "$NAV_LAUNCH" \
-    "map:=$MAP" \
+    "map:=$MAP_YAML" \
     "localization_map:=$LOCALIZATION_MAP" \
     "params_file:=$PARAMS" \
     "axis_params_file:=$AXIS_PARAMS" \
-    "start_route_client:=false" \
+    "initial_pose_file:=$INITIAL_POSE_FILE" \
     "use_teleop:=$USE_TELEOP" \
     "use_rviz:=false"
 
@@ -143,12 +154,13 @@ start_process "rviz2 waypoint maker" \
     rviz2 -d "$RVIZ_CONFIG"
 
 start_process "waypoint recorder" \
-  ros2 launch "$RECORDER_LAUNCH"
+  ros2 launch "$RECORDER_LAUNCH" \
+    "waypoint_file:=$RECORDER_WAYPOINT_FILE"
 
 if [[ "$USE_TELEOP" == true ]]; then
-  printf '[waypoints-maker] navigation, teleop, RViz, and waypoint recorder started.\n'
+  printf '[waypoints-maker] profile=%s; navigation, teleop, RViz, and waypoint recorder started.\n' "$MAP_ID"
 else
-  printf '[waypoints-maker] navigation, RViz, and waypoint recorder started.\n'
+  printf '[waypoints-maker] profile=%s; navigation, RViz, and waypoint recorder started.\n' "$MAP_ID"
 fi
 printf '[waypoints-maker] use the RViz Waypoint Maker panel to record, save, undo, and test points. Press Ctrl-C to stop.\n'
 

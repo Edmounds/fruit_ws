@@ -25,7 +25,7 @@ SIDE_NAMES = ("left", "right")
 
 @dataclass(frozen=True)
 class SideObservation:
-    """Latest type strings seen by left and right side cameras."""
+    """Latest model labels seen by left and right side cameras."""
 
     left: List[str]
     right: List[str]
@@ -81,6 +81,34 @@ def spoken_model_type(model_type: Optional[str]) -> str:
 def format_position_name(position_id: int) -> str:
     """Return a spoken C-zone position name."""
     return f"{_chinese_index(position_id)}号位置"
+
+
+def choose_maturity_side(
+    observation: SideObservation,
+    preferred_side: str = "left",
+) -> PickDecision:
+    """Choose a side from A-zone ripe/unripe labels."""
+    if preferred_side not in SIDE_NAMES:
+        raise ValueError("preferred_side must be left or right")
+
+    candidates = {"left": observation.left, "right": observation.right}
+    for side in (preferred_side, _other_side(preferred_side)):
+        if "ripe" in candidates[side]:
+            return PickDecision(True, side, "matched ripe target", "ripe", "matched")
+
+    if not observation.left and not observation.right:
+        return PickDecision(
+            False,
+            None,
+            "no target detected",
+            reason_code="no_detection",
+        )
+    return PickDecision(
+        False,
+        None,
+        "only unripe targets",
+        reason_code="target_unripe",
+    )
 
 
 def choose_side(

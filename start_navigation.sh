@@ -3,13 +3,11 @@
 set -eo pipefail
 
 WORKSPACE=/home/rc4/fruit_ws
+MAP_PROFILE_HELPER="$WORKSPACE/scripts/map_profile.sh"
 NAV_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/localization_navigation_launch.py"
 HARDWARE_LAUNCH="$WORKSPACE/src/fruit_hardware_bridge/launch/fruit_hardware_bridge.launch.py"
 PARAMS="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/localization_params.yaml"
 AXIS_PARAMS="$WORKSPACE/src/fruit_navigation/config/axis_navigation.yaml"
-ROUTE_FILE="$WORKSPACE/src/fruit_waypoint_recorder/waypoints/competition_waypoints.yaml"
-MAP="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.yaml"
-LOCALIZATION_MAP="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/field.pcd"
 RVIZ_CONFIG="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/rviz/navigation.rviz"
 DESKTOP_RUNTIME_DIR="/run/user/$(id -u)"
 DESKTOP_DISPLAY=:0
@@ -18,6 +16,35 @@ DESKTOP_XAUTHORITY="$DESKTOP_RUNTIME_DIR/gdm/Xauthority"
 pids=()
 debug_pids=()
 stopped=0
+MAP_ID=""
+
+usage() {
+  cat <<'EOF'
+Usage: ./start_navigation.sh --map A|B
+
+Start navigation and localization for the selected field profile.
+EOF
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --map)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      MAP_ID=$2
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+[[ -n "$MAP_ID" ]] || { usage >&2; exit 2; }
 
 stop_children() {
   trap - INT TERM EXIT
@@ -63,14 +90,18 @@ trap stop_children INT TERM EXIT
 
 source "$WORKSPACE/setup_fruit_runtime.bash"
 set -u
+source "$MAP_PROFILE_HELPER"
+resolve_map_profile "$WORKSPACE" "$MAP_ID"
+require_map_profile_runtime
 
 for required_file in \
   "$NAV_LAUNCH" \
   "$HARDWARE_LAUNCH" \
   "$PARAMS" \
   "$AXIS_PARAMS" \
-  "$MAP" \
+  "$MAP_YAML" \
   "$LOCALIZATION_MAP" \
+  "$INITIAL_POSE_FILE" \
   "$WORKSPACE/robot_debug_monitor.sh" \
   "$RVIZ_CONFIG"; do
   if [[ ! -r "$required_file" ]]; then
@@ -90,12 +121,11 @@ start_process "serial bridge" \
 
 start_process "axis navigation and localization" \
   ros2 launch "$NAV_LAUNCH" \
-    "map:=$MAP" \
+    "map:=$MAP_YAML" \
     "localization_map:=$LOCALIZATION_MAP" \
     "params_file:=$PARAMS" \
     "axis_params_file:=$AXIS_PARAMS" \
-    "route_file:=$ROUTE_FILE" \
-    "start_route_client:=false" \
+    "initial_pose_file:=$INITIAL_POSE_FILE" \
     "use_teleop:=false" \
     "use_rviz:=false"
 
@@ -109,7 +139,7 @@ start_process "rviz2" \
     "DBUS_SESSION_BUS_ADDRESS=unix:path=$DESKTOP_RUNTIME_DIR/bus" \
     rviz2 -d "$RVIZ_CONFIG"
 
-printf '[navigation] axis navigation, serial bridge, and RViz started. Press Ctrl-C to stop them.\n'
+printf '[navigation] profile=%s; axis navigation, serial bridge, and RViz started. Press Ctrl-C to stop them.\n' "$MAP_ID"
 
 if wait -n "${pids[@]}"; then
   status=0

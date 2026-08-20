@@ -7,7 +7,6 @@
 
 import json
 import time
-from datetime import datetime
 from functools import partial
 from pathlib import Path
 
@@ -33,18 +32,15 @@ from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
-from fruit_navigation.route_model import PoseData, yaw_from_quaternion
 from fruit_waypoint_recorder.recorder import (
+    PoseData,
     TestPointStore,
     VALID_TEST_POINT_TYPES,
-    WaypointTemplateStore,
     mean_pose,
-    new_session_path,
+    yaw_from_quaternion,
 )
 
 
-DEFAULT_OUTPUT_DIRECTORY = "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints"
-DEFAULT_SOURCE_ROOT = "/home/rc4/fruit_ws/src"
 FINAL_YAW_MODES = ("blend_on_path", "rotate_at_goal")
 
 
@@ -59,17 +55,13 @@ def latched_qos() -> QoSProfile:
 
 
 class WaypointRecorderNode(Node):
-    """Record formal anchors and named test points from current robot pose."""
+    """Record and exercise named points in the configured waypoint file."""
 
     def __init__(self) -> None:
         super().__init__("fruit_waypoint_recorder")
-        self.declare_parameter("goal_topic", "/goal_pose")
         self.declare_parameter("frame_id", "map")
         self.declare_parameter("base_frame", "base_link")
-        self.declare_parameter("output_directory", DEFAULT_OUTPUT_DIRECTORY)
-        self.declare_parameter("output_file", "competition_waypoints.yaml")
-        self.declare_parameter("test_output_file", "test_waypoints.yaml")
-        self.declare_parameter("yaw_tolerance", 0.35)
+        self.declare_parameter("waypoint_file", "")
         self.declare_parameter("sample_duration_sec", 1.0)
         self.declare_parameter("sample_period_sec", 0.05)
         self.declare_parameter("command_topic", "/fruit/waypoint_maker/command")
@@ -78,11 +70,14 @@ class WaypointRecorderNode(Node):
         self.declare_parameter("follow_waypoints_action", "/follow_waypoints")
         self.declare_parameter("axis_waypoint_node", "/axis_waypoint_action_server")
         self.declare_parameter("default_final_yaw_mode", "blend_on_path")
-        self.declare_parameter("source_root", DEFAULT_SOURCE_ROOT)
+        self.declare_parameter("source_root", "")
 
         self._frame_id = self.get_parameter("frame_id").value
         self._base_frame = self.get_parameter("base_frame").value
-        self._source_root = Path(self.get_parameter("source_root").value).resolve()
+        source_root = str(self.get_parameter("source_root").value).strip()
+        if not source_root:
+            raise ValueError("source_root must be configured")
+        self._source_root = Path(source_root).resolve()
         self._sample_duration_sec = float(
             self.get_parameter("sample_duration_sec").value
         )
@@ -96,20 +91,15 @@ class WaypointRecorderNode(Node):
             raise ValueError(
                 "default_final_yaw_mode must be blend_on_path or rotate_at_goal"
             )
-        output_directory = Path(self.get_parameter("output_directory").value)
-        output_file = str(self.get_parameter("output_file").value)
-        test_output_file = str(self.get_parameter("test_output_file").value)
-        yaw_tolerance = float(self.get_parameter("yaw_tolerance").value)
-        if output_file:
-            output_path = output_directory / output_file
-        else:
-            output_path = new_session_path(output_directory, datetime.now().astimezone())
-        self._store = WaypointTemplateStore(output_path, yaw_tolerance)
-        self._test_store = TestPointStore(output_directory / test_output_file)
+        waypoint_path = self._resolve_src_yaml_path(
+            str(self.get_parameter("waypoint_file").value)
+        )
+        self._test_store = TestPointStore(waypoint_path)
+        self._test_store.load(waypoint_path)
         self._sampling = False
         self._active_test_goal = False
         self._pending_test_cursor = None
-        self._last_message = self._store.prompt
+        self._last_message = f"Loaded waypoint file {waypoint_path}"
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -128,12 +118,6 @@ class WaypointRecorderNode(Node):
             f"{axis_waypoint_node}/set_parameters",
         )
 
-        self._subscription = self.create_subscription(
-            PoseStamped,
-            self.get_parameter("goal_topic").value,
-            self._on_goal_pose,
-            10,
-        )
         self._prompt_publisher = self.create_publisher(
             String,
             "~/prompt",
@@ -159,21 +143,7 @@ class WaypointRecorderNode(Node):
         self._clear_service = self.create_service(Trigger, "~/clear", self._on_clear)
         self._save_service = self.create_service(Trigger, "~/save", self._on_save)
         self._publish_state()
-        self.get_logger().info(f"Recording route template to {output_path}")
-
-    def _on_goal_pose(self, message: PoseStamped) -> None:
-        if message.header.frame_id != self._frame_id:
-            self.get_logger().error(
-                f"Rejected goal in {message.header.frame_id}; expected {self._frame_id}"
-            )
-            return
-        try:
-            pose = self._store.append(PoseData.from_pose_stamped("", message))
-        except ValueError as error:
-            self.get_logger().error(str(error))
-            return
-        self.get_logger().info(f"Recorded {pose.name}; {self._store.prompt}")
-        self._publish_state()
+        self.get_logger().info(f"Editing waypoint file {waypoint_path}")
 
     def _on_command(self, message: String) -> None:
         try:
@@ -189,9 +159,9 @@ class WaypointRecorderNode(Node):
         if command == "record":
             self._record_from_current_pose(payload)
         elif command == "undo":
-            self._undo_mode(str(payload.get("mode", "formal")))
+            self._undo_waypoint()
         elif command == "save":
-            self._save_mode(str(payload.get("mode", "formal")))
+            self._save_waypoints()
         elif command == "run_next_test":
             self._run_next_test_segment(payload)
         elif command == "reset_test_cursor":
@@ -203,59 +173,54 @@ class WaypointRecorderNode(Node):
             self._reject_command(f"Unknown waypoint-maker command: {command}")
 
     def _on_undo(self, _request, response):
-        removed = self._store.undo()
+        removed = self._test_store.undo()
         response.success = removed is not None
         response.message = (
-            f"Removed {removed.name}; {self._store.prompt}"
+            f"Removed waypoint {removed.name}"
             if removed is not None
-            else "No anchor to undo"
+            else "No waypoint to undo"
         )
-        self._publish_state()
+        self._publish_state(response.message)
         return response
 
     def _on_clear(self, _request, response):
-        self._store.clear()
+        self._test_store.clear()
         response.success = True
-        response.message = self._store.prompt
-        self._publish_state()
+        response.message = "Cleared waypoint file in memory"
+        self._publish_state(response.message)
         return response
 
     def _on_save(self, _request, response):
-        success, message = self._save_formal()
-        response.success = success
-        response.message = message
-        self._publish_state()
+        try:
+            self._test_store.save()
+        except ValueError as error:
+            response.success = False
+            response.message = str(error)
+        else:
+            response.success = True
+            response.message = f"Saved waypoints to {self._test_store.output_path}"
+        self._publish_state(response.message)
         return response
 
     def _record_from_current_pose(self, payload) -> None:
         if self._sampling:
             self._reject_command("Already sampling current pose")
             return
-        mode = str(payload.get("mode", ""))
-        if mode == "test":
-            name = str(payload.get("name", "")).strip()
-            point_type = str(payload.get("point_type", "")).strip()
-            if not self._can_record_test_point(name, point_type):
-                return
-            pose_name = name
-        elif mode == "formal":
-            name = ""
-            point_type = ""
-            pose_name = ""
-        else:
+        mode = str(payload.get("mode", "test"))
+        if mode != "test":
             self._reject_command(f"Unknown record mode: {mode}")
+            return
+        name = str(payload.get("name", "")).strip()
+        point_type = str(payload.get("point_type", "")).strip()
+        if not self._can_record_test_point(name, point_type):
             return
 
         self._sampling = True
         self._publish_state("Sampling current pose")
         try:
-            pose = self._sample_current_pose(pose_name)
-            if mode == "test":
-                point = self._test_store.append(name, point_type, pose)
-                message = f"Recorded {point.point_type} {point.name}"
-            else:
-                recorded = self._store.append(pose)
-                message = f"Recorded {recorded.name}; {self._store.prompt}"
+            pose = self._sample_current_pose(name)
+            point = self._test_store.append(name, point_type, pose)
+            message = f"Recorded {point.point_type} {point.name}"
             self.get_logger().info(message)
         except (RuntimeError, ValueError) as error:
             message = str(error)
@@ -320,46 +285,22 @@ class WaypointRecorderNode(Node):
             ),
         )
 
-    def _undo_mode(self, mode: str) -> None:
-        if mode == "test":
-            removed = self._test_store.undo()
-            message = (
-                f"Removed test point {removed.name}"
-                if removed is not None
-                else "No test point to undo"
-            )
-        elif mode == "formal":
-            removed = self._store.undo()
-            message = (
-                f"Removed {removed.name}; {self._store.prompt}"
-                if removed is not None
-                else "No anchor to undo"
-            )
-        else:
-            self._reject_command(f"Unknown undo mode: {mode}")
-            return
+    def _undo_waypoint(self) -> None:
+        removed = self._test_store.undo()
+        message = (
+            f"Removed waypoint {removed.name}"
+            if removed is not None
+            else "No waypoint to undo"
+        )
         self._publish_state(message)
 
-    def _save_mode(self, mode: str) -> None:
-        if mode == "test":
-            try:
-                self._test_store.save()
-            except ValueError as error:
-                self._publish_state(str(error))
-                return
-            self._publish_state(f"Saved test points to {self._test_store.output_path}")
-        elif mode == "formal":
-            _, message = self._save_formal()
-            self._publish_state(message)
-        else:
-            self._reject_command(f"Unknown save mode: {mode}")
-
-    def _save_formal(self):
+    def _save_waypoints(self) -> None:
         try:
-            self._store.save()
+            self._test_store.save()
         except ValueError as error:
-            return False, str(error)
-        return True, f"Saved route template to {self._store.output_path}"
+            self._publish_state(str(error))
+            return
+        self._publish_state(f"Saved waypoints to {self._test_store.output_path}")
 
     def _load_test_file(self, payload) -> None:
         if self._sampling or self._active_test_goal:
@@ -496,7 +437,7 @@ class WaypointRecorderNode(Node):
         if message is not None:
             self._last_message = message
         prompt = String()
-        prompt.data = self._store.prompt
+        prompt.data = self._last_message
         self._prompt_publisher.publish(prompt)
         state = String()
         state.data = json.dumps(self._state(), ensure_ascii=False)
@@ -507,12 +448,6 @@ class WaypointRecorderNode(Node):
         return {
             "status": self._status(),
             "message": self._last_message,
-            "formal": {
-                "count": len(self._store.anchors),
-                "total": 11,
-                "next_prompt": self._store.prompt,
-                "output_path": str(self._store.output_path),
-            },
             "test": {
                 "count": len(self._test_store.points),
                 "cursor": self._test_store.cursor,
@@ -542,14 +477,6 @@ class WaypointRecorderNode(Node):
         clear.action = Marker.DELETEALL
         markers = [clear]
         marker_id = 1
-        for index, pose in enumerate(self._store.anchors):
-            marker_id = self._append_pose_markers(
-                markers,
-                marker_id,
-                pose,
-                f"F{index + 1}: {pose.name}",
-                ColorRGBA(r=1.0, g=0.75, b=0.0, a=1.0),
-            )
         for index, point in enumerate(self._test_store.points):
             color = (
                 ColorRGBA(r=0.0, g=0.8, b=1.0, a=1.0)

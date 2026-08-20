@@ -1,4 +1,4 @@
-"""Formal waypoint YAML loading and C-zone route planning."""
+"""Configured waypoint YAML loading and C-zone route planning."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ C_GOAL_PATTERN = re.compile(r"^C_(\d+)_(\d+)$")
 C_ENTRANCE = "to_C_entrance"
 C_QR = "C_QR"
 B_QR = "B_QR"
-C_OTHER_ENTRY = "temp_point"
+C_OTHER_ENTRY = "to_C_other_entrance"
 C_PASSWAY_1 = "C_passway_1"
 C_PASSWAY_2 = "C_passway_2"
 
@@ -57,15 +57,9 @@ class CStopCandidate:
     position_id: int
     goal_name: str
     position_side: str
-    camera_side: str
     lane: str
     lane_index: int
     yaml_order: int
-
-    @property
-    def preferred_side(self) -> str:
-        """Compatibility name for the camera side used by mission execution."""
-        return self.camera_side
 
 
 @dataclass(frozen=True)
@@ -78,8 +72,8 @@ class _RouteCost:
         return (self.distance, self.lane_changes, self.yaml_order)
 
 
-class FormalWaypointRoute:
-    """Route helper built from the formal waypoint-maker YAML."""
+class MissionWaypointRoute:
+    """Mission route helper built from the configured waypoint YAML."""
 
     def __init__(self, points: Sequence[WaypointPose]) -> None:
         if not points:
@@ -90,13 +84,12 @@ class FormalWaypointRoute:
             if point.name in self._by_name:
                 raise ValueError(f"duplicate waypoint name: {point.name}")
             self._by_name[point.name] = point
-        self._adjust_c_other_entry_yaw()
         self._c_candidates = self._parse_c_candidates()
         self._validate_required_points()
 
     @classmethod
-    def from_file(cls, path: Path) -> "FormalWaypointRoute":
-        """Load the formal waypoint-maker YAML from disk."""
+    def from_file(cls, path: Path) -> "MissionWaypointRoute":
+        """Load the configured waypoint YAML from disk."""
         with path.open(encoding="utf-8") as stream:
             document = yaml.safe_load(stream)
         if not isinstance(document, dict):
@@ -190,7 +183,6 @@ class FormalWaypointRoute:
                     left_id,
                     point.name,
                     "left",
-                    _camera_side_for_pose("left", point),
                     lane,
                     lane_index,
                     point.order,
@@ -201,7 +193,6 @@ class FormalWaypointRoute:
                     right_id,
                     point.name,
                     "right",
-                    _camera_side_for_pose("right", point),
                     lane,
                     lane_index,
                     point.order,
@@ -250,8 +241,6 @@ class FormalWaypointRoute:
                         "expected_ripe_type": expected_ripe_type(target_name),
                         "goal_name": candidate.goal_name,
                         "position_side": candidate.position_side,
-                        "camera_side": candidate.camera_side,
-                        "preferred_side": candidate.preferred_side,
                         "movement_points": movement,
                         "result": None,
                         "last_observation": None,
@@ -265,7 +254,25 @@ class FormalWaypointRoute:
             states = next_states
         if not states:
             return []
-        return min(states.values(), key=lambda item: item[0].key())[1]
+        route = min(states.values(), key=lambda item: item[0].key())[1]
+        self._set_c_camera_sides(route)
+        return route
+
+    def _set_c_camera_sides(self, tasks: Sequence[Dict[str, object]]) -> None:
+        current_name = C_QR
+        current_yaw = _pose_yaw(self.pose(C_QR))
+        for task in tasks:
+            _targets, current_name, current_yaw = self.path_aligned_targets(
+                current_name,
+                task["movement_points"],
+                current_yaw,
+            )
+            camera_side = _camera_side_for_yaw(
+                str(task["position_side"]),
+                current_yaw,
+            )
+            task["camera_side"] = camera_side
+            task["preferred_side"] = camera_side
 
     def _movement_points(
         self,
@@ -358,27 +365,28 @@ class FormalWaypointRoute:
             distance += math.hypot(end.x - start.x, end.y - start.y)
         return distance
 
-    def _adjust_c_other_entry_yaw(self) -> None:
-        qr = self.pose(C_QR)
-        entry = self.pose(C_OTHER_ENTRY)
-        yaw = math.atan2(entry.y - qr.y, entry.x - qr.x) + math.pi
-        adjusted = WaypointPose(
-            name=C_OTHER_ENTRY,
-            point_type=entry.point_type,
-            order=entry.order,
-            x=entry.x,
-            y=entry.y,
-            z=entry.z,
-            qx=0.0,
-            qy=0.0,
-            qz=math.sin(yaw * 0.5),
-            qw=math.cos(yaw * 0.5),
-        )
-        self._by_name[C_OTHER_ENTRY] = adjusted
-        for index, point in enumerate(self._points):
-            if point.name == C_OTHER_ENTRY:
-                self._points[index] = adjusted
-                return
+    def path_aligned_targets(
+        self,
+        start_name: str,
+        target_names: Iterable[str],
+        start_yaw: Optional[float] = None,
+    ) -> tuple[List[tuple[str, float]], str, float]:
+        """Return existing route points with yaw aligned to each XY segment."""
+        current = self.pose(start_name)
+        current_name = start_name
+        current_yaw = _pose_yaw(current) if start_yaw is None else start_yaw
+        targets: List[tuple[str, float]] = []
+        for name in target_names:
+            target = self.pose(str(name))
+            dx = target.x - current.x
+            dy = target.y - current.y
+            current_name = target.name
+            current = target
+            if math.hypot(dx, dy) <= 1e-9:
+                continue
+            current_yaw = math.atan2(dy, dx)
+            targets.append((target.name, current_yaw))
+        return targets, current_name, current_yaw
 
 
 def _load_points(raw_points: Iterable[Mapping[str, Any]]) -> List[WaypointPose]:
@@ -411,18 +419,17 @@ def _load_points(raw_points: Iterable[Mapping[str, Any]]) -> List[WaypointPose]:
     return points
 
 
-def _camera_side_for_pose(position_side: str, pose: WaypointPose) -> str:
-    if _faces_reverse_x(pose):
+def _camera_side_for_yaw(position_side: str, yaw: float) -> str:
+    if math.cos(yaw) < 0.0:
         return _other_side(position_side)
     return position_side
 
 
-def _faces_reverse_x(pose: WaypointPose) -> bool:
-    yaw = math.atan2(
+def _pose_yaw(pose: WaypointPose) -> float:
+    return math.atan2(
         2.0 * (pose.qw * pose.qz + pose.qx * pose.qy),
         1.0 - 2.0 * (pose.qy * pose.qy + pose.qz * pose.qz),
     )
-    return math.cos(yaw) < 0.0
 
 
 def _other_side(side: str) -> str:

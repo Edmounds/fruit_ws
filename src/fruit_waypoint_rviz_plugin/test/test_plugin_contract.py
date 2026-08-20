@@ -51,7 +51,6 @@ def test_panel_has_yaml_loader_and_separate_test_record_buttons():
     ).read_text(encoding="utf-8")
 
     assert "QFileDialog::getOpenFileName" in source
-    assert '"/home/rc4/fruit_ws/src"' in source
     assert '"load_test_file"' in source
     assert '"Set Waypoint"' in source
     assert '"Set Goal"' in source

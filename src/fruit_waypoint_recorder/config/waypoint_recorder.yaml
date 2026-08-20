@@ -1,12 +1,8 @@
 fruit_waypoint_recorder:
   ros__parameters:
-    goal_topic: "/goal_pose"
     frame_id: "map"
     base_frame: "base_link"
-    output_directory: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints"
-    output_file: "competition_waypoints.yaml"
-    test_output_file: "test_waypoints.yaml"
-    yaw_tolerance: 0.35
+    waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml"
     sample_duration_sec: 1.0
     sample_period_sec: 0.05
     command_topic: "/fruit/waypoint_maker/command"

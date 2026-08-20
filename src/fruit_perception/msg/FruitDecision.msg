@@ -1,0 +1,9 @@
+std_msgs/Header header
+uint8 SOURCE_LEFT=0
+uint8 SOURCE_RIGHT=1
+uint8 SOURCE_D435I=2
+uint8 source
+string[] types
+FruitDetection[] detections
+bool has_target
+geometry_msgs/Point target_point

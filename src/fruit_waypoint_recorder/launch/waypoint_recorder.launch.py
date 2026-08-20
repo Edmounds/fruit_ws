@@ -1,3 +1,5 @@
+import yaml
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -10,6 +12,10 @@ def generate_launch_description():
         "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/config/"
         "waypoint_recorder.yaml"
     )
+    with open(config_file, encoding="utf-8") as stream:
+        default_waypoint_file = yaml.safe_load(stream)["fruit_waypoint_recorder"][
+            "ros__parameters"
+        ]["waypoint_file"]
 
     nodes_to_launch = [
         {
@@ -21,16 +27,23 @@ def generate_launch_description():
     ]
 
     use_sim_time = LaunchConfiguration("use_sim_time")
+    waypoint_file = LaunchConfiguration("waypoint_file")
     declare_use_sim_time = DeclareLaunchArgument(
         "use_sim_time",
         default_value="false",
         description="Use simulation clock if true",
     )
-
-    launch_actions = [declare_use_sim_time]
+    declare_waypoint_file = DeclareLaunchArgument(
+        "waypoint_file",
+        default_value=default_waypoint_file,
+        description="Profile-specific waypoint YAML file",
+    )
+    launch_actions = [declare_use_sim_time, declare_waypoint_file]
     for node_config in nodes_to_launch:
-        parameters = [{"use_sim_time": use_sim_time}]
-        parameters.extend(node_config.get("parameters", []))
+        parameters = list(node_config.get("parameters", []))
+        parameters.append(
+            {"use_sim_time": use_sim_time, "waypoint_file": waypoint_file}
+        )
         launch_actions.append(
             Node(
                 package=node_config["package"],

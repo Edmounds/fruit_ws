@@ -1,51 +1,29 @@
 # fruit_waypoint_recorder
 
-Records the latest `map -> base_link` transform to a timestamped YAML file while
-the robot is positioned with the Xbox controller.
+该功能包通过 RViz 面板记录、显示、保存并逐段试跑一份显式 waypoint YAML。
 
-## Controls and interface
+节点从 `config/waypoint_recorder.yaml` 的 `waypoint_file` 参数加载默认文件。文件名不是代码
+契约；修改配置即可切换到其他 `.yaml` 或 `.yml` 文件。配置路径必须位于项目 `src` 下且
+文件已经存在。
 
-- Xbox A button: append the current pose once per button press.
-- D-pad left: remove the last saved pose once per press.
-- `/waypoint_recorder/save` (`std_srvs/srv/Trigger`): append the current pose.
+面板支持：
 
-The default Xbox Linux mapping uses button index `0` for A and axis index `6`
-with value `+1` for D-pad left. All mappings, TF frames, and thresholds are
-parameters in `config/waypoint_recorder.yaml`.
+- 加载另一份 waypoint YAML；
+- 从当前 `map -> base_link` TF 采样并记录 `waypoint` 或 `goal`；
+- 撤销内存中的最后一点；
+- 保存到当前加载的文件；
+- 按 YAML 顺序执行到下一个 `goal`；
+- 在 RViz 中显示点名、类型和 YAML yaw。
 
-Each launch creates a new file under the source package:
-
-```text
-/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/
-  waypoints_YYYYMMDD_HHMMSS.yaml
-```
-
-Each entry contains an automatic name, recording time, XYZ position, quaternion,
-and yaw. A failed TF lookup does not append a waypoint. Undo rewrites the current
-session file after removing its last entry.
-
-## Build and run
-
-Build the package outside any training virtual environment:
+构建和启动：
 
 ```bash
 cd /home/rc4/fruit_ws
 source setup_fruit_runtime.bash
-colcon build --symlink-install --packages-select fruit_waypoint_recorder
+colcon build --symlink-install --packages-select \
+  fruit_waypoint_recorder fruit_waypoint_rviz_plugin
 source setup_fruit_runtime.bash
-```
-
-Start navigation with `use_teleop:=true` so the existing `joy_linux` node
-publishes `/joy`, then start the recorder:
-
-```bash
 ros2 launch fruit_waypoint_recorder waypoint_recorder.launch.py
 ```
-
-The same save operation can be triggered without the controller:
-
-```bash
-ros2 service call /waypoint_recorder/save std_srvs/srv/Trigger '{}'
-```
-
-The node prints the exact session path at startup and logs every save and undo.
+录点器逐段试跑会使用 YAML 中的 yaw。正式 Mission 对 `C_QR` 保留 YAML yaw，对其后的 C 区
+路点根据相邻 XY 动态生成 yaw；详见 `docs/WAYPOINT_RECORDING.md`。

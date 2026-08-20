@@ -3,7 +3,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 
-"""Route-template and waypoint-maker recording helpers."""
+"""Waypoint-maker recording helpers."""
 
 import math
 from dataclasses import dataclass
@@ -13,60 +13,59 @@ from typing import List, Optional, Sequence, Tuple
 
 import yaml
 
-from fruit_navigation.route_model import (
-    AnchorSession,
-    PoseData,
-    quaternion_from_yaw,
-    yaw_from_quaternion,
-)
-
-
 VALID_TEST_POINT_TYPES = ("waypoint", "goal")
 
 
-def new_session_path(output_directory: Path, now: datetime) -> Path:
-    """Return a timestamped route-template path without replacing a file."""
-    stem = f"competition_waypoints_{now.strftime('%Y%m%d_%H%M%S')}"
-    candidate = output_directory / f"{stem}.yaml"
-    suffix = 1
-    while candidate.exists():
-        candidate = output_directory / f"{stem}_{suffix:02d}.yaml"
-        suffix += 1
-    return candidate
+@dataclass(frozen=True)
+class PoseData:
+    """Serializable map-frame pose used by the waypoint recorder."""
+
+    name: str
+    x: float
+    y: float
+    z: float
+    qx: float
+    qy: float
+    qz: float
+    qw: float
+    yaw: float
+
+    def renamed(self, name: str) -> "PoseData":
+        return PoseData(
+            name=name,
+            x=self.x,
+            y=self.y,
+            z=self.z,
+            qx=self.qx,
+            qy=self.qy,
+            qz=self.qz,
+            qw=self.qw,
+            yaw=self.yaw,
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "position": {"x": self.x, "y": self.y, "z": self.z},
+            "orientation": {
+                "x": self.qx,
+                "y": self.qy,
+                "z": self.qz,
+                "w": self.qw,
+            },
+            "yaw": round(self.yaw, 6),
+        }
 
 
-class WaypointTemplateStore:
-    """Maintain one eleven-anchor recording session and save generated points."""
+def quaternion_from_yaw(yaw: float) -> dict[str, float]:
+    """Return a planar quaternion dictionary."""
+    half = yaw * 0.5
+    return {"x": 0.0, "y": 0.0, "z": math.sin(half), "w": math.cos(half)}
 
-    def __init__(self, output_path: Path, yaw_tolerance: float) -> None:
-        self.output_path = output_path
-        self._session = AnchorSession(yaw_tolerance=yaw_tolerance)
 
-    @property
-    def prompt(self) -> str:
-        """Return the next click prompt."""
-        return self._session.next_prompt()
-
-    @property
-    def anchors(self):
-        """Return recorded anchors in click order."""
-        return self._session.anchors
-
-    def append(self, pose: PoseData) -> PoseData:
-        """Append one RViz-clicked pose as the next canonical anchor."""
-        return self._session.append(pose)
-
-    def undo(self) -> Optional[PoseData]:
-        """Undo the latest anchor."""
-        return self._session.undo()
-
-    def clear(self) -> None:
-        """Clear the current session."""
-        self._session.clear()
-
-    def save(self) -> None:
-        """Validate anchors, generate points, and write YAML."""
-        self._session.save(self.output_path)
+def yaw_from_quaternion(x: float, y: float, z: float, w: float) -> float:
+    """Return planar yaw from a quaternion."""
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
 @dataclass(frozen=True)

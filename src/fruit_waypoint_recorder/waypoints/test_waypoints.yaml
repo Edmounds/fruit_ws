@@ -266,7 +266,7 @@ points:
     w: 0.007040268634664886
   yaw: -3.127512
   type: goal
-- name: temp_point
+- name: to_C_other_entrance
   position:
     x: 0.204884108
     y: -1.95149931

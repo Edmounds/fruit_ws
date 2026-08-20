@@ -92,18 +92,15 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
 Launch the one supported real-robot entrypoint:
 
 ```bash
-ros2 launch pb2025_nav_bringup localization_navigation_launch.py \
-  map:=/abs/path/map.yaml \
-  localization_map:=/abs/path/localization.pcd \
-  params_file:=/abs/path/localization_params.yaml \
-  use_teleop:=false
+./start_navigation.sh --map A
 ```
 
-The launch file automatically loads `/abs/path/localization.initial_pose.yaml` as
-the final `pb_gicp_localization` parameter override. Generate the PCD and matching
-initial-pose sidecar together with `/home/rc4/fruit_ws/save_glim_map.sh`.
+Use `--map B` for the other field profile. Each profile owns its map YAML, localization PCD,
+and initial-pose sidecar; shared localization and controller tuning remains in
+the common configuration files. For direct ROS 2 launch, pass `map:=...`, `localization_map:=...`,
+and `initial_pose_file:=...` explicitly.
 
-The launch fails immediately when any required map or parameter file is missing. Set
+The launch fails immediately when any required map, initial-pose, or parameter file is missing. Set
 `use_teleop:=true` to start the Bluetooth Xbox Wireless Controller path. The launch selects the
 controller by its Linux input name and publishes through the existing `twist_mux` safety timeout.
 

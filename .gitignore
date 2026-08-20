@@ -6,6 +6,7 @@ log/
 # ROS 2 runtime data
 .ros/
 rosbag2_*/
+rosbags/
 *.bag
 *.db3
 *.mcap

@@ -46,14 +46,12 @@ WaypointMakerPanel::WaypointMakerPanel(QWidget * parent)
   auto * test_form = new QFormLayout();
   test_file_edit_ = new QLineEdit(test_tab);
   test_file_edit_->setReadOnly(true);
-  test_file_edit_->setText(
-    "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml");
   test_name_edit_ = new QLineEdit(test_tab);
   test_name_edit_->setText("a_001");
   final_yaw_mode_combo_ = new QComboBox(test_tab);
   final_yaw_mode_combo_->addItem("Blend on path", "blend_on_path");
   final_yaw_mode_combo_->addItem("Rotate at goal", "rotate_at_goal");
-  load_test_file_button_ = new QPushButton("Load Test YAML", test_tab);
+  load_test_file_button_ = new QPushButton("Load Waypoint YAML", test_tab);
   test_form->addRow("YAML", test_file_edit_);
   test_form->addRow("Name", test_name_edit_);
   test_form->addRow("Final yaw", final_yaw_mode_combo_);
@@ -67,7 +65,7 @@ WaypointMakerPanel::WaypointMakerPanel(QWidget * parent)
   record_waypoint_button_ = new QPushButton("Set Waypoint", test_tab);
   record_goal_button_ = new QPushButton("Set Goal", test_tab);
   undo_test_button_ = new QPushButton("Undo Test", test_tab);
-  save_test_button_ = new QPushButton("Save Test YAML", test_tab);
+  save_test_button_ = new QPushButton("Save Waypoint YAML", test_tab);
   run_next_button_ = new QPushButton("Test Next", test_tab);
   reset_cursor_button_ = new QPushButton("Reset Test Cursor", test_tab);
 
@@ -83,25 +81,7 @@ WaypointMakerPanel::WaypointMakerPanel(QWidget * parent)
   test_layout->addLayout(test_run_row);
   test_layout->addWidget(save_test_button_);
   test_layout->addStretch();
-  tabs_->addTab(test_tab, "Test");
-
-  auto * formal_tab = new QWidget(this);
-  auto * formal_layout = new QVBoxLayout(formal_tab);
-  formal_label_ = new QLabel("Formal anchors: 0/11", formal_tab);
-  formal_label_->setWordWrap(true);
-  formal_layout->addWidget(formal_label_);
-
-  record_formal_button_ = new QPushButton("Record Formal Anchor", formal_tab);
-  undo_formal_button_ = new QPushButton("Undo Formal", formal_tab);
-  save_formal_button_ = new QPushButton("Save Competition YAML", formal_tab);
-  formal_layout->addWidget(record_formal_button_);
-
-  auto * formal_row = new QHBoxLayout();
-  formal_row->addWidget(undo_formal_button_);
-  formal_row->addWidget(save_formal_button_);
-  formal_layout->addLayout(formal_row);
-  formal_layout->addStretch();
-  tabs_->addTab(formal_tab, "Formal");
+  tabs_->addTab(test_tab, "Waypoints");
 
   connect(
     load_test_file_button_, &QPushButton::clicked, this,
@@ -116,11 +96,6 @@ WaypointMakerPanel::WaypointMakerPanel(QWidget * parent)
   connect(save_test_button_, &QPushButton::clicked, this, &WaypointMakerPanel::saveTestPoints);
   connect(run_next_button_, &QPushButton::clicked, this, &WaypointMakerPanel::runNextTest);
   connect(reset_cursor_button_, &QPushButton::clicked, this, &WaypointMakerPanel::resetTestCursor);
-  connect(
-    record_formal_button_, &QPushButton::clicked, this,
-    &WaypointMakerPanel::recordFormalPoint);
-  connect(undo_formal_button_, &QPushButton::clicked, this, &WaypointMakerPanel::undoFormalPoint);
-  connect(save_formal_button_, &QPushButton::clicked, this, &WaypointMakerPanel::saveFormalPoints);
 }
 
 void WaypointMakerPanel::onInitialize()
@@ -148,7 +123,7 @@ void WaypointMakerPanel::loadTestFile()
   const QString selected = QFileDialog::getOpenFileName(
     this,
     "Load waypoint-maker YAML",
-    "/home/rc4/fruit_ws/src",
+    test_file_edit_->text(),
     "YAML files (*.yaml *.yml)");
   if (selected.isEmpty()) {
     return;
@@ -208,21 +183,6 @@ void WaypointMakerPanel::resetTestCursor()
   sendCommand({{"command", "reset_test_cursor"}});
 }
 
-void WaypointMakerPanel::recordFormalPoint()
-{
-  sendCommand({{"command", "record"}, {"mode", "formal"}});
-}
-
-void WaypointMakerPanel::undoFormalPoint()
-{
-  sendCommand({{"command", "undo"}, {"mode", "formal"}});
-}
-
-void WaypointMakerPanel::saveFormalPoints()
-{
-  sendCommand({{"command", "save"}, {"mode", "formal"}});
-}
-
 void WaypointMakerPanel::sendCommand(const QJsonObject & command)
 {
   if (!command_publisher_) {
@@ -260,13 +220,6 @@ void WaypointMakerPanel::applyState(const QString & state_json)
   status_label_->setText(status + ": " + message);
   setBusy(status == "sampling" || status == "running_test");
 
-  const QJsonObject formal = root.value("formal").toObject();
-  formal_label_->setText(
-    QString("Formal anchors: %1/%2\nNext: %3")
-    .arg(formal.value("count").toInt())
-    .arg(formal.value("total").toInt())
-    .arg(formal.value("next_prompt").toString()));
-
   const QJsonObject test = root.value("test").toObject();
   const QString output_path = test.value("output_path").toString();
   if (!output_path.isEmpty()) {
@@ -296,9 +249,6 @@ void WaypointMakerPanel::setBusy(bool busy)
   run_next_button_->setDisabled(busy);
   reset_cursor_button_->setDisabled(busy);
   final_yaw_mode_combo_->setDisabled(busy);
-  record_formal_button_->setDisabled(busy);
-  undo_formal_button_->setDisabled(busy);
-  save_formal_button_->setDisabled(busy);
 }
 
 }  // namespace fruit_waypoint_rviz_plugin

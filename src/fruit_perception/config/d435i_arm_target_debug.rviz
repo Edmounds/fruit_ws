@@ -5,7 +5,6 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Global Options1
-        - /Target Point1
         - /Left Annotated1
         - /Right Annotated1
         - /D435i Annotated1
@@ -37,21 +36,6 @@ Visualization Manager:
       Plane: XY
       Plane Cell Count: 10
       Reference Frame: <Fixed Frame>
-      Value: true
-    - Alpha: 1
-      Class: rviz_default_plugins/PointStamped
-      Color: 255; 70; 30
-      Enabled: true
-      History Length: 10
-      Name: Target Point
-      Radius: 0.025
-      Topic:
-        Depth: 10
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /fruit_perception/d435i/target_point
       Value: true
     - Class: rviz_default_plugins/Image
       Enabled: true

@@ -1,6 +1,5 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <cv_bridge/cv_bridge.h>
-#include <geometry_msgs/msg/point_stamped.hpp>
 #include <openvino/openvino.hpp>
 #include <openvino/runtime/properties.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -18,6 +17,7 @@
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -28,8 +28,7 @@
 #include "fruit_perception/detection_parser.hpp"
 #include "fruit_perception/image_processing.hpp"
 #include "fruit_perception/msg/fruit_detection.hpp"
-#include "fruit_perception/msg/fruit_detections.hpp"
-#include "fruit_perception/msg/fruit_types.hpp"
+#include "fruit_perception/msg/fruit_decision.hpp"
 #include "fruit_perception/perception_mode.hpp"
 #include "fruit_perception/side_target_selector.hpp"
 
@@ -121,6 +120,21 @@ public:
         RCLCPP_WARN(
           get_logger(), "Ignoring invalid current area '%s'", message->data.c_str());
       });
+    const auto expected_fruit_type_topic = declare_parameter(
+      "expected_fruit_type_topic", "/fruit_mission/expected_fruit_type");
+    expected_fruit_type_subscription_ = create_subscription<std_msgs::msg::String>(
+      expected_fruit_type_topic, rclcpp::QoS(1).reliable().transient_local(),
+      [this](std_msgs::msg::String::ConstSharedPtr message) {
+        std::lock_guard<std::mutex> lock(expected_fruit_type_mutex_);
+        if (expected_fruit_type_ == message->data) {
+          return;
+        }
+        expected_fruit_type_ = message->data;
+        target_selection_generation_.fetch_add(1U);
+      });
+    const auto decision_topic = declare_parameter(
+      "decision_topic", "/fruit_perception/decision");
+    decision_publisher_ = create_publisher<msg::FruitDecision>(decision_topic, rclcpp::QoS(10));
 
     const bool enable_left = declare_parameter("enable_left_camera", false);
     const bool enable_right = declare_parameter("enable_right_camera", false);
@@ -159,13 +173,13 @@ public:
       static_cast<std::size_t>(enable_left) + static_cast<std::size_t>(enable_right);
     initialize_model(
       a_model_, a_model_path, std::max<std::size_t>(1U, side_camera_count + enable_d435i),
-      "A", 2U);
+      "A", DetectionLabelSet::kMaturity);
     initialize_model(
       b_model_, b_model_path, std::max<std::size_t>(1U, static_cast<std::size_t>(enable_d435i)),
-      "B");
+      "B", DetectionLabelSet::kTreeFruit);
     initialize_model(
-      c_model_, c_model_path, std::max<std::size_t>(1U, side_camera_count + enable_d435i),
-      "C");
+      c_model_, c_model_path, std::max<std::size_t>(1U, static_cast<std::size_t>(enable_d435i)),
+      "C", DetectionLabelSet::kSideFruit);
     if (!rclcpp::ok(get_node_base_interface()->get_context())) {
       return;
     }
@@ -174,9 +188,7 @@ public:
       add_stream(
         "left",
         a_model_,
-        c_model_,
         declare_parameter("left_input_topic", "/left_camera/image_raw"),
-        declare_parameter("left_output_topic", "/fruit_perception/left/types"),
         declare_parameter(
           "left_annotated_topic", "/fruit_perception/left/annotated_image"));
     }
@@ -184,9 +196,7 @@ public:
       add_stream(
         "right",
         a_model_,
-        c_model_,
         declare_parameter("right_input_topic", "/right_camera/image_raw"),
-        declare_parameter("right_output_topic", "/fruit_perception/right/types"),
         declare_parameter(
           "right_annotated_topic", "/fruit_perception/right/annotated_image"));
     }
@@ -196,13 +206,8 @@ public:
         b_model_,
         c_model_,
         declare_parameter("d435i_rgbd_topic", "/camera/camera/rgbd"),
-        declare_parameter("d435i_output_topic", "/fruit_perception/d435i/types"),
         declare_parameter(
-          "d435i_annotated_topic", "/fruit_perception/d435i/annotated_image"),
-        declare_parameter(
-          "d435i_target_point_topic", "/fruit_perception/d435i/target_point"),
-        declare_parameter(
-          "d435i_detections_topic", "/fruit_perception/d435i/detections"));
+          "d435i_annotated_topic", "/fruit_perception/d435i/annotated_image"));
     }
 
     RCLCPP_INFO(
@@ -224,10 +229,11 @@ private:
   {
     Stream(
       std::string stream_name,
-      rclcpp::Publisher<msg::FruitTypes>::SharedPtr result_publisher,
+      rclcpp::Publisher<msg::FruitDecision>::SharedPtr decision_publisher,
       rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher)
     : name(std::move(stream_name)),
-      result_publisher(std::move(result_publisher)),
+      decision_publisher(std::move(decision_publisher)),
+      is_d435i(name == "d435i"),
       image_publisher(std::move(image_publisher)),
       input_image(kModelInputSize, kModelInputSize, CV_8UC3, cv::Scalar(114, 114, 114))
     {
@@ -235,16 +241,15 @@ private:
 
     struct RequestSlot
     {
-      std::string model_name;
+      DetectionLabelSet label_set;
       ov::InferRequest request;
       ov::Shape output_shape;
     };
 
     std::string name;
-    rclcpp::Publisher<msg::FruitTypes>::SharedPtr result_publisher;
+    rclcpp::Publisher<msg::FruitDecision>::SharedPtr decision_publisher;
+    bool is_d435i{false};
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher;
-    rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr target_point_publisher;
-    rclcpp::Publisher<msg::FruitDetections>::SharedPtr detections_publisher;
     std::vector<std::unique_ptr<RequestSlot>> request_slots;
     RequestSlot * a_area_request{nullptr};
     RequestSlot * b_area_request{nullptr};
@@ -268,7 +273,7 @@ private:
   {
     ov::CompiledModel compiled_model;
     ov::Shape output_shape;
-    std::string name;
+    DetectionLabelSet label_set;
   };
 
   void initialize_model(
@@ -276,7 +281,7 @@ private:
     const std::string & model_path,
     std::size_t request_count,
     const std::string & model_name,
-    std::size_t required_class_count = 0U)
+    DetectionLabelSet label_set)
   {
     const auto available_devices = core_.get_available_devices();
     if (std::find(available_devices.begin(), available_devices.end(), "GPU") ==
@@ -319,44 +324,36 @@ private:
       throw std::runtime_error("Expected compiled model input u8 [1,640,640,3]");
     }
     if (runtime.compiled_model.output().get_element_type() != ov::element::f32 ||
-      !is_supported_detection_output_shape(runtime.compiled_model.output().get_shape()))
+      !is_supported_detection_output_shape(
+        runtime.compiled_model.output().get_shape(), label_set))
     {
       throw std::runtime_error(
-              "Expected model output f32 [1,300,6] or [1,4+classes,N]");
-    }
-    if (required_class_count != 0U &&
-      !raw_output_has_class_count(runtime.compiled_model.output().get_shape(), required_class_count))
-    {
-      throw std::runtime_error(
-              "Model " + model_name + " output does not match required class count");
+              "Model " + model_name + " output does not match its label set");
     }
 
     runtime.output_shape = runtime.compiled_model.output().get_shape();
-    runtime.name = model_name;
+    runtime.label_set = label_set;
     RCLCPP_INFO(
-      get_logger(), "OpenVINO model %s compiled successfully; execution device: %s",
-      model_name.c_str(), execution_devices.front().c_str());
+      get_logger(),
+      "OpenVINO model %s compiled successfully; labels=%s (%zu classes), device=%s",
+      model_name.c_str(), detection_label_set_name(label_set),
+      detection_label_count(label_set), execution_devices.front().c_str());
   }
 
   void add_rgbd_stream(
     ModelRuntime & a_model,
     ModelRuntime & b_model,
     ModelRuntime & c_model,
-    const std::string & input_topic, const std::string & output_topic,
-    const std::string & annotated_topic, const std::string & target_point_topic,
-    const std::string & detections_topic)
+    const std::string & input_topic,
+    const std::string & annotated_topic)
   {
     auto stream = std::make_unique<Stream>(
       "d435i",
-      create_publisher<msg::FruitTypes>(output_topic, rclcpp::QoS(10)),
+      decision_publisher_,
       create_publisher<sensor_msgs::msg::Image>(
         annotated_topic, rclcpp::QoS(1).reliable()));
     stream->target_selector = std::make_unique<D435iTargetSelector>(target_selector_config_);
     stream->target_selection_generation = target_selection_generation_.load();
-    stream->target_point_publisher =
-      create_publisher<geometry_msgs::msg::PointStamped>(target_point_topic, rclcpp::QoS(10));
-    stream->detections_publisher =
-      create_publisher<msg::FruitDetections>(detections_topic, rclcpp::QoS(10));
     auto * stream_ptr = stream.get();
     stream->a_area_request = add_request_slot(*stream, a_model);
     stream->b_area_request = add_request_slot(*stream, b_model);
@@ -377,19 +374,18 @@ private:
           submit_rgbd(*stream_ptr, rgbd);
         }));
     RCLCPP_INFO(
-      get_logger(), "d435i: %s -> %s, %s, %s and %s", input_topic.c_str(),
-      output_topic.c_str(), annotated_topic.c_str(), target_point_topic.c_str(),
-      detections_topic.c_str());
+      get_logger(), "d435i: %s -> %s and %s", input_topic.c_str(),
+      decision_publisher_->get_topic_name(), annotated_topic.c_str());
   }
 
   void add_stream(
-    const std::string & name, ModelRuntime & a_model, ModelRuntime & c_model,
-    const std::string & input_topic, const std::string & output_topic,
+    const std::string & name, ModelRuntime & a_model,
+    const std::string & input_topic,
     const std::string & annotated_topic)
   {
     auto stream = std::make_unique<Stream>(
       name,
-      create_publisher<msg::FruitTypes>(output_topic, rclcpp::QoS(10)),
+      decision_publisher_,
       create_publisher<sensor_msgs::msg::Image>(
         annotated_topic, rclcpp::QoS(1).reliable()));
     stream->side_target_selector =
@@ -397,7 +393,6 @@ private:
     stream->target_selection_generation = target_selection_generation_.load();
     auto * stream_ptr = stream.get();
     stream->a_area_request = add_request_slot(*stream, a_model);
-    stream->c_area_request = add_request_slot(*stream, c_model);
     for (auto & slot : stream->request_slots) {
       auto * slot_ptr = slot.get();
       slot->request.set_callback(
@@ -415,7 +410,7 @@ private:
         }));
     RCLCPP_INFO(
       get_logger(), "%s: %s -> %s and %s", name.c_str(), input_topic.c_str(),
-      output_topic.c_str(), annotated_topic.c_str());
+      decision_publisher_->get_topic_name(), annotated_topic.c_str());
   }
 
   void submit(Stream & stream, const sensor_msgs::msg::Image::ConstSharedPtr & image)
@@ -502,10 +497,11 @@ private:
       const auto detections = parse_detections(
         output.data<const float>(),
         request.output_shape,
+        request.label_set,
         confidence_threshold_,
         nms_iou_threshold_);
 
-      const bool mode_allows_output = stream.detections_publisher ?
+      const bool mode_allows_output = stream.is_d435i ?
         runs_d435i_inference(perception_mode_.load()) :
         runs_side_inference(perception_mode_.load());
       if (!mode_allows_output) {
@@ -520,8 +516,11 @@ private:
         return;
       }
 
-      msg::FruitTypes result;
-      result.header = stream.header;
+      msg::FruitDecision result;
+      result.header = stream.is_d435i ? stream.aligned_depth->header : stream.header;
+      result.source = stream.name == "left" ? msg::FruitDecision::SOURCE_LEFT :
+        stream.name == "right" ? msg::FruitDecision::SOURCE_RIGHT :
+        msg::FruitDecision::SOURCE_D435I;
       if (stream.side_target_selector) {
         std::vector<SideTargetCandidate> candidates;
         candidates.reserve(detections.size());
@@ -568,16 +567,10 @@ private:
         for (const auto & detection : detections) {
           result.types.push_back(detection.type);
         }
-      }
-      stream.result_publisher->publish(result);
-
-      if (stream.detections_publisher) {
-        msg::FruitDetections all_detections;
-        all_detections.header = stream.aligned_depth->header;
         const auto outputs = make_detection_outputs(
           detections, stream.transform, stream.aligned_depth->image,
           stream.depth_camera_info);
-        all_detections.detections.reserve(outputs.size());
+        result.detections.reserve(outputs.size());
         for (const auto & output : outputs) {
           msg::FruitDetection item;
           item.type = output.type;
@@ -592,9 +585,8 @@ private:
             item.point.y = output.point.y;
             item.point.z = output.point.z;
           }
-          all_detections.detections.push_back(std::move(item));
+          result.detections.push_back(std::move(item));
         }
-        stream.detections_publisher->publish(all_detections);
 
         if (stream.submitted_target_selection_generation !=
           target_selection_generation_.load())
@@ -605,8 +597,12 @@ private:
 
         std::vector<D435iTargetCandidate> candidates;
         candidates.reserve(outputs.size());
+        const auto expected_type = expected_fruit_type();
         const double half_width = static_cast<double>(stream.frame->image.cols) * 0.5;
         for (const auto & output : outputs) {
+          if (!expected_type.empty() && output.type != expected_type) {
+            continue;
+          }
           if (!output.has_point ||
             !std::isfinite(output.point.x) ||
             !std::isfinite(output.point.y) ||
@@ -645,14 +641,13 @@ private:
             target_update.stddev.y, target_update.stddev.z);
         }
         if (target_update.point) {
-          geometry_msgs::msg::PointStamped target;
-          target.header = stream.aligned_depth->header;
-          target.point.x = target_update.point->x;
-          target.point.y = target_update.point->y;
-          target.point.z = target_update.point->z;
-          stream.target_point_publisher->publish(target);
+          result.has_target = true;
+          result.target_point.x = target_update.point->x;
+          result.target_point.y = target_update.point->y;
+          result.target_point.z = target_update.point->z;
         }
       }
+      stream.decision_publisher->publish(result);
 
       const auto now = std::chrono::steady_clock::now();
       if (stream.last_completed_at.time_since_epoch().count() != 0) {
@@ -691,7 +686,7 @@ private:
   Stream::RequestSlot * add_request_slot(Stream & stream, ModelRuntime & model)
   {
     auto slot = std::make_unique<Stream::RequestSlot>();
-    slot->model_name = model.name;
+    slot->label_set = model.label_set;
     slot->request = model.compiled_model.create_infer_request();
     slot->output_shape = model.output_shape;
     // The u8 NHWC tensor wraps the letterbox buffer directly; conversion to
@@ -713,10 +708,13 @@ private:
     if (area == 'A') {
       return stream.a_area_request;
     }
-    if (area == 'C') {
-      return stream.c_area_request;
-    }
     return nullptr;
+  }
+
+  std::string expected_fruit_type() const
+  {
+    std::lock_guard<std::mutex> lock(expected_fruit_type_mutex_);
+    return expected_fruit_type_;
   }
 
   Stream::RequestSlot * select_d435i_request(Stream & stream) const
@@ -734,14 +732,6 @@ private:
     return nullptr;
   }
 
-  static bool raw_output_has_class_count(
-    const std::vector<std::size_t> & shape,
-    std::size_t class_count)
-  {
-    return shape.size() == 3 && shape[0] == 1 && shape[1] == 4 + class_count &&
-           shape[2] > 0;
-  }
-
   ov::Core core_;
   ModelRuntime a_model_;
   ModelRuntime c_model_;
@@ -756,8 +746,12 @@ private:
   std::atomic<bool> stopping_{false};
   std::atomic<PerceptionMode> perception_mode_{PerceptionMode::kOff};
   std::atomic<char> current_area_{'A'};
+  rclcpp::Publisher<msg::FruitDecision>::SharedPtr decision_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr current_area_subscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr expected_fruit_type_subscription_;
+  mutable std::mutex expected_fruit_type_mutex_;
+  std::string expected_fruit_type_;
   std::vector<std::unique_ptr<Stream>> streams_;
   std::vector<rclcpp::SubscriptionBase::SharedPtr> subscriptions_;
 };

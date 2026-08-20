@@ -17,13 +17,12 @@ import time
 import rclpy
 from action_msgs.msg import GoalStatusArray
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
-from geometry_msgs.msg import PointStamped
 from rcl_interfaces.msg import Log
 from rclpy.executors import ExternalShutdownException
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
-from fruit_perception.msg import FruitDetections, FruitTypes
+from fruit_perception.msg import FruitDecision
 
 
 LABEL = sys.argv[1]
@@ -139,11 +138,7 @@ class RobotDebugMonitor:
 
         self.node.create_subscription(String, "/fruit_mission/perception_mode", lambda msg: self.on_mode("requested", msg), 10)
         self.node.create_subscription(String, "/fruit_perception/active_mode", lambda msg: self.on_mode("active", msg), latched_qos)
-        self.node.create_subscription(FruitTypes, "/fruit_perception/left/types", lambda msg: self.on_types("left", msg), 10)
-        self.node.create_subscription(FruitTypes, "/fruit_perception/right/types", lambda msg: self.on_types("right", msg), 10)
-        self.node.create_subscription(FruitTypes, "/fruit_perception/d435i/types", lambda msg: self.on_types("d435i", msg), 10)
-        self.node.create_subscription(FruitDetections, "/fruit_perception/d435i/detections", self.on_d435i_detections, 10)
-        self.node.create_subscription(PointStamped, "/fruit_perception/d435i/target_point", self.on_target_point, 10)
+        self.node.create_subscription(FruitDecision, "/fruit_perception/decision", self.on_decision, 100)
 
         self.node.create_timer(INTERVAL_SEC, self.on_timer)
 
@@ -245,6 +240,19 @@ class RobotDebugMonitor:
         self.last_mode[source] = message.data
         log(highlight(MAGENTA, "PERCEPTION mode") + f" {source}={message.data}")
 
+    def on_decision(self, message):
+        camera = {
+            FruitDecision.SOURCE_LEFT: "left",
+            FruitDecision.SOURCE_RIGHT: "right",
+            FruitDecision.SOURCE_D435I: "d435i",
+        }.get(message.source, "unknown")
+        self.on_types(camera, message)
+        if message.source != FruitDecision.SOURCE_D435I:
+            return
+        self.on_d435i_detections(message)
+        if message.has_target:
+            self.on_target_point(message)
+
     def on_types(self, camera, message):
         now = time.monotonic()
         types = tuple(message.types)
@@ -298,9 +306,9 @@ class RobotDebugMonitor:
     def on_target_point(self, message):
         now = time.monotonic()
         signature = (
-            round(float(message.point.x), 3),
-            round(float(message.point.y), 3),
-            round(float(message.point.z), 3),
+            round(float(message.target_point.x), 3),
+            round(float(message.target_point.y), 3),
+            round(float(message.target_point.z), 3),
         )
         if self.last_target_signature is not None:
             delta = math.sqrt(
@@ -343,9 +351,7 @@ class RobotDebugMonitor:
             self.node.count_publishers('/follow_waypoints/_action/status'),
             requested_mode,
             active_mode,
-            self.node.count_publishers('/fruit_perception/left/types'),
-            self.node.count_publishers('/fruit_perception/right/types'),
-            self.node.count_publishers('/fruit_perception/d435i/detections'),
+            self.node.count_publishers('/fruit_perception/decision'),
         )
         if health_signature == self.last_health_signature:
             return
@@ -359,9 +365,7 @@ class RobotDebugMonitor:
             f"registered_scan_sub={health_signature[4]} "
             f"follow_action_status_pub={health_signature[5]} "
             f"perception_requested={requested_mode} perception_active={active_mode} "
-            f"left_types_pub={health_signature[8]} "
-            f"right_types_pub={health_signature[9]} "
-            f"d435i_det_pub={health_signature[10]}"
+            f"decision_pub={health_signature[8]}"
         )
 
 
@@ -371,7 +375,7 @@ def main():
     node = rclpy.create_node(f"{safe_label}_robot_debug_monitor")
     log(
         "started; watching navigation, GICP, rosout warnings/errors, "
-        "camera modes, fruit types, d435i detections, and target points"
+        "camera modes and unified fruit decisions"
     )
     RobotDebugMonitor(node)
     try:

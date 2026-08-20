@@ -3,42 +3,56 @@
 set -eo pipefail
 
 WORKSPACE=/home/rc4/fruit_ws
-BAG_ROOT="$WORKSPACE/tmp/nav_bags"
-GICP_DEBUG_PID=""
+BAG_ROOT="$WORKSPACE/rosbags"
+MAX_BAGS=5
+DEBUG_MONITOR_PID=""
+START_MONITOR=1
+BAG_LABEL=""
+
+# Keep the high-volume point-cloud streams out while retaining images, scans,
+# odometry, diagnostics, mission messages, and navigation debug topics.
+POINT_CLOUD_EXCLUDE_REGEX='^/(livox/lidar(/.*)?|cloud_registered(_body)?|cloud_effected|Laser_map|registered_scan|sensor_scan|gicp/(localization_map|source_cloud|aligned_cloud)|glim_ros/aligned_points_odom|([^/]+/)*(pointcloud|point_cloud|points))$'
+BAG_NAME_PATTERN='^([A-Za-z0-9_.-]+_)?([0-9]{8}_[0-9]{6})(_[0-9]+)?$'
 
 usage() {
   cat <<'EOF'
-Usage: ./record_nav_debug.sh [label]
+Usage: ./record_nav_debug.sh [label] [--no-monitor]
 
-Record the navigation topics needed to diagnose localization, planning,
-control, TF, LiDAR input, and lower-controller issues.
+Record all ROS topics, including hidden Action topics, except the project's
+LiDAR and point-cloud topics. The bag is written to:
+  rosbags/YYYYMMDD_HHMMSS/
 
-The bag is written to:
-  tmp/nav_bags/<label>_YYYYMMDD_HHMMSS/
+The newest five date-named bags are retained. An optional label is kept as a
+prefix before the timestamp. --no-monitor is used by start_fruit_mission.sh
+to avoid starting a second robot debug monitor.
 
 Press Ctrl-C once to stop recording cleanly.
 EOF
 }
 
-case "${1:-}" in
-  --help|-h)
-    usage
-    exit 0
-    ;;
-  "")
-    BAG_LABEL=nav_debug
-    ;;
-  *)
-    BAG_LABEL=$1
-    ;;
-esac
+while (($# > 0)); do
+  case "$1" in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --no-monitor)
+      START_MONITOR=0
+      shift
+      ;;
+    --*)
+      usage >&2
+      exit 2
+      ;;
+    *)
+      [[ -z "$BAG_LABEL" ]] || { usage >&2; exit 2; }
+      BAG_LABEL=$1
+      shift
+      ;;
+  esac
+done
 
-if (($# > 1)); then
-  usage >&2
-  exit 2
-fi
-
-if [[ ! "$BAG_LABEL" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+if [[ -n "$BAG_LABEL" && ! "$BAG_LABEL" =~ ^[A-Za-z0-9_.-]+$ ]]; then
   printf '[nav-bag] label must contain only letters, numbers, dot, underscore, or hyphen: %s\n' \
     "$BAG_LABEL" >&2
   exit 2
@@ -49,119 +63,70 @@ set -u
 
 cleanup()
 {
-  if [[ -n "$GICP_DEBUG_PID" ]]; then
-    kill -INT "$GICP_DEBUG_PID" 2>/dev/null || true
-    wait "$GICP_DEBUG_PID" 2>/dev/null || true
+  if [[ -n "$DEBUG_MONITOR_PID" ]]; then
+    kill -INT "$DEBUG_MONITOR_PID" 2>/dev/null || true
+    wait "$DEBUG_MONITOR_PID" 2>/dev/null || true
+    DEBUG_MONITOR_PID=""
   fi
 }
 
 trap cleanup EXIT INT TERM
 
+list_recorded_bags()
+{
+  local name
+
+  while IFS= read -r name; do
+    [[ "$name" =~ $BAG_NAME_PATTERN ]] || continue
+    printf '%s\t%s\n' "${BASH_REMATCH[2]}" "$name"
+  done < <(find "$BAG_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+}
+
+prune_recorded_bags()
+{
+  local -a bag_records=()
+  local oldest_record
+  local oldest
+
+  mapfile -t bag_records < <(list_recorded_bags | sort -k1,1 -k2,2)
+  while ((${#bag_records[@]} > MAX_BAGS - 1)); do
+    oldest_record=${bag_records[0]}
+    oldest=${oldest_record#*$'\t'}
+    [[ "$oldest" =~ $BAG_NAME_PATTERN ]] || exit 1
+    printf '[nav-bag] removing oldest bag: %s\n' "$BAG_ROOT/$oldest"
+    rm -rf -- "$BAG_ROOT/$oldest"
+    bag_records=("${bag_records[@]:1}")
+  done
+}
+
 mkdir -p "$BAG_ROOT"
+prune_recorded_bags
 
 bag_stamp=$(date +%Y%m%d_%H%M%S)
-BAG_PATH="$BAG_ROOT/${BAG_LABEL}_${bag_stamp}"
+if [[ -n "$BAG_LABEL" ]]; then
+  BAG_NAME="${BAG_LABEL}_${bag_stamp}"
+else
+  BAG_NAME="$bag_stamp"
+fi
+BAG_PATH="$BAG_ROOT/$BAG_NAME"
 if [[ -e "$BAG_PATH" ]]; then
   BAG_PATH="${BAG_PATH}_$$"
 fi
 
-# Keep the input and output of every navigation stage in the same bag so that
-# a failure can be localized without starting the navigation stack again.
-TOPICS=(
-  # Runtime logs, diagnostics, and the complete TF tree.
-  /rosout
-  /parameter_events
-  /diagnostics
-  /tf
-  /tf_static
-
-  # MID-360 input and Point-LIO outputs.
-  /livox/lidar
-  /livox/lidar/pointcloud
-  /livox/imu
-  /cloud_registered
-  /cloud_registered_body
-  /cloud_effected
-  /Laser_map
-  /aft_mapped_to_init
-
-  # Navigation-frame conversion and obstacle scan.
-  /registered_scan
-  /lidar_odometry
-  /wheel/odom
-  /sensor_scan
-  /odometry
-  /obstacle_scan
-
-  # GICP localization result and debug visualization.
-  /gicp/localization_map
-  /gicp/source_cloud
-  /gicp/aligned_cloud
-  /gicp/pose
-  /gicp/path
-
-  # Map, costmaps, planner/controller debug topics, and the selected goal.
-  /map
-  /map_metadata
-  /global_costmap/costmap
-  /global_costmap/costmap_raw
-  /global_costmap/footprint
-  /global_costmap/published_footprint
-  /local_costmap/costmap
-  /local_costmap/costmap_raw
-  /local_costmap/footprint
-  /local_costmap/published_footprint
-  /plan
-  /local_plan
-  /lookahead_point
-  /curvature_points_marker_array
-  /follow_path_target_pose
-  /goal_pose
-
-  # Velocity arbitration and lower-controller protocol traffic.
-  /cmd_vel_nav_raw
-  /cmd_vel_nav
-  /cmd_vel_teleop
-  /cmd_vel_muxed
-  /cmd_vel
-  /polygon_slow_front
-  /polygon_stop_front
-  /polygon_stop_rear
-  /fruit_hardware_bridge/state_machine/command
-  /fruit_hardware_bridge/arm/target
-  /fruit_hardware_bridge/execution/callback
-
-  # Navigation action state and lifecycle transitions.
-  /navigate_to_pose/_action/goal
-  /navigate_to_pose/_action/result
-  /navigate_to_pose/_action/feedback
-  /navigate_to_pose/_action/status
-  /navigate_to_pose/_action/cancel
-  /navigate_through_poses/_action/goal
-  /navigate_through_poses/_action/result
-  /navigate_through_poses/_action/feedback
-  /navigate_through_poses/_action/status
-  /navigate_through_poses/_action/cancel
-  /map_server/transition_event
-  /controller_server/transition_event
-  /planner_server/transition_event
-  /behavior_server/transition_event
-  /bt_navigator/transition_event
-  /waypoint_follower/transition_event
-  /velocity_smoother/transition_event
-  /collision_monitor/transition_event
-  /lifecycle_manager_navigation/transition_event
-)
-
 printf '[nav-bag] output: %s\n' "$BAG_PATH"
-printf '[nav-bag] recording raw LiDAR and point-cloud topics; monitor free disk space.\n'
-printf '[nav-bag] press Ctrl-C once when the failure has been captured.\n'
+printf '[nav-bag] recording all topics except LiDAR and point-cloud topics\n'
+printf '[nav-bag] retaining the newest %s date-named bags\n' "$MAX_BAGS"
+printf '[nav-bag] press Ctrl-C once when the failure has been captured\n'
 
-"$WORKSPACE/robot_debug_monitor.sh" nav-bag &
-GICP_DEBUG_PID=$!
+if ((START_MONITOR)); then
+  "$WORKSPACE/robot_debug_monitor.sh" nav-bag &
+  DEBUG_MONITOR_PID=$!
+fi
 
 ros2 bag record \
+  --all \
+  --include-hidden-topics \
+  --exclude "$POINT_CLOUD_EXCLUDE_REGEX" \
   --output "$BAG_PATH" \
   --compression-mode file \
-  --compression-format zstd \
-  "${TOPICS[@]}"
+  --compression-format zstd

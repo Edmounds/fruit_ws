@@ -76,9 +76,8 @@ back independently without disturbing the other scripts.
 - Use ROS graph APIs (`get_node_names_and_namespaces`, `count_publishers`,
   `count_subscribers`) and `ActionClient.wait_for_server()` instead of parsing
   `ros2 node/action/topic` text.
-- Use typed `FruitDetections` messages as the only source for both target type
-  and 3D position. Do not synchronize a separately echoed `FruitTypes` text
-  result with detections.
+- Use typed `FruitDecision` messages as the only source for target type,
+  detections, and 3D position. Do not synchronize separate perception topics.
 - Subscribe and establish graph endpoints before publishing a hardware command.
   Publish each hardware command once; the serial bridge's reliable protocol is
   responsible for ACK/retry. Wait for the matching typed
@@ -122,7 +121,7 @@ back independently without disturbing the other scripts.
 | `/fruit_mission/perception_mode` | publish | reliable, volatile, depth 1 |
 | `/fruit_perception/active_mode` | subscribe | reliable, transient-local, depth 1 |
 | `/fruit_mission/current_area` | publish | reliable, transient-local, depth 1 |
-| `/fruit_perception/d435i/detections` | subscribe | reliable, volatile, depth 10 |
+| `/fruit_perception/decision` | subscribe | reliable, volatile, depth 10 |
 | `/fruit_hardware_bridge/state_machine/command` | publish | reliable, volatile, depth 10 |
 | `/fruit_hardware_bridge/arm/target` | publish | reliable, volatile, depth 10 |
 | `/fruit_hardware_bridge/execution/callback` | subscribe | reliable, volatile, depth 10 |
@@ -213,7 +212,7 @@ script to stack lifecycle management and one client invocation.
 - No `ros2 topic echo`, `ros2 topic pub`, CSV/YAML parsing, or callback listener
   process remains in `test_d435i_arm_target.sh`.
 - The client derives target type and coordinates from fresh typed
-  `FruitDetections`, collects five valid samples, averages them, publishes one
+  `FruitDecision`, waits for one fresh valid target, and publishes one
   `ArmTarget`, and waits for callback ID 3.
 - The existing behavior of leaving the perception stack resident for inspection
   after success or failure is preserved.

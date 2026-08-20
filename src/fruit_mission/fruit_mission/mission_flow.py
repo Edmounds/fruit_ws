@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional
 
-from fruit_mission.logic import choose_side
+from fruit_mission.logic import choose_maturity_side
 from fruit_mission.logic import expected_ripe_type
 from fruit_mission.logic import format_b_announcement
 from fruit_mission.logic import format_c_announcement
@@ -12,7 +12,6 @@ from fruit_mission.logic import format_position_name
 from fruit_mission.logic import PickDecision
 from fruit_mission.logic import SideObservation
 from fruit_mission.logic import spoken_model_type
-from fruit_mission.logic import without_tree_fruits
 
 
 def run_mission(ctx) -> None:
@@ -56,14 +55,14 @@ def run_a_area(ctx) -> bool:
             ctx.execute_closed_loop_pick(decision.side)
         if not ctx.set_perception_mode("SIDES"):
             return False
-    return True
+    return ctx.set_perception_mode("OFF")
 
 
 def _a_pick_decisions(
     observation: SideObservation,
     preferred_side: str,
 ) -> list[PickDecision]:
-    first = _choose_a_side(observation, preferred_side)
+    first = choose_maturity_side(observation, preferred_side)
     if not first.should_pick or first.side is None:
         return []
 
@@ -71,28 +70,10 @@ def _a_pick_decisions(
         left=[] if first.side == "left" else observation.left,
         right=[] if first.side == "right" else observation.right,
     )
-    second = _choose_a_side(remaining, preferred_side)
+    second = choose_maturity_side(remaining, preferred_side)
     if second.should_pick and second.side is not None:
         return [first, second]
     return [first]
-
-
-def _choose_a_side(observation: SideObservation, preferred_side: str) -> PickDecision:
-    if preferred_side not in ("left", "right"):
-        raise ValueError("preferred_side must be left or right")
-    candidates = {
-        "left": list(observation.left),
-        "right": list(observation.right),
-    }
-    for side in (preferred_side, "right" if preferred_side == "left" else "left"):
-        if "ripe" in candidates[side]:
-            return PickDecision(True, side, "matched ripe target", "ripe", "matched")
-    seen_types = [item for group in candidates.values() for item in group]
-    if not seen_types:
-        return PickDecision(False, None, "no target detected", reason_code="no_detection")
-    if "unripe" in seen_types:
-        return PickDecision(False, None, "only unripe targets", reason_code="target_unripe")
-    return PickDecision(False, None, "no A maturity target", reason_code="type_mismatch")
 
 
 def _send_arm_retract(
@@ -176,14 +157,14 @@ def _announce_and_wait(ctx, text: str) -> bool:
 
 def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
     """Execute C-zone tasks strictly in QR order."""
-    if not ctx.set_perception_mode("SIDES"):
-        ctx.announce("C区侧相机模式切换失败，任务停止。")
-        return False
     for task in ordered_c_tasks_from_distribution(c_distribution):
         position_id = int(task["position_id"])
         target_name = str(task["target_name"])
         movement_points = list(task["movement_points"])
         camera_side = str(task.get("camera_side", task["preferred_side"]))
+        expected_type = str(
+            task.get("expected_ripe_type") or expected_ripe_type(target_name)
+        )
         if not _go_through_c_route(ctx, movement_points):
             task["result"] = "navigation_failed"
             ctx.announce(
@@ -192,55 +173,44 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
             )
             continue
         ctx.stable_stop()
-
-        observation = ctx.observe_sides(float(ctx.config["side_observation_timeout_sec"]))
         task["last_observation"] = {
-            "left": observation.left,
-            "right": observation.right,
+            "source": "d435i",
+            "expected_type": expected_type,
         }
-        filtered_observation = _observation_for_camera_side(observation, camera_side)
-        filtered_observation = without_tree_fruits(filtered_observation)
-        decision = choose_side(
-            filtered_observation,
-            expected_ripe_type(target_name),
-            preferred_side=camera_side,
-        )
-        if not decision.should_pick:
-            task["result"] = decision.reason_code
-            ctx.announce(
-                _c_skip_text(
-                    position_id,
-                    target_name,
-                    decision.reason_code,
-                    filtered_observation,
-                )
-            )
-            continue
-
-        result = ctx.execute_closed_loop_pick(decision.side)
+        result = ctx.execute_closed_loop_pick(camera_side, expected_type)
         if result.success:
             task["result"] = "picked"
-            observed = spoken_model_type(decision.matched_type)
+            observed = spoken_model_type(result.matched_type)
             ctx.announce(
                 f"C区{format_position_name(position_id)}，应该采{target_name}。"
                 f"识别到{observed}，抓取完成。"
             )
         else:
             task["result"] = result.reason_code
-            observed = spoken_model_type(decision.matched_type)
-            ctx.announce(
-                f"C区{format_position_name(position_id)}，应该采{target_name}。"
-                f"识别到{observed}，但{_pick_failure_text(result.reason_code)}。"
-                "继续下一项。"
-            )
+            if result.reason_code in {
+                "no_detection",
+                "target_unripe",
+                "type_mismatch",
+            }:
+                ctx.announce(
+                    _c_skip_text(
+                        position_id,
+                        target_name,
+                        result.reason_code,
+                        result.matched_type,
+                    )
+                )
+            else:
+                observed = spoken_model_type(result.matched_type)
+                ctx.announce(
+                    f"C区{format_position_name(position_id)}，应该采{target_name}。"
+                    f"识别到{observed}，但{_pick_failure_text(result.reason_code)}。"
+                    "继续下一项。"
+                )
         if not _send_arm_retract(
             ctx,
             f"C区{format_position_name(position_id)}，机械臂收缩姿态动作超时，任务停止。",
         ):
-            ctx.save_c_distribution(c_distribution)
-            return False
-        if not ctx.set_perception_mode("SIDES"):
-            ctx.announce("C区侧相机模式恢复失败，任务停止。")
             ctx.save_c_distribution(c_distribution)
             return False
 
@@ -266,25 +236,14 @@ def ordered_c_tasks_from_distribution(
     return tasks
 
 
-def _observation_for_camera_side(
-    observation: SideObservation,
-    camera_side: str,
-) -> SideObservation:
-    if camera_side == "left":
-        return SideObservation(left=observation.left, right=[])
-    if camera_side == "right":
-        return SideObservation(left=[], right=observation.right)
-    raise ValueError("camera_side must be left or right")
-
-
 def _c_skip_text(
     position_id: int,
     target_name: str,
     reason_code: str,
-    observation: SideObservation,
+    matched_type: Optional[str],
 ) -> str:
     prefix = f"C区{format_position_name(position_id)}，应该采{target_name}。"
-    observed = _first_observed_text(observation, target_name, reason_code)
+    observed = spoken_model_type(matched_type) if matched_type else None
     if reason_code == "no_detection":
         return prefix + "没有识别到目标，跳过。"
     if reason_code == "target_unripe":
@@ -296,25 +255,8 @@ def _c_skip_text(
     return prefix + f"没有识别到成熟{target_name}，跳过。"
 
 
-def _first_observed_text(
-    observation: SideObservation,
-    target_name: str,
-    reason_code: str,
-) -> Optional[str]:
-    seen_types = list(observation.left) + list(observation.right)
-    if not seen_types:
-        return None
-    if reason_code == "target_unripe":
-        prefix = expected_ripe_type(target_name).rsplit("_", 1)[0]
-        target_unripe_type = f"{prefix}_unripe"
-        if target_unripe_type in seen_types:
-            return spoken_model_type(target_unripe_type)
-    return spoken_model_type(seen_types[0])
-
-
 def _pick_failure_text(reason_code: str) -> str:
     messages = {
-        "sides_mode_timeout": "侧向相机识别模式切换失败",
         "side_pose_timeout": "机械臂转向采摘位置超时",
         "tree_mode_timeout": "深度相机识别模式切换失败",
         "d435i_target_timeout": "深度相机没有识别到可抓取目标",

@@ -3,7 +3,7 @@
 set -eo pipefail
 
 WORKSPACE=/home/rc4/fruit_ws
-GLIM_DUMP_PATH="$WORKSPACE/tmp/glim_map"
+MAP_PROFILE_HELPER="$WORKSPACE/scripts/map_profile.sh"
 LIVOX_CONFIG="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/mid360_user_config.json"
 RVIZ_CONFIG="$WORKSPACE/src/navigation/glim_ros2/rviz/glim_ros.rviz"
 DESKTOP_RUNTIME_DIR="/run/user/$(id -u)"
@@ -13,7 +13,35 @@ DESKTOP_XAUTHORITY="$DESKTOP_RUNTIME_DIR/gdm/Xauthority"
 pids=()
 stopped=0
 save_map_on_stop=0
+MAP_ID=""
 
+usage() {
+  cat <<'EOF'
+Usage: ./start_mapping.sh --map A|B
+
+Start a mapping session for the selected field profile.
+EOF
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --map)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      MAP_ID=$2
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+[[ -n "$MAP_ID" ]] || { usage >&2; exit 2; }
 save_2d_map() {
   local output_prefix="$GLIM_DUMP_PATH/field"
 
@@ -85,6 +113,10 @@ trap stop_children EXIT
 
 source "$WORKSPACE/setup_fruit_runtime.bash"
 set -u
+source "$MAP_PROFILE_HELPER"
+resolve_map_profile "$WORKSPACE" "$MAP_ID"
+
+mkdir -p "$GLIM_DUMP_PATH"
 
 if [[ ! -r "$DESKTOP_XAUTHORITY" ]]; then
   printf '[mapping] desktop Xauthority is unavailable: %s\n' "$DESKTOP_XAUTHORITY" >&2
@@ -128,7 +160,7 @@ start_process "rviz2" \
     "DBUS_SESSION_BUS_ADDRESS=unix:path=$DESKTOP_RUNTIME_DIR/bus" \
     rviz2 -d "$RVIZ_CONFIG"
 
-printf '[mapping] all mapping processes started. Press Ctrl-C to save 2D/3D maps and stop.\n'
+printf '[mapping] profile=%s; all mapping processes started. Press Ctrl-C to save 2D/3D maps and stop.\n' "$MAP_ID"
 
 if wait -n "${pids[@]}"; then
   status=0

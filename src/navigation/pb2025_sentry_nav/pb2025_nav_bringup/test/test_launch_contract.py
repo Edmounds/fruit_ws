@@ -75,7 +75,6 @@ def test_competition_launch_keeps_localization_map_server_and_axis_control():
         'package="nav2_lifecycle_manager"',
         'package="fruit_navigation"',
         'executable="axis_waypoint_action_server"',
-        'executable="route_marker_node"',
         'package="twist_mux"',
         '("cmd_vel_out", "cmd_vel")',
     ):
