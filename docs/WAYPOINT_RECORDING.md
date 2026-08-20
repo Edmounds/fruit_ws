@@ -28,12 +28,12 @@ xy/yaw 偏差时，优先检查 GICP registration 和初始位姿，不要为了
 
 ## 1. 路点文件由配置决定
 
-正式任务按地图 profile 选择 waypoint 文件。当前 `map A`、`map B` 两个场地 profile 的
-`mission_waypoint_file` 和 `recorder_waypoint_file` 暂时都指向
-`src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml`，作为两套正式路线尚未分别录制前的临时覆盖。
-后续只需要分别替换 `map_profiles.yaml` 中 `maps.A`、`maps.B` 的两个字段，Mission、waypoint
-maker、独立 GUI 和 `start_fruit_mission.sh` 会跟随当前地图加载对应文件。不要把地图 profile
-和任务流程名称混用。
+正式任务按地图 profile 选择 waypoint 文件。`map_profiles.yaml` 中 `maps.A`、`maps.B`
+分别保存两个物理场地的 `mission_waypoint_file` 和 `recorder_waypoint_file`。在某个场地
+尚未完成独立录点时，可以临时让两个 profile 都指向
+`src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml`；完成分场地录点后，再分别指向
+`waypoints/A/` 和 `waypoints/B/` 下的正式文件。Mission、waypoint maker、独立 GUI 和
+`start_fruit_mission.sh` 都跟随当前 `--map` 选择加载文件。不要把地图 profile 和任务流程名称混用。
 
 路点文件使用以下结构：
 
