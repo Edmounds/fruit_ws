@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import math
 import re
 from dataclasses import dataclass
@@ -15,23 +16,54 @@ from fruit_mission.logic import expected_ripe_type
 
 A_GOAL_PATTERN = re.compile(r"^A(\d+)$")
 C_GOAL_PATTERN = re.compile(r"^C_(\d+)_(\d+)$")
-C_ENTRANCE = "to_C_entrance"
-C_QR = "C_QR"
 B_QR = "B_QR"
-C_OTHER_ENTRY = "to_C_other_entrance"
-C_PASSWAY_1 = "C_passway_1"
-C_PASSWAY_2 = "C_passway_2"
+C_QR = "C_QR"
+C_ENTRANCE_1 = "C_entrance_waypoint_1"
+C_ENTRANCE_1_LEGACY = "C_entrance_passway_1"
+C_TOP_1 = "C_top_waypoint_1"
+C_TOP_2 = "C_top_waypoint_2"
+C_ENTRANCE_2 = "C_entrance_waypoint_2"
 
-ENTRY_LANE = ("C_8_12", "C_7_11", "C_6_10", "C_5_9")
-OTHER_LANE = ("C_1_5", "C_2_6", "C_3_7", "C_4_8")
-LANES = {
-    "entry": ENTRY_LANE,
-    "other": OTHER_LANE,
-}
-LANE_BRIDGES = {
-    ("entry", "other"): (C_PASSWAY_1, C_PASSWAY_2),
-    ("other", "entry"): (C_PASSWAY_2, C_PASSWAY_1),
-}
+ENTRY_GOAL_CHAIN = (
+    "C_8_12",
+    "C_7_11",
+    "C_6_10",
+    "C_5_9",
+)
+OTHER_GOAL_CHAIN = (
+    "C_1_5",
+    "C_2_6",
+    "C_3_7",
+    "C_4_8",
+)
+C_GOAL_NAMES = ENTRY_GOAL_CHAIN + OTHER_GOAL_CHAIN
+
+
+def _c_graph_edges(entrance_1: str) -> tuple[tuple[str, str], ...]:
+    """Build the fixed semantic C graph for the resolved entrance name."""
+    entry_chain = (entrance_1,) + ENTRY_GOAL_CHAIN + (C_TOP_1,)
+    other_chain = (C_TOP_2,) + OTHER_GOAL_CHAIN + (C_ENTRANCE_2,)
+    return (
+        tuple(zip(entry_chain, entry_chain[1:]))
+        + tuple(zip(other_chain, other_chain[1:]))
+        + (
+            (entrance_1, C_ENTRANCE_2),
+            (C_TOP_1, C_TOP_2),
+        )
+    )
+
+
+def _c_waypoint_names(entrance_1: str) -> tuple[str, ...]:
+    return (entrance_1, C_TOP_1, C_TOP_2, C_ENTRANCE_2)
+
+
+def _legacy_or_canonical_entrance_name(points: Mapping[str, WaypointPose]) -> str:
+    """Resolve the canonical first entrance without changing the source YAML."""
+    if C_ENTRANCE_1 in points:
+        return C_ENTRANCE_1
+    if C_ENTRANCE_1_LEGACY in points:
+        return C_ENTRANCE_1_LEGACY
+    return C_ENTRANCE_1
 
 
 @dataclass(frozen=True)
@@ -57,19 +89,23 @@ class CStopCandidate:
     position_id: int
     goal_name: str
     position_side: str
-    lane: str
-    lane_index: int
     yaml_order: int
 
 
 @dataclass(frozen=True)
-class _RouteCost:
-    distance: float
-    lane_changes: int
-    yaml_order: int
+class CNavigationPlan:
+    """One C task route planned from the robot's current map pose."""
 
-    def key(self) -> tuple[float, int, int]:
-        return (self.distance, self.lane_changes, self.yaml_order)
+    start_x: float
+    start_y: float
+    position_id: int
+    goal_name: str
+    position_side: str
+    graph_path: tuple[str, ...]
+    navigation_names: tuple[str, ...]
+    navigation_yaws: tuple[float, ...]
+    distance: float
+    camera_side: str
 
 
 class MissionWaypointRoute:
@@ -84,8 +120,10 @@ class MissionWaypointRoute:
             if point.name in self._by_name:
                 raise ValueError(f"duplicate waypoint name: {point.name}")
             self._by_name[point.name] = point
-        self._c_candidates = self._parse_c_candidates()
+        self._c_entrance_1 = _legacy_or_canonical_entrance_name(self._by_name)
         self._validate_required_points()
+        self._c_candidates = self._parse_c_candidates()
+        self._c_adjacency = self._build_c_adjacency()
 
     @classmethod
     def from_file(cls, path: Path) -> "MissionWaypointRoute":
@@ -150,220 +188,261 @@ class MissionWaypointRoute:
             for position_id, candidates in self._c_candidates.items()
         }
 
+    def c_graph_edges(self) -> List[tuple[str, str]]:
+        """Return the configured bidirectional C topology edges."""
+        return list(_c_graph_edges(self._c_entrance_1))
+
     def build_c_distribution(self, c_plan: Mapping[str, object]) -> Dict[str, object]:
-        """Build the executable C task list in QR order with planned movement."""
-        tasks = _c_plan_tasks(c_plan)
-        route = self._choose_c_route(tasks)
+        """Build the C task table without pre-planning runtime movement."""
+        tasks = []
+        for task in _c_plan_tasks(c_plan):
+            position_id = int(task["position_id"])
+            target_name = str(task["target"])
+            tasks.append(
+                {
+                    "sequence": int(task["sequence"]),
+                    "position_id": position_id,
+                    "target_name": target_name,
+                    "expected_ripe_type": expected_ripe_type(target_name),
+                    "candidate_goal_names": [
+                        candidate.goal_name
+                        for candidate in self._c_candidates[position_id]
+                    ],
+                    "navigation_start": None,
+                    "goal_name": None,
+                    "position_side": None,
+                    "graph_path": [],
+                    "movement_points": [],
+                    "route_distance": None,
+                    "camera_side": None,
+                    "preferred_side": None,
+                    "result": None,
+                    "last_observation": None,
+                }
+            )
         return {
             "zone": "C",
-            "task_count": c_plan.get("task_count", len(route)),
-            "tasks": route,
+            "task_count": c_plan.get("task_count", len(tasks)),
+            "tasks": tasks,
         }
+
+    def plan_c_navigation(
+        self,
+        start_x: float,
+        start_y: float,
+        start_yaw: float,
+        position_id: int,
+        max_start_distance: float,
+    ) -> CNavigationPlan:
+        """Plan the shortest named C route from one live map pose."""
+        candidates = self._c_candidates.get(int(position_id), [])
+        if not candidates:
+            raise ValueError(f"C position {position_id} has no waypoint candidate")
+
+        best: Optional[tuple[tuple[float, int, int, str], CNavigationPlan]] = None
+        for candidate in candidates:
+            distance, graph_path = self._shortest_c_path(
+                float(start_x),
+                float(start_y),
+                candidate.goal_name,
+                float(max_start_distance),
+            )
+            navigation_names = [
+                name
+                for name in graph_path
+                if self.pose(name).point_type == "waypoint"
+            ]
+            navigation_names.append(candidate.goal_name)
+            navigation_names = _without_consecutive_duplicates(navigation_names)
+            navigation_yaws = self._navigation_yaws_from_xy(
+                float(start_x),
+                float(start_y),
+                float(start_yaw),
+                navigation_names,
+            )
+            final_yaw = navigation_yaws[-1] if navigation_yaws else float(start_yaw)
+            plan = CNavigationPlan(
+                start_x=float(start_x),
+                start_y=float(start_y),
+                position_id=int(position_id),
+                goal_name=candidate.goal_name,
+                position_side=candidate.position_side,
+                graph_path=tuple(graph_path),
+                navigation_names=tuple(navigation_names),
+                navigation_yaws=tuple(navigation_yaws),
+                distance=distance,
+                camera_side=_camera_side_for_yaw(candidate.position_side, final_yaw),
+            )
+            key = (
+                distance,
+                sum(
+                    self.pose(name).point_type == "waypoint"
+                    for name in navigation_names
+                ),
+                candidate.yaml_order,
+                candidate.goal_name,
+            )
+            if best is None or key < best[0]:
+                best = (key, plan)
+        if best is None:
+            raise ValueError(f"Could not plan a route to C position {position_id}")
+        return best[1]
+
+    def closest_c_graph_distance(self, x: float, y: float) -> float:
+        """Return the distance from a map point to the nearest C graph edge."""
+        return min(
+            _point_to_segment_distance(
+                float(x),
+                float(y),
+                self.pose(first).x,
+                self.pose(first).y,
+                self.pose(second).x,
+                self.pose(second).y,
+            )
+            for first, second in self.c_graph_edges()
+        )
+
+    def _validate_required_points(self) -> None:
+        waypoint_names = _c_waypoint_names(self._c_entrance_1)
+        for name in (B_QR, C_QR) + C_GOAL_NAMES + waypoint_names:
+            self.pose(name)
+        for name in C_GOAL_NAMES:
+            if self.pose(name).point_type != "goal":
+                raise ValueError(f"{name} must be a goal")
+        for name in waypoint_names:
+            if self.pose(name).point_type != "waypoint":
+                raise ValueError(f"{name} must be a waypoint")
 
     def _parse_c_candidates(self) -> Dict[int, List[CStopCandidate]]:
         candidates: Dict[int, List[CStopCandidate]] = {
             position_id: [] for position_id in range(1, 13)
         }
-        lane_lookup = {
-            goal_name: (lane, index)
-            for lane, names in LANES.items()
-            for index, goal_name in enumerate(names)
-        }
-        for point in self._points:
-            match = C_GOAL_PATTERN.match(point.name)
-            if not match or point.point_type != "goal":
-                continue
-            if point.name not in lane_lookup:
-                continue
-            lane, lane_index = lane_lookup[point.name]
+        for name in C_GOAL_NAMES:
+            point = self.pose(name)
+            match = C_GOAL_PATTERN.fullmatch(name)
+            if match is None:
+                raise ValueError(f"invalid C goal name: {name}")
             left_id = int(match.group(1))
             right_id = int(match.group(2))
             candidates[left_id].append(
-                CStopCandidate(
-                    left_id,
-                    point.name,
-                    "left",
-                    lane,
-                    lane_index,
-                    point.order,
-                )
+                CStopCandidate(left_id, name, "left", point.order)
             )
             candidates[right_id].append(
-                CStopCandidate(
-                    right_id,
-                    point.name,
-                    "right",
-                    lane,
-                    lane_index,
-                    point.order,
-                )
+                CStopCandidate(right_id, name, "right", point.order)
             )
         for position_id, options in candidates.items():
             if not options:
                 raise ValueError(f"C position {position_id} has no waypoint candidate")
+            options.sort(key=lambda candidate: (candidate.yaml_order, candidate.goal_name))
         return candidates
 
-    def _validate_required_points(self) -> None:
-        required = [B_QR, C_QR, C_ENTRANCE, C_OTHER_ENTRY, C_PASSWAY_1, C_PASSWAY_2]
-        required.extend(name for names in LANES.values() for name in names)
-        for name in required:
-            self.pose(name)
-        for name in (C_PASSWAY_1, C_PASSWAY_2):
-            if self.pose(name).point_type != "waypoint":
-                raise ValueError(f"{name} must be a waypoint")
+    def _build_c_adjacency(self) -> Dict[str, List[tuple[str, float]]]:
+        adjacency: Dict[str, List[tuple[str, float]]] = {
+            name: [] for name in C_GOAL_NAMES + _c_waypoint_names(self._c_entrance_1)
+        }
+        for first, second in self.c_graph_edges():
+            distance = _pose_distance(self.pose(first), self.pose(second))
+            adjacency[first].append((second, distance))
+            adjacency[second].append((first, distance))
+        for neighbors in adjacency.values():
+            neighbors.sort(key=lambda item: item[0])
+        return adjacency
 
-    def _choose_c_route(
+    def _shortest_c_path(
         self,
-        tasks: Sequence[Mapping[str, object]],
-    ) -> List[Dict[str, object]]:
-        states: Dict[Optional[CStopCandidate], tuple[_RouteCost, List[Dict[str, object]]]]
-        states = {None: (_RouteCost(0, 0, 0), [])}
-        for task in tasks:
-            position_id = int(task["position_id"])
-            target_name = str(task["target"])
-            next_states: Dict[
-                CStopCandidate,
-                tuple[_RouteCost, List[Dict[str, object]]],
-            ] = {}
-            for current, (current_cost, current_tasks) in states.items():
-                for candidate in self._c_candidates[position_id]:
-                    movement = self._movement_points(current, candidate)
-                    step_cost = self._movement_cost(current, candidate, movement)
-                    total_cost = _RouteCost(
-                        current_cost.distance + step_cost.distance,
-                        current_cost.lane_changes + step_cost.lane_changes,
-                        candidate.yaml_order,
+        start_x: float,
+        start_y: float,
+        target_name: str,
+        max_start_distance: float,
+    ) -> tuple[float, List[str]]:
+        closest_edge = min(
+            self.c_graph_edges(),
+            key=lambda edge: _point_to_segment_distance(
+                start_x,
+                start_y,
+                self.pose(edge[0]).x,
+                self.pose(edge[0]).y,
+                self.pose(edge[1]).x,
+                self.pose(edge[1]).y,
+            ),
+        )
+        graph_distance, fraction = _point_to_segment_projection(
+            start_x,
+            start_y,
+            self.pose(closest_edge[0]).x,
+            self.pose(closest_edge[0]).y,
+            self.pose(closest_edge[1]).x,
+            self.pose(closest_edge[1]).y,
+        )
+        start_neighbors = closest_edge
+        snap_distance = graph_distance
+        if snap_distance > max_start_distance:
+            raise ValueError(
+                f"robot is {snap_distance:.3f} m from the C route graph, "
+                f"limit is {max_start_distance:.3f} m"
+            )
+
+        heap: List[tuple[float, int, tuple[str, ...], str]] = []
+        best: Dict[str, tuple[float, int, tuple[str, ...]]] = {}
+        edge_length = _pose_distance(
+            self.pose(closest_edge[0]),
+            self.pose(closest_edge[1]),
+        )
+        start_distances = (
+            graph_distance + fraction * edge_length,
+            graph_distance + (1.0 - fraction) * edge_length,
+        )
+        for name, distance in zip(start_neighbors, start_distances):
+            pose = self.pose(name)
+            waypoint_count = int(pose.point_type == "waypoint")
+            path = (name,)
+            key = (distance, waypoint_count, path)
+            if name not in best or key < best[name]:
+                best[name] = key
+                heapq.heappush(heap, (distance, waypoint_count, path, name))
+
+        while heap:
+            distance, waypoint_count, path, name = heapq.heappop(heap)
+            if best.get(name) != (distance, waypoint_count, path):
+                continue
+            if name == target_name:
+                return distance, list(path)
+            for neighbor, edge_distance in self._c_adjacency[name]:
+                next_distance = distance + edge_distance
+                next_waypoint_count = waypoint_count + int(
+                    self.pose(neighbor).point_type == "waypoint"
+                )
+                next_path = path + (neighbor,)
+                next_key = (next_distance, next_waypoint_count, next_path)
+                if neighbor not in best or next_key < best[neighbor]:
+                    best[neighbor] = next_key
+                    heapq.heappush(
+                        heap,
+                        (next_distance, next_waypoint_count, next_path, neighbor),
                     )
-                    planned_task = {
-                        "sequence": int(task["sequence"]),
-                        "position_id": position_id,
-                        "target_name": target_name,
-                        "expected_ripe_type": expected_ripe_type(target_name),
-                        "goal_name": candidate.goal_name,
-                        "position_side": candidate.position_side,
-                        "movement_points": movement,
-                        "result": None,
-                        "last_observation": None,
-                    }
-                    existing = next_states.get(candidate)
-                    if existing is None or total_cost.key() < existing[0].key():
-                        next_states[candidate] = (
-                            total_cost,
-                            current_tasks + [planned_task],
-                        )
-            states = next_states
-        if not states:
-            return []
-        route = min(states.values(), key=lambda item: item[0].key())[1]
-        self._set_c_camera_sides(route)
-        return route
+        raise ValueError(f"C route graph cannot reach {target_name}")
 
-    def _set_c_camera_sides(self, tasks: Sequence[Dict[str, object]]) -> None:
-        current_name = C_QR
-        current_yaw = _pose_yaw(self.pose(C_QR))
-        for task in tasks:
-            _targets, current_name, current_yaw = self.path_aligned_targets(
-                current_name,
-                task["movement_points"],
-                current_yaw,
-            )
-            camera_side = _camera_side_for_yaw(
-                str(task["position_side"]),
-                current_yaw,
-            )
-            task["camera_side"] = camera_side
-            task["preferred_side"] = camera_side
-
-    def _movement_points(
+    def _navigation_yaws_from_xy(
         self,
-        current: Optional[CStopCandidate],
-        target: CStopCandidate,
-    ) -> List[str]:
-        if current is None:
-            return self._initial_c_movement_points(target)
-        if current.lane == target.lane:
-            return _lane_points_between(
-                current.lane,
-                current.lane_index,
-                target.lane_index,
-                include_start=False,
-            )
-        return self._lane_change_movement_points(current, target)
-
-    def _initial_c_movement_points(self, target: CStopCandidate) -> List[str]:
-        if target.lane == "entry":
-            return [C_ENTRANCE] + _lane_points_between(
-                "entry",
-                0,
-                target.lane_index,
-                include_start=True,
-            )
-        return [C_OTHER_ENTRY] + _lane_points_between(
-            "other",
-            len(OTHER_LANE) - 1,
-            target.lane_index,
-            include_start=True,
-        )
-
-    @staticmethod
-    def _lane_change_movement_points(
-        current: CStopCandidate,
-        target: CStopCandidate,
-    ) -> List[str]:
-        if current.lane == "entry":
-            to_bridge = _lane_points_between(
-                "entry",
-                current.lane_index,
-                len(ENTRY_LANE) - 1,
-                include_start=False,
-            )
-            from_bridge = _lane_points_between(
-                "other",
-                0,
-                target.lane_index,
-                include_start=True,
-            )
-        else:
-            to_bridge = _lane_points_between(
-                "other",
-                current.lane_index,
-                0,
-                include_start=False,
-            )
-            from_bridge = _lane_points_between(
-                "entry",
-                len(ENTRY_LANE) - 1,
-                target.lane_index,
-                include_start=True,
-            )
-        return (
-            to_bridge
-            + list(LANE_BRIDGES[(current.lane, target.lane)])
-            + from_bridge
-        )
-
-    def _movement_cost(
-        self,
-        current: Optional[CStopCandidate],
-        target: CStopCandidate,
-        movement: Sequence[str],
-    ) -> _RouteCost:
-        start_name = C_QR if current is None else current.goal_name
-        lane_changes = int(current is not None and current.lane != target.lane)
-        return _RouteCost(
-            self._route_distance(start_name, movement),
-            lane_changes,
-            target.yaml_order,
-        )
-
-    def _route_distance(self, start_name: str, movement: Sequence[str]) -> float:
-        names = [start_name] + list(movement)
-        distance = 0.0
-        for first, second in zip(names, names[1:]):
-            start = self.pose(first)
-            end = self.pose(second)
-            distance += math.hypot(end.x - start.x, end.y - start.y)
-        return distance
+        start_x: float,
+        start_y: float,
+        start_yaw: float,
+        target_names: Sequence[str],
+    ) -> List[float]:
+        current_x = start_x
+        current_y = start_y
+        current_yaw = start_yaw
+        yaws = []
+        for name in target_names:
+            target = self.pose(name)
+            dx = target.x - current_x
+            dy = target.y - current_y
+            if math.hypot(dx, dy) > 1e-9:
+                current_yaw = math.atan2(dy, dx)
+            yaws.append(current_yaw)
+            current_x = target.x
+            current_y = target.y
+        return yaws
 
     def path_aligned_targets(
         self,
@@ -419,6 +498,57 @@ def _load_points(raw_points: Iterable[Mapping[str, Any]]) -> List[WaypointPose]:
     return points
 
 
+def _pose_distance(first: WaypointPose, second: WaypointPose) -> float:
+    return math.hypot(second.x - first.x, second.y - first.y)
+
+
+def _point_to_segment_distance(
+    px: float,
+    py: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> float:
+    distance, _fraction = _point_to_segment_projection(
+        px,
+        py,
+        x1,
+        y1,
+        x2,
+        y2,
+    )
+    return distance
+
+
+def _point_to_segment_projection(
+    px: float,
+    py: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> tuple[float, float]:
+    dx = x2 - x1
+    dy = y2 - y1
+    length_squared = dx * dx + dy * dy
+    if length_squared <= 1e-12:
+        return math.hypot(px - x1, py - y1), 0.0
+    fraction = ((px - x1) * dx + (py - y1) * dy) / length_squared
+    fraction = min(max(fraction, 0.0), 1.0)
+    nearest_x = x1 + fraction * dx
+    nearest_y = y1 + fraction * dy
+    return math.hypot(px - nearest_x, py - nearest_y), fraction
+
+
+def _without_consecutive_duplicates(names: Sequence[str]) -> List[str]:
+    result = []
+    for name in names:
+        if not result or result[-1] != name:
+            result.append(name)
+    return result
+
+
 def _camera_side_for_yaw(position_side: str, yaw: float) -> str:
     if math.cos(yaw) < 0.0:
         return _other_side(position_side)
@@ -434,20 +564,6 @@ def _pose_yaw(pose: WaypointPose) -> float:
 
 def _other_side(side: str) -> str:
     return "right" if side == "left" else "left"
-
-
-def _lane_points_between(
-    lane: str,
-    start_index: int,
-    target_index: int,
-    include_start: bool,
-) -> List[str]:
-    names = LANES[lane]
-    step = 1 if target_index >= start_index else -1
-    indexes = list(range(start_index, target_index + step, step))
-    if not include_start:
-        indexes = indexes[1:]
-    return [names[index] for index in indexes]
 
 
 def _c_plan_tasks(c_plan: Mapping[str, object]) -> List[Mapping[str, object]]:

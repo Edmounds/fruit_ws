@@ -10,6 +10,7 @@ from threading import Event
 import time
 from typing import Any, Dict, Mapping, Optional, Sequence, Union
 
+from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PointStamped, PoseStamped
 from nav2_msgs.action import FollowWaypoints
 import rclpy
@@ -19,7 +20,9 @@ from rclpy.qos import DurabilityPolicy
 from rclpy.qos import HistoryPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
+from rclpy.time import Time
 from std_msgs.msg import String
+from tf2_ros import Buffer, TransformException, TransformListener
 
 from fruit_hardware_interfaces.msg import ArmTarget
 from fruit_hardware_interfaces.msg import ExecutionCallback
@@ -78,6 +81,12 @@ class MissionContext:
         self._pending_callback_id: Optional[int] = None
         self._matched_callback_status: Optional[int] = None
         self._callback_event = Event()
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(
+            self._tf_buffer,
+            node,
+            spin_thread=False,
+        )
 
         self._mode_publisher = node.create_publisher(
             String,
@@ -193,6 +202,106 @@ class MissionContext:
         self._route_cursor = self.route.pose(final_name).order + 1
         return True
 
+    def navigate_c_position(self, position_id: int) -> Dict[str, Any]:
+        """Plan and execute one C task from the live TF map pose."""
+        start = self._lookup_map_pose()
+        if start is None:
+            return {
+                "status": "planning_failed",
+                "reason": "tf_unavailable",
+            }
+        start_x, start_y, start_yaw = start
+        try:
+            plan = self.route.plan_c_navigation(
+                start_x,
+                start_y,
+                start_yaw,
+                int(position_id),
+                float(self.config["c_graph_max_start_distance"]),
+            )
+        except ValueError as error:
+            self.node.get_logger().error(str(error))
+            return {
+                "status": "planning_failed",
+                "reason": "route_unavailable",
+                "navigation_start": {"x": start_x, "y": start_y},
+                "detail": str(error),
+            }
+
+        result = {
+            "status": "navigation_failed",
+            "reason": "follow_waypoints_failed",
+            "navigation_start": {"x": plan.start_x, "y": plan.start_y},
+            "goal_name": plan.goal_name,
+            "position_side": plan.position_side,
+            "graph_path": list(plan.graph_path),
+            "movement_points": list(plan.navigation_names),
+            "navigation_yaws": list(plan.navigation_yaws),
+            "route_distance": plan.distance,
+            "camera_side": plan.camera_side,
+            "preferred_side": plan.camera_side,
+        }
+        if not self._send_waypoint_names(
+            plan.navigation_names,
+            plan.navigation_yaws,
+        ):
+            result["recovery_available"] = self.can_replan_c()
+            return result
+
+        result["status"] = "succeeded"
+        result["reason"] = None
+        result["recovery_available"] = True
+        self._current_waypoint_name = plan.goal_name
+        self._current_route_yaw = plan.navigation_yaws[-1]
+        self._route_cursor = max(
+            self._route_cursor,
+            self.route.pose(plan.goal_name).order + 1,
+        )
+        return result
+
+    def can_replan_c(self) -> bool:
+        """Return whether live TF can be attached safely to the C route graph."""
+        pose = self._lookup_map_pose()
+        if pose is None:
+            return False
+        distance = self.route.closest_c_graph_distance(pose[0], pose[1])
+        limit = float(self.config["c_graph_max_start_distance"])
+        if distance <= limit:
+            return True
+        self.node.get_logger().error(
+            f"Robot is {distance:.3f} m from the C route graph, "
+            f"limit is {limit:.3f} m"
+        )
+        return False
+
+    def _lookup_map_pose(self) -> Optional[tuple[float, float, float]]:
+        deadline = time.monotonic() + float(self.config["tf_lookup_timeout_sec"])
+        last_error = None
+        while rclpy.ok() and time.monotonic() < deadline:
+            try:
+                transform = self._tf_buffer.lookup_transform(
+                    str(self.config["map_frame"]),
+                    str(self.config["base_frame"]),
+                    Time(),
+                )
+            except TransformException as error:
+                last_error = error
+                rclpy.spin_once(self.node, timeout_sec=0.05)
+                continue
+            translation = transform.transform.translation
+            rotation = transform.transform.rotation
+            yaw = math.atan2(
+                2.0 * (rotation.w * rotation.z + rotation.x * rotation.y),
+                1.0 - 2.0 * (rotation.y * rotation.y + rotation.z * rotation.z),
+            )
+            return float(translation.x), float(translation.y), yaw
+        detail = f": {last_error}" if last_error is not None else ""
+        self.node.get_logger().error(
+            "Could not resolve live robot pose "
+            f"{self.config['map_frame']}->{self.config['base_frame']}{detail}"
+        )
+        return None
+
     def _expand_waypoint_names(
         self,
         requested_names: Sequence[str],
@@ -260,7 +369,14 @@ class MissionContext:
         result_future = goal_handle.get_result_async()
         if not self._wait_future(result_future):
             return False
-        result = result_future.result().result
+        wrapped_result = result_future.result()
+        if wrapped_result.status != GoalStatus.STATUS_SUCCEEDED:
+            self.node.get_logger().error(
+                f"FollowWaypoints finished with status={wrapped_result.status}: "
+                f"{route_text}"
+            )
+            return False
+        result = wrapped_result.result
         missed = list(result.missed_waypoints)
         if missed:
             self.node.get_logger().error(

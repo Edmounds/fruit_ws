@@ -55,7 +55,7 @@ def latched_qos() -> QoSProfile:
 
 
 class WaypointRecorderNode(Node):
-    """Record and exercise named points in the configured waypoint file."""
+    """Edit and exercise named points in the configured waypoint file."""
 
     def __init__(self) -> None:
         super().__init__("fruit_waypoint_recorder")
@@ -162,12 +162,12 @@ class WaypointRecorderNode(Node):
             self._undo_waypoint()
         elif command == "save":
             self._save_waypoints()
-        elif command == "run_next_test":
+        elif command in ("run_next_test", "run_next_goal"):
             self._run_next_test_segment(payload)
-        elif command == "reset_test_cursor":
+        elif command in ("reset_test_cursor", "reset_run_cursor"):
             self._test_store.reset_cursor()
-            self._publish_state("Reset test cursor")
-        elif command == "load_test_file":
+            self._publish_state("Reset route run cursor")
+        elif command in ("load_test_file", "load_waypoint_file"):
             self._load_test_file(payload)
         else:
             self._reject_command(f"Unknown waypoint-maker command: {command}")
@@ -206,8 +206,8 @@ class WaypointRecorderNode(Node):
         if self._sampling:
             self._reject_command("Already sampling current pose")
             return
-        mode = str(payload.get("mode", "test"))
-        if mode != "test":
+        mode = str(payload.get("mode", "waypoints"))
+        if mode not in ("test", "waypoints"):
             self._reject_command(f"Unknown record mode: {mode}")
             return
         name = str(payload.get("name", "")).strip()
@@ -231,13 +231,13 @@ class WaypointRecorderNode(Node):
 
     def _can_record_test_point(self, name: str, point_type: str) -> bool:
         if not name:
-            self._reject_command("test point name must not be empty")
+            self._reject_command("waypoint name must not be empty")
             return False
         if point_type not in VALID_TEST_POINT_TYPES:
             self._reject_command("point_type must be waypoint or goal")
             return False
         if any(point.name == name for point in self._test_store.points):
-            self._reject_command(f"test point already exists: {name}")
+            self._reject_command(f"waypoint already exists: {name}")
             return False
         return True
 
@@ -304,7 +304,7 @@ class WaypointRecorderNode(Node):
 
     def _load_test_file(self, payload) -> None:
         if self._sampling or self._active_test_goal:
-            self._reject_command("Cannot load test waypoints while busy")
+            self._reject_command("Cannot load waypoints while busy")
             return
         try:
             path = self._resolve_src_yaml_path(str(payload.get("path", "")))
@@ -312,7 +312,7 @@ class WaypointRecorderNode(Node):
         except (OSError, ValueError) as error:
             self._reject_command(str(error))
             return
-        self._publish_state(f"Loaded test waypoints from {self._test_store.output_path}")
+        self._publish_state(f"Loaded waypoints from {self._test_store.output_path}")
 
     def _resolve_src_yaml_path(self, raw_path: str) -> Path:
         path = Path(raw_path).expanduser()
@@ -333,7 +333,7 @@ class WaypointRecorderNode(Node):
 
     def _run_next_test_segment(self, payload) -> None:
         if self._active_test_goal:
-            self._reject_command("Test segment is already running")
+            self._reject_command("A route segment is already running")
             return
         final_yaw_mode = str(
             payload.get("final_yaw_mode", self._current_final_yaw_mode)
@@ -360,7 +360,7 @@ class WaypointRecorderNode(Node):
         self._active_test_goal = True
         self._pending_test_cursor = after_cursor
         self._publish_state(
-            f"Running test segment to {segment[-1].name} with {final_yaw_mode}"
+            f"Running route segment to {segment[-1].name} with {final_yaw_mode}"
         )
         request = SetParameters.Request()
         request.parameters = [
@@ -402,10 +402,10 @@ class WaypointRecorderNode(Node):
         try:
             goal_handle = future.result()
         except Exception as error:
-            self._finish_test_goal(f"Failed to send test segment: {error}", False)
+            self._finish_test_goal(f"Failed to send route segment: {error}", False)
             return
         if not goal_handle.accepted:
-            self._finish_test_goal("Test segment was rejected", False)
+            self._finish_test_goal("Route segment was rejected", False)
             return
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self._on_test_result)
@@ -414,15 +414,15 @@ class WaypointRecorderNode(Node):
         try:
             wrapped = future.result()
         except Exception as error:
-            self._finish_test_goal(f"Test segment failed: {error}", False)
+            self._finish_test_goal(f"Route segment failed: {error}", False)
             return
         missed = list(wrapped.result.missed_waypoints)
         success = wrapped.status == GoalStatus.STATUS_SUCCEEDED and not missed
         if success:
             self._test_store.advance_cursor(int(self._pending_test_cursor))
-            self._finish_test_goal("Test segment reached next goal", True)
+            self._finish_test_goal("Route segment reached next goal", True)
         else:
-            self._finish_test_goal(f"Test segment missed waypoints: {missed}", False)
+            self._finish_test_goal(f"Route segment missed waypoints: {missed}", False)
 
     def _finish_test_goal(self, message: str, _success: bool) -> None:
         self._active_test_goal = False
@@ -445,16 +445,18 @@ class WaypointRecorderNode(Node):
         self._marker_publisher.publish(self._markers())
 
     def _state(self) -> dict:
+        waypoint_state = {
+            "count": len(self._test_store.points),
+            "cursor": self._test_store.cursor,
+            "next_goal": self._next_test_goal_name(),
+            "final_yaw_mode": self._current_final_yaw_mode,
+            "output_path": str(self._test_store.output_path),
+        }
         return {
             "status": self._status(),
             "message": self._last_message,
-            "test": {
-                "count": len(self._test_store.points),
-                "cursor": self._test_store.cursor,
-                "next_goal": self._next_test_goal_name(),
-                "final_yaw_mode": self._current_final_yaw_mode,
-                "output_path": str(self._test_store.output_path),
-            },
+            "waypoints": waypoint_state,
+            "test": waypoint_state,
         }
 
     def _status(self) -> str:
@@ -487,7 +489,7 @@ class WaypointRecorderNode(Node):
                 markers,
                 marker_id,
                 point.pose,
-                f"T{index + 1}: {point.name} [{point.point_type}]",
+                f"W{index + 1}: {point.name} [{point.point_type}]",
                 color,
             )
         return MarkerArray(markers=markers)

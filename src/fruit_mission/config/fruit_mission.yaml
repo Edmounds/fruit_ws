@@ -10,6 +10,10 @@ fruit_mission:
     c_distribution_output_dir: "/home/rc4/fruit_ws/tmp/fruit_mission"
     waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml"
     follow_waypoints_action: "/follow_waypoints"
+    map_frame: "map"
+    base_frame: "base_link"
+    tf_lookup_timeout_sec: 1.0
+    c_graph_max_start_distance: 0.75
 
     perception_mode_topic: "/fruit_mission/perception_mode"
     current_area_topic: "/fruit_mission/current_area"

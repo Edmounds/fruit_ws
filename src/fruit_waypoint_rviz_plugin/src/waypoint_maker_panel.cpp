@@ -47,7 +47,7 @@ WaypointMakerPanel::WaypointMakerPanel(QWidget * parent)
   test_file_edit_ = new QLineEdit(test_tab);
   test_file_edit_->setReadOnly(true);
   test_name_edit_ = new QLineEdit(test_tab);
-  test_name_edit_->setText("a_001");
+  test_name_edit_->setPlaceholderText("A1 / C_top_waypoint_1");
   final_yaw_mode_combo_ = new QComboBox(test_tab);
   final_yaw_mode_combo_->addItem("Blend on path", "blend_on_path");
   final_yaw_mode_combo_->addItem("Rotate at goal", "rotate_at_goal");
@@ -58,16 +58,16 @@ WaypointMakerPanel::WaypointMakerPanel(QWidget * parent)
   test_layout->addLayout(test_form);
   test_layout->addWidget(load_test_file_button_);
 
-  test_label_ = new QLabel("Test points: 0", test_tab);
+  test_label_ = new QLabel("Loaded waypoints: 0", test_tab);
   test_label_->setWordWrap(true);
   test_layout->addWidget(test_label_);
 
   record_waypoint_button_ = new QPushButton("Set Waypoint", test_tab);
   record_goal_button_ = new QPushButton("Set Goal", test_tab);
-  undo_test_button_ = new QPushButton("Undo Test", test_tab);
+  undo_test_button_ = new QPushButton("Undo Point", test_tab);
   save_test_button_ = new QPushButton("Save Waypoint YAML", test_tab);
-  run_next_button_ = new QPushButton("Test Next", test_tab);
-  reset_cursor_button_ = new QPushButton("Reset Test Cursor", test_tab);
+  run_next_button_ = new QPushButton("Run Next Goal", test_tab);
+  reset_cursor_button_ = new QPushButton("Reset Run Cursor", test_tab);
 
   auto * test_record_row = new QHBoxLayout();
   test_record_row->addWidget(record_waypoint_button_);
@@ -81,7 +81,7 @@ WaypointMakerPanel::WaypointMakerPanel(QWidget * parent)
   test_layout->addLayout(test_run_row);
   test_layout->addWidget(save_test_button_);
   test_layout->addStretch();
-  tabs_->addTab(test_tab, "Waypoints");
+  tabs_->addTab(test_tab, "Route");
 
   connect(
     load_test_file_button_, &QPushButton::clicked, this,
@@ -146,7 +146,7 @@ void WaypointMakerPanel::recordTestPoint(const QString & point_type)
 {
   const QString name = test_name_edit_->text().trimmed();
   if (name.isEmpty()) {
-    status_label_->setText("idle: test point name must not be empty");
+    status_label_->setText("idle: waypoint name must not be empty");
     test_name_edit_->setFocus();
     return;
   }
@@ -217,10 +217,15 @@ void WaypointMakerPanel::applyState(const QString & state_json)
   const QJsonObject root = document.object();
   const QString status = root.value("status").toString("idle");
   const QString message = root.value("message").toString();
-  status_label_->setText(status + ": " + message);
-  setBusy(status == "sampling" || status == "running_test");
+  const QString display_status = status == "running_test" ? "running_route" : status;
+  status_label_->setText(display_status + ": " + message);
+  setBusy(
+    status == "sampling" || status == "running_route" || status == "running_test");
 
-  const QJsonObject test = root.value("test").toObject();
+  QJsonObject test = root.value("waypoints").toObject();
+  if (test.isEmpty()) {
+    test = root.value("test").toObject();
+  }
   const QString output_path = test.value("output_path").toString();
   if (!output_path.isEmpty()) {
     test_file_edit_->setText(output_path);
@@ -232,7 +237,7 @@ void WaypointMakerPanel::applyState(const QString & state_json)
     final_yaw_mode_combo_->setCurrentIndex(final_yaw_mode_index);
   }
   test_label_->setText(
-    QString("Test points: %1\nCursor: %2\nNext goal: %3\nFinal yaw: %4")
+    QString("Loaded waypoints: %1\nRun cursor: %2\nNext goal: %3\nFinal yaw: %4")
     .arg(test.value("count").toInt())
     .arg(test.value("cursor").toInt())
     .arg(next_goal.isEmpty() ? "none" : next_goal)

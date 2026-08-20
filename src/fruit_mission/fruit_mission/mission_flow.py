@@ -160,18 +160,51 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
     for task in ordered_c_tasks_from_distribution(c_distribution):
         position_id = int(task["position_id"])
         target_name = str(task["target_name"])
-        movement_points = list(task["movement_points"])
-        camera_side = str(task.get("camera_side", task["preferred_side"]))
         expected_type = str(
             task.get("expected_ripe_type") or expected_ripe_type(target_name)
         )
-        if not _go_through_c_route(ctx, movement_points):
-            task["result"] = "navigation_failed"
+        navigation = _navigate_c_task(ctx, task)
+        for key in (
+            "navigation_start",
+            "goal_name",
+            "position_side",
+            "graph_path",
+            "movement_points",
+            "navigation_yaws",
+            "route_distance",
+            "camera_side",
+            "preferred_side",
+        ):
+            if key in navigation:
+                task[key] = navigation[key]
+
+        if navigation["status"] == "planning_failed":
+            task["result"] = "navigation_planning_failed"
+            task["navigation_failure_reason"] = navigation.get("reason")
+            task["navigation_failure_detail"] = navigation.get("detail")
             ctx.announce(
                 f"C区{format_position_name(position_id)}，应该采{target_name}。"
-                "导航失败，跳过。"
+                "无法根据当前位置规划安全路线，C区任务停止。"
             )
+            ctx.save_c_distribution(c_distribution)
+            _send_arm_retract(ctx, "C区导航规划失败，机械臂收缩姿态动作超时。")
+            return False
+
+        if navigation["status"] == "navigation_failed":
+            task["result"] = "navigation_failed"
+            task["navigation_failure_reason"] = navigation.get("reason")
+            ctx.announce(
+                f"C区{format_position_name(position_id)}，应该采{target_name}。"
+                "导航失败，跳过并从当前位置规划下一项。"
+            )
+            ctx.save_c_distribution(c_distribution)
+            if not bool(navigation.get("recovery_available", False)):
+                ctx.announce("C区当前位置无法用于重新规划，C区任务停止。")
+                _send_arm_retract(ctx, "C区导航恢复失败，机械臂收缩姿态动作超时。")
+                return False
             continue
+
+        camera_side = str(navigation["camera_side"])
         ctx.stable_stop()
         task["last_observation"] = {
             "source": "d435i",
@@ -220,18 +253,32 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
     return True
 
 
-def _go_through_c_route(ctx, movement_points: list[str]) -> bool:
+def _navigate_c_task(ctx, task: Mapping[str, Any]) -> Dict[str, Any]:
+    navigate = getattr(ctx, "navigate_c_position", None)
+    if callable(navigate):
+        return dict(navigate(int(task["position_id"])))
+
+    movement_points = list(task.get("movement_points", []))
     go_through = getattr(ctx, "go_through", None)
-    if callable(go_through):
-        return bool(go_through(movement_points))
-    return bool(ctx.go_to(movement_points))
+    success = (
+        bool(go_through(movement_points))
+        if callable(go_through)
+        else bool(ctx.go_to(movement_points))
+    )
+    return {
+        "status": "succeeded" if success else "navigation_failed",
+        "reason": None if success else "follow_waypoints_failed",
+        "recovery_available": success,
+        "movement_points": movement_points,
+        "camera_side": task.get("camera_side", task.get("preferred_side", "left")),
+    }
 
 
 def ordered_c_tasks_from_distribution(
     c_distribution: Mapping[str, Any],
-) -> list[Mapping[str, Any]]:
+) -> list[Dict[str, Any]]:
     """Return planned C tasks in QR order."""
-    tasks = list(c_distribution["tasks"])
+    tasks: list[Dict[str, Any]] = list(c_distribution["tasks"])
     tasks.sort(key=lambda item: int(item["sequence"]))
     return tasks
 
