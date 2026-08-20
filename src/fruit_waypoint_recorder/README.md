@@ -1,6 +1,6 @@
 # fruit_waypoint_recorder
 
-该功能包通过 RViz 面板记录、显示、保存并逐段试跑一份显式 waypoint YAML。
+该功能包通过 RViz 面板编辑、显示、保存并逐段试跑一份显式 waypoint YAML。
 
 节点从 `config/waypoint_recorder.yaml` 的 `waypoint_file` 参数加载默认文件。文件名不是代码
 契约；修改配置即可切换到其他 `.yaml` 或 `.yml` 文件。配置路径必须位于项目 `src` 下且
@@ -14,6 +14,9 @@
 - 保存到当前加载的文件；
 - 按 YAML 顺序执行到下一个 `goal`；
 - 在 RViz 中显示点名、类型和 YAML yaw。
+
+当前加载的文件就是保存目标，不再维护独立的“正式点”和“测试点”两套内存数据。
+逐段试跑游标只记录本次调试进度，不改变文件用途，也不会写入 YAML。
 
 构建和启动：
 

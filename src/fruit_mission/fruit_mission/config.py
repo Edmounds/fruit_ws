@@ -36,6 +36,14 @@ def validate_config(params: Mapping[str, Any]) -> None:
         raise ValueError(f"waypoint_file is not readable: {waypoint_file}") from error
     if not str(params.get("follow_waypoints_action", "")).strip():
         raise ValueError("follow_waypoints_action must not be empty")
+    if not str(params.get("map_frame", "")).strip():
+        raise ValueError("map_frame must not be empty")
+    if not str(params.get("base_frame", "")).strip():
+        raise ValueError("base_frame must not be empty")
+    if float(params.get("tf_lookup_timeout_sec", 0.0)) <= 0.0:
+        raise ValueError("tf_lookup_timeout_sec must be positive")
+    if float(params.get("c_graph_max_start_distance", 0.0)) <= 0.0:
+        raise ValueError("c_graph_max_start_distance must be positive")
     if not str(params.get("expected_fruit_type_topic", "")).strip():
         raise ValueError("expected_fruit_type_topic must not be empty")
     if not str(params.get("decision_topic", "")).strip():
