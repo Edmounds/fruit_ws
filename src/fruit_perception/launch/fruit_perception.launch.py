@@ -23,11 +23,8 @@ def _set_v4l2_control(device, control, value):
 
 def _apply_manual_camera_controls(camera_parameters, v4l2_controls):
     device = camera_parameters['video_device']
-    _set_v4l2_control(
-        device,
-        'backlight_compensation',
-        v4l2_controls['backlight_compensation'],
-    )
+    for control, value in v4l2_controls.items():
+        _set_v4l2_control(device, control, value)
     _set_v4l2_control(
         device,
         'white_balance_automatic',
@@ -84,7 +81,11 @@ def generate_launch_description():
     left_camera_controls = dict(
         backlight_compensation=usb_camera_controls[
             'left_backlight_compensation'
-        ]
+        ],
+        gamma=usb_camera_controls['left_gamma'],
+        power_line_frequency=usb_camera_controls[
+            'left_power_line_frequency'
+        ],
     )
     right_camera_parameters = dict(
         camera_config['right_camera']['ros__parameters']
@@ -92,7 +93,11 @@ def generate_launch_description():
     right_camera_controls = dict(
         backlight_compensation=usb_camera_controls[
             'right_backlight_compensation'
-        ]
+        ],
+        gamma=usb_camera_controls['right_gamma'],
+        power_line_frequency=usb_camera_controls[
+            'right_power_line_frequency'
+        ],
     )
     # ========================================================================
     # 2. 节点清单

@@ -29,4 +29,4 @@ set -u
 "$WORKSPACE/robot_debug_monitor.sh" perception &
 DEBUG_PID=$!
 
-ros2 launch fruit_perception fruit_perception.launch.py
+ros2 launch fruit_perception fruit_perception.launch.py "$@"

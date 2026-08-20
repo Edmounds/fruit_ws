@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from dataclasses import dataclass
 from threading import Event
@@ -23,7 +24,6 @@ from std_msgs.msg import String
 from fruit_hardware_interfaces.msg import ArmTarget
 from fruit_hardware_interfaces.msg import ExecutionCallback
 from fruit_hardware_interfaces.msg import StateMachineCommand
-from fruit_perception.msg import FruitDetections
 from fruit_perception.msg import FruitTypes
 
 from fruit_mission.logic import PickExecutionResult
@@ -64,10 +64,11 @@ class MissionContext:
         self.route = FormalWaypointRoute.from_file(Path(str(config["waypoint_file"])))
         self._route_cursor = 0
         self._latest_active_mode: Optional[str] = None
+        self._active_mode_generation = 0
         self._latest_left: Optional[list[str]] = None
         self._latest_right: Optional[list[str]] = None
         self._latest_d435i_types: Optional[list[str]] = None
-        self._latest_d435i_detections: Optional[FruitDetections] = None
+        self._latest_d435i_target: Optional[PointStamped] = None
         self._latest_b_plan: Optional[Dict[str, Any]] = None
         self._latest_c_plan: Optional[Dict[str, Any]] = None
         self._pending_callback_id: Optional[int] = None
@@ -124,9 +125,9 @@ class MissionContext:
             QoSProfile(depth=10),
         )
         node.create_subscription(
-            FruitDetections,
-            config["d435i_detections_topic"],
-            self._on_d435i_detections,
+            PointStamped,
+            config["d435i_target_point_topic"],
+            self._on_d435i_target,
             QoSProfile(depth=10),
         )
         node.create_subscription(
@@ -252,19 +253,29 @@ class MissionContext:
         """Publish a perception mode and wait for the active-mode echo."""
         message = String()
         message.data = mode
+        previous_generation = self._active_mode_generation
         deadline = time.monotonic() + float(self.config["active_mode_timeout_sec"])
         while rclpy.ok() and time.monotonic() < deadline:
             self._mode_publisher.publish(message)
             remaining = deadline - time.monotonic()
             if self._wait_until(
-                lambda: self._latest_active_mode == mode,
+                lambda: self._active_mode_generation > previous_generation
+                and self._latest_active_mode == mode,
                 min(0.5, max(0.0, remaining)),
             ):
                 return True
-        return self._latest_active_mode == mode
+        return (
+            self._active_mode_generation > previous_generation
+            and self._latest_active_mode == mode
+        )
 
     def observe_sides(self, timeout_sec: float) -> SideObservation:
         """Collect recent side camera detections for a short window."""
+        if not self.set_perception_mode("SIDES"):
+            self.node.get_logger().error(
+                "Could not reset side target selection before observation"
+            )
+            return SideObservation(left=[], right=[])
         self._latest_left = None
         self._latest_right = None
         left_seen: list[str] = []
@@ -310,7 +321,6 @@ class MissionContext:
     def execute_closed_loop_pick(
         self,
         side: str,
-        expected_type: str,
     ) -> PickExecutionResult:
         """Send pick direction, use D435i depth, and send ArmTarget."""
         if not self.set_perception_mode("SIDES"):
@@ -320,7 +330,7 @@ class MissionContext:
         fresh_after_ns = self.node.get_clock().now().nanoseconds
         if not self.set_perception_mode("TREE"):
             return PickExecutionResult(False, "tree_mode_timeout")
-        selection = self._wait_d435i_target(fresh_after_ns, expected_type)
+        selection = self._wait_d435i_target(fresh_after_ns)
         if selection.target is None:
             return PickExecutionResult(False, selection.reason_code)
         if not self._send_arm_target_and_wait(selection.target.point):
@@ -525,52 +535,33 @@ class MissionContext:
     def _wait_d435i_target(
         self,
         fresh_after_ns: int,
-        expected_type: str,
     ) -> _D435iSelection:
-        self._latest_d435i_types = None
-        self._latest_d435i_detections = None
-        sample_count = int(self.config["d435i_target_sample_count"])
-        samples: list[tuple[float, float, float]] = []
-        latest_header = None
+        self._latest_d435i_target = None
+        latest_stamp_ns = fresh_after_ns
         deadline = time.monotonic() + float(self.config["d435i_detection_timeout_sec"])
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self.node, timeout_sec=0.1)
-            if self._latest_d435i_detections is None:
+            if self._latest_d435i_target is None:
                 continue
-            detection_message = self._latest_d435i_detections
-            stamp = detection_message.header.stamp
+            target = self._latest_d435i_target
+            self._latest_d435i_target = None
+            stamp = target.header.stamp
             stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
-            if stamp_ns <= fresh_after_ns:
-                self._latest_d435i_detections = None
+            if stamp_ns <= latest_stamp_ns:
                 continue
-            detection = next(
-                (
-                    item
-                    for item in detection_message.detections
-                    if item.type == expected_type and item.has_point
-                ),
-                None,
+            latest_stamp_ns = stamp_ns
+            point = (
+                float(target.point.x),
+                float(target.point.y),
+                float(target.point.z),
             )
-            if detection is not None:
-                samples.append(
-                    (
-                        float(detection.point.x),
-                        float(detection.point.y),
-                        float(detection.point.z),
-                    )
-                )
-                latest_header = detection_message.header
-            if len(samples) >= sample_count and latest_header is not None:
-                target_point = PointStamped()
-                target_point.header = latest_header
-                target_point.point.x = sum(point[0] for point in samples) / sample_count
-                target_point.point.y = sum(point[1] for point in samples) / sample_count
-                target_point.point.z = sum(point[2] for point in samples) / sample_count
-                return _D435iSelection(
-                    "matched",
-                    _D435iTarget(target_point),
-                )
-            self._latest_d435i_detections = None
+            if not all(math.isfinite(value) for value in point):
+                continue
+            self.node.get_logger().info(
+                "D435i target received from the 35-frame perception window: "
+                f"x={point[0]}, y={point[1]}, z={point[2]}"
+            )
+            return _D435iSelection("matched", _D435iTarget(target))
         return _D435iSelection("d435i_target_timeout")
 
     def _wait_until(self, predicate, timeout_sec: float) -> bool:
@@ -604,6 +595,7 @@ class MissionContext:
 
     def _on_active_mode(self, message: String) -> None:
         self._latest_active_mode = message.data
+        self._active_mode_generation += 1
 
     def _on_left_types(self, message: FruitTypes) -> None:
         self._latest_left = list(message.types)
@@ -614,8 +606,8 @@ class MissionContext:
     def _on_d435i_types(self, message: FruitTypes) -> None:
         self._latest_d435i_types = list(message.types)
 
-    def _on_d435i_detections(self, message: FruitDetections) -> None:
-        self._latest_d435i_detections = message
+    def _on_d435i_target(self, message: PointStamped) -> None:
+        self._latest_d435i_target = message
 
     def _on_b_plan(self, message: String) -> None:
         self._latest_b_plan = json.loads(message.data)

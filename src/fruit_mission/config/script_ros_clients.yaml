@@ -7,6 +7,7 @@
     perception_mode_topic: "/fruit_mission/perception_mode"
     active_mode_topic: "/fruit_perception/active_mode"
     current_area_topic: "/fruit_mission/current_area"
+    d435i_target_point_topic: "/fruit_perception/d435i/target_point"
     d435i_detections_topic: "/fruit_perception/d435i/detections"
 
     bridge_ready_timeout_sec: 30.0
@@ -14,7 +15,6 @@
     callback_timeout_sec: 60.0
     active_mode_timeout_sec: 30.0
     detection_timeout_sec: 120.0
-    d435i_target_sample_count: 5
     current_area_delivery_timeout_sec: 1.0
     perception_mode_min_subscribers: 2
     cleanup_mode_timeout_sec: 2.0

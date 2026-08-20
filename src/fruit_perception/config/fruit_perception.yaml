@@ -14,7 +14,7 @@ left_camera:
     saturation: 69
     sharpness: 2
     gain: 1
-    auto_white_balance: false
+    auto_white_balance: true
     white_balance: 5400
     autoexposure: false
     exposure: 25
@@ -44,6 +44,10 @@ usb_camera_controls:
   ros__parameters:
     left_backlight_compensation: 0
     right_backlight_compensation: 0
+    left_gamma: 84
+    right_gamma: 84
+    left_power_line_frequency: 1
+    right_power_line_frequency: 1
 
 d435i_camera:
   ros__parameters:
@@ -52,10 +56,17 @@ d435i_camera:
     rgb_camera.color_profile: "1280x720x30"
     rgb_camera.color_format: "RGB8"
     rgb_camera.enable_auto_exposure: false
-    rgb_camera.exposure: 166
-    rgb_camera.gain: 64
-    rgb_camera.enable_auto_white_balance: false
-    rgb_camera.white_balance: 4600.0
+    rgb_camera.exposure: 538
+    rgb_camera.gain: 0
+    rgb_camera.enable_auto_white_balance: true
+    rgb_camera.white_balance: 3610.0
+    rgb_camera.brightness: 0
+    rgb_camera.contrast: 50
+    rgb_camera.saturation: 64
+    rgb_camera.sharpness: 50
+    rgb_camera.gamma: 300
+    rgb_camera.backlight_compensation: false
+    rgb_camera.power_line_frequency: 3
     enable_depth: true
     depth_module.depth_profile: "1280x720x30"
     depth_module.depth_format: "Z16"
@@ -94,6 +105,17 @@ fruit_perception_node:
     b_model_path: "/home/rc4/fruit_ws/src/fruit_perception/model/B.onnx"
     confidence_threshold: 0.50
     nms_iou_threshold: 0.45
+    side_target_confidence_weight: 0.70
+    side_target_score_close_threshold: 0.05
+    side_target_acquisition_sec: 3.0
+    side_target_association_iou_threshold: 0.30
+    side_target_lock_miss_frames: 8
+    d435i_target_confidence_weight: 0.70
+    d435i_target_score_close_threshold: 0.05
+    d435i_target_acquisition_frames: 35
+    d435i_target_association_radius_m: 0.03
+    d435i_target_outlier_sigma: 2.0
+    d435i_target_lock_miss_frames: 8
 
 camera_mode_manager:
   ros__parameters:

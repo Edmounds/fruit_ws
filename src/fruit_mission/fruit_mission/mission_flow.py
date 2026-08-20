@@ -53,7 +53,7 @@ def run_a_area(ctx) -> bool:
         if not decisions:
             continue
         for decision in decisions:
-            ctx.execute_closed_loop_pick(decision.side, "ripe")
+            ctx.execute_closed_loop_pick(decision.side)
         if not ctx.set_perception_mode("SIDES"):
             return False
     return True
@@ -217,7 +217,7 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
             )
             continue
 
-        result = ctx.execute_closed_loop_pick(decision.side, expected_ripe_type(target_name))
+        result = ctx.execute_closed_loop_pick(decision.side)
         if result.success:
             task["result"] = "picked"
             observed = spoken_model_type(decision.matched_type)

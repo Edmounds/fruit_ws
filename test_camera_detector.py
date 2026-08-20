@@ -54,6 +54,15 @@ from rclpy.node import Node  # noqa: E402
 from rclpy.qos import QoSProfile, ReliabilityPolicy  # noqa: E402
 from sensor_msgs.msg import Image  # noqa: E402
 
+from camera_control_gui import (  # noqa: E402
+    CameraControlPanel,
+    D435iControlService,
+    discover_usb_controls,
+    run_v4l2_control,
+    save_camera_controls,
+    set_usb_control,
+)
+
 
 WORKSPACE = Path('/home/rc4/fruit_ws')
 CONFIG_PATH = WORKSPACE / 'src/fruit_perception/config/fruit_perception.yaml'
@@ -231,8 +240,13 @@ def select_camera(
             topic=perception['left_input_topic'],
             parameters=parameters,
             controls={
-                'backlight_compensation':
-                    int(controls['left_backlight_compensation']),
+                'backlight_compensation': int(
+                    controls['left_backlight_compensation'],
+                ),
+                'gamma': int(controls['left_gamma']),
+                'power_line_frequency': int(
+                    controls['left_power_line_frequency'],
+                ),
             },
             calibration=load_calibration(parameters),
         )
@@ -244,8 +258,13 @@ def select_camera(
             topic=perception['right_input_topic'],
             parameters=parameters,
             controls={
-                'backlight_compensation':
-                    int(controls['right_backlight_compensation']),
+                'backlight_compensation': int(
+                    controls['right_backlight_compensation'],
+                ),
+                'gamma': int(controls['right_gamma']),
+                'power_line_frequency': int(
+                    controls['right_power_line_frequency'],
+                ),
             },
             calibration=load_calibration(parameters),
         )
@@ -268,37 +287,13 @@ def model_path_for(letter: str, config: dict[str, Any]) -> Path:
     return MODEL_DIR / 'A.onnx'
 
 
-def run_v4l2_control(device: str, control: str, value: int) -> None:
-    command = [
-        'v4l2-ctl',
-        '--device',
-        device,
-        '--set-ctrl',
-        f'{control}={value}',
-    ]
-    result = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        details = (result.stderr or result.stdout).strip()
-        raise RuntimeError(
-            f'Failed to set {control}={value} on {device}: {details}',
-        )
-
-
 def apply_usb_controls(selection: CameraSelection) -> None:
     parameters = selection.parameters
     controls = selection.controls or {}
     device = str(parameters['video_device'])
 
-    run_v4l2_control(
-        device,
-        'backlight_compensation',
-        int(controls.get('backlight_compensation', 0)),
-    )
+    for name, value in controls.items():
+        run_v4l2_control(device, name, int(value))
     run_v4l2_control(
         device,
         'white_balance_automatic',
@@ -814,6 +809,51 @@ def run() -> int:
         )
     window_name = f'{selection.name} model {args.model}'
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.moveWindow(window_name, 20, 60)
+    try:
+        if selection.kind == 'd435i' and not wait_for_publisher(
+            node,
+            selection.topic,
+            10.0,
+        ):
+            check_camera_process(camera_process, log_path)
+            raise RuntimeError(
+                f'Timed out waiting for D435i frames on {selection.topic}',
+            )
+        if selection.kind == 'usb':
+            device = str(selection.parameters['video_device'])
+            controls = discover_usb_controls(device)
+            control_panel = CameraControlPanel(
+                selection.name,
+                controls,
+                lambda name, value: set_usb_control(device, name, value),
+                lambda values: save_camera_controls(
+                    selection.name,
+                    values,
+                    CONFIG_PATH,
+                    TMP_DIR,
+                ),
+            )
+        else:
+            control_service = D435iControlService(node)
+            control_panel = CameraControlPanel(
+                selection.name,
+                control_service.discover(),
+                control_service.set,
+                lambda values: save_camera_controls(
+                    selection.name,
+                    values,
+                    CONFIG_PATH,
+                    TMP_DIR,
+                ),
+            )
+    except BaseException:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+        stop_process(camera_process)
+        cv2.destroyAllWindows()
+        raise
 
     last_frame_time = 0.0
     displayed_fps = 0.0
@@ -823,6 +863,7 @@ def run() -> int:
     try:
         while rclpy.ok():
             check_camera_process(camera_process, log_path)
+            control_panel.apply_pending()
             rclpy.spin_once(node, timeout_sec=0.01)
             frame = node.take_latest_frame()
             if frame is None:
@@ -830,7 +871,10 @@ def run() -> int:
                 if not announced_first_frame and now - last_wait_message > 2.0:
                     print(f'Waiting for frames on {selection.topic}...', flush=True)
                     last_wait_message = now
-                if cv2.waitKey(1) in (27, ord('q')):
+                if (
+                    cv2.waitKey(1) in (27, ord('q'))
+                    or not control_panel.is_open()
+                ):
                     break
                 continue
             if not announced_first_frame:
@@ -869,9 +913,10 @@ def run() -> int:
             cv2.imshow(window_name, annotated_bgr)
 
             key = cv2.waitKey(1)
-            if key in (27, ord('q')):
+            if key in (27, ord('q')) or not control_panel.is_open():
                 break
     finally:
+        control_panel.close()
         try:
             node.destroy_node()
         except Exception:  # noqa: BLE001

@@ -573,9 +573,9 @@ def _find_block(
 def _scalar_text(value: object) -> str:
     if isinstance(value, bool):
         return 'true' if value else 'false'
-    if isinstance(value, int):
+    if isinstance(value, (int, float)):
         return str(value)
-    raise TypeError(f'only bool and int YAML updates are supported: {value!r}')
+    raise TypeError(f'only numeric and bool YAML updates are supported: {value!r}')
 
 
 def update_yaml_values(path: Path, updates: dict[str, dict[str, dict[str, object]]]) -> None:

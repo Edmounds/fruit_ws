@@ -12,10 +12,68 @@ readonly CLIENT_LOG="${RUN_DIR}/client.log"
 
 LAUNCH_PID=""
 STOPPING=0
+ZONE=""
+DIRECTION=""
+DEBUG=0
 
 log()
 {
   printf '[d435i-arm] %s\n' "$*"
+}
+
+usage()
+{
+  cat <<'EOF'
+Usage: ./test_d435i_arm_target.sh --zone A|C --left|--right [--debug]
+
+Select the current area and observation direction before running the existing
+D435i recognition and arm-target workflow. --debug prints every D435i detection
+message and every selected target point with their ROS timestamps.
+EOF
+}
+
+parse_arguments()
+{
+  while (( $# > 0 )); do
+    case "$1" in
+      --zone)
+        (( $# >= 2 )) || { log "ERROR: --zone requires A or C"; return 2; }
+        [[ -z "${ZONE}" ]] || { log "ERROR: --zone may only be specified once"; return 2; }
+        case "$2" in
+          A|a) ZONE=A ;;
+          C|c) ZONE=C ;;
+          *) log "ERROR: --zone must be A or C"; return 2 ;;
+        esac
+        shift 2
+        ;;
+      --left|--right)
+        [[ -z "${DIRECTION}" ]] || {
+          log "ERROR: choose exactly one of --left or --right"
+          return 2
+        }
+        DIRECTION=$1
+        shift
+        ;;
+      --debug)
+        DEBUG=1
+        shift
+        ;;
+      --help|-h)
+        usage
+        exit 0
+        ;;
+      *)
+        log "ERROR: unknown option: $1"
+        return 2
+        ;;
+    esac
+  done
+
+  [[ -n "${ZONE}" ]] || { log "ERROR: --zone A or --zone C is required"; return 2; }
+  [[ -n "${DIRECTION}" ]] || {
+    log "ERROR: --left or --right is required"
+    return 2
+  }
 }
 
 process_is_alive()
@@ -122,6 +180,13 @@ keep_running()
 
 main()
 {
+  local -a client_debug_args=()
+
+  parse_arguments "$@" || {
+    usage >&2
+    exit 2
+  }
+
   mkdir -p "${RUN_DIR}"
   : >"${LAUNCH_LOG}"
   : >"${CLIENT_LOG}"
@@ -130,6 +195,10 @@ main()
   source "${RUNTIME_SETUP}"
   set -u
   check_prerequisites || exit 1
+  if (( DEBUG != 0 )); then
+    client_debug_args+=(--debug)
+    log "Per-frame D435i detection and target-point logging is enabled"
+  fi
   ros2 run fruit_mission d435i_arm_target_client \
     --require-stack-absent --ros-args --params-file "${CLIENT_CONFIG}" || {
     log "ERROR: perception or serial nodes are already running"
@@ -146,6 +215,7 @@ main()
 
   log "Waiting for the perception stack"
   if ros2 run fruit_mission d435i_arm_target_client \
+    --zone "${ZONE}" "${DIRECTION}" "${client_debug_args[@]}" \
     --ros-args --params-file "${CLIENT_CONFIG}" \
     2>&1 | tee -a "${CLIENT_LOG}"; then
     log "Task sequence completed"

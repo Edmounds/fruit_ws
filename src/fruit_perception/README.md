@@ -86,25 +86,66 @@ the A request in Area A and the C request in Area C. The D435i creates A, B, and
 C infer requests; `TREE` mode uses the request matching the current area. There
 is no fallback where every non-B area silently uses the C model.
 
+Each USB camera filters its `/fruit_perception/left/types` or
+`/fruit_perception/right/types` output independently. The node groups same-type
+detections across a complete 3-second window when their source-image ROIs
+overlap by at least the configured IoU threshold. There is no minimum
+observation-count gate. Tracks use the same median-confidence and
+horizontal-centrality 70%/30% score as the D435i selector; near-tied scores are
+decided by median confidence. Once a track is selected, the topic contains only
+that locked type while the matching ROI is present. During acquisition or a
+lock miss it publishes an empty type list, not another visible target's type.
+Annotated images continue to show all per-frame detections for diagnosis. A
+repeated `SIDES` request and a current-area change reset both side selectors, so
+each formal A/C observation starts a new window. The mission-side wait includes
+one extra second so the inference that closes the three-second selection window
+can publish its result.
+
 The D435i topics are:
 
 - synchronized aligned input: `/camera/camera/rgbd`
 - fruit types in confidence order: `/fruit_perception/d435i/types`
 - annotated RGB8 image: `/fruit_perception/d435i/annotated_image`
-- highest-confidence detection center: `/fruit_perception/d435i/target_point`
+- selected arm target center: `/fruit_perception/d435i/target_point`
 - all detections in confidence order: `/fruit_perception/d435i/detections`
 
 The detection message contains every model result above the configured
 threshold after NMS, in confidence order. Each item includes the model type,
-confidence, ROI in original 1920x1080 color coordinates, `has_point`, and a
+confidence, ROI in source-image coordinates, `has_point`, and a
 camera optical-frame point. Invalid center depth keeps the 2D detection with
 `has_point=false`.
 
-The legacy target point is a `geometry_msgs/msg/PointStamped` in the D435i color
+The target point is a `geometry_msgs/msg/PointStamped` in the D435i color
 optical frame. Coordinates are meters: `x` points right in the image, `y`
-points down, and `z` points forward. The point uses the depth value at the
-center pixel of the highest-confidence detection box. No point is published
-when that center pixel has invalid zero depth.
+points down, and `z` points forward. Candidates must have a valid center-depth
+point. Before publishing, the node observes the complete configured acquisition
+window and associates valid detections into physical-target tracks by their 3D
+distance. There is no minimum observation-count gate for a track. Each track is
+scored as
+`confidence_weight * median_confidence + (1 - confidence_weight) *
+median_horizontal_centrality`. Horizontal centrality ignores ROI y and is one
+minus the normalized distance of the ROI center from the image center along the
+image x axis. Tracks within `d435i_target_score_close_threshold` of the highest
+score are treated as a near tie, and median confidence decides first. After the
+winner is chosen, coordinate observations farther than the configured sigma
+limit on any axis are removed. The mean and per-axis standard deviation are
+recomputed from the remaining observations. Standard deviation is diagnostic
+only and never prevents the highest-scoring target from being published.
+
+The winning physical target is locked, and its filtered 35-frame mean is
+published exactly once on `target_point`. While locked, matching detections only
+maintain the lock; their raw per-frame points are not published. A frame that
+misses the locked target does not substitute another target. The node clears
+the lock and starts a new acquisition only after the configured number of
+consecutive misses. TREE-mode and current-area changes also reset the selection
+state. With the default configuration, acquisition uses exactly 35 frames,
+associates observations within a 3 cm radius, applies a 2-sigma outlier filter,
+and releases a lock after 8 missed frames.
+
+The target point published when the lock is acquired is the filtered mean from
+that winning 35-frame track. Arm-target consumers wait for one fresh finite
+`target_point` and forward it as `ArmTarget`; they do not collect or average a
+second point window.
 
 The annotated image keeps the camera's original aspect ratio. Inference uses a
 centered 640x640 letterbox with value 114, so no source pixels are cropped. Each

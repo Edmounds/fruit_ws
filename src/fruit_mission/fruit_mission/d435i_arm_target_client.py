@@ -6,6 +6,7 @@ import argparse
 import math
 import time
 
+from geometry_msgs.msg import PointStamped
 import rclpy
 from std_msgs.msg import String
 
@@ -18,8 +19,6 @@ from fruit_mission.script_hardware_client import CommandResult
 from fruit_mission.script_hardware_client import HardwareCommandClient
 from fruit_mission.script_hardware_client import latched_qos
 from fruit_mission.script_hardware_client import reliable_qos
-
-
 EXIT_MODE_TIMEOUT = 7
 EXIT_TARGET_TIMEOUT = 8
 EXIT_STACK_ALREADY_RUNNING = 9
@@ -28,8 +27,9 @@ EXIT_STACK_ALREADY_RUNNING = 9
 class D435iArmTargetClient(HardwareCommandClient):
     """Run the current-area, perception, sampling, and arm command sequence."""
 
-    def __init__(self) -> None:
+    def __init__(self, debug: bool = False) -> None:
         super().__init__("d435i_arm_target_client")
+        self.debug = debug
         self.declare_parameter(
             "state_command_topic",
             "/fruit_hardware_bridge/state_machine/command",
@@ -47,12 +47,15 @@ class D435iArmTargetClient(HardwareCommandClient):
             "current_area_topic", "/fruit_mission/current_area"
         )
         self.declare_parameter(
+            "d435i_target_point_topic",
+            "/fruit_perception/d435i/target_point",
+        )
+        self.declare_parameter(
             "d435i_detections_topic",
             "/fruit_perception/d435i/detections",
         )
         self.declare_parameter("active_mode_timeout_sec", 30.0)
         self.declare_parameter("detection_timeout_sec", 120.0)
-        self.declare_parameter("d435i_target_sample_count", 5)
         self.declare_parameter("current_area_delivery_timeout_sec", 1.0)
         self.declare_parameter("perception_mode_min_subscribers", 2)
         self.declare_parameter("cleanup_mode_timeout_sec", 2.0)
@@ -75,6 +78,9 @@ class D435iArmTargetClient(HardwareCommandClient):
         )
         self.active_mode_topic = self._string_parameter("active_mode_topic")
         self.current_area_topic = self._string_parameter("current_area_topic")
+        self.target_point_topic = self._string_parameter(
+            "d435i_target_point_topic"
+        )
         self.detections_topic = self._string_parameter(
             "d435i_detections_topic"
         )
@@ -83,9 +89,6 @@ class D435iArmTargetClient(HardwareCommandClient):
         )
         self.detection_timeout_sec = self._float_parameter(
             "detection_timeout_sec"
-        )
-        self.sample_count = int(
-            self.get_parameter("d435i_target_sample_count").value
         )
         self.area_delivery_timeout_sec = self._float_parameter(
             "current_area_delivery_timeout_sec"
@@ -104,7 +107,7 @@ class D435iArmTargetClient(HardwareCommandClient):
         )
 
         self._active_mode = ""
-        self._latest_detections: FruitDetections | None = None
+        self._latest_target_point: PointStamped | None = None
         self._mode_publisher = self.create_publisher(
             String, self.perception_mode_topic, reliable_qos(depth=1)
         )
@@ -123,12 +126,24 @@ class D435iArmTargetClient(HardwareCommandClient):
             self._on_active_mode,
             latched_qos(),
         )
-        self._detections_subscription = self.create_subscription(
-            FruitDetections,
-            self.detections_topic,
-            self._on_detections,
+        self._target_point_subscription = self.create_subscription(
+            PointStamped,
+            self.target_point_topic,
+            self._on_target_point,
             reliable_qos(),
         )
+        self._detections_subscription = None
+        if self.debug:
+            self._detections_subscription = self.create_subscription(
+                FruitDetections,
+                self.detections_topic,
+                self._on_detections_debug,
+                reliable_qos(depth=100),
+            )
+            self.get_logger().info(
+                "D435i per-frame debug logging enabled for "
+                f"{self.detections_topic} and {self.target_point_topic}"
+            )
 
     def stack_is_absent(self) -> bool:
         """Return whether none of the script-owned stack nodes exists."""
@@ -168,32 +183,54 @@ class D435iArmTargetClient(HardwareCommandClient):
             return False
         return True
 
-    def run_sequence(self) -> int:
-        """Run the original D435i target command sequence once."""
+    def run_sequence(self, area: str, direction: str) -> int:
+        """Set the area and direction, then run the D435i target sequence."""
         if not self.wait_for_stack():
             return int(CommandResult.BRIDGE_NOT_READY)
 
         self.get_logger().info(
-            "Reporting current area A to the lower controller"
+            f"Reporting current area {area} to the lower controller"
         )
         area_command = StateMachineCommand()
         area_command.task_id = StateMachineCommand.TASK_CURRENT_AREA
-        area_command.task_status = StateMachineCommand.AREA_A
+        area_command.task_status = {
+            "A": StateMachineCommand.AREA_A,
+            "C": StateMachineCommand.AREA_C,
+        }[area]
         area_result = self.publish_and_wait(
             self._state_command_publisher,
             self.state_command_topic,
             area_command,
             ExecutionCallback.CALLBACK_CURRENT_AREA,
-            "current area A",
+            f"current area {area}",
         )
         if area_result != CommandResult.COMPLETED:
             return int(area_result)
-        if not self._announce_current_area("A"):
+        if not self._announce_current_area(area):
             return int(CommandResult.ENDPOINTS_NOT_READY)
 
         self.get_logger().info(
-            "Assuming the robot is at the observation position; "
-            "switching to TREE mode"
+            f"Moving to the {direction} observation position"
+        )
+        direction_command = StateMachineCommand()
+        direction_command.task_id = StateMachineCommand.TASK_PICK_DIRECTION
+        direction_command.task_status = (
+            StateMachineCommand.PICK_DIRECTION_LEFT
+            if direction == "left"
+            else StateMachineCommand.PICK_DIRECTION_RIGHT
+        )
+        direction_result = self.publish_and_wait(
+            self._state_command_publisher,
+            self.state_command_topic,
+            direction_command,
+            ExecutionCallback.CALLBACK_PICK_DIRECTION,
+            f"{direction} observation position",
+        )
+        if direction_result != CommandResult.COMPLETED:
+            return int(direction_result)
+
+        self.get_logger().info(
+            "Observation position reached; switching to TREE mode"
         )
         if not self.set_perception_mode("TREE", self.active_mode_timeout_sec):
             self.get_logger().error("Perception stack did not enter TREE mode")
@@ -203,15 +240,16 @@ class D435iArmTargetClient(HardwareCommandClient):
         target = self.sample_target(fresh_after_ns)
         if target is None:
             self.get_logger().error(
-                f"Fewer than {self.sample_count} valid D435i "
-                "detection samples "
+                "No D435i target from a completed perception window "
                 f"within {self.detection_timeout_sec:.0f}s"
             )
             return EXIT_TARGET_TIMEOUT
-        target_type, target_x, target_y, target_z = target
+        target_x = float(target.point.x)
+        target_y = float(target.point.y)
+        target_z = float(target.point.z)
         self.get_logger().info(
-            f"Averaged {self.sample_count} centered D435i samples: "
-            f"{target_type} x={target_x}, y={target_y}, z={target_z}"
+            "D435i target selected from the 35-frame perception window: "
+            f"x={target_x}, y={target_y}, z={target_z}"
         )
 
         self.get_logger().info("Sending the D435i target to the arm")
@@ -253,46 +291,29 @@ class D435iArmTargetClient(HardwareCommandClient):
         """Wait for the transient-local active perception mode."""
         return self.wait_until(lambda: self._active_mode == mode, timeout_sec)
 
-    def sample_target(
-        self, fresh_after_ns: int
-    ) -> tuple[str, float, float, float] | None:
-        """Average five fresh centered typed D435i detections."""
-        self._latest_detections = None
-        samples: list[tuple[float, float, float]] = []
-        latest_type = ""
+    def sample_target(self, fresh_after_ns: int) -> PointStamped | None:
+        """Wait for one fresh target already averaged by perception."""
+        self._latest_target_point = None
+        latest_stamp_ns = fresh_after_ns
         deadline = time.monotonic() + self.detection_timeout_sec
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self, timeout_sec=0.1)
-            message = self._latest_detections
-            self._latest_detections = None
-            if message is None or self._stamp_ns(message) <= fresh_after_ns:
+            message = self._latest_target_point
+            self._latest_target_point = None
+            if message is None:
                 continue
-            valid = [item for item in message.detections if self._valid(item)]
-            if not valid:
+            stamp_ns = self._stamp_ns(message)
+            if stamp_ns <= latest_stamp_ns:
                 continue
-            selected = min(
-                valid,
-                key=lambda item: (
-                    item.point.x * item.point.x
-                    + item.point.y * item.point.y,
-                    -float(item.confidence),
-                ),
+            latest_stamp_ns = stamp_ns
+            point = (
+                float(message.point.x),
+                float(message.point.y),
+                float(message.point.z),
             )
-            latest_type = selected.type
-            samples.append(
-                (
-                    float(selected.point.x),
-                    float(selected.point.y),
-                    float(selected.point.z),
-                )
-            )
-            if len(samples) >= self.sample_count:
-                return (
-                    latest_type,
-                    sum(point[0] for point in samples) / self.sample_count,
-                    sum(point[1] for point in samples) / self.sample_count,
-                    sum(point[2] for point in samples) / self.sample_count,
-                )
+            if not all(math.isfinite(value) for value in point):
+                continue
+            return message
         return None
 
     def _announce_current_area(self, area: str) -> bool:
@@ -314,8 +335,40 @@ class D435iArmTargetClient(HardwareCommandClient):
     def _on_active_mode(self, message: String) -> None:
         self._active_mode = message.data
 
-    def _on_detections(self, message: FruitDetections) -> None:
-        self._latest_detections = message
+    def _on_target_point(self, message: PointStamped) -> None:
+        if self.debug:
+            self.get_logger().info(
+                "[D435I DEBUG] target_point "
+                f"stamp={self._format_stamp(message)} "
+                f"frame={message.header.frame_id!r} "
+                f"point=({message.point.x:.6f},"
+                f"{message.point.y:.6f},{message.point.z:.6f})"
+            )
+        self._latest_target_point = message
+
+    def _on_detections_debug(self, message: FruitDetections) -> None:
+        detections = []
+        for index, item in enumerate(message.detections):
+            point = (
+                f"({item.point.x:.6f},{item.point.y:.6f},"
+                f"{item.point.z:.6f})"
+                if item.has_point
+                else "NONE"
+            )
+            detections.append(
+                f"#{index} type={item.type!r} "
+                f"confidence={item.confidence:.6f} "
+                f"roi=({item.roi.x_offset},{item.roi.y_offset},"
+                f"{item.roi.width},{item.roi.height}) "
+                f"has_point={bool(item.has_point)} point={point}"
+            )
+        details = " | ".join(detections) if detections else "<none>"
+        self.get_logger().info(
+            "[D435I DEBUG] detections "
+            f"stamp={self._format_stamp(message)} "
+            f"frame={message.header.frame_id!r} "
+            f"count={len(message.detections)} {details}"
+        )
 
     def _string_parameter(self, name: str) -> str:
         return str(self.get_parameter(name).value)
@@ -324,19 +377,14 @@ class D435iArmTargetClient(HardwareCommandClient):
         return float(self.get_parameter(name).value)
 
     @staticmethod
-    def _stamp_ns(message: FruitDetections) -> int:
+    def _stamp_ns(message: PointStamped) -> int:
         stamp = message.header.stamp
         return stamp.sec * 1_000_000_000 + stamp.nanosec
 
     @staticmethod
-    def _valid(detection: object) -> bool:
-        return bool(
-            detection.has_point
-            and detection.type
-            and math.isfinite(float(detection.point.x))
-            and math.isfinite(float(detection.point.y))
-            and math.isfinite(float(detection.point.z))
-        )
+    def _format_stamp(message: PointStamped | FruitDetections) -> str:
+        stamp = message.header.stamp
+        return f"{stamp.sec}.{stamp.nanosec:09d}"
 
     @staticmethod
     def _fully_qualified_name(name: str, namespace: str) -> str:
@@ -351,10 +399,25 @@ def main(args=None) -> None:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--require-stack-absent", action="store_true")
     mode.add_argument("--mode-off", action="store_true")
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--zone", choices=("A", "C"))
+    direction = parser.add_mutually_exclusive_group()
+    direction.add_argument(
+        "--left", dest="direction", action="store_const", const="left"
+    )
+    direction.add_argument(
+        "--right", dest="direction", action="store_const", const="right"
+    )
     options, ros_args = parser.parse_known_args(args)
 
+    if not (options.require_stack_absent or options.mode_off):
+        if options.zone is None:
+            parser.error("--zone A or --zone C is required")
+        if options.direction is None:
+            parser.error("--left or --right is required")
+
     rclpy.init(args=ros_args)
-    node = D435iArmTargetClient()
+    node = D435iArmTargetClient(debug=options.debug)
     status = 1
     try:
         if options.require_stack_absent:
@@ -366,7 +429,7 @@ def main(args=None) -> None:
         elif options.mode_off:
             status = 0 if node.set_off_for_cleanup() else EXIT_MODE_TIMEOUT
         else:
-            status = node.run_sequence()
+            status = node.run_sequence(options.zone, options.direction)
     except KeyboardInterrupt:
         status = 130
     finally:

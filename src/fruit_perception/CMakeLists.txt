@@ -65,7 +65,12 @@ target_compile_features(detection_parser PUBLIC cxx_std_17)
 target_link_libraries(detection_parser ${OpenCV_LIBRARIES})
 ament_target_dependencies(detection_parser sensor_msgs)
 
-add_library(fruit_perception_component SHARED src/fruit_perception_node.cpp)
+add_library(
+  fruit_perception_component SHARED
+  src/d435i_target_selector.cpp
+  src/fruit_perception_node.cpp
+  src/side_target_selector.cpp
+)
 target_include_directories(fruit_perception_component PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>

@@ -23,13 +23,15 @@
 #include <utility>
 #include <vector>
 
-#include "fruit_perception/detection_parser.hpp"
+#include "fruit_perception/d435i_target_selector.hpp"
 #include "fruit_perception/detection_output.hpp"
+#include "fruit_perception/detection_parser.hpp"
 #include "fruit_perception/image_processing.hpp"
 #include "fruit_perception/msg/fruit_detection.hpp"
 #include "fruit_perception/msg/fruit_detections.hpp"
 #include "fruit_perception/msg/fruit_types.hpp"
 #include "fruit_perception/perception_mode.hpp"
+#include "fruit_perception/side_target_selector.hpp"
 
 namespace fruit_perception
 {
@@ -45,6 +47,44 @@ public:
     const auto b_model_path = declare_parameter("b_model_path", package_share + "/model/B.onnx");
     confidence_threshold_ = static_cast<float>(declare_parameter("confidence_threshold", 0.50));
     nms_iou_threshold_ = static_cast<float>(declare_parameter("nms_iou_threshold", 0.45));
+    target_confidence_weight_ =
+      static_cast<float>(declare_parameter("d435i_target_confidence_weight", 0.70));
+    target_score_close_threshold_ =
+      static_cast<float>(declare_parameter("d435i_target_score_close_threshold", 0.05));
+    const auto target_acquisition_frames =
+      declare_parameter<std::int64_t>("d435i_target_acquisition_frames", 35);
+    const auto target_association_radius =
+      declare_parameter("d435i_target_association_radius_m", 0.03);
+    const auto target_outlier_sigma =
+      declare_parameter("d435i_target_outlier_sigma", 2.0);
+    const auto target_lock_miss_frames =
+      declare_parameter<std::int64_t>("d435i_target_lock_miss_frames", 8);
+    if (target_acquisition_frames <= 0) {
+      throw std::invalid_argument("d435i_target_acquisition_frames must be positive");
+    }
+    if (target_lock_miss_frames <= 0) {
+      throw std::invalid_argument("d435i_target_lock_miss_frames must be positive");
+    }
+    target_selector_config_ = D435iTargetSelectorConfig{
+      static_cast<std::size_t>(target_acquisition_frames),
+      target_association_radius,
+      target_outlier_sigma,
+      static_cast<std::size_t>(target_lock_miss_frames),
+      target_confidence_weight_,
+      target_score_close_threshold_};
+    const auto side_target_acquisition_sec =
+      declare_parameter("side_target_acquisition_sec", 3.0);
+    const auto side_target_lock_miss_frames =
+      declare_parameter<std::int64_t>("side_target_lock_miss_frames", 8);
+    if (side_target_lock_miss_frames <= 0) {
+      throw std::invalid_argument("side_target_lock_miss_frames must be positive");
+    }
+    side_target_selector_config_ = SideTargetSelectorConfig{
+      side_target_acquisition_sec,
+      declare_parameter("side_target_association_iou_threshold", 0.30),
+      static_cast<std::size_t>(side_target_lock_miss_frames),
+      declare_parameter("side_target_confidence_weight", 0.70),
+      declare_parameter("side_target_score_close_threshold", 0.05)};
     const auto active_mode_topic = declare_parameter(
       "active_mode_topic", "/fruit_perception/active_mode");
     mode_subscription_ = create_subscription<std_msgs::msg::String>(
@@ -57,7 +97,12 @@ public:
             message->data.c_str());
           return;
         }
-        perception_mode_.store(*mode);
+        const auto previous = perception_mode_.exchange(*mode);
+        if (previous != *mode || *mode == PerceptionMode::kTree ||
+          *mode == PerceptionMode::kSides)
+        {
+          target_selection_generation_.fetch_add(1U);
+        }
       });
     const auto current_area_topic = declare_parameter(
       "current_area_topic", "/fruit_mission/current_area");
@@ -67,7 +112,10 @@ public:
         if (message->data == "A" || message->data == "B" ||
           message->data == "C" || message->data == "D")
         {
-          current_area_.store(message->data.front());
+          const char previous = current_area_.exchange(message->data.front());
+          if (previous != message->data.front()) {
+            target_selection_generation_.fetch_add(1U);
+          }
           return;
         }
         RCLCPP_WARN(
@@ -93,6 +141,18 @@ public:
       nms_iou_threshold_ < 0.0F || nms_iou_threshold_ > 1.0F)
     {
       throw std::invalid_argument("nms_iou_threshold must be between 0 and 1");
+    }
+    if (!std::isfinite(target_confidence_weight_) ||
+      target_confidence_weight_ < 0.0F || target_confidence_weight_ > 1.0F)
+    {
+      throw std::invalid_argument(
+              "d435i_target_confidence_weight must be between 0 and 1");
+    }
+    if (!std::isfinite(target_score_close_threshold_) ||
+      target_score_close_threshold_ < 0.0F || target_score_close_threshold_ > 1.0F)
+    {
+      throw std::invalid_argument(
+              "d435i_target_score_close_threshold must be between 0 and 1");
     }
 
     const auto side_camera_count =
@@ -197,6 +257,10 @@ private:
     std_msgs::msg::Header header;
     std::chrono::steady_clock::time_point last_completed_at;
     double displayed_fps{0.0};
+    std::unique_ptr<D435iTargetSelector> target_selector;
+    std::unique_ptr<SideTargetSelector> side_target_selector;
+    std::uint64_t target_selection_generation{0U};
+    std::uint64_t submitted_target_selection_generation{0U};
     std::atomic<bool> busy{false};
   };
 
@@ -287,6 +351,8 @@ private:
       create_publisher<msg::FruitTypes>(output_topic, rclcpp::QoS(10)),
       create_publisher<sensor_msgs::msg::Image>(
         annotated_topic, rclcpp::QoS(1).reliable()));
+    stream->target_selector = std::make_unique<D435iTargetSelector>(target_selector_config_);
+    stream->target_selection_generation = target_selection_generation_.load();
     stream->target_point_publisher =
       create_publisher<geometry_msgs::msg::PointStamped>(target_point_topic, rclcpp::QoS(10));
     stream->detections_publisher =
@@ -326,6 +392,9 @@ private:
       create_publisher<msg::FruitTypes>(output_topic, rclcpp::QoS(10)),
       create_publisher<sensor_msgs::msg::Image>(
         annotated_topic, rclcpp::QoS(1).reliable()));
+    stream->side_target_selector =
+      std::make_unique<SideTargetSelector>(side_target_selector_config_);
+    stream->target_selection_generation = target_selection_generation_.load();
     auto * stream_ptr = stream.get();
     stream->a_area_request = add_request_slot(*stream, a_model);
     stream->c_area_request = add_request_slot(*stream, c_model);
@@ -361,6 +430,12 @@ private:
     }
 
     try {
+      const auto target_generation = target_selection_generation_.load();
+      if (stream.target_selection_generation != target_generation) {
+        stream.side_target_selector->reset();
+        stream.target_selection_generation = target_generation;
+      }
+      stream.submitted_target_selection_generation = target_generation;
       // toCvShare avoids a full-frame copy when the source already publishes
       // rgb8 (usb_cam mjpeg2rgb does); the returned pointer
       // keeps the message alive for the duration of the inference.
@@ -392,6 +467,12 @@ private:
     }
 
     try {
+      const auto target_generation = target_selection_generation_.load();
+      if (stream.target_selection_generation != target_generation) {
+        stream.target_selector->reset();
+        stream.target_selection_generation = target_generation;
+      }
+      stream.submitted_target_selection_generation = target_generation;
       stream.frame = cv_bridge::toCvShare(
         rgbd->rgb, rgbd, sensor_msgs::image_encodings::RGB8);
       stream.aligned_depth = cv_bridge::toCvShare(
@@ -431,12 +512,62 @@ private:
         stream.busy.store(false);
         return;
       }
+      if (stream.side_target_selector &&
+        stream.submitted_target_selection_generation !=
+        target_selection_generation_.load())
+      {
+        stream.busy.store(false);
+        return;
+      }
 
       msg::FruitTypes result;
       result.header = stream.header;
-      result.types.reserve(detections.size());
-      for (const auto & detection : detections) {
-        result.types.push_back(detection.type);
+      if (stream.side_target_selector) {
+        std::vector<SideTargetCandidate> candidates;
+        candidates.reserve(detections.size());
+        const double half_width = static_cast<double>(stream.frame->image.cols) * 0.5;
+        for (const auto & detection : detections) {
+          const cv::Rect roi = to_original_box(detection, stream.transform);
+          if (roi.empty()) {
+            continue;
+          }
+          const double roi_center_x =
+            static_cast<double>(roi.x) + static_cast<double>(roi.width) * 0.5;
+          const double horizontal_offset = std::clamp(
+            std::abs(roi_center_x - half_width) / half_width, 0.0, 1.0);
+          candidates.push_back(
+            SideTargetCandidate{
+              detection.type, roi, static_cast<double>(detection.score),
+              1.0 - horizontal_offset});
+        }
+
+        const auto target_update = stream.side_target_selector->update(candidates);
+        if (target_update.lock_lost) {
+          RCLCPP_WARN(
+            get_logger(), "%s side target lock lost after %zu missed frames; reacquiring",
+            stream.name.c_str(), side_target_selector_config_.lock_miss_frames);
+        }
+        if (target_update.lock_acquired) {
+          RCLCPP_INFO(
+            get_logger(),
+            "%s side target '%s' locked from %zu observations over %.1f s: score=%.3f, "
+            "confidence=%.3f, horizontal_centrality=%.3f, roi=(%.1f, %.1f, %.1f, %.1f)",
+            stream.name.c_str(), target_update.type ? target_update.type->c_str() : "",
+            target_update.observation_count,
+            side_target_selector_config_.acquisition_duration_sec,
+            target_update.score, target_update.confidence,
+            target_update.horizontal_centrality, target_update.reference_roi.x,
+            target_update.reference_roi.y, target_update.reference_roi.width,
+            target_update.reference_roi.height);
+        }
+        if (target_update.type) {
+          result.types.push_back(*target_update.type);
+        }
+      } else {
+        result.types.reserve(detections.size());
+        for (const auto & detection : detections) {
+          result.types.push_back(detection.type);
+        }
       }
       stream.result_publisher->publish(result);
 
@@ -465,12 +596,60 @@ private:
         }
         stream.detections_publisher->publish(all_detections);
 
-        if (!all_detections.detections.empty() &&
-          all_detections.detections.front().has_point)
+        if (stream.submitted_target_selection_generation !=
+          target_selection_generation_.load())
         {
+          stream.busy.store(false);
+          return;
+        }
+
+        std::vector<D435iTargetCandidate> candidates;
+        candidates.reserve(outputs.size());
+        const double half_width = static_cast<double>(stream.frame->image.cols) * 0.5;
+        for (const auto & output : outputs) {
+          if (!output.has_point ||
+            !std::isfinite(output.point.x) ||
+            !std::isfinite(output.point.y) ||
+            !std::isfinite(output.point.z))
+          {
+            continue;
+          }
+          const double roi_center_x =
+            static_cast<double>(output.roi.x) + static_cast<double>(output.roi.width) * 0.5;
+          const double horizontal_offset = std::clamp(
+            std::abs(roi_center_x - half_width) / half_width, 0.0, 1.0);
+          candidates.push_back(
+            D435iTargetCandidate{
+              output.point, static_cast<double>(output.confidence), 1.0 - horizontal_offset});
+        }
+
+        const auto target_update = stream.target_selector->update(candidates);
+        if (target_update.lock_lost) {
+          RCLCPP_WARN(
+            get_logger(),
+            "D435i target lock lost after %zu missed frames; reacquiring",
+            target_selector_config_.lock_miss_frames);
+        }
+        if (target_update.lock_acquired) {
+          RCLCPP_INFO(
+            get_logger(),
+            "D435i target locked with %zu/%zu inliers from %zu frames: score=%.3f, "
+            "confidence=%.3f, horizontal_centrality=%.3f, "
+            "mean=(%.3f, %.3f, %.3f), stddev=(%.4f, %.4f, %.4f)",
+            target_update.inlier_count, target_update.observation_count,
+            target_selector_config_.acquisition_frames,
+            target_update.score, target_update.confidence,
+            target_update.horizontal_centrality,
+            target_update.reference_point.x, target_update.reference_point.y,
+            target_update.reference_point.z, target_update.stddev.x,
+            target_update.stddev.y, target_update.stddev.z);
+        }
+        if (target_update.point) {
           geometry_msgs::msg::PointStamped target;
           target.header = stream.aligned_depth->header;
-          target.point = all_detections.detections.front().point;
+          target.point.x = target_update.point->x;
+          target.point.y = target_update.point->y;
+          target.point.z = target_update.point->z;
           stream.target_point_publisher->publish(target);
         }
       }
@@ -569,6 +748,11 @@ private:
   ModelRuntime b_model_;
   float confidence_threshold_{0.50F};
   float nms_iou_threshold_{0.45F};
+  float target_confidence_weight_{0.70F};
+  float target_score_close_threshold_{0.05F};
+  D435iTargetSelectorConfig target_selector_config_{35U, 0.03, 2.0, 8U, 0.70, 0.05};
+  SideTargetSelectorConfig side_target_selector_config_{3.0, 0.30, 8U, 0.70, 0.05};
+  std::atomic<std::uint64_t> target_selection_generation_{0U};
   std::atomic<bool> stopping_{false};
   std::atomic<PerceptionMode> perception_mode_{PerceptionMode::kOff};
   std::atomic<char> current_area_{'A'};

@@ -132,7 +132,7 @@ cloud; fixed structures should overlap and `GICP Path` should be continuous with
 Enable the red `GICP Source Odom` display when the uncorrected odom cloud is needed for comparison.
 The `Global Costmap`, `Local Costmap`, `Path`, and `Local Plan` displays show whether navigation is
 using the corrected robot pose. The full command sequence and diagnostic interpretation are in
-[`MAPPING_NAVIGATION.md`](../../../MAPPING_NAVIGATION.md#5-查看重定位效果).
+[`MAPPING_NAVIGATION.md`](../../../docs/MAPPING_NAVIGATION.md#5-查看重定位效果).
 
 ## Verification
 
