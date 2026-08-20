@@ -139,6 +139,9 @@ public:
       });
     const auto expected_fruit_type_topic = declare_parameter(
       "expected_fruit_type_topic", "/fruit_mission/expected_fruit_type");
+    rclcpp::SubscriptionOptions expected_fruit_type_options;
+    // ROS 2 Humble intra-process communication does not support transient-local durability.
+    expected_fruit_type_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
     expected_fruit_type_subscription_ = create_subscription<std_msgs::msg::String>(
       expected_fruit_type_topic, rclcpp::QoS(1).reliable().transient_local(),
       [this](std_msgs::msg::String::ConstSharedPtr message) {
@@ -148,7 +151,8 @@ public:
         }
         expected_fruit_type_ = message->data;
         target_selection_generation_.fetch_add(1U);
-      });
+      },
+      expected_fruit_type_options);
     const auto decision_topic = declare_parameter(
       "decision_topic", "/fruit_perception/decision");
     decision_publisher_ = create_publisher<msg::FruitDecision>(decision_topic, rclcpp::QoS(10));

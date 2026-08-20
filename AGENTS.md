@@ -41,6 +41,9 @@
 ### 图像处理节点使用进程内通信
 - 相机驱动和订阅其原始图像的 C++ 图像处理节点必须实现为 ROS 2 component，并加载到同一个 `ComposableNodeContainer` 中。
 - 每个相关组件必须设置 `extra_arguments=[{'use_intra_process_comms': True}]`，避免大尺寸 `sensor_msgs/Image` 经过 DDS 跨进程序列化和分片。
+- ROS 2 Humble 的进程内通信只支持 `VOLATILE` durability。启用进程内通信的 component 一旦创建 `TRANSIENT_LOCAL` 发布器或订阅器，构造函数会抛出 `intraprocess communication allowed only with volatile durability`，导致组件加载失败。
+- 对确实需要 `TRANSIENT_LOCAL` 的状态/控制话题，必须保留其 QoS 语义，并只对该发布器或订阅器关闭进程内通信：使用 `rclcpp::PublisherOptions` 或 `rclcpp::SubscriptionOptions`，将 `use_intra_process_comm` 设为 `rclcpp::IntraProcessSetting::Disable` 后传给 `create_publisher`/`create_subscription`。这样低频状态话题走 DDS，而图像话题继续走进程内通信。
+- 禁止为了消除上述异常把需要锁存的状态话题改成 `VOLATILE`，也禁止关闭整个相机/图像处理 component 的进程内通信。给已启用进程内通信的 component 新增发布器或订阅器时，必须检查其 history、depth 和 durability 是否满足 ROS 2 Humble 的进程内通信限制。
 - 同一容器中的组件必须链接同一套 OpenCV ABI；ROS 2 Humble 节点统一使用系统 OpenCV 4.5.4，禁止与 `/usr/local` 下的其他 OpenCV 版本混用。
 - 第三方节点没有 component 接口时，先说明限制并确认方案，再使用跨进程图像传输。
 
