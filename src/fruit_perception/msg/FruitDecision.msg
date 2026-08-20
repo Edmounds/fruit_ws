@@ -5,5 +5,7 @@ uint8 SOURCE_D435I=2
 uint8 source
 string[] types
 FruitDetection[] detections
+FruitTarget[] targets
+bool targets_ready
 bool has_target
 geometry_msgs/Point target_point

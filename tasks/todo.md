@@ -1,5 +1,12 @@
 # ROS-native Script Communication Checklist
 
+## B 区双果实 mission TODO
+
+- [ ] B 区到树后消费 D435i `FruitDecision.targets`，先比较二维码要求的水果基础类型，再筛选 `_ripe` 目标。
+- [ ] 按成熟目标数量执行 1 次或 2 次抓取；每个 ArmTarget 等待下位机完成后再继续。
+- [ ] 两个目标之间重新发送相同的 left/right 方向命令并等待完成，再发送第二个 ArmTarget。
+- [ ] 当前树处理结束后只推进一次 B 区任务游标；本阶段不把该逻辑接入正式 mission 状态机。
+
 ## Preparation
 
 - [x] Review and approve `tasks/plan.md`.

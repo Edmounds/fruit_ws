@@ -29,6 +29,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FruitDetection.msg"
   "msg/FruitDetections.msg"
   "msg/FruitDecision.msg"
+  "msg/FruitTarget.msg"
   "msg/FruitTypes.msg"
   DEPENDENCIES geometry_msgs sensor_msgs std_msgs
 )
@@ -69,6 +70,7 @@ ament_target_dependencies(detection_parser sensor_msgs)
 add_library(
   fruit_perception_component SHARED
   src/d435i_target_selector.cpp
+  src/b_target_selector.cpp
   src/fruit_perception_node.cpp
   src/side_target_selector.cpp
 )

@@ -113,6 +113,10 @@ fruit_perception_node:
     d435i_target_association_radius_m: 0.03
     d435i_target_outlier_sigma: 2.0
     d435i_target_lock_miss_frames: 8
+    d435i_b_target_acquisition_frames: 50
+    d435i_b_target_max_count: 2
+    d435i_b_target_association_radius_m: 0.03
+    d435i_b_target_outlier_sigma: 2.0
 
 camera_mode_manager:
   ros__parameters:

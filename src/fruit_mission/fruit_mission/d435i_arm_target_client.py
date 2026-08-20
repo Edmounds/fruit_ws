@@ -96,6 +96,7 @@ class D435iArmTargetClient(HardwareCommandClient):
 
         self._active_mode = ""
         self._latest_target_point: PointStamped | None = None
+        self._latest_b_targets = None
         self._mode_publisher = self.create_publisher(
             String, self.perception_mode_topic, reliable_qos(depth=1)
         )
@@ -176,6 +177,7 @@ class D435iArmTargetClient(HardwareCommandClient):
         area_command.task_id = StateMachineCommand.TASK_CURRENT_AREA
         area_command.task_status = {
             "A": StateMachineCommand.AREA_A,
+            "B": StateMachineCommand.AREA_B,
             "C": StateMachineCommand.AREA_C,
         }[area]
         area_result = self.publish_and_wait(
@@ -193,20 +195,7 @@ class D435iArmTargetClient(HardwareCommandClient):
         self.get_logger().info(
             f"Moving to the {direction} observation position"
         )
-        direction_command = StateMachineCommand()
-        direction_command.task_id = StateMachineCommand.TASK_PICK_DIRECTION
-        direction_command.task_status = (
-            StateMachineCommand.PICK_DIRECTION_LEFT
-            if direction == "left"
-            else StateMachineCommand.PICK_DIRECTION_RIGHT
-        )
-        direction_result = self.publish_and_wait(
-            self._state_command_publisher,
-            self.state_command_topic,
-            direction_command,
-            ExecutionCallback.CALLBACK_PICK_DIRECTION,
-            f"{direction} observation position",
-        )
+        direction_result = self.send_pick_direction(direction)
         if direction_result != CommandResult.COMPLETED:
             return int(direction_result)
 
@@ -218,6 +207,35 @@ class D435iArmTargetClient(HardwareCommandClient):
             return EXIT_MODE_TIMEOUT
 
         fresh_after_ns = self.get_clock().now().nanoseconds
+        if area == "B":
+            targets = self.sample_b_targets(fresh_after_ns)
+            if not targets:
+                self.get_logger().error(
+                    "No valid B-zone targets from the completed 50-frame perception window "
+                    f"within {self.detection_timeout_sec:.0f}s"
+                )
+                return EXIT_TARGET_TIMEOUT
+            for index, target in enumerate(targets):
+                self.get_logger().info(
+                    f"B target {index + 1}/{len(targets)} type={target.type!r} "
+                    f"confidence={target.confidence:.6f} "
+                    f"observations={target.observation_count} "
+                    f"inliers={target.inlier_count} "
+                    f"point=({target.point.x:.6f},{target.point.y:.6f},"
+                    f"{target.point.z:.6f})"
+                )
+                result = self.send_arm_target(target.point, f"B arm target {index + 1}")
+                if result != CommandResult.COMPLETED:
+                    return int(result)
+                if index + 1 < len(targets):
+                    self.get_logger().info(
+                        "Re-entering the B observation direction before the next target"
+                    )
+                    direction_result = self.send_pick_direction(direction)
+                    if direction_result != CommandResult.COMPLETED:
+                        return int(direction_result)
+            return int(CommandResult.COMPLETED)
+
         target = self.sample_target(fresh_after_ns)
         if target is None:
             self.get_logger().error(
@@ -233,20 +251,41 @@ class D435iArmTargetClient(HardwareCommandClient):
             f"x={target_x}, y={target_y}, z={target_z}"
         )
 
-        self.get_logger().info("Sending the D435i target to the arm")
+        result = self.send_arm_target(target.point, "arm target")
+        return int(result)
+
+    def send_pick_direction(self, direction: str) -> CommandResult:
+        """Send a direction pose command and wait for its completion callback."""
+        direction_command = StateMachineCommand()
+        direction_command.task_id = StateMachineCommand.TASK_PICK_DIRECTION
+        direction_command.task_status = (
+            StateMachineCommand.PICK_DIRECTION_LEFT
+            if direction == "left"
+            else StateMachineCommand.PICK_DIRECTION_RIGHT
+        )
+        return self.publish_and_wait(
+            self._state_command_publisher,
+            self.state_command_topic,
+            direction_command,
+            ExecutionCallback.CALLBACK_PICK_DIRECTION,
+            f"{direction} observation position",
+        )
+
+    def send_arm_target(self, point, label: str) -> CommandResult:
+        """Send one point to the arm and wait for the execution callback."""
+        self.get_logger().info(f"Sending {label} to the arm")
         message = ArmTarget()
-        message.target_x = target_x
-        message.target_y = target_y
-        message.target_z = target_z
+        message.target_x = float(point.x)
+        message.target_y = float(point.y)
+        message.target_z = float(point.z)
         message.z_type = ArmTarget.Z_GROUND
-        result = self.publish_and_wait(
+        return self.publish_and_wait(
             self._arm_target_publisher,
             self.arm_target_topic,
             message,
             ExecutionCallback.CALLBACK_ARM_TARGET,
-            "arm target",
+            label,
         )
-        return int(result)
 
     def set_perception_mode(self, mode: str, timeout_sec: float) -> bool:
         """Publish one mode after subscribers exist and await typed state."""
@@ -297,6 +336,31 @@ class D435iArmTargetClient(HardwareCommandClient):
             return message
         return None
 
+    def sample_b_targets(self, fresh_after_ns: int):
+        """Wait for one fresh completed B-zone target window."""
+        self._latest_b_targets = None
+        deadline = time.monotonic() + self.detection_timeout_sec
+        while rclpy.ok() and time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.1)
+            selection = self._latest_b_targets
+            self._latest_b_targets = None
+            if selection is None:
+                continue
+            stamp_ns, targets = selection
+            if stamp_ns <= fresh_after_ns:
+                continue
+            valid_targets = []
+            for target in targets:
+                point = (
+                    float(target.point.x),
+                    float(target.point.y),
+                    float(target.point.z),
+                )
+                if target.has_point and all(math.isfinite(value) for value in point):
+                    valid_targets.append(target)
+            return valid_targets
+        return None
+
     def _announce_current_area(self, area: str) -> bool:
         matched = self.wait_until(
             lambda: self.count_subscribers(self.current_area_topic) > 0,
@@ -341,6 +405,12 @@ class D435iArmTargetClient(HardwareCommandClient):
                 f"stamp={self._format_stamp(message)} "
                 f"frame={message.header.frame_id!r} "
                 f"count={len(message.detections)} {details}"
+            )
+        if message.targets_ready:
+            stamp = message.header.stamp
+            self._latest_b_targets = (
+                stamp.sec * 1_000_000_000 + stamp.nanosec,
+                list(message.targets),
             )
         if not message.has_target:
             return
@@ -389,7 +459,7 @@ def main(args=None) -> None:
     mode.add_argument("--require-stack-absent", action="store_true")
     mode.add_argument("--mode-off", action="store_true")
     parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--zone", choices=("A", "C"))
+    parser.add_argument("--zone", choices=("A", "B", "C"))
     direction = parser.add_mutually_exclusive_group()
     direction.add_argument(
         "--left", dest="direction", action="store_const", const="left"
@@ -401,7 +471,7 @@ def main(args=None) -> None:
 
     if not (options.require_stack_absent or options.mode_off):
         if options.zone is None:
-            parser.error("--zone A or --zone C is required")
+            parser.error("--zone A, --zone B, or --zone C is required")
         if options.direction is None:
             parser.error("--left or --right is required")
 

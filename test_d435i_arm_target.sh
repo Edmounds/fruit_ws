@@ -24,7 +24,7 @@ log()
 usage()
 {
   cat <<'EOF'
-Usage: ./test_d435i_arm_target.sh --zone A|C --left|--right [--debug]
+Usage: ./test_d435i_arm_target.sh --zone A|B|C --left|--right [--debug]
 
 Select the current area and observation direction before running the existing
 D435i recognition and arm-target workflow. --debug prints every D435i detection
@@ -37,12 +37,13 @@ parse_arguments()
   while (( $# > 0 )); do
     case "$1" in
       --zone)
-        (( $# >= 2 )) || { log "ERROR: --zone requires A or C"; return 2; }
+        (( $# >= 2 )) || { log "ERROR: --zone requires A, B, or C"; return 2; }
         [[ -z "${ZONE}" ]] || { log "ERROR: --zone may only be specified once"; return 2; }
         case "$2" in
           A|a) ZONE=A ;;
+          B|b) ZONE=B ;;
           C|c) ZONE=C ;;
-          *) log "ERROR: --zone must be A or C"; return 2 ;;
+          *) log "ERROR: --zone must be A, B, or C"; return 2 ;;
         esac
         shift 2
         ;;
@@ -69,7 +70,7 @@ parse_arguments()
     esac
   done
 
-  [[ -n "${ZONE}" ]] || { log "ERROR: --zone A or --zone C is required"; return 2; }
+  [[ -n "${ZONE}" ]] || { log "ERROR: --zone A, --zone B, or --zone C is required"; return 2; }
   [[ -n "${DIRECTION}" ]] || {
     log "ERROR: --left or --right is required"
     return 2

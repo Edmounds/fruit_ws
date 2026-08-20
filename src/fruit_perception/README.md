@@ -107,6 +107,8 @@ The D435i decision stream on `/fruit_perception/decision` contains:
 - `source=SOURCE_D435I` and fruit types in confidence order
 - all detections in confidence order, including ROI and optional 3D points
 - `has_target` and `target_point` only when the selected target lock is acquired
+- B-zone `targets_ready` and up to two aggregated `targets` after the configured
+  50-frame window; B targets are independent physical tracks and may share a type
 - annotated RGB8 image: `/fruit_perception/d435i/annotated_image`
 
 The detection message contains every model result above the configured
@@ -132,20 +134,20 @@ limit on any axis are removed. The mean and per-axis standard deviation are
 recomputed from the remaining observations. Standard deviation is diagnostic
 only and never prevents the highest-scoring target from being published.
 
-The winning physical target is locked, and its filtered 35-frame mean is
-published exactly once with `has_target=true`. While locked, matching detections only
-maintain the lock; their raw per-frame points are not published. A frame that
-misses the locked target does not substitute another target. The node clears
-the lock and starts a new acquisition only after the configured number of
-consecutive misses. TREE-mode and current-area changes also reset the selection
-state. With the default configuration, acquisition uses exactly 35 frames,
-associates observations within a 3 cm radius, applies a 2-sigma outlier filter,
-and releases a lock after 8 missed frames.
+The A/C winning physical target is locked, and its filtered 35-frame mean is
+published exactly once with `has_target=true`. B uses a separate selector that
+collects exactly 50 frames, keeps at most two physical tracks, removes 2-sigma
+coordinate outliers independently for each track, and publishes the resulting
+`targets` repeatedly after `targets_ready=true`. B association does not use the
+mission's expected fruit type. TREE-mode and current-area changes reset both
+selectors.
 
 The target point published when the lock is acquired is the filtered mean from
-that winning 35-frame track. Arm-target consumers wait for one fresh finite
+that winning track. Arm-target consumers wait for one fresh finite
 decision with `has_target=true` and forward it as `ArmTarget`; they do not
-collect or average a second point window.
+collect or average a second point window. In B, QR expectations are deliberately
+not applied in the perception node; mission consumes the target types and decides
+whether each is the requested ripe fruit.
 
 The annotated image keeps the camera's original aspect ratio. Inference uses a
 centered 640x640 letterbox with value 114, so no source pixels are cropped. Each
