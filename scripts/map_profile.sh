@@ -43,11 +43,18 @@ with open(config_path, encoding="utf-8") as stream:
 profile = (document.get("maps") or {}).get(map_id)
 if not isinstance(profile, dict):
     raise SystemExit(f"missing map profile: {map_id}")
-for key in ("mission_waypoint_file", "recorder_waypoint_file"):
-    value = str(profile.get(key, "")).strip()
-    if not value:
-        raise SystemExit(f"missing {key} for map profile {map_id}")
-    print(value)
+global_waypoint_file = str(
+    profile.get("waypoint_file") or document.get("waypoint_file") or ""
+).strip()
+if global_waypoint_file:
+    print(global_waypoint_file)
+    print(global_waypoint_file)
+else:
+    for key in ("mission_waypoint_file", "recorder_waypoint_file"):
+        value = str(profile.get(key, "")).strip()
+        if not value:
+            raise SystemExit(f"missing {key} for map profile {map_id}")
+        print(value)
 PY
   ); then
     printf 'failed to parse map profile configuration: %s\n' "$profile_config" >&2

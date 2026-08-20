@@ -1,7 +1,5 @@
+waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml"
+
 maps:
-  A:
-    mission_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/A/test_waypoints.yaml"
-    recorder_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/A/test_waypoints.yaml"
-  B:
-    mission_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/B/test_waypoints.yaml"
-    recorder_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/B/test_waypoints.yaml"
+  A: {}
+  B: {}

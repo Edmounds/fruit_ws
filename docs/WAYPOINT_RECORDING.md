@@ -18,12 +18,12 @@ xy/yaw 偏差时，优先检查 GICP registration 和初始位姿，不要为了
 
 ## 1. 路点文件由配置决定
 
-正式任务不依赖固定文件名。Mission 从
-`src/fruit_mission/config/fruit_mission.yaml` 的 `waypoint_file` 加载路线，录点器从
-`src/fruit_waypoint_recorder/config/waypoint_recorder.yaml` 的 `waypoint_file` 加载和保存路线。
+正式任务使用一份全局 waypoint 文件。Mission、waypoint maker 和 `start_fruit_mission.sh`
+通过配置加载 `src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml`；地图 profile
+只负责选择地图、定位 PCD 和初始位姿，不再替换成另一套旧 waypoint 文件。
 
-两个参数当前可以指向同一份现场文件，也可以分别指向不同文件。更换路线文件时只修改
-配置，不修改 Python、C++、launch 或启动脚本。
+更换正式路线时只修改 `map_profiles.yaml` 的全局 `waypoint_file`、Mission 配置和录点器配置，
+不修改 Python、C++、launch 或启动脚本。
 
 路点文件使用以下结构：
 

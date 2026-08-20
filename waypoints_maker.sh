@@ -162,7 +162,7 @@ if [[ "$USE_TELEOP" == true ]]; then
 else
   printf '[waypoints-maker] profile=%s; navigation, RViz, and waypoint recorder started.\n' "$MAP_ID"
 fi
-printf '[waypoints-maker] use the RViz Waypoint Maker panel to record, save, undo, and test points. Press Ctrl-C to stop.\n'
+printf '[waypoints-maker] use the RViz Waypoint Maker panel to record, save, undo, and run the next goal. Press Ctrl-C to stop.\n'
 
 if wait -n "${pids[@]}"; then
   status=0
