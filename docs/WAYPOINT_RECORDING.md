@@ -1,9 +1,19 @@
 # 比赛路线打点说明
 
-## 0. A/B 场地 profile
+## 0. 两套场地地图与任务区域
+
+本项目有两个不同的物理比赛场地：`map A` 和 `map B`。这里的 A/B 是地图 profile
+标识，不是任务流程中的 A 区、B 区。`--map A|B` 只选择对应场地的地图、定位数据和
+waypoint 文件，不会选择或跳过任何采摘区域。
+
+采摘区域由独立的 `--flow full|ac|a|b|c` 选择。例如，`--map A --flow b` 表示在 A
+场地地图上调试 B 区流程；`--map B --flow full` 表示在 B 场地地图上执行全流程。
+
+## 0.1 场地 profile
 
 路径点使用 `map` 坐标系，不能跨地图直接复用。A、B 在 `map_profiles.yaml` 中分别配置
-自己的 waypoint file；文件名和目录可以是任意 `.yaml`/`.yml` 路径，不由代码推断用途。
+自己的 `mission_waypoint_file` 和 `recorder_waypoint_file`；文件名和目录可以是任意
+`.yaml`/`.yml` 路径，不由代码推断用途。
 
 启动打点流程时必须显式选择场地：
 
@@ -18,12 +28,12 @@ xy/yaw 偏差时，优先检查 GICP registration 和初始位姿，不要为了
 
 ## 1. 路点文件由配置决定
 
-正式任务使用一份全局 waypoint 文件。Mission、waypoint maker 和 `start_fruit_mission.sh`
-通过配置加载 `src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml`；地图 profile
-只负责选择地图、定位 PCD 和初始位姿，不再替换成另一套旧 waypoint 文件。
-
-更换正式路线时只修改 `map_profiles.yaml` 的全局 `waypoint_file`、Mission 配置和录点器配置，
-不修改 Python、C++、launch 或启动脚本。
+正式任务按地图 profile 选择 waypoint 文件。当前 `map A`、`map B` 两个场地 profile 的
+`mission_waypoint_file` 和 `recorder_waypoint_file` 暂时都指向
+`src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml`，作为两套正式路线尚未分别录制前的临时覆盖。
+后续只需要分别替换 `map_profiles.yaml` 中 `maps.A`、`maps.B` 的两个字段，Mission、waypoint
+maker、独立 GUI 和 `start_fruit_mission.sh` 会跟随当前地图加载对应文件。不要把地图 profile
+和任务流程名称混用。
 
 路点文件使用以下结构：
 
@@ -47,15 +57,16 @@ C 区不是任意两点直连。二维码只确定 8 个采摘任务的顺序，
 可通行拓扑，点的实际位置全部取自当前 waypoint YAML 的 XY。
 
 ```text
-C_entrance_waypoint_1 -- C_8_12 -- C_7_11 -- C_6_10 -- C_5_9 -- C_top_waypoint_1
+C_entrance_passway_1 -- C_8_12 -- C_7_11 -- C_6_10 -- C_5_9 -- C_top_waypoint_1
           |                                                               |
           |                                                               |
 C_entrance_waypoint_2 -- C_4_8 -- C_3_7 -- C_2_6 -- C_1_5 -- C_top_waypoint_2
 ```
 
 - `C_QR` 只用于到达二维码扫描位置；扫描完成后不属于 C 命名图，也不作为路线锚点。
-- `C_entrance_waypoint_1` 和 `C_entrance_waypoint_2` 是二维码附近的两个入口 waypoint。
+- 当前 YAML 中 `C_entrance_passway_1` 和 `C_entrance_waypoint_2` 是二维码附近的两个入口 waypoint。
 - 每个二维码任务都从扫描完成后的当前 `map -> base_link` TF 位置重新规划，不沿用 `C_QR` 或旧路线。
+- 每项开始规划都必须取得当前 `map -> base_link` TF；TF 不可用时不能沿用旧路线或上一项目标位姿。
 - 两侧链和 entrance/top 两条横向连接共同组成双向命名图，禁止根据坐标最近邻自动加边。
 - 图搜索使用 YAML XY 计算边的欧氏距离，选择当前点到候选 goal 的最短路径。
 - 中间 C goal 参与图搜索，但不会作为 `FollowWaypoints` 停靠点发送。
@@ -63,11 +74,11 @@ C_entrance_waypoint_2 -- C_4_8 -- C_3_7 -- C_2_6 -- C_1_5 -- C_top_waypoint_2
 - 同通道通常直接发送最终 goal；跨通道根据实际距离选择 entrance 或 top 横向连接。
 - 5 至 8 号位置可以从两侧合法停车点处理，但不能跨越障碍物直连。
 - 二维码任务顺序不可按距离重排。
+- FollowWaypoints 导航 action 返回失败时，记录导航失败原因，跳过当前目标并使用下一任务开始时的实时 TF 重新规划。
+- 每项任务保存 `navigation_status`、`navigation_start_source`、`navigation_failure_reason` 和目标路线，便于现场区分实时 TF 和导航 action 失败。
 
 重新打点时必须保持上述 C 区语义名称不变。只修改 XY 会自动改变边长和最短路线；若现场
 可通行关系发生变化，则必须同步修改 Mission 的命名边，程序不会根据坐标猜测新拓扑。
-为兼容当前仍使用旧拼写的路线文件，Mission 仅在找不到 `C_entrance_waypoint_1` 时读取
-`C_entrance_passway_1`；新录点应直接使用规范名称。
 
 ## 3. C 区 yaw 约定
 
@@ -79,7 +90,27 @@ C_entrance_waypoint_2 -- C_4_8 -- C_3_7 -- C_2_6 -- C_1_5 -- C_top_waypoint_2
 - 临时 yaw 不回写 YAML。
 - 录点器的单点/逐段调试仍使用 YAML yaw，因此 orientation 和 yaw 字段继续保留。
 
-## 4. RViz 录点流程
+## 4. 正式任务分区流程
+
+当前正式 YAML 的流程名称和顺序如下，坐标始终以 YAML 为准：
+
+```text
+A: A1 -> A2 -> A3 -> A4 -> to_B_QR_waypoint
+B QR: B_QR
+B 到 C: to_C_waypoint_1 -> to_C_waypoint_2 -> to_C_waypoint_3 -> C_QR
+C: C_entrance_passway_1 / C_top_waypoint_1 / C_top_waypoint_2 /
+   C_entrance_waypoint_2，以及 C_8_12 ... C_4_8
+C 回 B: C_entrance_waypoint_2 -> to_B_waypoint_1 -> to_B_waypoint_2
+       -> toB_waypoint_3 -> B1
+B 树位: B1 -> B2 -> B3 -> B4 -> B5 -> B6 -> B7 -> B8
+```
+
+`C_QR` 只负责停车扫码。C 任务完成后，`full` 才沿 C 到 B 过渡返回 B；`ac` 在 C
+完成后结束。`a` 在 `to_B_QR_waypoint` 结束，`b` 从 `B_QR` 扫码后执行 B1-B8，
+再到 `to_C_waypoint_2 -> to_C_waypoint_3` 结束，`c` 在 `C_QR` 扫码并完成 C 后结束。
+B 区观察方向按车辆视角交替：B1、B3、B5、B7 使用 `right`，B2、B4、B6、B8 使用 `left`。
+
+## 5. RViz 录点流程
 
 1. 启动导航、GICP 重定位、RViz 和 `waypoint_recorder.launch.py`。
 2. 面板启动后自动显示录点器配置的 `waypoint_file` 及其中全部点。
@@ -88,13 +119,14 @@ C_entrance_waypoint_2 -- C_4_8 -- C_3_7 -- C_2_6 -- C_1_5 -- C_top_waypoint_2
 5. 使用 Run Next Goal 按 YAML 顺序执行到下一个 `goal`；该调试功能会使用 YAML yaw。
 6. 需要编辑另一份路线时使用 Load Waypoint YAML，保存目标随加载文件一起切换。
 
-## 5. 现场检查
+## 6. 现场检查
 
 - [ ] 两个配置中的 `waypoint_file` 指向预期文件。
 - [ ] 所有名称唯一，`schema_version` 为 1，`frame_id` 为 `map`。
 - [ ] `C_QR` 的 yaw 能稳定识别二维码。
-- [ ] `C_entrance_waypoint_1` 和 `C_entrance_waypoint_2` 均位于二维码附近的可通行入口连接处。
+- [ ] `C_entrance_passway_1` 和 `C_entrance_waypoint_2` 均位于二维码附近的可通行入口连接处。
 - [ ] 两条 C 通道中的复合采摘点编号与现场位置一致。
 - [ ] `C_top_waypoint_1`、`C_top_waypoint_2` 能安全完成 top 侧换道。
 - [ ] 模拟二维码顺序后，同通道只发送最终 goal，跨通道包含正确的入口或 top waypoint。
-- [ ] 模拟导航失败后，下一任务使用当前 TF 重新规划，而不是复用旧 `movement_points`。
+- [ ] 模拟 TF 暂不可用时，不沿用旧路线继续发送。
+- [ ] 模拟导航 action 失败后，当前目标被记录并跳过，下一项重新读取当前 TF。

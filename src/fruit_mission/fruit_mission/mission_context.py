@@ -65,7 +65,10 @@ class MissionContext:
         self.node = node
         self.config = config
         self.speaker = speaker or PiperSpeaker(config["tts"], node.get_logger())
-        self.route = MissionWaypointRoute.from_file(Path(str(config["waypoint_file"])))
+        self.route = MissionWaypointRoute.from_file(
+            Path(str(config["waypoint_file"])),
+            str(config.get("mission_flow", "full")),
+        )
         self._route_cursor = 0
         self._current_waypoint_name: Optional[str] = None
         self._current_route_yaw: Optional[float] = None
@@ -76,6 +79,8 @@ class MissionContext:
         self._latest_d435i_types: Optional[list[str]] = None
         self._latest_d435i_types_stamp_ns = 0
         self._latest_d435i_target: Optional[PointStamped] = None
+        self._latest_b_targets: Optional[list[Any]] = None
+        self._latest_b_targets_stamp_ns = 0
         self._latest_b_plan: Optional[Dict[str, Any]] = None
         self._latest_c_plan: Optional[Dict[str, Any]] = None
         self._pending_callback_id: Optional[int] = None
@@ -170,6 +175,24 @@ class MissionContext:
         self._current_route_yaw = self._waypoint_yaw(names[-1])
         return True
 
+    def navigate_named(self, waypoint_names: Sequence[str]) -> bool:
+        """Send exactly the requested names, without YAML-order expansion."""
+        names = [str(name) for name in waypoint_names]
+        if not names:
+            return True
+        try:
+            for name in names:
+                self.route.pose(name)
+        except KeyError as error:
+            self.node.get_logger().error(str(error))
+            return False
+        if not self._send_waypoint_names(names):
+            return False
+        self._current_waypoint_name = names[-1]
+        self._current_route_yaw = self._waypoint_yaw(names[-1])
+        self._route_cursor = self.route.pose(names[-1]).order + 1
+        return True
+
     def go_through(self, waypoint_names: Sequence[str]) -> bool:
         """Reach explicit C-route points with yaw aligned to each XY segment."""
         names = (
@@ -209,6 +232,7 @@ class MissionContext:
             return {
                 "status": "planning_failed",
                 "reason": "tf_unavailable",
+                "navigation_start_source": "none",
             }
         start_x, start_y, start_yaw = start
         try:
@@ -225,6 +249,7 @@ class MissionContext:
                 "status": "planning_failed",
                 "reason": "route_unavailable",
                 "navigation_start": {"x": start_x, "y": start_y},
+                "navigation_start_source": "tf",
                 "detail": str(error),
             }
 
@@ -232,6 +257,7 @@ class MissionContext:
             "status": "navigation_failed",
             "reason": "follow_waypoints_failed",
             "navigation_start": {"x": plan.start_x, "y": plan.start_y},
+            "navigation_start_source": "tf",
             "goal_name": plan.goal_name,
             "position_side": plan.position_side,
             "graph_path": list(plan.graph_path),
@@ -245,12 +271,10 @@ class MissionContext:
             plan.navigation_names,
             plan.navigation_yaws,
         ):
-            result["recovery_available"] = self.can_replan_c()
             return result
 
         result["status"] = "succeeded"
         result["reason"] = None
-        result["recovery_available"] = True
         self._current_waypoint_name = plan.goal_name
         self._current_route_yaw = plan.navigation_yaws[-1]
         self._route_cursor = max(
@@ -258,21 +282,6 @@ class MissionContext:
             self.route.pose(plan.goal_name).order + 1,
         )
         return result
-
-    def can_replan_c(self) -> bool:
-        """Return whether live TF can be attached safely to the C route graph."""
-        pose = self._lookup_map_pose()
-        if pose is None:
-            return False
-        distance = self.route.closest_c_graph_distance(pose[0], pose[1])
-        limit = float(self.config["c_graph_max_start_distance"])
-        if distance <= limit:
-            return True
-        self.node.get_logger().error(
-            f"Robot is {distance:.3f} m from the C route graph, "
-            f"limit is {limit:.3f} m"
-        )
-        return False
 
     def _lookup_map_pose(self) -> Optional[tuple[float, float, float]]:
         deadline = time.monotonic() + float(self.config["tf_lookup_timeout_sec"])
@@ -485,6 +494,42 @@ class MissionContext:
             )
         return PickExecutionResult(True, "picked", selection.matched_type)
 
+    def execute_b_tree_pick(
+        self,
+        side: str,
+        expected_type: Optional[str],
+    ) -> Dict[str, Any]:
+        """Acquire up to two B targets and send the same side between targets."""
+        self.set_expected_fruit_type(expected_type)
+        if not self.send_pick_direction(side):
+            return {"success": False, "reason_code": "side_pose_timeout", "picked": 0}
+        if not self.set_perception_mode("TREE"):
+            return {"success": False, "reason_code": "tree_mode_timeout", "picked": 0}
+        targets = self._wait_b_targets(
+            self.node.get_clock().now().nanoseconds,
+            expected_type,
+        )
+        if targets is None:
+            return {"success": False, "reason_code": "d435i_target_timeout", "picked": 0}
+        if not targets:
+            return {"success": False, "reason_code": "type_mismatch", "picked": 0}
+        picked = 0
+        for index, target in enumerate(targets[:2]):
+            if not self._send_arm_target_and_wait(target):
+                return {
+                    "success": False,
+                    "reason_code": "arm_callback_timeout",
+                    "picked": picked,
+                }
+            picked += 1
+            if index + 1 < min(2, len(targets)) and not self.send_pick_direction(side):
+                return {
+                    "success": False,
+                    "reason_code": "side_pose_timeout",
+                    "picked": picked,
+                }
+        return {"success": True, "reason_code": "picked", "picked": picked}
+
     def set_expected_fruit_type(self, expected_type: Optional[str]) -> None:
         """Set the D435i target class; an empty value disables filtering."""
         message = String()
@@ -558,6 +603,15 @@ class MissionContext:
         (output_dir / f"c_distribution_{stamp}.json").write_text(
             encoded + "\n",
             encoding="utf-8",
+        )
+
+    def save_b_plan(self, plan: Mapping[str, Any]) -> None:
+        """Write the B QR plan so the later full-flow phase can be inspected."""
+        output_dir = Path(str(self.config["c_distribution_output_dir"]))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        encoded = json.dumps(plan, ensure_ascii=False, indent=2)
+        (output_dir / "b_plan_latest.json").write_text(
+            encoded + "\n", encoding="utf-8"
         )
 
     def _send_command_and_wait(
@@ -742,6 +796,37 @@ class MissionContext:
             reason_code = "d435i_target_timeout"
         return _D435iSelection(reason_code, matched_type=matched_type)
 
+    def _wait_b_targets(
+        self,
+        fresh_after_ns: int,
+        expected_type: Optional[str],
+    ) -> Optional[list[PointStamped]]:
+        self._latest_b_targets = None
+        self._latest_b_targets_stamp_ns = 0
+        deadline = time.monotonic() + float(self.config["d435i_detection_timeout_sec"])
+        while rclpy.ok() and time.monotonic() < deadline:
+            rclpy.spin_once(self.node, timeout_sec=0.1)
+            if self._latest_b_targets is None:
+                continue
+            if self._latest_b_targets_stamp_ns <= fresh_after_ns:
+                continue
+            targets = []
+            for item in self._latest_b_targets:
+                if expected_type and str(item.type) != expected_type:
+                    continue
+                if not bool(item.has_point):
+                    continue
+                point = PointStamped()
+                point.header.stamp = self.node.get_clock().now().to_msg()
+                point.point.x = float(item.point.x)
+                point.point.y = float(item.point.y)
+                point.point.z = float(item.point.z)
+                coordinates = (point.point.x, point.point.y, point.point.z)
+                if all(math.isfinite(value) for value in coordinates):
+                    targets.append(point)
+            return targets
+        return None
+
     def _wait_until(self, predicate, timeout_sec: float) -> bool:
         deadline = time.monotonic() + timeout_sec
         while rclpy.ok() and time.monotonic() < deadline:
@@ -802,6 +887,9 @@ class MissionContext:
         self._latest_d435i_types = list(message.types)
         stamp = message.header.stamp
         self._latest_d435i_types_stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
+        if message.targets_ready:
+            self._latest_b_targets = list(message.targets)
+            self._latest_b_targets_stamp_ns = self._latest_d435i_types_stamp_ns
         if message.has_target:
             target = PointStamped()
             target.header = message.header

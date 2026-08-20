@@ -18,8 +18,7 @@ A_GOAL_PATTERN = re.compile(r"^A(\d+)$")
 C_GOAL_PATTERN = re.compile(r"^C_(\d+)_(\d+)$")
 B_QR = "B_QR"
 C_QR = "C_QR"
-C_ENTRANCE_1 = "C_entrance_waypoint_1"
-C_ENTRANCE_1_LEGACY = "C_entrance_passway_1"
+C_ENTRANCE_1 = "C_entrance_passway_1"
 C_TOP_1 = "C_top_waypoint_1"
 C_TOP_2 = "C_top_waypoint_2"
 C_ENTRANCE_2 = "C_entrance_waypoint_2"
@@ -55,15 +54,6 @@ def _c_graph_edges(entrance_1: str) -> tuple[tuple[str, str], ...]:
 
 def _c_waypoint_names(entrance_1: str) -> tuple[str, ...]:
     return (entrance_1, C_TOP_1, C_TOP_2, C_ENTRANCE_2)
-
-
-def _legacy_or_canonical_entrance_name(points: Mapping[str, WaypointPose]) -> str:
-    """Resolve the canonical first entrance without changing the source YAML."""
-    if C_ENTRANCE_1 in points:
-        return C_ENTRANCE_1
-    if C_ENTRANCE_1_LEGACY in points:
-        return C_ENTRANCE_1_LEGACY
-    return C_ENTRANCE_1
 
 
 @dataclass(frozen=True)
@@ -111,7 +101,11 @@ class CNavigationPlan:
 class MissionWaypointRoute:
     """Mission route helper built from the configured waypoint YAML."""
 
-    def __init__(self, points: Sequence[WaypointPose]) -> None:
+    def __init__(
+        self,
+        points: Sequence[WaypointPose],
+        required_flow: str = "full",
+    ) -> None:
         if not points:
             raise ValueError("waypoint file must contain at least one point")
         self._points = list(points)
@@ -120,13 +114,22 @@ class MissionWaypointRoute:
             if point.name in self._by_name:
                 raise ValueError(f"duplicate waypoint name: {point.name}")
             self._by_name[point.name] = point
-        self._c_entrance_1 = _legacy_or_canonical_entrance_name(self._by_name)
+        self._required_flow = str(required_flow).strip().lower() or "full"
+        self._c_entrance_1 = C_ENTRANCE_1
         self._validate_required_points()
-        self._c_candidates = self._parse_c_candidates()
-        self._c_adjacency = self._build_c_adjacency()
+        if self._requires_c_points:
+            self._c_candidates = self._parse_c_candidates()
+            self._c_adjacency = self._build_c_adjacency()
+        else:
+            self._c_candidates = {}
+            self._c_adjacency = {}
 
     @classmethod
-    def from_file(cls, path: Path) -> "MissionWaypointRoute":
+    def from_file(
+        cls,
+        path: Path,
+        required_flow: str = "full",
+    ) -> "MissionWaypointRoute":
         """Load the configured waypoint YAML from disk."""
         with path.open(encoding="utf-8") as stream:
             document = yaml.safe_load(stream)
@@ -139,7 +142,7 @@ class MissionWaypointRoute:
         raw_points = document.get("points")
         if not isinstance(raw_points, list):
             raise ValueError("waypoint YAML points must be a list")
-        return cls(_load_points(raw_points))
+        return cls(_load_points(raw_points), required_flow)
 
     def pose(self, name: str) -> WaypointPose:
         """Return one waypoint pose by name."""
@@ -170,6 +173,44 @@ class MissionWaypointRoute:
             raise ValueError("waypoint YAML must contain A-zone goals")
         goals.sort()
         return [name for _number, _order, name in goals]
+
+    def b_goal_names(self) -> List[str]:
+        """Return B-zone goals in their numeric tree order."""
+        goals = []
+        for point in self._points:
+            match = re.fullmatch(r"B(\d+)", point.name)
+            if match and point.point_type == "goal":
+                goals.append((int(match.group(1)), point.order, point.name))
+        goals.sort()
+        expected = list(range(1, len(goals) + 1))
+        if [number for number, _order, _name in goals] != expected:
+            raise ValueError("waypoint YAML must contain contiguous B1..Bn goals")
+        if len(goals) != 8:
+            raise ValueError("waypoint YAML must contain B1 through B8 goals")
+        return [name for _number, _order, name in goals]
+
+    def transition_names(self, transition: str) -> List[str]:
+        """Return an explicit named transition without YAML-order expansion."""
+        transitions = {
+            "a_to_b_qr": ["to_B_QR_waypoint", B_QR],
+            "b_to_c_qr": ["to_C_waypoint_1", "to_C_waypoint_2", "to_C_waypoint_3", C_QR],
+            "b_to_first_tree": ["to_C_waypoint_1", "B1"],
+            "b_to_c_qr_end": ["to_C_waypoint_2", "to_C_waypoint_3"],
+            "c_to_b_first_tree": [
+                C_ENTRANCE_2,
+                "to_B_waypoint_1",
+                "to_B_waypoint_2",
+                "toB_waypoint_3",
+                "B1",
+            ],
+        }
+        try:
+            names = transitions[transition]
+        except KeyError as error:
+            raise ValueError(f"unknown waypoint transition: {transition}") from error
+        for name in names:
+            self.pose(name)
+        return list(names)
 
     @property
     def b_qr_name(self) -> str:
@@ -204,11 +245,13 @@ class MissionWaypointRoute:
                     "position_id": position_id,
                     "target_name": target_name,
                     "expected_ripe_type": expected_ripe_type(target_name),
+                    "navigation_status": None,
                     "candidate_goal_names": [
                         candidate.goal_name
                         for candidate in self._c_candidates[position_id]
                     ],
                     "navigation_start": None,
+                    "navigation_start_source": None,
                     "goal_name": None,
                     "position_side": None,
                     "graph_path": [],
@@ -216,6 +259,8 @@ class MissionWaypointRoute:
                     "route_distance": None,
                     "camera_side": None,
                     "preferred_side": None,
+                    "navigation_failure_reason": None,
+                    "navigation_failure_detail": None,
                     "result": None,
                     "last_observation": None,
                 }
@@ -303,15 +348,37 @@ class MissionWaypointRoute:
         )
 
     def _validate_required_points(self) -> None:
-        waypoint_names = _c_waypoint_names(self._c_entrance_1)
-        for name in (B_QR, C_QR) + C_GOAL_NAMES + waypoint_names:
-            self.pose(name)
-        for name in C_GOAL_NAMES:
-            if self.pose(name).point_type != "goal":
-                raise ValueError(f"{name} must be a goal")
-        for name in waypoint_names:
-            if self.pose(name).point_type != "waypoint":
-                raise ValueError(f"{name} must be a waypoint")
+        flow = self._required_flow
+        if flow not in {"full", "ac", "a", "b", "c"}:
+            raise ValueError(f"unknown mission flow: {flow}")
+        if flow in {"full", "ac", "a"}:
+            self.a_goal_names()
+            self._require_type("to_B_QR_waypoint", "waypoint")
+        if flow in {"full", "ac", "b"}:
+            self._require_type(B_QR, "goal")
+        if flow in {"full", "ac", "c"}:
+            self._require_type(C_QR, "goal")
+        if flow in {"full", "ac", "b"}:
+            for name in ("to_C_waypoint_1", "to_C_waypoint_2", "to_C_waypoint_3"):
+                self._require_type(name, "waypoint")
+        if flow in {"full", "ac", "c"}:
+            self._requires_c_points = True
+            waypoint_names = _c_waypoint_names(self._c_entrance_1)
+            for name in C_GOAL_NAMES + waypoint_names:
+                self._require_type(name, "goal" if name in C_GOAL_NAMES else "waypoint")
+        else:
+            self._requires_c_points = False
+        if flow == "full":
+            for name in (C_ENTRANCE_2, "to_B_waypoint_1", "to_B_waypoint_2", "toB_waypoint_3"):
+                self._require_type(name, "waypoint")
+            self.b_goal_names()
+        if flow == "b":
+            self.b_goal_names()
+
+    def _require_type(self, name: str, point_type: str) -> None:
+        point = self.pose(name)
+        if point.point_type != point_type:
+            raise ValueError(f"{name} must be a {point_type}")
 
     def _parse_c_candidates(self) -> Dict[int, List[CStopCandidate]]:
         candidates: Dict[int, List[CStopCandidate]] = {

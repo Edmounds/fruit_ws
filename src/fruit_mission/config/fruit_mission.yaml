@@ -9,6 +9,7 @@ fruit_mission:
     preferred_side: "left"
     c_distribution_output_dir: "/home/rc4/fruit_ws/tmp/fruit_mission"
     waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml"
+    mission_flow: "full"
     follow_waypoints_action: "/follow_waypoints"
     map_frame: "map"
     base_frame: "base_link"

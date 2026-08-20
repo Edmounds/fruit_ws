@@ -39,6 +39,7 @@ def _validated_node(context):
                 {
                     "use_sim_time": LaunchConfiguration("use_sim_time"),
                     "waypoint_file": waypoint_file,
+                    "mission_flow": LaunchConfiguration("mission_flow"),
                 },
             ],
         )
@@ -57,6 +58,11 @@ def generate_launch_description():
                 "waypoint_file",
                 default_value="",
                 description="Configured waypoint YAML file",
+            ),
+            DeclareLaunchArgument(
+                "mission_flow",
+                default_value="full",
+                description="Mission flow: full, ac, a, b, or c",
             ),
             OpaqueFunction(function=_validated_node),
         ]

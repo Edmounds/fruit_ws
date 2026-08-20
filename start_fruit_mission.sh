@@ -8,7 +8,7 @@ MAP_PROFILE_HELPER="$WORKSPACE/scripts/map_profile.sh"
 NAV_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/localization_navigation_launch.py"
 PERCEPTION_LAUNCH="$WORKSPACE/src/fruit_perception/launch/fruit_perception.launch.py"
 MISSION_LAUNCH="$WORKSPACE/src/fruit_mission/launch/fruit_mission.launch.py"
-RECORD_SCRIPT="$WORKSPACE/record_nav_debug.sh"
+RECORD_SCRIPT="$WORKSPACE/record_rosbag.sh"
 
 PARAMS="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/localization_params.yaml"
 AXIS_PARAMS="$WORKSPACE/src/fruit_navigation/config/axis_navigation.yaml"
@@ -20,14 +20,16 @@ RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
 RUN_DIR="$RUN_ROOT/$RUN_ID"
 ORCHESTRATOR_LOG="$RUN_DIR/orchestrator.log"
 MAP_ID=""
-DEBUG_ENABLED=0
+MISSION_FLOW="full"
+FULL_RECORD_ENABLED=0
 
 usage() {
   cat <<'EOF'
-Usage: ./start_fruit_mission.sh --map A|B [--debug]
+Usage: ./start_fruit_mission.sh --map A|B [--flow full|ac|a|b|c] [--full]
 
 Start the complete perception, navigation, and mission stack for a field profile.
-Use --debug to record all non-point-cloud ROS topics under rosbags/.
+Use --full to record all ROS topics, including LiDAR and point-cloud topics,
+under rosbags/.
 EOF
 }
 
@@ -38,8 +40,13 @@ while (($# > 0)); do
       MAP_ID=$2
       shift 2
       ;;
-    --debug)
-      DEBUG_ENABLED=1
+    --flow)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      MISSION_FLOW=$2
+      shift 2
+      ;;
+    --full)
+      FULL_RECORD_ENABLED=1
       shift
       ;;
     --help|-h)
@@ -54,6 +61,10 @@ while (($# > 0)); do
 done
 
 [[ -n "$MAP_ID" ]] || { usage >&2; exit 2; }
+case "$MISSION_FLOW" in
+  full|ac|a|b|c) ;;
+  *) usage >&2; exit 2 ;;
+esac
 
 child_pids=()
 child_names=()
@@ -532,7 +543,7 @@ for required_file in \
   check_file "$required_file"
 done
 
-if ((DEBUG_ENABLED)); then
+if ((FULL_RECORD_ENABLED)); then
   [[ -x "$RECORD_SCRIPT" ]] || die "required executable is unavailable: $RECORD_SCRIPT"
 fi
 
@@ -583,16 +594,17 @@ done
 
 log "RUN directory: $RUN_DIR"
 log "RUN profile: $MAP_ID"
+log "RUN mission flow: $MISSION_FLOW"
 log "RUN branch: $(git -C "$WORKSPACE" branch --show-current)"
 log "RUN commit: $(git -C "$WORKSPACE" rev-parse --short HEAD)"
 log "RUN policy: perception owns the only serial bridge; navigation does not launch hardware_bridge"
-if ((DEBUG_ENABLED)); then
-  log "RUN debug bag: enabled; recorder output is under $WORKSPACE/rosbags"
+if ((FULL_RECORD_ENABLED)); then
+  log "RUN full rosbag: enabled; recorder output is under $WORKSPACE/rosbags"
 fi
 
 if ! python3 -c \
-  'from pathlib import Path; import sys; from fruit_mission.waypoint_route import MissionWaypointRoute; MissionWaypointRoute.from_file(Path(sys.argv[1]))' \
-  "$WAYPOINT_FILE" >> "$ORCHESTRATOR_LOG" 2>&1; then
+  'from pathlib import Path; import sys; from fruit_mission.waypoint_route import MissionWaypointRoute; MissionWaypointRoute.from_file(Path(sys.argv[1]), sys.argv[2])' \
+  "$WAYPOINT_FILE" "$MISSION_FLOW" >> "$ORCHESTRATOR_LOG" 2>&1; then
   die "mission waypoint validation failed; see $ORCHESTRATOR_LOG"
 fi
 log "READY mission waypoint schema and required A/C points"
@@ -617,9 +629,10 @@ check_no_existing_nodes \
   /fruit_qr_planner \
   /fruit_mission
 
-if ((DEBUG_ENABLED)); then
+if ((FULL_RECORD_ENABLED)); then
   start_process "rosbag" \
     "$RECORD_SCRIPT" \
+    --full \
     --no-monitor
 fi
 
@@ -671,7 +684,8 @@ log "READY navigation and perception stack; starting mission"
 start_process "mission" \
   ros2 launch "$MISSION_LAUNCH" \
     "use_sim_time:=false" \
-    "waypoint_file:=$WAYPOINT_FILE"
+    "waypoint_file:=$WAYPOINT_FILE" \
+    "mission_flow:=$MISSION_FLOW"
 
 log "RUN mission started; press Ctrl-C to stop the complete stack"
 set +e
