@@ -1,9 +1,11 @@
 maps:
-  # Keep these explicit per-profile fields while A/B are temporarily using the
-  # same formal route. Replace each pair independently after recording.
   A:
-    mission_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml"
-    recorder_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml"
+    mission_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/A/competition_waypoints.yaml"
+    recorder_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/A/competition_waypoints.yaml"
+    odometry_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/A/odometry_waypoints.yaml"
+    waypoint_template_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/template.yaml"
   B:
-    mission_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml"
-    recorder_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/test_waypoints.yaml"
+    mission_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/B/competition_waypoints.yaml"
+    recorder_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/B/competition_waypoints.yaml"
+    odometry_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/B/odometry_waypoints.yaml"
+    waypoint_template_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/template.yaml"

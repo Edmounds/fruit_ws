@@ -88,7 +88,7 @@ source "$WORKSPACE/setup_fruit_runtime.bash"
 set -u
 source "$MAP_PROFILE_HELPER"
 resolve_map_profile "$WORKSPACE" "$MAP_ID"
-require_map_profile_runtime
+require_map_profile_maps
 
 for required_file in \
   "$PARAMS" \

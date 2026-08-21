@@ -9,17 +9,20 @@ DEBUG_MONITOR_PID=""
 START_MONITOR=1
 BAG_LABEL=""
 
-# Keep the high-volume point-cloud streams out while retaining images, scans,
-# odometry, diagnostics, mission messages, and navigation debug topics.
-POINT_CLOUD_EXCLUDE_REGEX='^/(livox/lidar(/.*)?|cloud_registered(_body)?|cloud_effected|Laser_map|registered_scan|sensor_scan|gicp/(localization_map|source_cloud|aligned_cloud)|glim_ros/aligned_points_odom|([^/]+/)*(pointcloud|point_cloud|points))$'
+RECORD_EXCLUDE_REGEX='(^/camera/camera/depth/image_rect_raw$|^/camera/camera/rgbd$|/(compressed|compressedDepth|theora)$)'
+
 BAG_NAME_PATTERN='^([A-Za-z0-9_.-]+_)?([0-9]{8}_[0-9]{6})(_[0-9]+)?$'
 
 usage() {
   cat <<'EOF'
-Usage: ./record_nav_debug.sh [label] [--no-monitor]
+Usage: ./record_rosbag.sh [label] [--full] [--no-monitor]
 
-Record all ROS topics, including hidden Action topics, except the project's
-LiDAR and point-cloud topics. The bag is written to:
+Record all discovered ROS topics, including hidden Action topics, LiDAR, and
+point-cloud topics. To control camera load and bag size, D435i unaligned raw
+depth, the composite RGBD topic, and image transport derivatives are excluded.
+The retained image topics are the two USB raw/annotated images and D435i color
+raw/aligned-depth/annotated images. --full is accepted as an explicit mode flag.
+The bag is written to:
   rosbags/YYYYMMDD_HHMMSS/
 
 The newest five date-named bags are retained. An optional label is kept as a
@@ -40,6 +43,9 @@ while (($# > 0)); do
       START_MONITOR=0
       shift
       ;;
+    --full)
+      shift
+      ;;
     --*)
       usage >&2
       exit 2
@@ -53,7 +59,7 @@ while (($# > 0)); do
 done
 
 if [[ -n "$BAG_LABEL" && ! "$BAG_LABEL" =~ ^[A-Za-z0-9_.-]+$ ]]; then
-  printf '[nav-bag] label must contain only letters, numbers, dot, underscore, or hyphen: %s\n' \
+  printf '[rosbag] label must contain only letters, numbers, dot, underscore, or hyphen: %s\n' \
     "$BAG_LABEL" >&2
   exit 2
 fi
@@ -93,7 +99,7 @@ prune_recorded_bags()
     oldest_record=${bag_records[0]}
     oldest=${oldest_record#*$'\t'}
     [[ "$oldest" =~ $BAG_NAME_PATTERN ]] || exit 1
-    printf '[nav-bag] removing oldest bag: %s\n' "$BAG_ROOT/$oldest"
+    printf '[rosbag] removing oldest bag: %s\n' "$BAG_ROOT/$oldest"
     rm -rf -- "$BAG_ROOT/$oldest"
     bag_records=("${bag_records[@]:1}")
   done
@@ -113,20 +119,22 @@ if [[ -e "$BAG_PATH" ]]; then
   BAG_PATH="${BAG_PATH}_$$"
 fi
 
-printf '[nav-bag] output: %s\n' "$BAG_PATH"
-printf '[nav-bag] recording all topics except LiDAR and point-cloud topics\n'
-printf '[nav-bag] retaining the newest %s date-named bags\n' "$MAX_BAGS"
-printf '[nav-bag] press Ctrl-C once when the failure has been captured\n'
+printf '[rosbag] output: %s\n' "$BAG_PATH"
+printf '[rosbag] recording all non-excluded topics, including LiDAR and point-cloud topics\n'
+printf '[rosbag] visual topics: USB raw/annotated; D435i color raw/aligned depth/annotated\n'
+printf '[rosbag] excluded topic regex: %s\n' "$RECORD_EXCLUDE_REGEX"
+printf '[rosbag] retaining the newest %s date-named bags\n' "$MAX_BAGS"
+printf '[rosbag] press Ctrl-C once when the failure has been captured\n'
 
 if ((START_MONITOR)); then
-  "$WORKSPACE/robot_debug_monitor.sh" nav-bag &
+  "$WORKSPACE/robot_debug_monitor.sh" rosbag &
   DEBUG_MONITOR_PID=$!
 fi
 
 ros2 bag record \
   --all \
   --include-hidden-topics \
-  --exclude "$POINT_CLOUD_EXCLUDE_REGEX" \
+  --exclude "$RECORD_EXCLUDE_REGEX" \
   --output "$BAG_PATH" \
   --compression-mode file \
   --compression-format zstd

@@ -2,7 +2,7 @@ import subprocess
 
 import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, GroupAction, OpaqueFunction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import ComposableNodeContainer, Node
@@ -112,6 +112,9 @@ def generate_launch_description():
             'parameters': [left_camera_parameters],
             'remappings': [
                 ('image_raw', '/left_camera/image_raw'),
+                ('image_raw/compressed', '/left_camera/image_raw/compressed'),
+                ('image_raw/compressedDepth', '/left_camera/image_raw/compressedDepth'),
+                ('image_raw/theora', '/left_camera/image_raw/theora'),
                 ('camera_info', '/left_camera/camera_info'),
                 ('/set_capture', '/left_camera/set_capture'),
             ],
@@ -127,6 +130,9 @@ def generate_launch_description():
             'parameters': [right_camera_parameters],
             'remappings': [
                 ('image_raw', '/right_camera/image_raw'),
+                ('image_raw/compressed', '/right_camera/image_raw/compressed'),
+                ('image_raw/compressedDepth', '/right_camera/image_raw/compressedDepth'),
+                ('image_raw/theora', '/right_camera/image_raw/theora'),
                 ('camera_info', '/right_camera/camera_info'),
                 ('/set_capture', '/right_camera/set_capture'),
             ],
@@ -156,6 +162,7 @@ def generate_launch_description():
     # ========================================================================
     use_sim_time = LaunchConfiguration('use_sim_time')
     serial_debug_raw_frame = LaunchConfiguration('serial_debug_raw_frame')
+    start_serial_bridge = LaunchConfiguration('start_serial_bridge')
     declare_use_sim_time = DeclareLaunchArgument(
         'use_sim_time',
         default_value='false',
@@ -165,6 +172,11 @@ def generate_launch_description():
         'serial_debug_raw_frame',
         default_value='false',
         description='Print auto_serial_bridge raw TX/RX frames if true',
+    )
+    declare_start_serial_bridge = DeclareLaunchArgument(
+        'start_serial_bridge',
+        default_value='true',
+        description='Start auto_serial_bridge as part of this launch',
     )
 
     # ========================================================================
@@ -250,10 +262,13 @@ def generate_launch_description():
     return LaunchDescription([
         declare_use_sim_time,
         declare_serial_debug_raw_frame,
+        declare_start_serial_bridge,
         OpaqueFunction(function=apply_manual_camera_controls),
         container,
         camera_mode_manager,
         qr_planner,
-        serial_bridge,
-        serial_bridge_debug,
+        GroupAction(
+            actions=[serial_bridge, serial_bridge_debug],
+            condition=IfCondition(start_serial_bridge),
+        ),
     ])

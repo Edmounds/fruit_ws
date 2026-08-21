@@ -8,6 +8,7 @@
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <std_msgs/msg/header.hpp>
 #include <std_msgs/msg/string.hpp>
 
 #include <algorithm>
@@ -222,6 +223,10 @@ public:
           "right_annotated_topic", "/fruit_perception/right/annotated_image"));
     }
     if (enable_d435i) {
+      rgbd_heartbeat_publisher_ = create_publisher<std_msgs::msg::Header>(
+        declare_parameter(
+          "d435i_rgbd_heartbeat_topic", "/fruit_perception/d435i/rgbd_heartbeat"),
+        rclcpp::SensorDataQoS().keep_last(1));
       add_rgbd_stream(
         a_model_,
         b_model_,
@@ -394,6 +399,7 @@ private:
       create_subscription<realsense2_camera_msgs::msg::RGBD>(
         input_topic, rclcpp::SensorDataQoS().keep_last(1),
         [this, stream_ptr](realsense2_camera_msgs::msg::RGBD::ConstSharedPtr rgbd) {
+          rgbd_heartbeat_publisher_->publish(rgbd->header);
           submit_rgbd(*stream_ptr, rgbd);
         }));
     RCLCPP_INFO(
@@ -810,6 +816,7 @@ private:
   std::atomic<PerceptionMode> perception_mode_{PerceptionMode::kOff};
   std::atomic<char> current_area_{'A'};
   rclcpp::Publisher<msg::FruitDecision>::SharedPtr decision_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Header>::SharedPtr rgbd_heartbeat_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr current_area_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr expected_fruit_type_subscription_;

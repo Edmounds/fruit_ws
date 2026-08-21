@@ -80,6 +80,22 @@ The last accepted transform remains active after a rejected result; consecutive 
 ERROR diagnostic. Debug clouds are published on `gicp/localization_map`, `gicp/source_cloud`, and
 `gicp/aligned_cloud`.
 
+## Point-LIO-only odometry
+
+For sensor and motion debugging without a map, run:
+
+```bash
+./start_odometry.sh --map A
+```
+
+This entrypoint starts the Livox driver, Point-LIO, and the existing coordinate adapters. It
+explicitly disables prior-PCD initialization, PCD saving, and Point-LIO's native TF to avoid a
+duplicate TF publisher. The adapter waits for roughly 1.5 seconds of stationary, low-variance
+odometry, then uses the mean pose as the `odom` origin and publishes `odom -> base_link`. Startup
+fails instead of using a drifting origin when no stable window is found within 5 seconds. No A/B
+map file or GICP initial pose is applied. `--map A|B` is retained only as the shared physical
+profile selector used by the other field scripts.
+
 ## Build And Run
 
 Install the normal ROS dependencies, including `twist_mux`, then build:

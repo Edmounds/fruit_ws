@@ -28,6 +28,13 @@ unset ROS_PACKAGE_PATH
 source /opt/ros/humble/setup.bash
 source /home/rc4/fruit_ws/install/local_setup.bash
 
+if [[ ! -r /opt/ros/humble/lib/librmw_cyclonedds_cpp.so ]]; then
+  echo "ROS runtime requires ros-humble-rmw-cyclonedds-cpp" >&2
+  echo "Install it with: sudo apt install ros-humble-rmw-cyclonedds-cpp" >&2
+  return 1
+fi
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
 export PYTHONNOUSERSITE=1
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}/usr/lib/python3/dist-packages"
 export PIP_REQUIRE_VIRTUALENV=true

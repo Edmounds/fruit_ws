@@ -50,7 +50,7 @@ points:
     w: 1.0
   yaw: -0.0
   type: goal
-- name: passway
+- name: to_B_QR_waypoint
   position:
     x: 2.512
     y: 0.0
@@ -61,7 +61,7 @@ points:
     z: -0.6051864057360395
     w: 0.7960837985490559
   yaw: -1.3
-  type: goal
+  type: waypoint
 - name: B_QR
   position:
     x: 2.5820117
@@ -74,7 +74,7 @@ points:
     w: 0.724687186800944
   yaw: -1.520432
   type: goal
-- name: inserted_7
+- name: to_C_waypoint_1
   position:
     x: 2.52224572
     y: -1.00666967
@@ -86,40 +86,28 @@ points:
     w: 0.0007963267107332633
   yaw: 3.14
   type: waypoint
-- name: B_1
+- name: to_C_waypoint_2
   position:
-    x: 2.241877724652229
-    y: -1.0091186729572983
-    z: -0.07190634202674502
+    x: 0.48943036
+    y: -0.970740501
+    z: -0.0108749927
   orientation:
     x: 0.0
     y: 0.0
-    z: 0.9999999846049734
-    w: 0.00017547094607927352
-  yaw: 3.141242
-  type: goal
-- name: B_last
-  position:
-    x: 0.48943035952610475
-    y: -0.9707405012986854
-    z: -0.010874992695810635
-  orientation:
-    x: 0.0
-    y: 0.0
-    z: 0.9999981791225788
-    w: 0.0019083373723863682
+    z: 0.9999981791449746
+    w: 0.0019083256366342735
   yaw: 3.137776
-  type: goal
-- name: to_C_passway
+  type: waypoint
+- name: to_C_waypoint_3
   position:
-    x: -0.0033564986936314768
-    y: -1.0993851699150095
-    z: 0.00540284152806278
+    x: -0.00335649869
+    y: -1.09938517
+    z: 0.00540284153
   orientation:
     x: 0.0
     y: 0.0
-    z: -0.6817713318903112
-    w: 0.7315653429547571
+    z: -0.6817711845422936
+    w: 0.7315654802735009
   yaw: -1.500362
   type: waypoint
 - name: C_QR
@@ -134,16 +122,16 @@ points:
     w: 0.7117753042706468
   yaw: -1.557548
   type: goal
-- name: to_C_entrance
+- name: C_entrance_passway_1
   position:
-    x: 0.03942330381867457
-    y: -2.6676265431717576
-    z: -0.01849913022802676
+    x: 0.0290863513
+    y: -2.67224247
+    z: -0.0184991302
   orientation:
     x: 0.0
     y: 0.0
-    z: 0.023861566661746946
-    w: 0.9997152722832872
+    z: 0.02386173501096269
+    w: 0.9997152682650529
   yaw: 0.047728
   type: waypoint
 - name: C_8_12
@@ -194,7 +182,7 @@ points:
     w: 0.9999873950866505
   yaw: 0.010042
   type: goal
-- name: C_passway_1
+- name: C_top_waypoint_1
   position:
     x: 2.32597756
     y: -2.64760436
@@ -206,7 +194,7 @@ points:
     w: 0.7038034035841451
   yaw: 1.580118
   type: waypoint
-- name: C_passway_2
+- name: C_top_waypoint_2
   position:
     x: 2.34549387
     y: -1.94733153
@@ -266,15 +254,147 @@ points:
     w: 0.007040268634664886
   yaw: -3.127512
   type: goal
-- name: to_C_other_entrance
+- name: C_entrance_waypoint_2
   position:
-    x: 0.204884108
-    y: -1.95149931
+    x: 0.17880018
+    y: -1.94889109
     z: -0.0112497297
   orientation:
     x: 0.0
     y: 0.0
-    z: -0.9672734196441195
-    w: 0.2537363427851263
-  yaw: -2.6285105189776026
+    z: 0.8414709848078965
+    w: 0.5403023058681398
+  yaw: 2.0
   type: waypoint
+- name: to_B_waypoint_1
+  position:
+    x: 0.0100441044
+    y: -1.52387579
+    z: -0.0112497297
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: 0.6889214451105513
+    w: 0.7248360107409052
+  yaw: 1.52
+  type: waypoint
+- name: to_B_waypoint_2
+  position:
+    x: 0.00347242461
+    y: -0.956109376
+    z: -0.0112497297
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+  yaw: 0.0
+  type: waypoint
+- name: toB_waypoint_3
+  position:
+    x: 2.22761506
+    y: -0.943302413
+    z: -0.0112497297
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+  yaw: 0.0
+  type: waypoint
+- name: B1
+  position:
+    x: 2.22761506
+    y: -0.943302413
+    z: -0.0112497297
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: -0.9999996829318346
+    w: 0.0007963267107332633
+  yaw: -3.14
+  type: goal
+- name: B2
+  position:
+    x: 2.01843466
+    y: -0.943302413
+    z: -0.0112497297
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: -0.9999996829318346
+    w: 0.0007963267107332633
+  yaw: -3.14
+  type: goal
+- name: B3
+  position:
+    x: 1.81843466
+    y: -0.943302413
+    z: -0.0112497297
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: -0.9999996829318346
+    w: 0.0007963267107332633
+  yaw: -3.14
+  type: goal
+- name: B4
+  position:
+    x: 1.51843466
+    y: -0.943302413
+    z: -0.0112497297
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: -0.9999996829318346
+    w: 0.0007963267107332633
+  yaw: -3.14
+  type: goal
+- name: B5
+  position:
+    x: 1.31843466
+    y: -0.943302413
+    z: -0.0112497297
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: -0.9999996829318346
+    w: 0.0007963267107332633
+  yaw: -3.14
+  type: goal
+- name: B6
+  position:
+    x: 1.01843466
+    y: -0.943302413
+    z: -0.0112497297
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: -0.9999996829318346
+    w: 0.0007963267107332633
+  yaw: -3.14
+  type: goal
+- name: B7
+  position:
+    x: 0.77843466
+    y: -0.943302413
+    z: -0.0112497297
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: -0.9999996829318346
+    w: 0.0007963267107332633
+  yaw: -3.14
+  type: goal
+- name: B8
+  position:
+    x: 0.57843466
+    y: -0.943302413
+    z: -0.0112497297
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: -0.9999996829318346
+    w: 0.0007963267107332633
+  yaw: -3.14
+  type: goal

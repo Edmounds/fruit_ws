@@ -4,6 +4,24 @@ git clone git@github.com:realsenseai/realsense-ros.git
 git clone git@github.com:ConQU2026/livox_ros_driver2.git
 ```
 
+## ROS 运行环境
+
+项目统一使用 Cyclone DDS，避免 Fast DDS 的 service request/reply 独立发现竞态导致
+Action 已执行但 goal response 丢失。首次部署需要安装：
+
+```bash
+sudo apt install ros-humble-rmw-cyclonedds-cpp
+```
+
+所有启动、调试和 ROS 2 CLI 终端都必须先加载项目环境；该脚本会固定
+`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`，缺少运行库时直接停止：
+
+```bash
+source /home/rc4/fruit_ws/setup_fruit_runtime.bash
+```
+
+切换前已经启动的 ROS 进程仍使用旧 RMW，不能与新进程混跑。停止整套旧进程后重新加载
+环境并启动；若 ROS 2 daemon 曾由旧环境启动，切换时执行一次 `ros2 daemon stop`。
 
 ### 输出水果检测结果
 ```bash
@@ -55,3 +73,23 @@ source /home/rc4/fruit_ws/setup_fruit_runtime.bash
 `ExecutionCallback`：`executing` 表示执行中，`completed` 表示完成。
 默认不显示心跳收发和心跳超时日志；需要调试心跳时加 `--show-heartbeat`。
 `vel` 只发送一帧，不会持续刷新速度。
+
+## 录制调试 ROS 话题
+```bash
+cd /home/rc4/fruit_ws
+source setup_fruit_runtime.bash
+./record_rosbag.sh --full
+```
+
+录包保留所有非视觉话题。视觉数据只保留左右 USB 相机的原始图和标注图，以及
+D435i 的彩色原图、对齐深度图和标注图。D435i 未对齐的
+`/camera/camera/depth/image_rect_raw`、重复的 `/camera/camera/rgbd`，以及所有
+`compressed`、`compressedDepth`、`theora` 派生话题均通过 rosbag 黑名单排除。
+
+## 语音播报检查
+```bash
+cd /home/rc4/fruit_ws
+./test_tts.sh --default
+```
+不带 `--default` 时，脚本默认使用配置的显式 USB ALSA 设备；也可以通过
+`ALSA_DEVICE=... ./test_tts.sh` 临时指定播放设备。

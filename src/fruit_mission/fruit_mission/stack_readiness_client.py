@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import math
 import time
 
+from nav_msgs.msg import Odometry
 from nav2_msgs.action import FollowWaypoints
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.time import Time
 from std_msgs.msg import Bool
 from std_msgs.msg import String
+from tf2_ros import Buffer
+from tf2_ros import TransformException
+from tf2_ros import TransformListener
 
 from fruit_mission.script_hardware_client import latched_qos
 
@@ -42,6 +48,12 @@ class StackReadinessClient(Node):
 
         self._bridge_ready = False
         self._active_mode = ""
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(
+            self._tf_buffer,
+            self,
+            spin_thread=False,
+        )
         self._ready_subscription = self.create_subscription(
             Bool,
             self.bridge_ready_topic,
@@ -90,6 +102,90 @@ class StackReadinessClient(Node):
         if not ready:
             self.get_logger().error(
                 f"Timed out waiting for action: {action_name}"
+            )
+        return ready
+
+    def wait_for_transform(
+        self,
+        parent_frame: str,
+        child_frame: str,
+        timeout_sec: float,
+        max_age_sec: float,
+    ) -> bool:
+        """Wait for a fresh dynamic transform used by navigation."""
+        latest_detail = "no transform received"
+
+        def transform_is_ready() -> bool:
+            nonlocal latest_detail
+            try:
+                transform = self._tf_buffer.lookup_transform(
+                    parent_frame,
+                    child_frame,
+                    Time(),
+                )
+            except TransformException as error:
+                latest_detail = str(error)
+                return False
+            stamp = transform.header.stamp
+            stamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+            if stamp_ns <= 0:
+                latest_detail = "transform has an invalid zero timestamp"
+                return False
+            age_sec = (self.get_clock().now().nanoseconds - stamp_ns) / 1_000_000_000.0
+            if abs(age_sec) > max_age_sec:
+                latest_detail = f"transform age is {age_sec:.3f}s"
+                return False
+            return True
+
+        ready = self.wait_until(transform_is_ready, timeout_sec)
+        if not ready:
+            self.get_logger().error(
+                f"Timed out waiting for fresh {parent_frame}->{child_frame} TF: "
+                f"{latest_detail}"
+            )
+        return ready
+
+    def wait_for_odometry(self, topic: str, timeout_sec: float) -> bool:
+        """Wait for the first finite, timestamped Point-LIO odometry sample."""
+        received = False
+        latest_detail = "no odometry received"
+
+        def on_odometry(message: Odometry) -> None:
+            nonlocal received, latest_detail
+            stamp = message.header.stamp
+            stamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+            pose = message.pose.pose
+            values = (
+                pose.position.x,
+                pose.position.y,
+                pose.position.z,
+                pose.orientation.x,
+                pose.orientation.y,
+                pose.orientation.z,
+                pose.orientation.w,
+            )
+            quaternion_norm = sum(value * value for value in values[3:])
+            if stamp_ns <= 0:
+                latest_detail = "odometry has an invalid zero timestamp"
+            elif not all(math.isfinite(value) for value in values):
+                latest_detail = "odometry pose contains a non-finite value"
+            elif quaternion_norm <= 0.0:
+                latest_detail = "odometry orientation is invalid"
+            else:
+                received = True
+
+        subscription = self.create_subscription(
+            Odometry,
+            topic,
+            on_odometry,
+            20,
+        )
+        ready = self.wait_until(lambda: received, timeout_sec)
+        self.destroy_subscription(subscription)
+        if not ready:
+            self.get_logger().error(
+                f"Timed out waiting for valid odometry on {topic}: "
+                f"{latest_detail}"
             )
         return ready
 
@@ -200,6 +296,16 @@ def _parser() -> argparse.ArgumentParser:
     active = commands.add_parser("active-mode")
     active.add_argument("--mode", required=True)
     active.add_argument("--timeout", type=float, required=True)
+
+    transform = commands.add_parser("tf")
+    transform.add_argument("--parent", required=True)
+    transform.add_argument("--child", required=True)
+    transform.add_argument("--timeout", type=float, required=True)
+    transform.add_argument("--max-age", type=float, default=1.0)
+
+    odometry = commands.add_parser("odometry")
+    odometry.add_argument("--topic", required=True)
+    odometry.add_argument("--timeout", type=float, required=True)
     return parser
 
 
@@ -228,6 +334,15 @@ def main(args=None) -> None:
             )
         elif options.command == "active-mode":
             ready = node.wait_for_active_mode(options.mode, options.timeout)
+        elif options.command == "tf":
+            ready = node.wait_for_transform(
+                options.parent,
+                options.child,
+                options.timeout,
+                options.max_age,
+            )
+        elif options.command == "odometry":
+            ready = node.wait_for_odometry(options.topic, options.timeout)
     except KeyboardInterrupt:
         ready = False
     finally:

@@ -96,6 +96,7 @@ class CNavigationPlan:
     navigation_yaws: tuple[float, ...]
     distance: float
     camera_side: str
+    rejoin_point: Optional[tuple[float, float, float]]
 
 
 class MissionWaypointRoute:
@@ -110,6 +111,7 @@ class MissionWaypointRoute:
             raise ValueError("waypoint file must contain at least one point")
         self._points = list(points)
         self._by_name: Dict[str, WaypointPose] = {}
+        self._runtime_poses: Dict[str, WaypointPose] = {}
         for point in self._points:
             if point.name in self._by_name:
                 raise ValueError(f"duplicate waypoint name: {point.name}")
@@ -117,6 +119,12 @@ class MissionWaypointRoute:
         self._required_flow = str(required_flow).strip().lower() or "full"
         self._c_entrance_1 = C_ENTRANCE_1
         self._validate_required_points()
+        self._c_forward_yaw = 0.0
+        if self._requires_c_points:
+            self._c_forward_yaw = math.atan2(
+                self.pose(C_TOP_1).y - self.pose(self._c_entrance_1).y,
+                self.pose(C_TOP_1).x - self.pose(self._c_entrance_1).x,
+            )
         if self._requires_c_points:
             self._c_candidates = self._parse_c_candidates()
             self._c_adjacency = self._build_c_adjacency()
@@ -129,6 +137,7 @@ class MissionWaypointRoute:
         cls,
         path: Path,
         required_flow: str = "full",
+        expected_frame: str = "map",
     ) -> "MissionWaypointRoute":
         """Load the configured waypoint YAML from disk."""
         with path.open(encoding="utf-8") as stream:
@@ -137,8 +146,8 @@ class MissionWaypointRoute:
             raise ValueError("waypoint YAML must be a mapping")
         if document.get("schema_version") != 1:
             raise ValueError("waypoint YAML schema_version must be 1")
-        if document.get("frame_id") != "map":
-            raise ValueError("waypoint YAML frame_id must be map")
+        if document.get("frame_id") != expected_frame:
+            raise ValueError(f"waypoint YAML frame_id must be {expected_frame}")
         raw_points = document.get("points")
         if not isinstance(raw_points, list):
             raise ValueError("waypoint YAML points must be a list")
@@ -146,6 +155,8 @@ class MissionWaypointRoute:
 
     def pose(self, name: str) -> WaypointPose:
         """Return one waypoint pose by name."""
+        if name in self._runtime_poses:
+            return self._runtime_poses[name]
         try:
             return self._by_name[name]
         except KeyError as exc:
@@ -233,6 +244,10 @@ class MissionWaypointRoute:
         """Return the configured bidirectional C topology edges."""
         return list(_c_graph_edges(self._c_entrance_1))
 
+    def c_camera_side(self, position_side: str, yaw: float) -> str:
+        """Convert a lane-relative side to the vehicle side for one map yaw."""
+        return _camera_side_for_yaw(position_side, float(yaw), self._c_forward_yaw)
+
     def build_c_distribution(self, c_plan: Mapping[str, object]) -> Dict[str, object]:
         """Build the C task table without pre-planning runtime movement."""
         tasks = []
@@ -259,6 +274,9 @@ class MissionWaypointRoute:
                     "route_distance": None,
                     "camera_side": None,
                     "preferred_side": None,
+                    "arrival_yaw": None,
+                    "arrival_yaw_source": None,
+                    "route_rejoin": None,
                     "navigation_failure_reason": None,
                     "navigation_failure_detail": None,
                     "result": None,
@@ -286,7 +304,7 @@ class MissionWaypointRoute:
 
         best: Optional[tuple[tuple[float, int, int, str], CNavigationPlan]] = None
         for candidate in candidates:
-            distance, graph_path = self._shortest_c_path(
+            distance, graph_path, rejoin_point = self._shortest_c_path(
                 float(start_x),
                 float(start_y),
                 candidate.goal_name,
@@ -297,11 +315,31 @@ class MissionWaypointRoute:
                 for name in graph_path
                 if self.pose(name).point_type == "waypoint"
             ]
+            if rejoin_point is not None:
+                rejoin_x, rejoin_y, _rejoin_yaw = rejoin_point
+                first_target = self.pose(graph_path[0])
+                rejoin_yaw = math.atan2(
+                    first_target.y - rejoin_y,
+                    first_target.x - rejoin_x,
+                )
+                rejoin_name = f"__c_route_rejoin__{candidate.goal_name}"
+                rejoin_point = (rejoin_x, rejoin_y, rejoin_yaw)
+                self._runtime_poses[rejoin_name] = WaypointPose(
+                    name=rejoin_name,
+                    point_type="waypoint",
+                    order=-1,
+                    x=rejoin_x,
+                    y=rejoin_y,
+                    z=0.0,
+                    qx=0.0,
+                    qy=0.0,
+                    qz=math.sin(rejoin_yaw * 0.5),
+                    qw=math.cos(rejoin_yaw * 0.5),
+                )
+                navigation_names.insert(0, rejoin_name)
             navigation_names.append(candidate.goal_name)
             navigation_names = _without_consecutive_duplicates(navigation_names)
-            navigation_yaws = self._navigation_yaws_from_xy(
-                float(start_x),
-                float(start_y),
+            navigation_yaws = self._navigation_yaws_from_waypoints(
                 float(start_yaw),
                 navigation_names,
             )
@@ -316,7 +354,8 @@ class MissionWaypointRoute:
                 navigation_names=tuple(navigation_names),
                 navigation_yaws=tuple(navigation_yaws),
                 distance=distance,
-                camera_side=_camera_side_for_yaw(candidate.position_side, final_yaw),
+                camera_side=self.c_camera_side(candidate.position_side, final_yaw),
+                rejoin_point=rejoin_point,
             )
             key = (
                 distance,
@@ -421,7 +460,7 @@ class MissionWaypointRoute:
         start_y: float,
         target_name: str,
         max_start_distance: float,
-    ) -> tuple[float, List[str]]:
+    ) -> tuple[float, List[str], Optional[tuple[float, float, float]]]:
         closest_edge = min(
             self.c_graph_edges(),
             key=lambda edge: _point_to_segment_distance(
@@ -459,6 +498,19 @@ class MissionWaypointRoute:
             graph_distance + fraction * edge_length,
             graph_distance + (1.0 - fraction) * edge_length,
         )
+        rejoin_point = None
+        if graph_distance > 0.03 and 1e-6 < fraction < 1.0:
+            edge_yaw = math.atan2(
+                self.pose(closest_edge[1]).y - self.pose(closest_edge[0]).y,
+                self.pose(closest_edge[1]).x - self.pose(closest_edge[0]).x,
+            )
+            rejoin_x = self.pose(closest_edge[0]).x + fraction * (
+                self.pose(closest_edge[1]).x - self.pose(closest_edge[0]).x
+            )
+            rejoin_y = self.pose(closest_edge[0]).y + fraction * (
+                self.pose(closest_edge[1]).y - self.pose(closest_edge[0]).y
+            )
+            rejoin_point = (rejoin_x, rejoin_y, edge_yaw)
         for name, distance in zip(start_neighbors, start_distances):
             pose = self.pose(name)
             waypoint_count = int(pose.point_type == "waypoint")
@@ -473,7 +525,7 @@ class MissionWaypointRoute:
             if best.get(name) != (distance, waypoint_count, path):
                 continue
             if name == target_name:
-                return distance, list(path)
+                return distance, list(path), rejoin_point
             for neighbor, edge_distance in self._c_adjacency[name]:
                 next_distance = distance + edge_distance
                 next_waypoint_count = waypoint_count + int(
@@ -489,48 +541,35 @@ class MissionWaypointRoute:
                     )
         raise ValueError(f"C route graph cannot reach {target_name}")
 
-    def _navigation_yaws_from_xy(
+    def _navigation_yaws_from_waypoints(
         self,
-        start_x: float,
-        start_y: float,
         start_yaw: float,
         target_names: Sequence[str],
     ) -> List[float]:
-        current_x = start_x
-        current_y = start_y
-        current_yaw = start_yaw
-        yaws = []
+        """Use saved waypoint yaw; only a temporary rejoin has no saved yaw."""
+        yaws: List[float] = []
         for name in target_names:
-            target = self.pose(name)
-            dx = target.x - current_x
-            dy = target.y - current_y
-            if math.hypot(dx, dy) > 1e-9:
-                current_yaw = math.atan2(dy, dx)
-            yaws.append(current_yaw)
-            current_x = target.x
-            current_y = target.y
-        return yaws
+            pose = self.pose(name)
+            # A temporary rejoin pose is created with the local edge
+            # direction; all other poses use their formal YAML orientation.
+            yaws.append(_pose_yaw(pose))
+        return yaws if yaws else [float(start_yaw)]
 
-    def path_aligned_targets(
+    def waypoint_yaw_targets(
         self,
         start_name: str,
         target_names: Iterable[str],
         start_yaw: Optional[float] = None,
     ) -> tuple[List[tuple[str, float]], str, float]:
-        """Return existing route points with yaw aligned to each XY segment."""
+        """Return existing route points with their saved YAML yaw."""
         current = self.pose(start_name)
         current_name = start_name
         current_yaw = _pose_yaw(current) if start_yaw is None else start_yaw
         targets: List[tuple[str, float]] = []
         for name in target_names:
             target = self.pose(str(name))
-            dx = target.x - current.x
-            dy = target.y - current.y
             current_name = target.name
-            current = target
-            if math.hypot(dx, dy) <= 1e-9:
-                continue
-            current_yaw = math.atan2(dy, dx)
+            current_yaw = _pose_yaw(target)
             targets.append((target.name, current_yaw))
         return targets, current_name, current_yaw
 
@@ -616,8 +655,12 @@ def _without_consecutive_duplicates(names: Sequence[str]) -> List[str]:
     return result
 
 
-def _camera_side_for_yaw(position_side: str, yaw: float) -> str:
-    if math.cos(yaw) < 0.0:
+def _camera_side_for_yaw(
+    position_side: str,
+    yaw: float,
+    forward_yaw: float,
+) -> str:
+    if math.cos(yaw - forward_yaw) < 0.0:
         return _other_side(position_side)
     return position_side
 

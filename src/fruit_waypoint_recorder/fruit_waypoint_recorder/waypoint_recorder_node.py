@@ -11,6 +11,7 @@ from functools import partial
 from pathlib import Path
 
 import rclpy
+import yaml
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import FollowWaypoints
@@ -70,6 +71,8 @@ class WaypointRecorderNode(Node):
         self.declare_parameter("follow_waypoints_action", "/follow_waypoints")
         self.declare_parameter("axis_waypoint_node", "/axis_waypoint_action_server")
         self.declare_parameter("default_final_yaw_mode", "blend_on_path")
+        self.declare_parameter("auto_name_prefix", "")
+        self.declare_parameter("auto_name_file", "")
         self.declare_parameter("source_root", "")
 
         self._frame_id = self.get_parameter("frame_id").value
@@ -94,8 +97,15 @@ class WaypointRecorderNode(Node):
         waypoint_path = self._resolve_src_yaml_path(
             str(self.get_parameter("waypoint_file").value)
         )
-        self._test_store = TestPointStore(waypoint_path)
+        self._test_store = TestPointStore(waypoint_path, self._frame_id)
         self._test_store.load(waypoint_path)
+        self._configured_auto_name_prefix = str(
+            self.get_parameter("auto_name_prefix").value
+        ).strip()
+        auto_name_file = str(
+            self.get_parameter("auto_name_file").value
+        ).strip()
+        self._auto_name_sequence = self._load_auto_name_sequence(auto_name_file)
         self._sampling = False
         self._active_test_goal = False
         self._pending_test_cursor = None
@@ -211,6 +221,12 @@ class WaypointRecorderNode(Node):
             self._reject_command(f"Unknown record mode: {mode}")
             return
         name = str(payload.get("name", "")).strip()
+        if not name and bool(payload.get("auto_name", False)):
+            try:
+                name = self._next_auto_name()
+            except ValueError as error:
+                self._reject_command(str(error))
+                return
         point_type = str(payload.get("point_type", "")).strip()
         if not self._can_record_test_point(name, point_type):
             return
@@ -293,6 +309,58 @@ class WaypointRecorderNode(Node):
             else "No waypoint to undo"
         )
         self._publish_state(message)
+
+    def _auto_name_prefix(self) -> str:
+        """Return the explicit profile prefix or infer A/B from the file path."""
+        if self._configured_auto_name_prefix:
+            return self._configured_auto_name_prefix
+        parent_name = self._test_store.output_path.parent.name.strip()
+        if parent_name in ("A", "B"):
+            return parent_name
+        return ""
+
+    def _load_auto_name_sequence(self, raw_path: str) -> list[str]:
+        """Load the ordered formal names used for automatic recording."""
+        if not raw_path:
+            return []
+        path = self._resolve_src_yaml_path(raw_path)
+        with path.open("r", encoding="utf-8") as stream:
+            document = yaml.safe_load(stream) or {}
+        raw_points = document.get("points")
+        if not isinstance(raw_points, list):
+            raise ValueError(f"auto_name_file points must be a list: {path}")
+        names = []
+        seen = set()
+        for index, item in enumerate(raw_points, start=1):
+            if not isinstance(item, dict):
+                raise ValueError(f"auto_name_file point {index} must be a mapping")
+            name = str(item.get("name", "")).strip()
+            if not name:
+                raise ValueError(f"auto_name_file point {index} name must not be empty")
+            if name in seen:
+                raise ValueError(f"auto_name_file contains duplicate name: {name}")
+            names.append(name)
+            seen.add(name)
+        return names
+
+    def _next_auto_name(self) -> str:
+        """Return the first formal name that is not already recorded."""
+        recorded_names = {point.name for point in self._test_store.points}
+        for name in self._auto_name_sequence:
+            if name not in recorded_names:
+                return name
+        if self._auto_name_sequence:
+            raise ValueError("all names from auto_name_file have been recorded")
+        return self._test_store.next_auto_name(self._auto_name_prefix())
+
+    def _next_auto_name_for_state(self) -> str:
+        """Return the next display name, or an empty value after the template ends."""
+        if not self._auto_name_sequence and not self._auto_name_prefix():
+            return ""
+        try:
+            return self._next_auto_name()
+        except ValueError:
+            return ""
 
     def _save_waypoints(self) -> None:
         try:
@@ -451,6 +519,8 @@ class WaypointRecorderNode(Node):
             "next_goal": self._next_test_goal_name(),
             "final_yaw_mode": self._current_final_yaw_mode,
             "output_path": str(self._test_store.output_path),
+            "auto_name_prefix": self._auto_name_prefix(),
+            "next_name": self._next_auto_name_for_state(),
         }
         return {
             "status": self._status(),

@@ -51,6 +51,20 @@ D435i 整树目标 -----> |                        |
 4. 下位机不决定 A/B/C 任务顺序和是否采收；上位机只上报所在区域并指定左/右抓取方向，下位机按当前区域解释 A/B/C 不同的识别和动作方向；B/D 执行上位机给出的机械臂目标，并通过 callback 返回执行阶段。
 5. 只有速度仲裁节点能向串口通信层发布最终底盘速度，禁止 Nav2 和任务节点同时直接控制底盘。
 
+### 2.1 ROS 2 中间件
+
+- 比赛运行环境统一使用 `rmw_cyclonedds_cpp`，由根目录
+  `setup_fruit_runtime.bash` 固定并校验；所有 ROS 2 节点和 CLI 必须加载同一环境。
+- 不再使用 Humble 默认的 `rmw_fastrtps_cpp`。Fast DDS Basic Service Mapping 的 request 和
+  reply 端点独立发现，冷启动时可能出现请求已送达、Action 已执行并发布 `SUCCEEDED`，但
+  goal response 因 reply reader 尚未匹配而被丢弃，mission 因拿不到 goal handle 无法推进；
+  上游跟踪见 [ros2/rmw_fastrtps#842](https://github.com/ros2/rmw_fastrtps/issues/842)。
+- 启动脚本中临时 `ActionClient` 的 readiness 结果只属于该客户端，不能证明之后新建的
+  mission ActionClient 已完成反向响应端点发现；禁止用延长 future 超时、固定 `sleep` 或
+  盲目重发导航 goal 掩盖响应丢失。
+- RMW 只能在进程启动时选择。切换时必须停止整套旧进程和旧 ROS 2 daemon，再从
+  `setup_fruit_runtime.bash` 启动完整链路，禁止 Fast DDS 与 Cyclone DDS 混跑。
+
 ## 3. ROS 2 工作区划分
 
 保留现有第三方仓库，不直接把比赛业务写进上游代码：
@@ -89,6 +103,11 @@ git -C src/auto_serial_bridge pull --ff-only origin dev
 - 从同一建图结果生成 small_gicp 使用的先验点云，以及 Nav2 使用的二维占据栅格；两份地图必须使用同一原点和方向。
 - 比赛运行时不启动 GLIM，避免与 Point-LIO、small_gicp、双路 YOLO 争抢 NUC 资源。
 - 比赛时运行链为 `MID360 -> Point-LIO -> small_gicp -> map->odom`，Nav2 使用该 TF 完成全局导航。
+- 调试时可运行 `./start_odometry.sh --map A|B` 进入纯里程计模式；该模式只启动 Livox 和
+  Point-LIO 及坐标适配节点，不读取场地 PCD，也不启动 small_gicp。适配节点只在连续约
+  1.5 秒的低速、低位置/yaw 方差数据满足条件后，使用平均位姿建立 `odom` 原点；最多等待
+  5 秒且不会降级采用漂移中的首帧。`--map` 仍沿用现场 profile 标识，但不会把地图定位初值
+  传给 Point-LIO。地图/GICP 模式默认关闭该稳定门控，保持原有启动行为。
 - 随机障碍物不得固化到先验地图中，必须由 MID360 在线加入 local/global costmap。
 
 ### 4.2 不直接使用现有实车启动文件
@@ -110,6 +129,7 @@ git -C src/auto_serial_bridge pull --ff-only origin dev
 - footprint 必须在整车和机械臂实际尺寸确定后填写，不能沿用当前 `robot_radius: 0.2`。
 - 抓取阶段由速度仲裁器强制输出零速度；机械臂未收回安全姿态时禁止 Nav2 恢复移动。
 - 障碍物碰撞扣分高，速度、膨胀半径和最小障碍距离应以保守通过为目标，而不是沿用竞速导航参数。
+- C 区当前的 `axis_waypoint_action_server` 是按命名路点逐段直线控制的专用动作服务器，不是带局部代价地图避障的 Nav2 控制器；动态障碍物避让仍依赖后续的 collision monitor/速度仲裁接入，不能把静态路点和在线 costmap 视为已经完成动态避障。
 
 ## 5. 感知结构与资源调度
 
@@ -170,6 +190,13 @@ D435i 的固定原生流为 `1920x1080@30 RGB8` 和 `1280x720@30 Z16`，开启�
 5. 可视化、图像落盘和调试日志。
 
 `QR/TREE` 模式会停止左右侧采集和 YOLO，把带宽与算力让给 D435i。正式比赛不启动 RViz，不持续保存原始图像和完整点云，只记录状态事件、检测摘要和故障证据。
+
+任务使用 `--debug` 时，rosbag 仍记录导航、Action、雷达、点云和控制诊断，但视觉数据限定为
+左右 USB 原始图/标注图及 D435i 彩色原图、对齐深度图、标注图。未对齐 D435i raw depth、
+RGBD 复合消息和 `compressed`/`compressedDepth`/`theora` 派生图像进入黑名单，避免同一帧
+多次 DDS 序列化和落盘。左右 `usb_cam` 的各 transport 话题分别位于自己的相机命名空间。
+调试监视器通过 color/depth metadata 与进程内 RGBD 回调产生的轻量 Header heartbeat 计算
+三条流的实际频率和最后帧时间，不直接订阅高带宽 RGBD 消息。
 
 USB 接线时，D435i 与两台 UVC 相机尽量分配到不同 USB 控制器；两组相机通过模式互斥采集，避免三路视频同时占满一个 USB 总线。
 
@@ -273,13 +300,18 @@ READ_C_QR
   -> LEAVE_C
 ```
 
-- C 区导航目标由 `(position_id, approach_pose, expected_side)` 配置表提供；`expected_side` 会根据停车姿态转换成相对车辆的 `left/right`。
+- C 区导航目标由 `(position_id, approach_pose, expected_side)` 配置表提供；`expected_side` 会根据到位后的实际停车姿态转换成相对车辆的 `left/right`。
 - 二维码输出只决定严格任务序列，不允许按路线距离重排。
 - 到位后即使没有目标，也完成稳定停车、识别、播报和推进。
-- 到位后先按停车姿态计算出的车辆相对侧发送一次方向命令，让机械臂从常态前视转到目标侧；随后 D435i 只把当前二维码任务的 `expected_ripe_type` 交给感知节点过滤，并继续使用现有跨帧聚类和综合评分选择目标点。
+- 到位后先按实际停车姿态计算出的车辆相对侧发送一次方向命令，让机械臂从常态前视转到目标侧；随后 D435i 把当前二维码任务的 `expected_ripe_type` 交给感知节点过滤抓取坐标，并继续使用现有跨帧聚类和综合评分选择目标点。
+- C 区每个位置只放置一种固定果蔬。方向动作完成后，第一条新鲜的非空 D435i 类型结果中没有 `expected_ripe_type` 时立即结束本项：同品种未成熟记为 `target_unripe`，其他品种记为 `type_mismatch`，播报后收臂并进入下一项，不等待期望类型在原位置再次出现。只有类型结果为空，或期望类型已经出现但尚未形成有效抓取坐标时，才继续等待 D435i 总超时。
 - 不成熟、坏水果或种类不符时不发送 ArmTarget；车辆方向命令仍保留，因为它是进入左右观察姿态的必要动作。
-- 导航失败只允许进行有限的局部恢复；仍失败则记录本项失败并推进，避免后续全部错序。
-- 每项任务开始时记录 task index，所有异步 callback 必须验证仍属于当前任务，防止旧反馈污染下一项。
+- C 区每项任务开始优先使用实时 `map -> base_link` TF；TF 暂不可用时使用上一项目标点位姿作为规划起点，首项没有历史位姿才停止。
+- FollowWaypoints 导航失败时记录失败状态，但仍继续当前目标的稳定停车、方向调整、识别和抓取流程，再按二维码顺序推进下一项，避免因导航 action 状态丢失而放弃现场目标。
+- C 区 `axis_waypoint_action_server` 将中间 waypoint 视为通行参考点：横向误差超限时先以低速继续修正，并允许一次从实时位姿重试；重试后距离 waypoint 不超过 `waypoint_pass_tolerance` 时容错通过。最终 goal 仍使用严格位置和方向收敛。
+- FollowWaypoints 已接受但执行为 `ABORTED` 时，Mission 按 `missed_waypoints` 截取未完成路线后缀重试，最多使用既有的三次 action 尝试，不重复经过已完成 waypoint。TF 不可用、GICP ERROR 或取消请求仍保持停车和恢复边界。
+- 每项任务开始时记录 task index；当前方向回调协议只有 `callback_id`，无法区分同一 ID 的迟到回调，
+  因此下位机协议增加命令序号前不得把跨任务回调校验写成已完成能力。
 
 ### 7.3 B 区
 

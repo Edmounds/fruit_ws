@@ -6,7 +6,7 @@ Panels:
       Expanded:
         - /Robot1
       Splitter Ratio: 0.5
-    Tree Height: 246
+    Tree Height: 367
   - Class: fruit_waypoint_rviz_plugin/WaypointMakerPanel
     Name: Waypoint Maker
   - Class: rviz_common/Tool Properties
@@ -155,7 +155,7 @@ Visualization Manager:
       Enabled: true
       Name: Waypoint Maker Markers
       Namespaces:
-        {}
+        fruit_waypoint_maker: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -202,8 +202,6 @@ Visualization Manager:
           Value: true
         livox_frame:
           Value: true
-        map:
-          Value: true
         odom:
           Value: true
       Marker Scale: 1
@@ -212,18 +210,17 @@ Visualization Manager:
       Show Axes: true
       Show Names: false
       Tree:
-        map:
-          odom:
-            base_link:
-              front_mid360:
-                livox_frame:
-                  {}
+        odom:
+          base_link:
+            front_mid360:
+              livox_frame:
+                {}
       Update Interval: 0
       Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: map
+    Fixed Frame: odom
     Frame Rate: 30
   Name: root
   Tools:
@@ -244,7 +241,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 2.8770763874053955
+      Distance: 13.041596412658691
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -259,24 +256,24 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.8197964429855347
+      Pitch: 1.5697963237762451
       Target Frame: map
       Value: Orbit (rviz_default_plugins)
-      Yaw: 2.5103983879089355
+      Yaw: 3.080399513244629
     Saved: ~
 Window Geometry:
   Displays:
     collapsed: false
-  Height: 900
+  Height: 1216
   Hide Left Dock: false
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd00000001000000000000015600000328fc0200000004fb000000100044006900730070006c006100790073010000003e00000134000000ca00fffffffb0000001c0057006100790070006f0069006e00740020004d0061006b006500720100000178000001ee0000014800fffffffb0000001e0054006f006f006c002000500072006f0070006500720074006900650073000000025e0000005c0000005c00fffffffb0000000a0056006900650077007300000002a9000000bd000000a600ffffff0000041c0000032800000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd00000001000000000000015600000464fc0200000004fb000000100044006900730070006c006100790073010000003e000001ad000000ca00fffffffb0000001c0057006100790070006f0069006e00740020004d0061006b0065007201000001f1000002b10000019900fffffffb0000001e0054006f006f006c002000500072006f0070006500720074006900650073000000025e0000005c0000005c00fffffffb0000000a0056006900650077007300000002a9000000bd000000a600ffffff0000066a0000046400000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Tool Properties:
     collapsed: false
   Views:
     collapsed: false
   Waypoint Maker:
     collapsed: false
-  Width: 1400
-  X: 520
-  Y: 143
+  Width: 1990
+  X: 58
+  Y: 27

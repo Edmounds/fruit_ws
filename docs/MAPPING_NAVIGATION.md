@@ -7,7 +7,11 @@
   source setup_fruit_runtime.bash
   ```
 
-  A、B 是两个独立的场地 profile。场馆在建筑物中的绝对位置不会进入 ROS `map` 坐标系，
+  运行环境固定使用 `rmw_cyclonedds_cpp`。导航、mission、调试监视器和 ROS 2 CLI 必须从
+  同一次环境加载后启动，禁止把仍在运行的 Fast DDS 节点与 Cyclone DDS 节点混在一套任务中。
+  首次从 Fast DDS 切换时先停止全部旧进程，并执行一次 `ros2 daemon stop` 后再重新启动。
+
+  `map A`、`map B` 是两个独立的物理场地 profile，不是任务流程中的 A 区、B 区。场馆在建筑物中的绝对位置不会进入 ROS `map` 坐标系，
   但只要地图原点、朝向或现场路线需要独立调节，就必须使用对应 profile 的地图、初始位姿
   和 waypoint YAML。所有现场脚本都要求显式指定 `--map A` 或 `--map B`。
 
@@ -15,18 +19,73 @@
   ./start_mapping.sh --map A
   ./save_glim_map.sh --map A
   ./start_relocalization_test.sh --map A
-  ./waypoints_maker.sh --map A
+  ./start_odometry.sh --map A
+  ./waypoints_maker.sh --map A --odom
   ./start_navigation.sh --map A
+  ./start_navigation.sh --map A --odom
   ./start_fruit_mission.sh --map A
+  ./start_fruit_mission.sh --map A --odom --flow a
   ./start_fruit_mission.sh --map A --debug
+  ./record_rosbag.sh --full
   ```
 
-  将命令中的 `A` 替换为 `B` 即可使用另一套场地数据。地图文件位于
-  `src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/{A,B}/`，路径点位于
-  `src/fruit_waypoint_recorder/waypoints/{A,B}/`。
+  将命令中的 `--map A` 替换为 `--map B` 即可使用另一套物理场地地图、定位数据和 waypoint
+  文件。地图文件位于 `src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/maps/{A,B}/`，
+  路点文件位于 `src/fruit_waypoint_recorder/waypoints/{A,B}/competition_waypoints.yaml`。
+  地图选择会同时切换该场地的地图、定位初始位姿和 waypoint 文件。
 
-  任务启动命令增加 `--debug` 时，会在导航、摄像头和任务节点启动前自动录制除点云外的
-  ROS 话题，录包保存在项目根目录的 `rosbags/YYYYMMDD_HHMMSS/`，最多保留最新的 5 个录包。
+  纯里程计调试不读取地图、`field.initial_pose.yaml` 或 GICP，只复用同一个 `--map A|B`
+  profile 标识现场起点：
+
+  ```bash
+  ./start_odometry.sh --map A
+  ```
+
+  该命令启动 Livox MID-360、Point-LIO 及其坐标适配节点。机器人必须在起点保持静止；
+  启动脚本先等待雷达连接、IMU 初始化和第一条有效 Point-LIO 里程计，再开始稳定倒计时。
+  适配节点会等待连续约 1.5 秒的低速、低位置/yaw 方差数据，并用稳定窗口的平均位姿建立
+  本次运行的 `odom` 原点。速度按完整窗口的首尾位姿计算，避免把 20 Hz 单帧位置噪声
+  放大成错误的运动速度。稳定完成前不会发布可供控制使用的 `odom -> base_link`。
+  收到第一条有效里程计后，稳定检测最多等待 5 秒；超时后脚本退出且不会用漂移中的位姿
+  降级建立原点。
+  `--map A`/`--map B` 不会加载对应 PCD，也不会发布 `map -> odom`；它只保证现场脚本使用
+  一致的 profile 标识。需要全局坐标时仍使用下面的建图、导出和重定位流程。
+
+  `start_navigation.sh --odom`、`waypoints_maker.sh --odom` 和
+  `start_fruit_mission.sh --odom` 复用同一条纯里程计导航链，并等待上述稳定 TF。
+  它们不读取地图、初始位姿或 GICP；mission 同时切换到该 profile 的
+  `odometry_waypoints.yaml`，并把 waypoint 的坐标系设为 `odom`。里程计 waypoint 必须在
+  同一个物理起点和朝向启动后复用。`fruit_mission_ui.py` 中打开“纯里程计模式”推拉开关后，
+  两个启动按钮会自动追加 `--odom`；状态栏会提示正在等待
+  稳定起点。
+
+  控制面板允许先启动定位/导航，确认定位正常后再启动比赛流程。第二步会自动给
+  `start_fruit_mission.sh` 追加 `--reuse-navigation`，复用已经运行的导航、定位、串口桥和
+  调试监视器，只补充启动感知与任务节点，不会重启雷达或定位。此模式下比赛流程退出只停止
+  它启动的感知与任务进程，导航仍保持运行；“停止全部进程”仍会统一停止所有项目进程。
+
+  Mission 流程使用独立的 `--flow full|ac|a|b|c` 参数选择，默认是 `full`。`--flow b` 表示
+  B 区流程，不代表切换到 `map B`，例如：
+
+  ```bash
+  ./start_fruit_mission.sh --map A --flow b
+  ```
+
+  完整任务启动命令增加 `--debug` 时，会在导航、摄像头和任务节点启动前自动录制 ROS
+  调试数据，包括隐藏的 Action 话题、LiDAR、点云和选定的视觉图像。视觉数据只保留
+  `/left_camera/image_raw`、`/right_camera/image_raw`、两路对应的
+  `/fruit_perception/{left,right}/annotated_image`，以及 D435i 的
+  `/camera/camera/color/image_raw`、`/camera/camera/aligned_depth_to_color/image_raw` 和
+  `/fruit_perception/d435i/annotated_image`。黑名单排除未对齐的 D435i raw depth、重复的
+  RGBD 复合消息和所有 `compressed`、`compressedDepth`、`theora` 派生图像，避免调试录包
+  把进程内图像链全部拉到 DDS 并重复落盘。录包保存在项目根目录的
+  `rosbags/YYYYMMDD_HHMMSS/`，最多保留最新的 5 个录包。单独执行 `record_rosbag.sh` 时
+  使用同一黑名单；`--full` 仅作为兼容的显式模式标识。
+
+  `robot_debug_monitor.sh` 每个统计周期输出一行 `D435I streams`。`color` 和 `depth` 的频率
+  来自 RealSense metadata，`rgbd` 来自感知 component 每收到一帧进程内 RGBD 时发布的轻量
+  `/fruit_perception/d435i/rgbd_heartbeat`。每项同时显示窗口实际频率、最后一帧 ROS 时间和
+  距当前的接收时长；`QR/TREE` 模式下任一流超过 1 秒没有新帧时状态变为 `STALE`。
 
   ## 1. 建图
 

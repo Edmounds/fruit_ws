@@ -29,4 +29,5 @@ source setup_fruit_runtime.bash
 ros2 launch fruit_waypoint_recorder waypoint_recorder.launch.py
 ```
 录点器逐段试跑会使用 YAML 中的 yaw。正式 Mission 对 `C_QR` 保留 YAML yaw，对其后的 C 区
-路点根据相邻 XY 动态生成 yaw；详见 `docs/WAYPOINT_RECORDING.md`。
+路点和当前 C goal 使用各自 YAML 中保存的 yaw；只有 TF 位于命名图边中间时临时插入的
+rejoin 点使用局部边方向；详见 `docs/WAYPOINT_RECORDING.md`。

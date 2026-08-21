@@ -18,7 +18,7 @@ VALID_TEST_POINT_TYPES = ("waypoint", "goal")
 
 @dataclass(frozen=True)
 class PoseData:
-    """Serializable map-frame pose used by the waypoint recorder."""
+    """Serializable fixed-frame pose used by the waypoint recorder."""
 
     name: str
     x: float
@@ -114,8 +114,11 @@ class TestPointStore:
 
     __test__ = False
 
-    def __init__(self, output_path: Path) -> None:
+    def __init__(self, output_path: Path, frame_id: str = "map") -> None:
         self.output_path = output_path
+        self.frame_id = str(frame_id).strip()
+        if self.frame_id not in ("map", "odom"):
+            raise ValueError("waypoint frame_id must be map or odom")
         self._points: List[TestPoint] = []
         self._cursor = 0
 
@@ -147,6 +150,18 @@ class TestPointStore:
         self._points.append(point)
         return point
 
+    def next_auto_name(self, prefix: str) -> str:
+        """Return the next name after the highest recorded profile index."""
+        cleaned_prefix = prefix.strip()
+        if not cleaned_prefix:
+            raise ValueError("auto_name_prefix must not be empty")
+        highest_index = 0
+        for point in self._points:
+            suffix = point.name[len(cleaned_prefix):]
+            if point.name.startswith(cleaned_prefix) and suffix.isdigit():
+                highest_index = max(highest_index, int(suffix))
+        return f"{cleaned_prefix}{highest_index + 1}"
+
     def undo(self) -> Optional[TestPoint]:
         """Undo the latest test point and keep the cursor valid."""
         if not self._points:
@@ -176,8 +191,10 @@ class TestPointStore:
             raise ValueError("test waypoint YAML must be a mapping")
         if document.get("schema_version") != 1:
             raise ValueError("test waypoint YAML schema_version must be 1")
-        if document.get("frame_id") != "map":
-            raise ValueError("test waypoint YAML frame_id must be map")
+        if document.get("frame_id") != self.frame_id:
+            raise ValueError(
+                f"waypoint YAML frame_id must be {self.frame_id}"
+            )
         raw_points = document.get("points")
         if not isinstance(raw_points, list):
             raise ValueError("test waypoint YAML points must be a list")
@@ -241,7 +258,7 @@ class TestPointStore:
             raise ValueError("no test points to save")
         document = {
             "schema_version": 1,
-            "frame_id": "map",
+            "frame_id": self.frame_id,
             "created_at": datetime.now().astimezone().isoformat(),
             "points": [point.to_dict() for point in self._points],
         }

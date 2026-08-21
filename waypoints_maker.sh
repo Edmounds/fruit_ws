@@ -4,16 +4,19 @@ set -eo pipefail
 
 WORKSPACE=/home/rc4/fruit_ws
 MAP_PROFILE_HELPER="$WORKSPACE/scripts/map_profile.sh"
-NAV_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/localization_navigation_launch.py"
+LOCALIZATION_NAV_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/localization_navigation_launch.py"
+ODOMETRY_NAV_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/odometry_navigation.launch.py"
 HARDWARE_LAUNCH="$WORKSPACE/src/fruit_hardware_bridge/launch/fruit_hardware_bridge.launch.py"
 RECORDER_LAUNCH="$WORKSPACE/src/fruit_waypoint_recorder/launch/waypoint_recorder.launch.py"
 PARAMS="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/localization_params.yaml"
 AXIS_PARAMS="$WORKSPACE/src/fruit_navigation/config/axis_navigation.yaml"
+SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
 RVIZ_CONFIG="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/rviz/waypoints_maker.rviz"
 DESKTOP_RUNTIME_DIR="/run/user/$(id -u)"
 DESKTOP_DISPLAY=:0
 DESKTOP_XAUTHORITY="$DESKTOP_RUNTIME_DIR/gdm/Xauthority"
 USE_TELEOP=false
+USE_ODOMETRY=false
 MAP_ID=""
 
 pids=()
@@ -22,9 +25,11 @@ stopped=0
 
 usage() {
   cat <<'EOF'
-Usage: ./waypoints_maker.sh --map A|B [--tele]
+Usage: ./waypoints_maker.sh --map A|B [--odom] [--tele]
 
-Start localization, axis navigation, RViz, and the waypoint recorder.
+Start axis navigation, RViz, and the waypoint recorder.
+Use --odom to record and run points in the startup-relative odom frame without
+loading a map, localization PCD, initial pose, or GICP.
 Use --tele when joystick teleop is needed.
 EOF
 }
@@ -69,6 +74,27 @@ start_debug_monitor() {
   debug_pids+=("$!")
 }
 
+wait_for_odom_tf() {
+  printf '[waypoints-maker] waiting for odometry nodes\n'
+  ros2 run fruit_mission stack_readiness_client \
+    nodes --node /laserMapping --node /loam_interface \
+    --node /sensor_scan_generation --timeout 60 \
+    --ros-args --params-file "$SCRIPT_CLIENT_CONFIG"
+  printf '[waypoints-maker] waiting for the first valid Point-LIO odometry sample\n'
+  ros2 run fruit_mission stack_readiness_client \
+    odometry --topic /aft_mapped_to_init --timeout 60 \
+    --ros-args --params-file "$SCRIPT_CLIENT_CONFIG"
+  printf '[waypoints-maker] waiting up to 5s for stable odom -> base_link TF\n'
+  if ros2 run fruit_mission stack_readiness_client \
+    tf --parent odom --child base_link --timeout 5 --max-age 1 \
+    --ros-args --params-file "$SCRIPT_CLIENT_CONFIG"; then
+    printf '[waypoints-maker] stable odom origin is ready\n'
+    return 0
+  fi
+  printf '[waypoints-maker] stable odom origin was not established within 5s\n' >&2
+  return 1
+}
+
 trap stop_children INT TERM EXIT
 
 while (($# > 0)); do
@@ -80,6 +106,10 @@ while (($# > 0)); do
       ;;
     --tele)
       USE_TELEOP=true
+      shift
+      ;;
+    --odom)
+      USE_ODOMETRY=true
       shift
       ;;
     --help|-h)
@@ -98,25 +128,49 @@ source "$WORKSPACE/setup_fruit_runtime.bash"
 set -u
 source "$MAP_PROFILE_HELPER"
 resolve_map_profile "$WORKSPACE" "$MAP_ID"
-require_map_profile_runtime
+require_map_profile_template
 
-for required_file in \
+if [[ "$USE_ODOMETRY" == true ]]; then
+  NAV_LAUNCH="$ODOMETRY_NAV_LAUNCH"
+  WAYPOINT_FILE="$ODOMETRY_WAYPOINT_FILE"
+  WAYPOINT_FRAME=odom
+  require_map_profile_odometry
+else
+  NAV_LAUNCH="$LOCALIZATION_NAV_LAUNCH"
+  WAYPOINT_FILE="$RECORDER_WAYPOINT_FILE"
+  WAYPOINT_FRAME=map
+  require_map_profile_maps
+  require_map_profile_recorder
+fi
+
+required_files=(
   "$NAV_LAUNCH" \
   "$HARDWARE_LAUNCH" \
   "$RECORDER_LAUNCH" \
   "$PARAMS" \
   "$AXIS_PARAMS" \
-  "$MAP_YAML" \
-  "$RECORDER_WAYPOINT_FILE" \
-  "$LOCALIZATION_MAP" \
-  "$INITIAL_POSE_FILE" \
+  "$WAYPOINT_FILE" \
   "$WORKSPACE/robot_debug_monitor.sh" \
-  "$RVIZ_CONFIG"; do
+  "$RVIZ_CONFIG"
+)
+if [[ "$USE_ODOMETRY" == true ]]; then
+  required_files+=("$SCRIPT_CLIENT_CONFIG")
+else
+  required_files+=("$MAP_YAML" "$LOCALIZATION_MAP" "$INITIAL_POSE_FILE")
+fi
+for required_file in "${required_files[@]}"; do
   if [[ ! -r "$required_file" ]]; then
     printf '[waypoints-maker] required file is unavailable: %s\n' "$required_file" >&2
     exit 1
   fi
 done
+
+if ros2 node list 2>/dev/null | grep -Eq \
+  '^/(livox_ros_driver2|laserMapping|loam_interface|sensor_scan_generation|axis_waypoint_action_server|fruit_waypoint_recorder)$'; then
+  printf '[waypoints-maker] an odometry or waypoint node is already running.\n' >&2
+  printf '[waypoints-maker] stop the existing stack before starting this script.\n' >&2
+  exit 1
+fi
 
 if [[ ! -r "$DESKTOP_XAUTHORITY" ]]; then
   printf '[waypoints-maker] desktop Xauthority is unavailable: %s\n' "$DESKTOP_XAUTHORITY" >&2
@@ -127,21 +181,34 @@ fi
 start_process "serial bridge" \
   ros2 launch "$HARDWARE_LAUNCH"
 
-if [[ "$USE_TELEOP" == true ]]; then
+if [[ "$USE_ODOMETRY" == true && "$USE_TELEOP" == true ]]; then
+  nav_process_name="axis navigation, odometry, and teleop"
+elif [[ "$USE_ODOMETRY" == true ]]; then
+  nav_process_name="axis navigation and odometry"
+elif [[ "$USE_TELEOP" == true ]]; then
   nav_process_name="axis navigation, localization, and teleop"
 else
   nav_process_name="axis navigation and localization"
 fi
 
-start_process "$nav_process_name" \
-  ros2 launch "$NAV_LAUNCH" \
-    "map:=$MAP_YAML" \
-    "localization_map:=$LOCALIZATION_MAP" \
-    "params_file:=$PARAMS" \
-    "axis_params_file:=$AXIS_PARAMS" \
-    "initial_pose_file:=$INITIAL_POSE_FILE" \
-    "use_teleop:=$USE_TELEOP" \
-    "use_rviz:=false"
+if [[ "$USE_ODOMETRY" == true ]]; then
+  start_process "$nav_process_name" \
+    ros2 launch "$NAV_LAUNCH" \
+      "params_file:=$PARAMS" \
+      "axis_params_file:=$AXIS_PARAMS" \
+      "use_teleop:=$USE_TELEOP" \
+      "use_rviz:=false"
+else
+  start_process "$nav_process_name" \
+    ros2 launch "$NAV_LAUNCH" \
+      "map:=$MAP_YAML" \
+      "localization_map:=$LOCALIZATION_MAP" \
+      "params_file:=$PARAMS" \
+      "axis_params_file:=$AXIS_PARAMS" \
+      "initial_pose_file:=$INITIAL_POSE_FILE" \
+      "use_teleop:=$USE_TELEOP" \
+      "use_rviz:=false"
+fi
 
 start_debug_monitor
 
@@ -151,17 +218,29 @@ start_process "rviz2 waypoint maker" \
     "XAUTHORITY=$DESKTOP_XAUTHORITY" \
     "XDG_RUNTIME_DIR=$DESKTOP_RUNTIME_DIR" \
     "DBUS_SESSION_BUS_ADDRESS=unix:path=$DESKTOP_RUNTIME_DIR/bus" \
-    rviz2 -d "$RVIZ_CONFIG"
+    rviz2 -d "$RVIZ_CONFIG" -f "$WAYPOINT_FRAME"
+
+if [[ "$USE_ODOMETRY" == true ]]; then
+  wait_for_odom_tf
+fi
 
 start_process "waypoint recorder" \
   ros2 launch "$RECORDER_LAUNCH" \
-    "waypoint_file:=$RECORDER_WAYPOINT_FILE"
+    "waypoint_file:=$WAYPOINT_FILE" \
+    "frame_id:=$WAYPOINT_FRAME" \
+    "auto_name_prefix:=$MAP_ID" \
+    "auto_name_file:=$WAYPOINT_TEMPLATE_FILE"
 
-if [[ "$USE_TELEOP" == true ]]; then
+if [[ "$USE_ODOMETRY" == true && "$USE_TELEOP" == true ]]; then
+  printf '[waypoints-maker] profile=%s; odometry, teleop, RViz, and waypoint recorder started.\n' "$MAP_ID"
+elif [[ "$USE_ODOMETRY" == true ]]; then
+  printf '[waypoints-maker] profile=%s; odometry, RViz, and waypoint recorder started.\n' "$MAP_ID"
+elif [[ "$USE_TELEOP" == true ]]; then
   printf '[waypoints-maker] profile=%s; navigation, teleop, RViz, and waypoint recorder started.\n' "$MAP_ID"
 else
   printf '[waypoints-maker] profile=%s; navigation, RViz, and waypoint recorder started.\n' "$MAP_ID"
 fi
+printf '[waypoints-maker] frame=%s; waypoint_file=%s\n' "$WAYPOINT_FRAME" "$WAYPOINT_FILE"
 printf '[waypoints-maker] use the RViz Waypoint Maker panel to record, save, undo, and run the next goal. Press Ctrl-C to stop.\n'
 
 if wait -n "${pids[@]}"; then

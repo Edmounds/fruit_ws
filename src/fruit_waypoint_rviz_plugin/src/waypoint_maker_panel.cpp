@@ -46,17 +46,18 @@ WaypointMakerPanel::WaypointMakerPanel(QWidget * parent)
   auto * test_form = new QFormLayout();
   test_file_edit_ = new QLineEdit(test_tab);
   test_file_edit_->setReadOnly(true);
-  test_name_edit_ = new QLineEdit(test_tab);
-  test_name_edit_->setPlaceholderText("A1 / C_top_waypoint_1");
   final_yaw_mode_combo_ = new QComboBox(test_tab);
   final_yaw_mode_combo_->addItem("Blend on path", "blend_on_path");
   final_yaw_mode_combo_->addItem("Rotate at goal", "rotate_at_goal");
   load_test_file_button_ = new QPushButton("Load Waypoint YAML", test_tab);
   test_form->addRow("YAML", test_file_edit_);
-  test_form->addRow("Name", test_name_edit_);
   test_form->addRow("Final yaw", final_yaw_mode_combo_);
   test_layout->addLayout(test_form);
   test_layout->addWidget(load_test_file_button_);
+
+  next_name_label_ = new QLabel("Next name: waiting for recorder", test_tab);
+  next_name_label_->setWordWrap(true);
+  test_layout->addWidget(next_name_label_);
 
   test_label_ = new QLabel("Loaded waypoints: 0", test_tab);
   test_label_->setWordWrap(true);
@@ -144,17 +145,10 @@ void WaypointMakerPanel::recordTestGoal()
 
 void WaypointMakerPanel::recordTestPoint(const QString & point_type)
 {
-  const QString name = test_name_edit_->text().trimmed();
-  if (name.isEmpty()) {
-    status_label_->setText("idle: waypoint name must not be empty");
-    test_name_edit_->setFocus();
-    return;
-  }
-
   QJsonObject command;
   command["command"] = "record";
   command["mode"] = "test";
-  command["name"] = name;
+  command["auto_name"] = true;
   command["point_type"] = point_type;
   sendCommand(command);
 }
@@ -232,6 +226,8 @@ void WaypointMakerPanel::applyState(const QString & state_json)
   }
   const QString next_goal = test.value("next_goal").toString();
   const QString final_yaw_mode = test.value("final_yaw_mode").toString();
+  const QString auto_name_prefix = test.value("auto_name_prefix").toString();
+  const QString next_name = test.value("next_name").toString();
   const int final_yaw_mode_index = final_yaw_mode_combo_->findData(final_yaw_mode);
   if (final_yaw_mode_index >= 0) {
     final_yaw_mode_combo_->setCurrentIndex(final_yaw_mode_index);
@@ -242,6 +238,14 @@ void WaypointMakerPanel::applyState(const QString & state_json)
     .arg(test.value("cursor").toInt())
     .arg(next_goal.isEmpty() ? "none" : next_goal)
     .arg(final_yaw_mode_combo_->currentText()));
+  if (next_name.isEmpty()) {
+    next_name_label_->setText(
+      auto_name_prefix.isEmpty()
+      ? "Next name: unavailable (set auto_name_prefix)"
+      : "Next name: none");
+  } else {
+    next_name_label_->setText(QString("Next name: %1").arg(next_name));
+  }
 }
 
 void WaypointMakerPanel::setBusy(bool busy)

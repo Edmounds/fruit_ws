@@ -8,8 +8,43 @@ readonly PIPER="${WORKSPACE_DIR}/.venv/piper-tts/bin/piper"
 readonly MODEL="${WORKSPACE_DIR}/.cache/piper-tts/zh_CN-huayan-medium/zh_CN-huayan-medium.onnx"
 readonly MODEL_CONFIG="${WORKSPACE_DIR}/.cache/piper-tts/zh_CN-huayan-medium/zh_CN-huayan-medium.onnx.json"
 readonly WAV_PATH="${WORKSPACE_DIR}/tmp/fruit_mission/tts_test.wav"
-readonly TEXT="${*:-巴巴博弈}"
-readonly ALSA_DEVICE="${ALSA_DEVICE:-plughw:CARD=Device,DEV=0}"
+
+usage() {
+  cat <<'EOF'
+Usage: ./test_tts.sh [--default] [TEXT...]
+
+Play the generated speech through the configured ALSA device.
+  --default  Use the ALSA default playback device.
+  ALSA_DEVICE=... can select an explicit ALSA device when --default is absent.
+EOF
+}
+
+ALSA_DEVICE="${ALSA_DEVICE:-plughw:CARD=Device,DEV=0}"
+text_args=()
+while (($# > 0)); do
+  case "$1" in
+    --default)
+      ALSA_DEVICE=default
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      text_args+=("$@")
+      break
+      ;;
+    *)
+      text_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+readonly TEXT="${text_args[*]:-巴巴博弈}"
+readonly ALSA_DEVICE
 
 source "${RUNTIME_SETUP}"
 set -u

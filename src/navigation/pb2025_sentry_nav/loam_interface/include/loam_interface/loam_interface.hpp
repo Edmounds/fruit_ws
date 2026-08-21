@@ -15,6 +15,7 @@
 #ifndef LOAM_INTERFACE__LOAM_INTERFACE_HPP_
 #define LOAM_INTERFACE__LOAM_INTERFACE_HPP_
 
+#include <deque>
 #include <memory>
 #include <string>
 
@@ -34,9 +35,22 @@ public:
   explicit LoamInterfaceNode(const rclcpp::NodeOptions & options);
 
 private:
+  struct InitialPoseSample
+  {
+    rclcpp::Time stamp;
+    tf2::Transform camera_init_to_body;
+  };
+
   void pointCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg);
 
   void odometryCallback(const nav_msgs::msg::Odometry::ConstSharedPtr msg);
+
+  bool initializeExtrinsics(const rclcpp::Time & stamp);
+
+  bool updateInitialPoseStability(
+    const rclcpp::Time & stamp, const tf2::Transform & camera_init_to_body);
+
+  tf2::Transform meanInitialPose() const;
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pcd_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
@@ -53,12 +67,25 @@ private:
   std::string lidar_frame_;
   std::string base_frame_;
   std::string imu_frame_;
+  tf2::Transform base_to_lidar_;
   tf2::Transform lidar_in_imu_;
 
+  bool stabilize_initial_odom_{false};
+  double initial_stability_timeout_sec_{5.0};
+  double initial_stability_window_sec_{1.5};
+  int initial_stability_min_samples_{15};
+  double initial_stability_max_translation_speed_{0.03};
+  double initial_stability_max_rotation_speed_{0.08};
+  double initial_stability_position_stddev_{0.02};
+  double initial_stability_yaw_stddev_{0.03};
+  bool extrinsics_initialized_{false};
+  bool initial_stability_started_{false};
+  bool initial_stability_failed_{false};
+  rclcpp::Time initial_stability_start_time_;
+  std::deque<InitialPoseSample> initial_pose_samples_;
   bool odom_to_camera_init_initialized_{false};
   bool odometry_initialized_{false};
-  // Constant after first successful base->lidar lookup: aligns odom with base at t0
-  // where Point-LIO camera_init coincides with the Mid360 IMU/body frame.
+  // Constant after initialization: aligns the selected Point-LIO origin pose with base_link.
   tf2::Transform tf_odom_to_camera_init_;
 };
 

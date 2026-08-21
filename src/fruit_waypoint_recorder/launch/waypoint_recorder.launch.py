@@ -12,6 +12,9 @@ def generate_launch_description():
         "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/config/"
         "waypoint_recorder.yaml"
     )
+    default_auto_name_file = (
+        "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/template.yaml"
+    )
     with open(config_file, encoding="utf-8") as stream:
         default_waypoint_file = yaml.safe_load(stream)["fruit_waypoint_recorder"][
             "ros__parameters"
@@ -28,6 +31,9 @@ def generate_launch_description():
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     waypoint_file = LaunchConfiguration("waypoint_file")
+    frame_id = LaunchConfiguration("frame_id")
+    auto_name_prefix = LaunchConfiguration("auto_name_prefix")
+    auto_name_file = LaunchConfiguration("auto_name_file")
     declare_use_sim_time = DeclareLaunchArgument(
         "use_sim_time",
         default_value="false",
@@ -38,11 +44,38 @@ def generate_launch_description():
         default_value=default_waypoint_file,
         description="Profile-specific waypoint YAML file",
     )
-    launch_actions = [declare_use_sim_time, declare_waypoint_file]
+    declare_frame_id = DeclareLaunchArgument(
+        "frame_id",
+        default_value="map",
+        description="Coordinate frame stored in the waypoint YAML",
+    )
+    declare_auto_name_prefix = DeclareLaunchArgument(
+        "auto_name_prefix",
+        default_value="",
+        description="Prefix for sequential waypoint names, such as A or B",
+    )
+    declare_auto_name_file = DeclareLaunchArgument(
+        "auto_name_file",
+        default_value=default_auto_name_file,
+        description="YAML file containing formal waypoint names in recording order",
+    )
+    launch_actions = [
+        declare_use_sim_time,
+        declare_waypoint_file,
+        declare_frame_id,
+        declare_auto_name_prefix,
+        declare_auto_name_file,
+    ]
     for node_config in nodes_to_launch:
         parameters = list(node_config.get("parameters", []))
         parameters.append(
-            {"use_sim_time": use_sim_time, "waypoint_file": waypoint_file}
+            {
+                "use_sim_time": use_sim_time,
+                "waypoint_file": waypoint_file,
+                "frame_id": frame_id,
+                "auto_name_prefix": auto_name_prefix,
+                "auto_name_file": auto_name_file,
+            }
         )
         launch_actions.append(
             Node(

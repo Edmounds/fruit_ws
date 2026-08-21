@@ -31,6 +31,8 @@ setup(
     },
     entry_points={
         "console_scripts": [
+            "waypoint_editor_server = "
+            "fruit_waypoint_recorder.waypoint_editor_server:main",
             "waypoint_recorder_node = "
             "fruit_waypoint_recorder.waypoint_recorder_node:main",
         ],

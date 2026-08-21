@@ -268,6 +268,9 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
             "route_distance",
             "camera_side",
             "preferred_side",
+            "arrival_yaw",
+            "arrival_yaw_source",
+            "route_rejoin",
         ):
             if key in navigation:
                 task[key] = navigation[key]
@@ -290,14 +293,13 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
             task["navigation_failure_detail"] = navigation.get("detail")
             ctx.announce(
                 f"C区{format_position_name(position_id)}，应该采{target_name}。"
-                "导航失败，跳过并从当前位置规划下一项。"
+                "导航 action 失败，仍在当前位置执行方向调整和识别。"
             )
             ctx.save_c_distribution(c_distribution)
             if not bool(navigation.get("recovery_available", True)):
                 ctx.announce("C区当前位置无法用于重新规划，C区任务停止。")
                 _send_arm_retract(ctx, "C区导航恢复失败，机械臂收缩姿态动作超时。")
                 return False
-            continue
 
         camera_side = str(navigation["camera_side"])
         ctx.stable_stop()

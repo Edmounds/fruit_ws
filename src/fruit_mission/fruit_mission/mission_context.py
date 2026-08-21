@@ -68,6 +68,7 @@ class MissionContext:
         self.route = MissionWaypointRoute.from_file(
             Path(str(config["waypoint_file"])),
             str(config.get("mission_flow", "full")),
+            str(config["map_frame"]),
         )
         self._route_cursor = 0
         self._current_waypoint_name: Optional[str] = None
@@ -194,7 +195,7 @@ class MissionContext:
         return True
 
     def go_through(self, waypoint_names: Sequence[str]) -> bool:
-        """Reach explicit C-route points with yaw aligned to each XY segment."""
+        """Reach explicit C-route points using their saved YAML yaw."""
         names = (
             [waypoint_names]
             if isinstance(waypoint_names, str)
@@ -204,11 +205,11 @@ class MissionContext:
             return True
         if self._current_waypoint_name is None:
             self.node.get_logger().error(
-                "Cannot align C-route yaw before reaching a known waypoint"
+                "Cannot set C-route yaw before reaching a known waypoint"
             )
             return False
         try:
-            targets, final_name, final_yaw = self.route.path_aligned_targets(
+            targets, final_name, final_yaw = self.route.waypoint_yaw_targets(
                 self._current_waypoint_name,
                 names,
                 self._current_route_yaw,
@@ -228,6 +229,10 @@ class MissionContext:
     def navigate_c_position(self, position_id: int) -> Dict[str, Any]:
         """Plan and execute one C task from the live TF map pose."""
         start = self._lookup_map_pose()
+        start_source = "tf"
+        if start is None:
+            start = self._previous_target_pose()
+            start_source = "previous_target"
         if start is None:
             return {
                 "status": "planning_failed",
@@ -249,7 +254,7 @@ class MissionContext:
                 "status": "planning_failed",
                 "reason": "route_unavailable",
                 "navigation_start": {"x": start_x, "y": start_y},
-                "navigation_start_source": "tf",
+                "navigation_start_source": start_source,
                 "detail": str(error),
             }
 
@@ -257,7 +262,7 @@ class MissionContext:
             "status": "navigation_failed",
             "reason": "follow_waypoints_failed",
             "navigation_start": {"x": plan.start_x, "y": plan.start_y},
-            "navigation_start_source": "tf",
+            "navigation_start_source": start_source,
             "goal_name": plan.goal_name,
             "position_side": plan.position_side,
             "graph_path": list(plan.graph_path),
@@ -267,12 +272,19 @@ class MissionContext:
             "camera_side": plan.camera_side,
             "preferred_side": plan.camera_side,
         }
+        if plan.rejoin_point is not None:
+            result["route_rejoin"] = {
+                "x": plan.rejoin_point[0],
+                "y": plan.rejoin_point[1],
+            }
         if not self._send_waypoint_names(
             plan.navigation_names,
             plan.navigation_yaws,
         ):
+            self._update_c_arrival_side(result, plan.position_side, plan.camera_side)
             return result
 
+        self._update_c_arrival_side(result, plan.position_side, plan.camera_side)
         result["status"] = "succeeded"
         result["reason"] = None
         self._current_waypoint_name = plan.goal_name
@@ -282,6 +294,39 @@ class MissionContext:
             self.route.pose(plan.goal_name).order + 1,
         )
         return result
+
+    def _previous_target_pose(self) -> Optional[tuple[float, float, float]]:
+        """Return the last mission target pose for C-route recovery."""
+        if self._current_waypoint_name is None:
+            return None
+        try:
+            pose = self.route.pose(self._current_waypoint_name)
+        except KeyError:
+            return None
+        yaw = self._current_route_yaw
+        if yaw is None:
+            yaw = self._waypoint_yaw(self._current_waypoint_name)
+        return float(pose.x), float(pose.y), float(yaw)
+
+    def _update_c_arrival_side(
+        self,
+        result: Dict[str, Any],
+        position_side: str,
+        fallback_side: str,
+    ) -> None:
+        """Use the post-action vehicle yaw when selecting the arm side."""
+        arrival = self._lookup_map_pose()
+        if arrival is None:
+            result["arrival_yaw_source"] = "planned"
+            result["arrival_yaw"] = result["navigation_yaws"][-1]
+            result["camera_side"] = fallback_side
+            result["preferred_side"] = fallback_side
+            return
+        result["arrival_yaw_source"] = "tf"
+        result["arrival_yaw"] = arrival[2]
+        side = self.route.c_camera_side(position_side, arrival[2])
+        result["camera_side"] = side
+        result["preferred_side"] = side
 
     def _lookup_map_pose(self) -> Optional[tuple[float, float, float]]:
         deadline = time.monotonic() + float(self.config["tf_lookup_timeout_sec"])
@@ -295,6 +340,16 @@ class MissionContext:
                 )
             except TransformException as error:
                 last_error = error
+                rclpy.spin_once(self.node, timeout_sec=0.05)
+                continue
+            stamp = transform.header.stamp
+            stamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+            now_ns = self.node.get_clock().now().nanoseconds
+            age_sec = (now_ns - stamp_ns) / 1_000_000_000.0
+            if stamp_ns <= 0 or age_sec > float(self.config["tf_lookup_timeout_sec"]):
+                last_error = RuntimeError(
+                    f"map->base_link transform is stale ({age_sec:.3f}s)"
+                )
                 rclpy.spin_once(self.node, timeout_sec=0.05)
                 continue
             translation = transform.transform.translation
@@ -332,14 +387,7 @@ class MissionContext:
         try:
             if yaws is not None and len(yaws) != len(names):
                 raise ValueError("waypoint names and yaw values must have equal length")
-            poses = [
-                self._pose_stamped(
-                    self.route.pose(name),
-                    None if yaws is None else yaws[index],
-                )
-                for index, name in enumerate(names)
-            ]
-        except KeyError as error:
+        except ValueError as error:
             self.node.get_logger().error(str(error))
             return False
         if not self._follow_waypoints_client.wait_for_server(timeout_sec=2.0):
@@ -348,12 +396,30 @@ class MissionContext:
             )
             return False
 
-        goal = FollowWaypoints.Goal()
-        goal.poses = poses
-        route_text = " -> ".join(names)
-        goal_handle = None
+        pending_names = list(names)
+        pending_yaws = None if yaws is None else list(yaws)
         for attempt in range(1, NAV_GOAL_ATTEMPTS + 1):
-            self.node.get_logger().info(f"Navigating through {route_text}")
+            if not pending_names:
+                return True
+            try:
+                poses = [
+                    self._pose_stamped(
+                        self.route.pose(name),
+                        None if pending_yaws is None else pending_yaws[index],
+                    )
+                    for index, name in enumerate(pending_names)
+                ]
+            except (IndexError, KeyError) as error:
+                self.node.get_logger().error(str(error))
+                return False
+
+            goal = FollowWaypoints.Goal()
+            goal.poses = poses
+            route_text = " -> ".join(pending_names)
+            self.node.get_logger().info(
+                f"Navigating through {route_text} "
+                f"attempt={attempt}/{NAV_GOAL_ATTEMPTS}"
+            )
             future = self._follow_waypoints_client.send_goal_async(goal)
             if not self._wait_future(future):
                 if attempt == NAV_GOAL_ATTEMPTS:
@@ -361,38 +427,56 @@ class MissionContext:
                 time.sleep(0.3)
                 continue
             candidate_handle = future.result()
-            if candidate_handle.accepted:
-                goal_handle = candidate_handle
-                break
-            self.node.get_logger().warning(
-                f"FollowWaypoints goal rejected "
-                f"attempt={attempt}/{NAV_GOAL_ATTEMPTS}: {route_text}"
-            )
-            time.sleep(0.3)
-        if goal_handle is None:
-            self.node.get_logger().error(
-                "FollowWaypoints goal rejected: " + route_text
-            )
-            return False
+            if not candidate_handle.accepted:
+                self.node.get_logger().warning(
+                    f"FollowWaypoints goal rejected "
+                    f"attempt={attempt}/{NAV_GOAL_ATTEMPTS}: {route_text}"
+                )
+                if attempt < NAV_GOAL_ATTEMPTS:
+                    time.sleep(0.3)
+                continue
 
-        result_future = goal_handle.get_result_async()
-        if not self._wait_future(result_future):
-            return False
-        wrapped_result = result_future.result()
-        if wrapped_result.status != GoalStatus.STATUS_SUCCEEDED:
-            self.node.get_logger().error(
-                f"FollowWaypoints finished with status={wrapped_result.status}: "
-                f"{route_text}"
-            )
-            return False
-        result = wrapped_result.result
-        missed = list(result.missed_waypoints)
-        if missed:
-            self.node.get_logger().error(
-                f"FollowWaypoints missed indexes {missed}: {' -> '.join(names)}"
-            )
-            return False
-        return True
+            result_future = candidate_handle.get_result_async()
+            if not self._wait_future(result_future):
+                if attempt < NAV_GOAL_ATTEMPTS:
+                    time.sleep(0.3)
+                continue
+            wrapped_result = result_future.result()
+            result = wrapped_result.result
+            missed = list(result.missed_waypoints)
+            if wrapped_result.status == GoalStatus.STATUS_CANCELED:
+                self.node.get_logger().error(
+                    f"FollowWaypoints canceled: {route_text}"
+                )
+                return False
+            if wrapped_result.status == GoalStatus.STATUS_SUCCEEDED and not missed:
+                return True
+
+            next_index = missed[0] if missed else 0
+            if attempt == NAV_GOAL_ATTEMPTS:
+                self.node.get_logger().error(
+                    "FollowWaypoints retries exhausted: "
+                    f"status={wrapped_result.status} "
+                    f"missed={missed} route={route_text}"
+                )
+                return False
+            if 0 <= next_index < len(pending_names):
+                pending_names = pending_names[next_index:]
+                if pending_yaws is not None:
+                    pending_yaws = pending_yaws[next_index:]
+                self.node.get_logger().warning(
+                    "FollowWaypoints did not finish; retrying unfinished "
+                    f"suffix from index={next_index}: {' -> '.join(pending_names)}"
+                )
+            else:
+                self.node.get_logger().error(
+                    f"FollowWaypoints returned invalid missed index {missed}: "
+                    f"{route_text}"
+                )
+                return False
+            if attempt < NAV_GOAL_ATTEMPTS:
+                time.sleep(0.3)
+        return False
 
     def stable_stop(self) -> None:
         """Wait after a navigation arrival so cameras see a steady target."""
@@ -751,7 +835,20 @@ class MissionContext:
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self.node, timeout_sec=0.1)
             if self._latest_d435i_types_stamp_ns > fresh_after_ns:
-                seen_types = merge_seen_types(seen_types, self._latest_d435i_types or [])
+                latest_types = self._latest_d435i_types or []
+                seen_types = merge_seen_types(seen_types, latest_types)
+                if expected_type and latest_types and expected_type not in latest_types:
+                    prefix = expected_type.rsplit("_", 1)[0]
+                    unripe_type = f"{prefix}_unripe"
+                    if unripe_type in latest_types:
+                        return _D435iSelection(
+                            "target_unripe",
+                            matched_type=unripe_type,
+                        )
+                    return _D435iSelection(
+                        "type_mismatch",
+                        matched_type=latest_types[0],
+                    )
             if self._latest_d435i_target is None:
                 continue
             target = self._latest_d435i_target
@@ -856,7 +953,7 @@ class MissionContext:
         yaw: Optional[float] = None,
     ) -> PoseStamped:
         stamped = PoseStamped()
-        stamped.header.frame_id = "map"
+        stamped.header.frame_id = str(self.config["map_frame"])
         stamped.header.stamp = self.node.get_clock().now().to_msg()
         stamped.pose.position.x = pose.x
         stamped.pose.position.y = pose.y

@@ -43,25 +43,23 @@ with open(config_path, encoding="utf-8") as stream:
 profile = (document.get("maps") or {}).get(map_id)
 if not isinstance(profile, dict):
     raise SystemExit(f"missing map profile: {map_id}")
-global_waypoint_file = str(
-    profile.get("waypoint_file") or document.get("waypoint_file") or ""
-).strip()
-if global_waypoint_file:
-    print(global_waypoint_file)
-    print(global_waypoint_file)
-else:
-    for key in ("mission_waypoint_file", "recorder_waypoint_file"):
-        value = str(profile.get(key, "")).strip()
-        if not value:
-            raise SystemExit(f"missing {key} for map profile {map_id}")
-        print(value)
+for key in (
+    "mission_waypoint_file",
+    "recorder_waypoint_file",
+    "odometry_waypoint_file",
+    "waypoint_template_file",
+):
+    value = str(profile.get(key, "")).strip()
+    if not value:
+        raise SystemExit(f"missing {key} for map profile {map_id}")
+    print(value)
 PY
   ); then
     printf 'failed to parse map profile configuration: %s\n' "$profile_config" >&2
     return 1
   fi
-  ((${#waypoint_paths[@]} == 2)) || {
-    printf 'map profile %s must define mission and recorder waypoint files\n' "$map_id" >&2
+  ((${#waypoint_paths[@]} == 4)) || {
+    printf 'map profile %s must define map, odometry, and template waypoint files\n' "$map_id" >&2
     return 1
   }
   local waypoint_path
@@ -73,9 +71,11 @@ PY
   done
   MISSION_WAYPOINT_FILE="${waypoint_paths[0]}"
   RECORDER_WAYPOINT_FILE="${waypoint_paths[1]}"
+  ODOMETRY_WAYPOINT_FILE="${waypoint_paths[2]}"
+  WAYPOINT_TEMPLATE_FILE="${waypoint_paths[3]}"
   export MAP_ID MAP_DIR MAP_YAML LOCALIZATION_MAP INITIAL_POSE_FILE
   export MAP_PGM MAP_PLY GLIM_DUMP_PATH MISSION_WAYPOINT_FILE
-  export RECORDER_WAYPOINT_FILE
+  export RECORDER_WAYPOINT_FILE ODOMETRY_WAYPOINT_FILE WAYPOINT_TEMPLATE_FILE
 }
 
 require_map_profile_file() {
@@ -86,10 +86,30 @@ require_map_profile_file() {
   }
 }
 
-require_map_profile_runtime() {
+require_map_profile_maps() {
   require_map_profile_file "$MAP_YAML" || return 1
   require_map_profile_file "$LOCALIZATION_MAP" || return 1
   require_map_profile_file "$INITIAL_POSE_FILE" || return 1
+}
+
+require_map_profile_mission() {
   require_map_profile_file "$MISSION_WAYPOINT_FILE" || return 1
+}
+
+require_map_profile_recorder() {
   require_map_profile_file "$RECORDER_WAYPOINT_FILE" || return 1
+}
+
+require_map_profile_odometry() {
+  require_map_profile_file "$ODOMETRY_WAYPOINT_FILE" || return 1
+}
+
+require_map_profile_template() {
+  require_map_profile_file "$WAYPOINT_TEMPLATE_FILE" || return 1
+}
+
+require_map_profile_runtime() {
+  require_map_profile_maps || return 1
+  require_map_profile_mission || return 1
+  require_map_profile_recorder || return 1
 }

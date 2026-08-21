@@ -5,7 +5,8 @@ set -eo pipefail
 WORKSPACE=/home/rc4/fruit_ws
 MAP_PROFILE_HELPER="$WORKSPACE/scripts/map_profile.sh"
 
-NAV_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/localization_navigation_launch.py"
+LOCALIZATION_NAV_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/localization_navigation_launch.py"
+ODOMETRY_NAV_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/odometry_navigation.launch.py"
 PERCEPTION_LAUNCH="$WORKSPACE/src/fruit_perception/launch/fruit_perception.launch.py"
 MISSION_LAUNCH="$WORKSPACE/src/fruit_mission/launch/fruit_mission.launch.py"
 RECORD_SCRIPT="$WORKSPACE/record_rosbag.sh"
@@ -21,15 +22,22 @@ RUN_DIR="$RUN_ROOT/$RUN_ID"
 ORCHESTRATOR_LOG="$RUN_DIR/orchestrator.log"
 MAP_ID=""
 MISSION_FLOW="full"
-FULL_RECORD_ENABLED=0
+DEBUG_RECORD_ENABLED=0
+USE_ODOMETRY=false
+REUSE_NAVIGATION=false
 
 usage() {
   cat <<'EOF'
-Usage: ./start_fruit_mission.sh --map A|B [--flow full|ac|a|b|c] [--full]
+Usage: ./start_fruit_mission.sh --map A|B [--odom] [--reuse-navigation] [--flow full|ac|a|b|c] [--debug]
 
 Start the complete perception, navigation, and mission stack for a field profile.
-Use --full to record all ROS topics, including LiDAR and point-cloud topics,
-under rosbags/.
+Use --odom to skip map/GICP startup and run navigation and mission in the
+startup-relative odom frame using the profile's odometry waypoint file.
+Use --reuse-navigation after start_navigation.sh to keep its navigation,
+localization, and serial bridge running while starting perception and mission.
+Use --debug to record ROS diagnostics, LiDAR, point clouds, and the selected
+raw/annotated camera topics under rosbags/. Duplicate high-bandwidth image
+transports and D435i unaligned raw depth are excluded.
 EOF
 }
 
@@ -45,8 +53,16 @@ while (($# > 0)); do
       MISSION_FLOW=$2
       shift 2
       ;;
-    --full)
-      FULL_RECORD_ENABLED=1
+    --odom)
+      USE_ODOMETRY=true
+      shift
+      ;;
+    --reuse-navigation)
+      REUSE_NAVIGATION=true
+      shift
+      ;;
+    --debug)
+      DEBUG_RECORD_ENABLED=1
       shift
       ;;
     --help|-h)
@@ -77,7 +93,18 @@ source "$WORKSPACE/setup_fruit_runtime.bash"
 set -u
 source "$MAP_PROFILE_HELPER"
 resolve_map_profile "$WORKSPACE" "$MAP_ID"
-require_map_profile_runtime
+
+if [[ "$USE_ODOMETRY" == true ]]; then
+  NAV_LAUNCH="$ODOMETRY_NAV_LAUNCH"
+  WAYPOINT_FILE="$ODOMETRY_WAYPOINT_FILE"
+  MAP_FRAME=odom
+  require_map_profile_odometry
+else
+  NAV_LAUNCH="$LOCALIZATION_NAV_LAUNCH"
+  WAYPOINT_FILE="$MISSION_WAYPOINT_FILE"
+  MAP_FRAME=map
+  require_map_profile_runtime
+fi
 
 mkdir -p "$RUN_DIR"
 
@@ -246,6 +273,47 @@ wait_for_action() {
   fi
   ((status != 2)) || die "$label process exited before readiness"
   die "timeout waiting for $label action=$action_name"
+}
+
+wait_for_tf() {
+  local label=$1
+  local parent_frame=$2
+  local child_frame=$3
+  local timeout_sec=$4
+  local status
+
+  log "WAIT $label tf=$parent_frame->$child_frame timeout=${timeout_sec}s"
+  if run_readiness_client tf \
+    --parent "$parent_frame" \
+    --child "$child_frame" \
+    --timeout "$timeout_sec" \
+    --max-age 1; then
+    log "READY $label tf=$parent_frame->$child_frame"
+    return 0
+  else
+    status=$?
+  fi
+  ((status != 2)) || die "$label process exited before readiness"
+  die "timeout waiting for $label tf=$parent_frame->$child_frame"
+}
+
+wait_for_odometry() {
+  local label=$1
+  local topic=$2
+  local timeout_sec=$3
+  local status
+
+  log "WAIT $label topic=$topic timeout=${timeout_sec}s"
+  if run_readiness_client odometry \
+    --topic "$topic" \
+    --timeout "$timeout_sec"; then
+    log "READY $label topic=$topic"
+    return 0
+  else
+    status=$?
+  fi
+  ((status != 2)) || die "$label process exited before readiness"
+  die "timeout waiting for $label topic=$topic"
 }
 
 wait_for_localization() {
@@ -528,22 +596,24 @@ on_signal() {
 trap stop_children EXIT
 trap on_signal INT TERM
 
-for required_file in \
+required_files=(
   "$NAV_LAUNCH" \
   "$PERCEPTION_LAUNCH" \
   "$MISSION_LAUNCH" \
   "$PARAMS" \
   "$AXIS_PARAMS" \
-  "$MAP_YAML" \
-  "$LOCALIZATION_MAP" \
-  "$INITIAL_POSE_FILE" \
   "$WORKSPACE/robot_debug_monitor.sh" \
   "$MISSION_CONFIG" \
-  "$SCRIPT_CLIENT_CONFIG"; do
+  "$SCRIPT_CLIENT_CONFIG"
+)
+if [[ "$USE_ODOMETRY" != true ]]; then
+  required_files+=("$MAP_YAML" "$LOCALIZATION_MAP" "$INITIAL_POSE_FILE")
+fi
+for required_file in "${required_files[@]}"; do
   check_file "$required_file"
 done
 
-if ((FULL_RECORD_ENABLED)); then
+if ((DEBUG_RECORD_ENABLED)); then
   [[ -x "$RECORD_SCRIPT" ]] || die "required executable is unavailable: $RECORD_SCRIPT"
 fi
 
@@ -575,7 +645,6 @@ if ((${#mission_runtime_path_values[@]} != 4)); then
   die "mission config returned an unexpected number of runtime paths"
 fi
 
-WAYPOINT_FILE="$MISSION_WAYPOINT_FILE"
 PIPER_EXECUTABLE=${mission_runtime_path_values[0]}
 MODEL_PATH=${mission_runtime_path_values[1]}
 MODEL_CONFIG=${mission_runtime_path_values[2]}
@@ -597,68 +666,127 @@ log "RUN profile: $MAP_ID"
 log "RUN mission flow: $MISSION_FLOW"
 log "RUN branch: $(git -C "$WORKSPACE" branch --show-current)"
 log "RUN commit: $(git -C "$WORKSPACE" rev-parse --short HEAD)"
-log "RUN policy: perception owns the only serial bridge; navigation does not launch hardware_bridge"
-if ((FULL_RECORD_ENABLED)); then
-  log "RUN full rosbag: enabled; recorder output is under $WORKSPACE/rosbags"
+if [[ "$REUSE_NAVIGATION" == true ]]; then
+  log "RUN mode: reuse existing navigation, localization, and serial bridge"
+elif [[ "$USE_ODOMETRY" == true ]]; then
+  log "RUN mode: pure odometry; Point-LIO navigation owns odom and no GICP/map localization is started"
+else
+  log "RUN mode: map localization; perception owns the only serial bridge; navigation does not launch hardware_bridge"
+fi
+if ((DEBUG_RECORD_ENABLED)); then
+  log "RUN debug rosbag: enabled with visual-topic exclusions; output is under $WORKSPACE/rosbags"
 fi
 
 if ! python3 -c \
-  'from pathlib import Path; import sys; from fruit_mission.waypoint_route import MissionWaypointRoute; MissionWaypointRoute.from_file(Path(sys.argv[1]), sys.argv[2])' \
-  "$WAYPOINT_FILE" "$MISSION_FLOW" >> "$ORCHESTRATOR_LOG" 2>&1; then
+  'from pathlib import Path; import sys; from fruit_mission.waypoint_route import MissionWaypointRoute; MissionWaypointRoute.from_file(Path(sys.argv[1]), sys.argv[2], sys.argv[3])' \
+  "$WAYPOINT_FILE" "$MISSION_FLOW" "$MAP_FRAME" >> "$ORCHESTRATOR_LOG" 2>&1; then
   die "mission waypoint validation failed; see $ORCHESTRATOR_LOG"
 fi
 log "READY mission waypoint schema and required A/C points"
 
-check_no_existing_nodes \
-  /livox_ros_driver2 \
-  /laserMapping \
-  /loam_interface \
-  /sensor_scan_generation \
-  /map_server \
-  /lifecycle_manager_map \
-  /serial_controller \
-  /axis_waypoint_action_server \
-  /twist_mux \
-  /pb_gicp_localization \
-  /fruit_perception_container \
-  /left_camera \
-  /right_camera \
-  /camera/camera \
-  /fruit_perception_node \
-  /camera_mode_manager \
-  /fruit_qr_planner \
-  /fruit_mission
+if [[ "$REUSE_NAVIGATION" == true ]]; then
+  check_no_existing_nodes \
+    /fruit_perception_container \
+    /left_camera \
+    /right_camera \
+    /camera/camera \
+    /fruit_perception_node \
+    /camera_mode_manager \
+    /fruit_qr_planner \
+    /fruit_mission
+else
+  check_no_existing_nodes \
+    /livox_ros_driver2 \
+    /laserMapping \
+    /loam_interface \
+    /sensor_scan_generation \
+    /map_server \
+    /lifecycle_manager_map \
+    /serial_controller \
+    /axis_waypoint_action_server \
+    /twist_mux \
+    /pb_gicp_localization \
+    /fruit_perception_container \
+    /left_camera \
+    /right_camera \
+    /camera/camera \
+    /fruit_perception_node \
+    /camera_mode_manager \
+    /fruit_qr_planner \
+    /fruit_mission
+fi
 
-if ((FULL_RECORD_ENABLED)); then
+if ((DEBUG_RECORD_ENABLED)); then
   start_process "rosbag" \
     "$RECORD_SCRIPT" \
-    --full \
     --no-monitor
 fi
 
-start_process "navigation" \
-  ros2 launch "$NAV_LAUNCH" \
-    "map:=$MAP_YAML" \
-    "localization_map:=$LOCALIZATION_MAP" \
-    "params_file:=$PARAMS" \
-    "axis_params_file:=$AXIS_PARAMS" \
-    "initial_pose_file:=$INITIAL_POSE_FILE" \
-    "use_teleop:=false" \
-    "use_rviz:=false"
+if [[ "$REUSE_NAVIGATION" != true ]]; then
+  if [[ "$USE_ODOMETRY" == true ]]; then
+    start_process "navigation" \
+      ros2 launch "$NAV_LAUNCH" \
+        "params_file:=$PARAMS" \
+        "axis_params_file:=$AXIS_PARAMS" \
+        "use_teleop:=false" \
+        "use_rviz:=false"
+  else
+    start_process "navigation" \
+      ros2 launch "$NAV_LAUNCH" \
+        "map:=$MAP_YAML" \
+        "localization_map:=$LOCALIZATION_MAP" \
+        "params_file:=$PARAMS" \
+        "axis_params_file:=$AXIS_PARAMS" \
+        "initial_pose_file:=$INITIAL_POSE_FILE" \
+        "use_teleop:=false" \
+        "use_rviz:=false"
+  fi
 
-start_debug_process "robot_debug" \
-  "$WORKSPACE/robot_debug_monitor.sh" fruit-mission
+  start_debug_process "robot_debug" \
+    "$WORKSPACE/robot_debug_monitor.sh" fruit-mission
+fi
 
-start_process "perception" \
-  ros2 launch "$PERCEPTION_LAUNCH" \
-    "use_sim_time:=false" \
-    "serial_debug_raw_frame:=true"
+START_SERIAL_BRIDGE=true
+if [[ "$REUSE_NAVIGATION" == true ]]; then
+  START_SERIAL_BRIDGE=false
+  log "RUN reuse: existing navigation, localization, serial bridge, and debug monitor remain owned by start_navigation.sh"
+fi
 
-wait_for_nodes "navigation readiness" 60 \
-  /axis_waypoint_action_server \
-  /pb_gicp_localization
-wait_for_action "waypoint navigation" "/follow_waypoints" 60
-wait_for_localization 180
+if [[ "$USE_ODOMETRY" == true ]]; then
+  wait_for_nodes "odometry navigation readiness" 60 \
+    /axis_waypoint_action_server \
+    /laserMapping \
+    /loam_interface \
+    /sensor_scan_generation
+  wait_for_action "waypoint navigation" "/follow_waypoints" 60
+  wait_for_odometry "Point-LIO odometry" /aft_mapped_to_init 60
+  wait_for_tf "stable odometry origin" odom base_link 5
+  start_process "perception" \
+    ros2 launch "$PERCEPTION_LAUNCH" \
+      "use_sim_time:=false" \
+      "serial_debug_raw_frame:=true" \
+      "start_serial_bridge:=$START_SERIAL_BRIDGE"
+else
+  if [[ "$REUSE_NAVIGATION" != true ]]; then
+    start_process "perception" \
+      ros2 launch "$PERCEPTION_LAUNCH" \
+        "use_sim_time:=false" \
+        "serial_debug_raw_frame:=true" \
+        "start_serial_bridge:=$START_SERIAL_BRIDGE"
+  fi
+  wait_for_nodes "navigation readiness" 60 \
+    /axis_waypoint_action_server \
+    /pb_gicp_localization
+  wait_for_action "waypoint navigation" "/follow_waypoints" 60
+  wait_for_localization 180
+  if [[ "$REUSE_NAVIGATION" == true ]]; then
+    start_process "perception" \
+      ros2 launch "$PERCEPTION_LAUNCH" \
+        "use_sim_time:=false" \
+        "serial_debug_raw_frame:=true" \
+        "start_serial_bridge:=$START_SERIAL_BRIDGE"
+  fi
+fi
 
 wait_for_nodes "perception readiness" 120 \
   /serial_controller \
@@ -685,9 +813,14 @@ start_process "mission" \
   ros2 launch "$MISSION_LAUNCH" \
     "use_sim_time:=false" \
     "waypoint_file:=$WAYPOINT_FILE" \
-    "mission_flow:=$MISSION_FLOW"
+    "mission_flow:=$MISSION_FLOW" \
+    "map_frame:=$MAP_FRAME"
 
-log "RUN mission started; press Ctrl-C to stop the complete stack"
+if [[ "$REUSE_NAVIGATION" == true ]]; then
+  log "RUN mission started; Ctrl-C stops mission and perception but keeps the reused navigation stack running"
+else
+  log "RUN mission started; press Ctrl-C to stop the complete stack"
+fi
 set +e
 wait -n "${child_pids[@]}"
 status=$?

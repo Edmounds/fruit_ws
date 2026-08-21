@@ -17,6 +17,7 @@ def _validated_node(context):
     params = document["fruit_mission"]["ros__parameters"]
     override = LaunchConfiguration("waypoint_file").perform(context).strip()
     waypoint_file = override or str(params.get("waypoint_file", "")).strip()
+    map_frame = LaunchConfiguration("map_frame").perform(context).strip()
     waypoint_path = Path(waypoint_file)
     if not waypoint_file:
         raise RuntimeError("waypoint_file must not be empty")
@@ -26,6 +27,10 @@ def _validated_node(context):
         raise RuntimeError(f"waypoint_file does not exist: {waypoint_file}")
     if not os.access(waypoint_path, os.R_OK):
         raise RuntimeError(f"waypoint_file is not readable: {waypoint_file}")
+    with waypoint_path.open(encoding="utf-8") as stream:
+        waypoint_document = yaml.safe_load(stream) or {}
+    if waypoint_document.get("frame_id") != map_frame:
+        raise RuntimeError(f"waypoint YAML frame_id must be {map_frame}")
 
     return [
         Node(
@@ -40,6 +45,7 @@ def _validated_node(context):
                     "use_sim_time": LaunchConfiguration("use_sim_time"),
                     "waypoint_file": waypoint_file,
                     "mission_flow": LaunchConfiguration("mission_flow"),
+                    "map_frame": map_frame,
                 },
             ],
         )
@@ -63,6 +69,11 @@ def generate_launch_description():
                 "mission_flow",
                 default_value="full",
                 description="Mission flow: full, ac, a, b, or c",
+            ),
+            DeclareLaunchArgument(
+                "map_frame",
+                default_value="map",
+                description="Coordinate frame used by mission waypoints",
             ),
             OpaqueFunction(function=_validated_node),
         ]

@@ -65,8 +65,8 @@ private:
   QTabWidget * tabs_{nullptr};
   QLabel * status_label_{nullptr};
   QLabel * test_label_{nullptr};
+  QLabel * next_name_label_{nullptr};
   QLineEdit * test_file_edit_{nullptr};
-  QLineEdit * test_name_edit_{nullptr};
   QComboBox * final_yaw_mode_combo_{nullptr};
   QPushButton * load_test_file_button_{nullptr};
   QPushButton * record_waypoint_button_{nullptr};

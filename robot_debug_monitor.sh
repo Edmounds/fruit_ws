@@ -20,7 +20,8 @@ from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
 from rcl_interfaces.msg import Log
 from rclpy.executors import ExternalShutdownException
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import String
+from realsense2_camera_msgs.msg import Metadata
+from std_msgs.msg import Header, String
 
 from fruit_perception.msg import FruitDecision
 
@@ -41,6 +42,7 @@ CAM_TYPES_MIN_INTERVAL_SEC = 2.0
 D435I_DETECTIONS_MIN_INTERVAL_SEC = 1.5
 D435I_TARGET_MIN_INTERVAL_SEC = 1.5
 D435I_TARGET_MIN_DELTA_M = 0.04
+D435I_STREAM_STALE_SEC = 1.0
 
 
 def log(message):
@@ -124,9 +126,21 @@ class RobotDebugMonitor:
         self.last_perception_log_time = {}
         self.last_target_signature = None
         self.last_target_log_time = 0.0
+        now = time.monotonic()
+        self.d435i_streams = {
+            name: {
+                "count": 0,
+                "window_started": now,
+                "last_received": None,
+                "last_stamp_ns": None,
+            }
+            for name in ("color", "depth", "rgbd")
+        }
 
         volatile_qos = QoSProfile(depth=10)
         volatile_qos.reliability = ReliabilityPolicy.RELIABLE
+        sensor_qos = QoSProfile(depth=1)
+        sensor_qos.reliability = ReliabilityPolicy.BEST_EFFORT
         latched_qos = QoSProfile(depth=1)
         latched_qos.reliability = ReliabilityPolicy.RELIABLE
         latched_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
@@ -139,6 +153,24 @@ class RobotDebugMonitor:
         self.node.create_subscription(String, "/fruit_mission/perception_mode", lambda msg: self.on_mode("requested", msg), 10)
         self.node.create_subscription(String, "/fruit_perception/active_mode", lambda msg: self.on_mode("active", msg), latched_qos)
         self.node.create_subscription(FruitDecision, "/fruit_perception/decision", self.on_decision, 100)
+        self.node.create_subscription(
+            Metadata,
+            "/camera/camera/color/metadata",
+            lambda msg: self.on_d435i_frame("color", msg.header),
+            sensor_qos,
+        )
+        self.node.create_subscription(
+            Metadata,
+            "/camera/camera/depth/metadata",
+            lambda msg: self.on_d435i_frame("depth", msg.header),
+            sensor_qos,
+        )
+        self.node.create_subscription(
+            Header,
+            "/fruit_perception/d435i/rgbd_heartbeat",
+            lambda msg: self.on_d435i_frame("rgbd", msg),
+            sensor_qos,
+        )
 
         self.node.create_timer(INTERVAL_SEC, self.on_timer)
 
@@ -331,6 +363,45 @@ class RobotDebugMonitor:
             f" point=({signature[0]:.3f},{signature[1]:.3f},{signature[2]:.3f}) frame={message.header.frame_id}"
         )
 
+    def on_d435i_frame(self, stream_name, header):
+        state = self.d435i_streams[stream_name]
+        state["count"] += 1
+        state["last_received"] = time.monotonic()
+        state["last_stamp_ns"] = header.stamp.sec * 1_000_000_000 + header.stamp.nanosec
+
+    @staticmethod
+    def format_d435i_stream(state, now):
+        elapsed = max(now - state["window_started"], 1e-6)
+        hz = state["count"] / elapsed
+        state["count"] = 0
+        state["window_started"] = now
+        if state["last_received"] is None:
+            return "hz=0.0 last=NEVER age=INF", float("inf")
+        age = max(0.0, now - state["last_received"])
+        stamp_ns = state["last_stamp_ns"]
+        if stamp_ns:
+            seconds, nanoseconds = divmod(stamp_ns, 1_000_000_000)
+            stamp = time.strftime("%H:%M:%S", time.localtime(seconds))
+            stamp = f"{stamp}.{nanoseconds // 1_000_000:03d}"
+        else:
+            stamp = "ZERO"
+        return f"hz={hz:.1f} last={stamp} age={age:.2f}s", age
+
+    def log_d435i_streams(self, now, active_mode):
+        values = {}
+        ages = {}
+        for name, state in self.d435i_streams.items():
+            values[name], ages[name] = self.format_d435i_stream(state, now)
+        expected = active_mode in ("QR", "TREE")
+        stale = expected and any(age > D435I_STREAM_STALE_SEC for age in ages.values())
+        status = "STALE" if stale else "OK" if expected else "IDLE"
+        color = RED if stale else GREEN if expected else CYAN
+        log(
+            highlight(color, "D435I streams") + " "
+            f"status={status} mode={active_mode} "
+            f"color[{values['color']}] depth[{values['depth']}] rgbd[{values['rgbd']}]"
+        )
+
     def on_timer(self):
         now = time.monotonic()
         if now - self.last_graph_log_time < INTERVAL_SEC:
@@ -342,6 +413,7 @@ class RobotDebugMonitor:
         fruit_perception_present = "fruit_perception_node" in nodes
         active_mode = self.last_mode.get("active", "-")
         requested_mode = self.last_mode.get("requested", "-")
+        self.log_d435i_streams(now, active_mode)
         health_signature = (
             int(node_present),
             int(fruit_perception_present),
@@ -375,7 +447,7 @@ def main():
     node = rclpy.create_node(f"{safe_label}_robot_debug_monitor")
     log(
         "started; watching navigation, GICP, rosout warnings/errors, "
-        "camera modes and unified fruit decisions"
+        "camera modes, D435i stream rates and unified fruit decisions"
     )
     RobotDebugMonitor(node)
     try:

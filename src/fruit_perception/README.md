@@ -9,6 +9,9 @@ The enabled camera components and `FruitPerceptionNode` run in one
 `component_container` with intra-process communication enabled. This keeps raw
 images out of the inter-process DDS transport path. The generated standalone
 `fruit_perception_node` executable remains available for isolated debugging.
+The left and right `usb_cam` components independently remap their `compressed`,
+`compressedDepth`, and `theora` transport topics below their own camera
+namespaces; they never share a global `/image_raw/*` transport topic.
 
 ## Runtime modes
 
@@ -47,6 +50,12 @@ both aligned images at 1920x1080 in one RGBD message. The aligned depth image ha
 1920x1080 pixels, but its measurements still originate from the native 1280x720
 depth stream. Infrared, IMU,
 point cloud, and TF output remain disabled.
+
+Each RGBD callback also publishes only its `std_msgs/Header` on
+`/fruit_perception/d435i/rgbd_heartbeat`. The external debug monitor combines
+that lightweight heartbeat with the D435i color/depth metadata topics to report
+actual rates and last-frame times without subscribing to and serializing the
+multi-megabyte RGBD message outside the component container.
 
 These settings follow the RealSense ROS RGBD topic requirements:
 https://github.com/realsenseai/realsense-ros#rgbd-topic

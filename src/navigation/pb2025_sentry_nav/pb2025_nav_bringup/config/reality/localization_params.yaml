@@ -82,6 +82,14 @@ loam_interface:
     base_frame: base_link
     lidar_frame: front_mid360
     imu_frame: livox_frame
+    stabilize_initial_odom: false
+    initial_stability_timeout_sec: 5.0
+    initial_stability_window_sec: 1.5
+    initial_stability_min_samples: 15
+    initial_stability_max_translation_speed: 0.03
+    initial_stability_max_rotation_speed: 0.08
+    initial_stability_position_stddev: 0.02
+    initial_stability_yaw_stddev: 0.03
 
 sensor_scan_generation:
   ros__parameters:
