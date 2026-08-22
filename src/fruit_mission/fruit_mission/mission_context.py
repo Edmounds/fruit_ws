@@ -589,13 +589,18 @@ class MissionContext:
             )
         fresh_after_ns = self.node.get_clock().now().nanoseconds
         if not self.set_perception_mode("TREE"):
-            return PickExecutionResult(False, "tree_mode_timeout")
+            return PickExecutionResult(
+                False,
+                "tree_mode_timeout",
+                safe_to_continue=self._recover_after_perception_failure(),
+            )
         selection = self._wait_d435i_target(fresh_after_ns, expected_type)
         if selection.target is None:
             return PickExecutionResult(
                 False,
                 selection.reason_code,
                 selection.matched_type,
+                safe_to_continue=self._recover_after_perception_failure(),
             )
         arm_result = self._send_arm_target_and_wait(selection.target.point)
         if not arm_result.completed:
@@ -693,6 +698,17 @@ class MissionContext:
             ExecutionCallback.CALLBACK_RETURN_INITIAL_POSE,
             recover_on_error=False,
         )
+
+    def _recover_after_perception_failure(self) -> bool:
+        """Return A-zone hardware to a safe pose before navigation resumes."""
+        if self._current_area != "A":
+            return True
+        recovered = self.send_return_initial_pose()
+        if not recovered:
+            self.node.get_logger().error(
+                "A区感知失败后未能返回初始姿态，不能继续后续任务"
+            )
+        return recovered
 
     def report_current_area(self, area: str) -> bool:
         """Report current competition area to the lower controller."""
