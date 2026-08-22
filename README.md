@@ -23,6 +23,30 @@ source /home/rc4/fruit_ws/setup_fruit_runtime.bash
 切换前已经启动的 ROS 进程仍使用旧 RMW，不能与新进程混跑。停止整套旧进程后重新加载
 环境并启动；若 ROS 2 daemon 曾由旧环境启动，切换时执行一次 `ros2 daemon stop`。
 
+### 清理残留进程和设备占用
+
+启动整套任务、摄像头调参或串口直连工具前，可先检查再清理项目进程：
+
+```bash
+cd /home/rc4/fruit_ws
+./kill_fruit_processes.sh --dry-run
+./kill_fruit_processes.sh
+fuser -v /dev/left_cam /dev/right_cam /dev/stm32
+```
+
+清理脚本覆盖任务启动器、ROS launch/run、`test_camera_detector.py` 创建的
+`test_camera_detector_*_container`、`lower_controller_console.py`、录包进程和调试监视器；
+它会先恢复被 `Ctrl-Z` 挂起的目标，再依次发送 `SIGINT`、`SIGTERM` 和 `SIGKILL`，成功后
+停止 ROS 2 daemon 以清除过期图缓存。RViz、`foxglove_bridge.service` 和
+`waypoint-editor.service` 是独立工具，不由该脚本停止，也不占用三台摄像头或下位机串口。
+
+`fruit-perception.service` 会占用摄像头和 `/dev/stm32`。如果清理脚本提示该服务处于
+active，必须先执行：
+
+```bash
+sudo systemctl stop fruit-perception.service
+```
+
 ### 输出水果检测结果
 ```bash
 ros2 topic echo /fruit_perception/decision

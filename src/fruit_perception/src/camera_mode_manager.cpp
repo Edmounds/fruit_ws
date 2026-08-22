@@ -1,5 +1,6 @@
 #include <rcl_interfaces/msg/parameter.hpp>
 #include <rcl_interfaces/msg/parameter_type.hpp>
+#include <rcl_interfaces/srv/get_parameters.hpp>
 #include <rcl_interfaces/srv/set_parameters.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -32,10 +33,14 @@ public:
       "right_capture_service", "/right_camera/set_capture");
     const auto d435i_service = declare_parameter(
       "d435i_parameter_service", "/camera/camera/set_parameters");
+    const auto d435i_get_service = declare_parameter(
+      "d435i_get_parameters_service", "/camera/camera/get_parameters");
 
     left_client_ = create_client<std_srvs::srv::SetBool>(left_service);
     right_client_ = create_client<std_srvs::srv::SetBool>(right_service);
     d435i_client_ = create_client<rcl_interfaces::srv::SetParameters>(d435i_service);
+    d435i_get_client_ =
+      create_client<rcl_interfaces::srv::GetParameters>(d435i_get_service);
     active_mode_publisher_ = create_publisher<std_msgs::msg::String>(
       active_topic, rclcpp::QoS(1).reliable().transient_local());
     mode_subscription_ = create_subscription<std_msgs::msg::String>(
@@ -47,18 +52,41 @@ public:
 
 private:
   using SetBoolClient = rclcpp::Client<std_srvs::srv::SetBool>;
+  using GetParametersClient = rclcpp::Client<rcl_interfaces::srv::GetParameters>;
   using SetParametersClient = rclcpp::Client<rcl_interfaces::srv::SetParameters>;
 
   void initialize_off()
   {
     if (!left_client_->service_is_ready() || !right_client_->service_is_ready() ||
-      !d435i_client_->service_is_ready())
+      !d435i_client_->service_is_ready() || !d435i_get_client_->service_is_ready() ||
+      d435i_readiness_check_pending_)
     {
       return;
     }
-    startup_timer_->cancel();
-    state_.begin_startup_reset();
-    execute_current_action();
+
+    d435i_readiness_check_pending_ = true;
+    auto request = std::make_shared<rcl_interfaces::srv::GetParameters::Request>();
+    request->names = {"enable_color", "enable_depth"};
+    d435i_get_client_->async_send_request(
+      request, [this](GetParametersClient::SharedFuture future) {
+        d435i_readiness_check_pending_ = false;
+        try {
+          const auto response = future.get();
+          if (response->values.size() != 2U ||
+            response->values[0].type != rcl_interfaces::msg::ParameterType::PARAMETER_BOOL ||
+            response->values[1].type != rcl_interfaces::msg::ParameterType::PARAMETER_BOOL)
+          {
+            return;
+          }
+        } catch (const std::exception & error) {
+          RCLCPP_WARN(get_logger(), "D435i parameter readiness check failed: %s", error.what());
+          return;
+        }
+
+        startup_timer_->cancel();
+        state_.begin_startup_reset();
+        execute_current_action();
+      });
   }
 
   void on_mode(const std_msgs::msg::String::ConstSharedPtr message)
@@ -176,8 +204,12 @@ private:
   void finish_action(bool success)
   {
     if (!success) {
+      const bool startup_failed = !state_.active_mode();
       state_.fail();
       RCLCPP_ERROR(get_logger(), "Camera transition failed; active mode was not changed");
+      if (startup_failed) {
+        startup_timer_->reset();
+      }
       return;
     }
     state_.complete_action();
@@ -204,11 +236,13 @@ private:
   SetBoolClient::SharedPtr left_client_;
   SetBoolClient::SharedPtr right_client_;
   SetParametersClient::SharedPtr d435i_client_;
+  GetParametersClient::SharedPtr d435i_get_client_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr active_mode_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_subscription_;
   rclcpp::TimerBase::SharedPtr startup_timer_;
   std::size_t side_results_remaining_{0U};
   bool side_step_succeeded_{false};
+  bool d435i_readiness_check_pending_{false};
 };
 }  // namespace fruit_perception
 

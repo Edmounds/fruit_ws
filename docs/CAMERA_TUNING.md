@@ -27,6 +27,9 @@ python3 test_camera_detector.py --cam3 --model A
 `--model` 必须是 `A`、`B` 或 `C`，需要测试其他模型时替换示例中的字母。
 
 脚本默认把窗口显示到机器人连接的桌面屏幕。检测窗口按 `q` 或 `Esc`，或者关闭参数窗口，即可退出。
+正常退出会停止脚本自己启动的相机进程。如果窗口或父脚本被强制终止，独立的
+`test_camera_detector_*_container` 可能继续占用摄像头；返回工作空间根目录执行
+`./kill_fruit_processes.sh` 可清理该容器及其 `ros2 component standalone` 包装进程。
 
 ## 常用参数
 

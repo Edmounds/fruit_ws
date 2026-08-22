@@ -38,6 +38,13 @@ not change or republish the active mode. Hardware transitions stop the outgoing
 camera group before starting the incoming group. `QR <-> TREE` only changes the
 consumer and does not restart the D435i.
 
+The RealSense parameter services appear before the device initialization thread
+declares `enable_color` and `enable_depth`. At startup, the camera mode manager
+therefore polls both values through `get_parameters` and only begins its `OFF`
+reset after both are declared as Boolean parameters. A transient failure during
+that initial reset returns to the readiness check; failures after an active mode
+has been established keep the current mode and are not retried automatically.
+
 The installed `usb_cam 0.8.1` performs `set_capture` correctly but returns
 `success=false` with the messages `Start Capturing` or `Stop Capturing`. The
 mode manager accepts those two observed responses as successful; any other

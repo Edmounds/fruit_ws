@@ -9,7 +9,7 @@ INTERVAL_SEC=${2:-2.0}
 source "$WORKSPACE/setup_fruit_runtime.bash"
 set -u
 
-python3 - "$LABEL" "$INTERVAL_SEC" <<'PY'
+exec -a fruit_robot_debug_monitor python3 - "$LABEL" "$INTERVAL_SEC" <<'PY'
 import math
 import sys
 import time

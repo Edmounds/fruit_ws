@@ -126,3 +126,4 @@ camera_mode_manager:
     left_capture_service: "/left_camera/set_capture"
     right_capture_service: "/right_camera/set_capture"
     d435i_parameter_service: "/camera/camera/set_parameters"
+    d435i_get_parameters_service: "/camera/camera/get_parameters"

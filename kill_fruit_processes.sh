@@ -18,6 +18,8 @@ target_tokens=(
   "bash ./start_odometry.sh"
   "bash ./start_tele.sh"
   "bash ./waypoints_maker.sh"
+  "bash ./record_rosbag.sh"
+  "bash ./zone_witch.sh"
   "/home/rc4/fruit_ws/start_fruit_perception.sh"
   "/home/rc4/fruit_ws/start_fruit_mission.sh"
   "/home/rc4/fruit_ws/start_mapping.sh"
@@ -26,10 +28,26 @@ target_tokens=(
   "/home/rc4/fruit_ws/start_odometry.sh"
   "/home/rc4/fruit_ws/start_tele.sh"
   "/home/rc4/fruit_ws/waypoints_maker.sh"
+  "/home/rc4/fruit_ws/record_rosbag.sh"
+  "/home/rc4/fruit_ws/zone_witch.sh"
+  "/home/rc4/fruit_ws/robot_debug_monitor.sh"
+  "/home/rc4/fruit_ws/gicp_debug_monitor.sh"
+  "fruit_robot_debug_monitor"
+  "python3 - fruit-mission "
+  "python3 - navigation "
+  "python3 - perception "
+  "python3 - relocalization-test "
+  "python3 - rosbag "
+  "python3 - waypoints-maker "
+  "/home/rc4/fruit_ws/test_camera_detector.py"
+  "test_camera_detector.py --cam"
+  "/home/rc4/fruit_ws/lower_controller_console.py"
   "bash ./test_d435i_arm_target.sh"
   "bash test_d435i_arm_target.sh"
   "bash /home/rc4/fruit_ws/test_d435i_arm_target.sh"
   "ros2 topic pub --once --wait-matching-subscriptions 1 /fruit_mission/perception_mode"
+  "ros2 bag record "
+  "/lib/rosbag2_transport/record"
   "ros2 launch fruit_perception "
   "ros2 launch fruit_mission "
   "ros2 launch fruit_hardware_bridge "
@@ -60,6 +78,8 @@ target_tokens=(
   "__node:=joy_container"
   "__node:=base_to_front_mid360"
   "__node:=front_mid360_to_livox_imu"
+  "-c test_camera_detector_"
+  "__node:=test_camera_detector_"
   "/lib/fruit_perception/"
   "/lib/fruit_mission/"
   "/lib/fruit_qr_planner/"
@@ -68,7 +88,7 @@ target_tokens=(
   "/lib/glim_ros/"
   "/lib/livox_ros_driver2/"
   "/lib/fruit_navigation/"
-  "/lib/fruit_waypoint_recorder/"
+  "/lib/fruit_waypoint_recorder/waypoint_recorder_node"
   "/lib/pointcloud_to_laserscan/"
   "/lib/point_lio/"
   "/lib/loam_interface/"
@@ -109,8 +129,9 @@ Usage: ./kill_fruit_processes.sh [--dry-run]
 
 Stop task scripts, helper processes, nodes, and launch processes in the current
 fruit robot project design. This includes perception, mapping, localization,
-navigation, and teleop.
-RViz and foxglove_bridge are intentionally excluded.
+navigation, teleop, camera tuning, direct serial diagnostics, and rosbag
+recording. RViz, foxglove_bridge, and the system-managed waypoint editor are
+intentionally excluded.
 
 --dry-run  Print matching processes without sending signals.
 EOF
@@ -199,6 +220,15 @@ wait_for_targets() {
   return 1
 }
 
+stop_ros_daemon() {
+  command -v ros2 >/dev/null 2>&1 || return 0
+  if ros2 daemon stop >/dev/null 2>&1; then
+    printf 'Stopped the ROS 2 daemon to discard stale graph entries.\n'
+  else
+    printf 'Warning: failed to stop the ROS 2 daemon.\n' >&2
+  fi
+}
+
 case "${1:-}" in
   "") ;;
   --dry-run) dry_run=1 ;;
@@ -222,6 +252,9 @@ refresh_targets
 
 if ((${#target_pids[@]} == 0)); then
   printf 'No project processes found.\n'
+  if ((${dry_run:-0} == 0)); then
+    stop_ros_daemon
+  fi
   exit 0
 fi
 
@@ -236,6 +269,7 @@ signal_targets CONT
 signal_targets INT
 if wait_for_targets 50; then
   printf 'All matching processes stopped gracefully.\n'
+  stop_ros_daemon
   exit 0
 fi
 
@@ -243,6 +277,7 @@ refresh_targets
 signal_targets TERM
 if wait_for_targets 30; then
   printf 'All matching processes stopped after SIGTERM.\n'
+  stop_ros_daemon
   exit 0
 fi
 
@@ -250,6 +285,7 @@ refresh_targets
 signal_targets KILL
 if wait_for_targets 10; then
   printf 'All matching processes stopped after SIGKILL.\n'
+  stop_ros_daemon
   exit 0
 fi
 
