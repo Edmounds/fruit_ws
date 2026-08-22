@@ -52,6 +52,8 @@ def validate_config(params: Mapping[str, Any]) -> None:
         raise ValueError("tf_lookup_timeout_sec must be positive")
     if float(params.get("c_graph_max_start_distance", 0.0)) <= 0.0:
         raise ValueError("c_graph_max_start_distance must be positive")
+    if float(params.get("c_qr_announce_lead_sec", 4.0)) < 0.0:
+        raise ValueError("c_qr_announce_lead_sec must not be negative")
     if not str(params.get("expected_fruit_type_topic", "")).strip():
         raise ValueError("expected_fruit_type_topic must not be empty")
     if not str(params.get("decision_topic", "")).strip():
