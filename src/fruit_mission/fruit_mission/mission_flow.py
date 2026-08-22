@@ -168,7 +168,10 @@ def scan_b_qr_and_announce(
     save_b_plan = getattr(ctx, "save_b_plan", None)
     if callable(save_b_plan):
         save_b_plan(b_plan)
-    ctx.announce(format_b_announcement(b_plan))
+    _announce_qr(
+        ctx,
+        format_b_announcement(b_plan),
+    )
     if not _send_arm_retract(ctx, "B区二维码后机械臂收缩姿态动作超时，任务停止。"):
         return None
     return b_plan
@@ -206,6 +209,7 @@ def scan_c_qr_and_build_table(ctx) -> Optional[Dict[str, Any]]:
         ctx,
         format_c_announcement(c_plan),
         lead_time_sec=float(ctx.config.get("c_qr_announce_lead_sec", 4.0)),
+        length_scale=_qr_length_scale(ctx),
     )
     if not _send_arm_retract(ctx, "C区二维码后机械臂收缩姿态动作超时，任务停止。"):
         return None
@@ -217,16 +221,41 @@ def _announce_and_wait(
     text: str,
     *,
     lead_time_sec: float = 0.0,
+    length_scale: Optional[float] = None,
 ) -> bool:
     announce_and_wait = getattr(ctx, "announce_and_wait", None)
     if callable(announce_and_wait):
         if lead_time_sec > 0.0:
             try:
-                return bool(announce_and_wait(text, lead_time_sec=lead_time_sec))
+                return bool(
+                    announce_and_wait(
+                        text,
+                        lead_time_sec=lead_time_sec,
+                        length_scale=length_scale,
+                    )
+                )
+            except TypeError:
+                pass
+        if length_scale is not None:
+            try:
+                return bool(announce_and_wait(text, length_scale=length_scale))
             except TypeError:
                 pass
         return bool(announce_and_wait(text))
     return bool(ctx.announce(text))
+
+
+def _announce_qr(ctx, text: str) -> bool:
+    """Queue a compact QR summary with the configured faster speech rate."""
+    length_scale = _qr_length_scale(ctx)
+    try:
+        return bool(ctx.announce(text, length_scale=length_scale))
+    except TypeError:
+        return bool(ctx.announce(text))
+
+
+def _qr_length_scale(ctx) -> float:
+    return float(ctx.config.get("tts", {}).get("qr_length_scale", 0.8))
 
 
 def run_b_area(ctx, b_plan: Mapping[str, Any]) -> bool:

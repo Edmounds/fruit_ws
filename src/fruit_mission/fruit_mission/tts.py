@@ -18,6 +18,7 @@ class _SpeechJob:
     text: str
     done: Event | None = None
     playback_started: Event | None = None
+    length_scale: float | None = None
     playback_duration_sec: float | None = None
     result: bool = False
 
@@ -43,6 +44,8 @@ class PiperSpeaker:
         self._playback_timeout_sec = float(
             config.get("playback_timeout_sec", fallback_timeout)
         )
+        length_scale = config.get("length_scale")
+        self._length_scale = None if length_scale is None else float(length_scale)
         self._logger = logger
         self._run = run
         self._queue: Queue[_SpeechJob | None] = Queue()
@@ -51,23 +54,33 @@ class PiperSpeaker:
         self._worker = Thread(target=self._worker_loop, daemon=True)
         self._worker.start()
 
-    def announce(self, text: str) -> bool:
+    def announce(self, text: str, length_scale: float | None = None) -> bool:
         """Queue text for speech without blocking mission execution."""
         if not text:
             return True
         with self._close_lock:
             if self._closed:
                 return False
-            self._queue.put(_SpeechJob(str(text)))
+            self._queue.put(_SpeechJob(str(text), length_scale=length_scale))
         return True
 
-    def announce_and_wait(self, text: str, lead_time_sec: float = 0.0) -> bool:
+    def announce_and_wait(
+        self,
+        text: str,
+        lead_time_sec: float = 0.0,
+        length_scale: float | None = None,
+    ) -> bool:
         """Queue text and wait until playback finishes or reaches its lead time."""
         if not text:
             return True
         done = Event()
         playback_started = Event()
-        job = _SpeechJob(str(text), done, playback_started)
+        job = _SpeechJob(
+            str(text),
+            done,
+            playback_started,
+            length_scale=length_scale,
+        )
         with self._close_lock:
             if self._closed:
                 return False
@@ -112,16 +125,24 @@ class PiperSpeaker:
         """Speak text and return whether audio generation and playback succeeded."""
         self._wav_path.parent.mkdir(parents=True, exist_ok=True)
         try:
+            command = [
+                self._piper,
+                "--model",
+                self._model,
+                "--config",
+                self._model_config,
+                "--output_file",
+                str(self._wav_path),
+            ]
+            length_scale = (
+                job.length_scale
+                if job.length_scale is not None
+                else self._length_scale
+            )
+            if length_scale is not None:
+                command.extend(["--length_scale", str(length_scale)])
             self._run(
-                [
-                    self._piper,
-                    "--model",
-                    self._model,
-                    "--config",
-                    self._model_config,
-                    "--output_file",
-                    str(self._wav_path),
-                ],
+                command,
                 input=job.text,
                 text=True,
                 check=True,

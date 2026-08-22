@@ -724,19 +724,40 @@ class MissionContext:
             self._current_area_publisher.publish(message)
         return reported
 
-    def announce(self, text: str) -> bool:
+    def announce(self, text: str, length_scale: Optional[float] = None) -> bool:
         """Speak text through the configured TTS backend."""
         self.node.get_logger().info(f"播报：{text}")
+        if length_scale is not None:
+            try:
+                return bool(self.speaker.announce(text, length_scale=length_scale))
+            except TypeError:
+                pass
         return self.speaker.announce(text)
 
-    def announce_and_wait(self, text: str, lead_time_sec: float = 0.0) -> bool:
+    def announce_and_wait(
+        self,
+        text: str,
+        lead_time_sec: float = 0.0,
+        length_scale: Optional[float] = None,
+    ) -> bool:
         """Speak text and wait until playback completes or reaches its lead time."""
         self.node.get_logger().info(f"同步播报：{text}")
         announce_and_wait = getattr(self.speaker, "announce_and_wait", None)
         if callable(announce_and_wait):
             if lead_time_sec > 0.0:
                 try:
-                    return bool(announce_and_wait(text, lead_time_sec=lead_time_sec))
+                    return bool(
+                        announce_and_wait(
+                            text,
+                            lead_time_sec=lead_time_sec,
+                            length_scale=length_scale,
+                        )
+                    )
+                except TypeError:
+                    pass
+            elif length_scale is not None:
+                try:
+                    return bool(announce_and_wait(text, length_scale=length_scale))
                 except TypeError:
                     pass
             return bool(announce_and_wait(text))

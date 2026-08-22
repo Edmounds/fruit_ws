@@ -36,5 +36,6 @@ fruit_mission:
       config_path: "/home/rc4/fruit_ws/.cache/piper-tts/zh_CN-huayan-medium/zh_CN-huayan-medium.onnx.json"
       aplay_executable: "/usr/bin/aplay"
       wav_path: "/home/rc4/fruit_ws/tmp/fruit_mission/tts_latest.wav"
+      qr_length_scale: 0.8
       generation_timeout_sec: 20.0
       playback_timeout_sec: 60.0

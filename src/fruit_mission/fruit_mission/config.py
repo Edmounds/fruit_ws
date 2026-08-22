@@ -60,6 +60,9 @@ def validate_config(params: Mapping[str, Any]) -> None:
         raise ValueError("decision_topic must not be empty")
     if params.get("preferred_side") not in ("left", "right"):
         raise ValueError("preferred_side must be left or right")
+    tts = params.get("tts", {})
+    if "qr_length_scale" in tts and float(tts["qr_length_scale"]) <= 0.0:
+        raise ValueError("tts.qr_length_scale must be positive")
     mission_flow = str(params.get("mission_flow", "full")).strip().lower()
     if mission_flow not in {"full", "ac", "a", "b", "c"}:
         raise ValueError("mission_flow must be full, ac, a, b, or c")

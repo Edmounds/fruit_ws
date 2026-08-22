@@ -192,24 +192,24 @@ def ordered_c_tasks(c_plan: Mapping[str, object]) -> List[Mapping[str, object]]:
 
 
 def format_b_announcement(b_plan: Mapping[str, object]) -> str:
-    """Build a concise Chinese spoken summary for the B plan."""
+    """Build a compact spoken summary for the B plan."""
     parts = [
-        f"{format_position_name(int(task['position_id']))}，目标{task['target']}。"
+        f"{int(task['position_id'])}{task['target']}"
         for task in b_plan.get("tasks", [])
     ]
-    return "B区采收顺序。" + "".join(parts)
+    return "，".join(parts)
 
 
 def format_c_announcement(c_plan: Mapping[str, object]) -> str:
-    """Build a concise Chinese spoken summary for the C plan."""
+    """Build a compact spoken summary for the C plan."""
     parts = [
         (
-            f"第{_chinese_index(int(task['sequence']))}项，"
-            f"{format_position_name(int(task['position_id']))}，目标{task['target']}。"
+            f"{int(task['sequence'])}，"
+            f"{int(task['position_id'])}{task['target']}"
         )
         for task in c_plan.get("tasks", [])
     ]
-    return "C区采收顺序。" + "".join(parts)
+    return "，".join(parts)
 
 
 def _first_pickable_type(
