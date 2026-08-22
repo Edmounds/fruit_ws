@@ -92,7 +92,7 @@ def spoken_model_type(model_type: Optional[str]) -> str:
     if maturity == "ripe":
         return f"成熟{produce_name}"
     if maturity == "unripe":
-        return f"未成熟{produce_name}"
+        return f"不成熟{produce_name}"
     return "未知目标"
 
 

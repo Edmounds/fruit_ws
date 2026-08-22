@@ -20,7 +20,10 @@ def run_mission(ctx) -> None:
     flow = str(ctx.config.get("mission_flow", "full")).strip().lower()
     mission_complete = False
     try:
-        ctx.announce("Bobocup队开始比赛")
+        _announce_and_wait(
+            ctx,
+            "我们是重庆大学 bobocup 水果采摘队伍，现在开始采摘",
+        )
         if flow not in {"full", "ac", "a", "b", "c"}:
             ctx.announce(f"未知任务流程{flow}，任务停止。")
             return
@@ -511,7 +514,7 @@ def _c_skip_text(
     if reason_code == "no_detection":
         return prefix + "没有识别到目标，跳过。"
     if reason_code == "target_unripe":
-        return prefix + f"识别到{observed or '未成熟' + target_name}，跳过。"
+        return prefix + f"识别到{observed or '不成熟' + target_name}，跳过。"
     if reason_code == "type_mismatch":
         return prefix + f"识别到{observed or '其他目标'}，跳过。"
     if observed:

@@ -205,9 +205,10 @@ and `model/C.onnx` for C-zone side-fruit detection.
 
 ## B-zone model export
 
-The active `model/B.onnx` was exported from the workspace-root
-`fruit_apple_pear.pt` checkpoint with Ultralytics 8.4.126 in the isolated
-non-ROS environment `/home/rc4/fruit_model_export_env/.venv`:
+The previous B-zone model, now retained as `model/B_old_2.onnx`, was exported
+from the workspace-root `fruit_apple_pear.pt` checkpoint with Ultralytics
+8.4.126 in the isolated non-ROS environment
+`/home/rc4/fruit_model_export_env/.venv`:
 
 ```bash
 mkdir -p /home/rc4/fruit_ws/tmp/b_model_export
@@ -218,6 +219,11 @@ env -u PYTHONPATH /home/rc4/fruit_model_export_env/.venv/bin/yolo export \
   format=onnx imgsz=640 \
   batch=1 half=False dynamic=False simplify=True opset=12 nms=False device=cpu
 ```
+
+The active `model/B.onnx` embeds an export timestamp of
+`2026-08-23T05:56:12.687066+08:00` and the same Ultralytics 8.4.126, fixed
+640x640, simplified opset 12, and non-NMS export settings. The source
+checkpoint path is not embedded in the ONNX metadata.
 
 The ONNX interface is `float32 [1,3,640,640]` input and raw
 `float32 [1,8,8400]` output. OpenVINO 2024.6 reads this ONNX model directly,
@@ -231,6 +237,10 @@ folds the u8 NHWC preprocessing into the compiled graph, and runs it on
 | 2 | `pear_ripe` |
 | 3 | `pear_unripe` |
 
-`model/B_old.onnx` is the byte-for-byte backup of the previous B-zone model
-(SHA-256 `8a60fc5737592d506f892949a889b3bca876d459fd3cc71634c870fab8cf19ea`).
-It is retained only for manual rollback and is never loaded automatically.
+The active B-zone model is `model/B.onnx` (SHA-256
+`4f9db75d4e28ebd0197ef7ff550993821a036d5a1a48a9370393e4363a5e3e78`).
+`model/B_old_2.onnx` is the byte-for-byte backup of the model it replaced
+(SHA-256 `2b4531f75a89e625d48a1b1a42032b49682f2e7742f9778a0e9c14c5ab5d817e`).
+`model/B_old.onnx` is the earlier rollback model (SHA-256
+`8a60fc5737592d506f892949a889b3bca876d459fd3cc71634c870fab8cf19ea`).
+Rollback models are retained only for manual use and are never loaded automatically.

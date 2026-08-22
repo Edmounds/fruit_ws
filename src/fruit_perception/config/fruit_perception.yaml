@@ -14,10 +14,10 @@ left_camera:
     saturation: 69
     sharpness: 2
     gain: 1
-    auto_white_balance: true
-    white_balance: 5400
+    auto_white_balance: false
+    white_balance: 6500
     autoexposure: false
-    exposure: 25
+    exposure: 24
 
 right_camera:
   ros__parameters:
@@ -30,20 +30,20 @@ right_camera:
     image_height: 720
     camera_name: "right_camera"
     camera_info_url: "file:///home/rc4/fruit_ws/src/fruit_perception/config/right_camera_1280x720_uncalibrated.yaml"
-    brightness: 0
-    contrast: 3
+    brightness: 1
+    contrast: 2
     saturation: 69
     sharpness: 2
     gain: 1
-    auto_white_balance: true
-    white_balance: 4600
+    auto_white_balance: false
+    white_balance: 6500
     autoexposure: false
     exposure: 25
 
 usb_camera_controls:
   ros__parameters:
-    left_backlight_compensation: 0
-    right_backlight_compensation: 0
+    left_backlight_compensation: 125
+    right_backlight_compensation: 121
     left_gamma: 84
     right_gamma: 84
     left_power_line_frequency: 1
