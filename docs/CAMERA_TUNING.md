@@ -26,6 +26,19 @@ python3 test_camera_detector.py --cam3 --model A
 
 `--model` 必须是 `A`、`B` 或 `C`，需要测试其他模型时替换示例中的字母。
 
+检测阈值默认读取
+`/home/rc4/fruit_ws/src/fruit_perception/config/fruit_perception.yaml`，也可以只在本次运行中通过命令行覆盖：
+
+```bash
+python3 test_camera_detector.py --cam1 --model B --conf 0.60 --iou 0.45
+```
+
+`--conf` 是最低置信度阈值。低于这个值的候选框不会进入 GUI；值越高，通常误检越少，但低置信度的真实目标也更容易漏掉。
+
+`--iou` 是 NMS 使用的交并比阈值。NMS 会在重叠框中保留置信度较高的框；两个框的 IoU 超过这个值时，较低分的框会被抑制。值越低，抑制越严格，显示框通常更少；值越高，越容易保留相互重叠的框，但重复框也可能增加。当前实现没有区分类别，重叠较大的不同类别框也可能互相抑制。
+
+两个命令行参数只影响当前进程，不会修改 YAML。省略参数时继续使用 YAML 中的值，当前默认值为 `conf=0.50`、`iou=0.45`。
+
 脚本默认把窗口显示到机器人连接的桌面屏幕。检测窗口按 `q` 或 `Esc`，或者关闭参数窗口，即可退出。
 正常退出会停止脚本自己启动的相机进程。如果窗口或父脚本被强制终止，独立的
 `test_camera_detector_*_container` 可能继续占用摄像头；返回工作空间根目录执行

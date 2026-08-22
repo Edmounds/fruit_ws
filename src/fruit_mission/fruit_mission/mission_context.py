@@ -653,30 +653,17 @@ class MissionContext:
             }
         return {"success": True, "reason_code": "observed", "targets": targets}
 
-    def execute_b_tree_targets(
-        self,
-        side: str,
-        targets: Sequence[BTreeTarget],
-    ) -> Dict[str, Any]:
-        """Send stable B targets, returning to the same side between fruits."""
-        picked = 0
-        for index, target in enumerate(targets):
-            arm_result = self._send_arm_target_and_wait(target.point)
-            if not arm_result.completed:
-                return {
-                    "success": False,
-                    "reason_code": arm_result.reason_code,
-                    "safe_to_continue": arm_result.safe_to_continue,
-                    "picked": picked,
-                }
-            picked += 1
-            if index + 1 < len(targets) and not self.send_pick_direction(side):
-                return {
-                    "success": False,
-                    "reason_code": "side_pose_timeout",
-                    "picked": picked,
-                }
-        return {"success": True, "reason_code": "picked", "picked": picked}
+    def execute_b_tree_target(self, target: BTreeTarget) -> Dict[str, Any]:
+        """Send the single B-zone target selected by mission."""
+        arm_result = self._send_arm_target_and_wait(target.point)
+        if not arm_result.completed:
+            return {
+                "success": False,
+                "reason_code": arm_result.reason_code,
+                "safe_to_continue": arm_result.safe_to_continue,
+                "picked": 0,
+            }
+        return {"success": True, "reason_code": "picked", "picked": 1}
 
     def set_expected_fruit_type(self, expected_type: Optional[str]) -> None:
         """Set the D435i target class; an empty value disables filtering."""

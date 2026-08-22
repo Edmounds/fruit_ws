@@ -52,6 +52,22 @@ sudo systemctl stop fruit-perception.service
 ros2 topic echo /fruit_perception/decision
 ```
 
+### B 区单树感知与机械臂测试
+
+测试 B 区单棵树时必须指定观察方向和二维码期望品种：
+
+```bash
+cd /home/rc4/fruit_ws
+./test_d435i_arm_target.sh --zone B --right --apple
+./test_d435i_arm_target.sh --zone B --left --pear --debug
+```
+
+`--apple` 和 `--pear` 只能用于 B 区且必须二选一。脚本等待感知节点完成 50 帧
+整树统计，再按正式 mission 的规则比较整树品种和期望品种，只向下位机发送品种一致的
+成熟目标。没有目标、品种不一致或只有未成熟目标时正常跳过，不发送 `ArmTarget`。
+单树抓取、跳过或执行失败后都会发送 `task_id=7` 并等待机械臂收缩姿态回调；感知进程
+继续保留，便于现场检查，按 `Ctrl-C` 后退出。
+
 ## 下位机直连交互脚本
 
 这个脚本直接打开串口与下位机通信，不启动 ROS，也不启动

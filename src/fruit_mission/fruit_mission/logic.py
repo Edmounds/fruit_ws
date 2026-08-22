@@ -1,4 +1,4 @@
-"""Pure mission decision helpers for A/C side-camera tasks."""
+"""Pure mission decision helpers for A/B/C perception tasks."""
 
 from __future__ import annotations
 
@@ -52,6 +52,15 @@ class PickExecutionResult:
     safe_to_continue: bool = True
 
 
+@dataclass(frozen=True)
+class BTreeDecision:
+    """B-zone species comparison and single-target selection result."""
+
+    reason_code: str
+    observed_name: Optional[str] = None
+    target_index: Optional[int] = None
+
+
 def expected_ripe_type(target_name: str) -> str:
     """Return the model class that means the target is mature."""
     try:
@@ -85,6 +94,38 @@ def spoken_model_type(model_type: Optional[str]) -> str:
     if maturity == "unripe":
         return f"未成熟{produce_name}"
     return "未知目标"
+
+
+def decide_b_tree_targets(
+    target_name: str,
+    expected_type: str,
+    candidates: Iterable[tuple[str, float, float]],
+) -> BTreeDecision:
+    """Compare one B-tree result and select at most one ripe target."""
+    candidate_list = list(candidates)
+    types = [model_type for model_type, _x, _y in candidate_list]
+    if not types:
+        return BTreeDecision("no_detection")
+
+    observed_names = {spoken_produce_name(model_type) for model_type in types}
+    if len(observed_names) != 1 or "未知果实" in observed_names:
+        return BTreeDecision("inconsistent_types")
+
+    observed_name = observed_names.pop()
+    if observed_name != target_name:
+        return BTreeDecision("type_mismatch", observed_name)
+
+    ripe_indices = tuple(
+        index for index, model_type in enumerate(types)
+        if model_type == expected_type
+    )
+    if not ripe_indices:
+        return BTreeDecision("no_ripe_target", observed_name)
+    target_index = max(
+        ripe_indices,
+        key=lambda index: abs(candidate_list[index][1]) - candidate_list[index][2],
+    )
+    return BTreeDecision("matched", observed_name, target_index)
 
 
 def format_position_name(position_id: int) -> str:

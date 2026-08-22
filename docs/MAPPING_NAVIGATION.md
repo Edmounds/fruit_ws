@@ -71,8 +71,10 @@
   ./start_fruit_mission.sh --map A --flow b
   ```
 
-  完整任务启动命令增加 `--debug` 时，会在导航、摄像头和任务节点启动前自动录制 ROS
-  调试数据，包括隐藏的 Action 话题、LiDAR、点云和选定的视觉图像。视觉数据只保留
+  完整任务启动命令增加 `--debug` 时，会先等待导航、摄像头、感知、串口桥和相机模式管理器
+  全部就绪；相机模式确认处于 `OFF` 后才启动 ROS 录包，并等待录包节点就绪，再启动 mission
+  和发送第一条导航目标。调试数据包括隐藏的 Action 话题、LiDAR、点云和选定的视觉图像。
+  视觉数据只保留
   `/left_camera/image_raw`、`/right_camera/image_raw`、两路对应的
   `/fruit_perception/{left,right}/annotated_image`，以及 D435i 的
   `/camera/camera/color/image_raw`、`/camera/camera/aligned_depth_to_color/image_raw` 和

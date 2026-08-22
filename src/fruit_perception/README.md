@@ -125,7 +125,8 @@ The D435i decision stream on `/fruit_perception/decision` contains:
 - `has_target` and `target_point` only when the selected target lock is acquired
 - B-zone `targets_ready` and up to two aggregated `targets` after the configured
   50-frame window; B targets are independent physical tracks from one inferred
-  tree-fruit species and may differ in maturity
+  tree-fruit species and may differ in maturity, while mission selects at most
+  one target for picking
 - annotated RGB8 image: `/fruit_perception/d435i/annotated_image`
 
 The detection message contains every model result above the configured
@@ -166,8 +167,9 @@ The target point published when the lock is acquired is the filtered mean from
 that winning track. Arm-target consumers wait for one fresh finite
 decision with `has_target=true` and forward it as `ArmTarget`; they do not
 collect or average a second point window. In B, QR expectations are deliberately
-not applied in the perception node; mission consumes the target types and decides
-whether each is the requested ripe fruit.
+not applied in the perception node. Mission compares the inferred species with
+the QR plan, filters ripe targets, then selects at most one using `abs(x) - y`
+in the optical frame.
 
 The annotated image keeps the camera's original aspect ratio. Inference uses a
 centered 640x640 letterbox with value 114, so no source pixels are cropped. Each
@@ -200,3 +202,35 @@ Its generated metadata and AGPL-3.0 license declaration are retained in
 `model/metadata.yaml`. The runtime models are `model/A.onnx` for Area A
 maturity-only detection, `model/B.onnx` for B-zone D435i tree-fruit detection,
 and `model/C.onnx` for C-zone side-fruit detection.
+
+## B-zone model export
+
+The active `model/B.onnx` was exported from the workspace-root
+`fruit_apple_pear.pt` checkpoint with Ultralytics 8.4.126 in the isolated
+non-ROS environment `/home/rc4/fruit_model_export_env/.venv`:
+
+```bash
+mkdir -p /home/rc4/fruit_ws/tmp/b_model_export
+cp /home/rc4/fruit_ws/fruit_apple_pear.pt \
+  /home/rc4/fruit_ws/tmp/b_model_export/fruit_apple_pear.pt
+env -u PYTHONPATH /home/rc4/fruit_model_export_env/.venv/bin/yolo export \
+  model=/home/rc4/fruit_ws/tmp/b_model_export/fruit_apple_pear.pt \
+  format=onnx imgsz=640 \
+  batch=1 half=False dynamic=False simplify=True opset=12 nms=False device=cpu
+```
+
+The ONNX interface is `float32 [1,3,640,640]` input and raw
+`float32 [1,8,8400]` output. OpenVINO 2024.6 reads this ONNX model directly,
+folds the u8 NHWC preprocessing into the compiled graph, and runs it on
+`GPU.0`. NMS remains in the C++ detection parser. The model class order is:
+
+| Class ID | Name |
+| ---: | --- |
+| 0 | `apple_ripe` |
+| 1 | `apple_unripe` |
+| 2 | `pear_ripe` |
+| 3 | `pear_unripe` |
+
+`model/B_old.onnx` is the byte-for-byte backup of the previous B-zone model
+(SHA-256 `8a60fc5737592d506f892949a889b3bca876d459fd3cc71634c870fab8cf19ea`).
+It is retained only for manual rollback and is never loaded automatically.

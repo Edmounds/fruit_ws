@@ -14,6 +14,7 @@ LAUNCH_PID=""
 STOPPING=0
 ZONE=""
 DIRECTION=""
+B_FRUIT=""
 DEBUG=0
 
 log()
@@ -24,11 +25,12 @@ log()
 usage()
 {
   cat <<'EOF'
-Usage: ./test_d435i_arm_target.sh --zone A|B|C --left|--right [--debug]
+Usage: ./test_d435i_arm_target.sh --zone A|B|C --left|--right [--apple|--pear] [--debug]
 
 Select the current area and observation direction before running the existing
-D435i recognition and arm-target workflow. --debug prints every D435i detection
-message and every selected target point with their ROS timestamps.
+D435i recognition and arm-target workflow. Zone B requires exactly one of
+--apple or --pear. --debug prints every D435i detection message and every
+selected target point with their ROS timestamps.
 EOF
 }
 
@@ -55,6 +57,14 @@ parse_arguments()
         DIRECTION=$1
         shift
         ;;
+      --apple|--pear)
+        [[ -z "${B_FRUIT}" ]] || {
+          log "ERROR: choose exactly one of --apple or --pear"
+          return 2
+        }
+        B_FRUIT=$1
+        shift
+        ;;
       --debug)
         DEBUG=1
         shift
@@ -75,6 +85,15 @@ parse_arguments()
     log "ERROR: --left or --right is required"
     return 2
   }
+  if [[ "${ZONE}" == B ]]; then
+    [[ -n "${B_FRUIT}" ]] || {
+      log "ERROR: --zone B requires exactly one of --apple or --pear"
+      return 2
+    }
+  elif [[ -n "${B_FRUIT}" ]]; then
+    log "ERROR: --apple and --pear may only be used with --zone B"
+    return 2
+  fi
 }
 
 process_is_alive()
@@ -181,7 +200,7 @@ keep_running()
 
 main()
 {
-  local -a client_debug_args=()
+  local -a client_args=()
 
   parse_arguments "$@" || {
     usage >&2
@@ -197,8 +216,11 @@ main()
   set -u
   check_prerequisites || exit 1
   if (( DEBUG != 0 )); then
-    client_debug_args+=(--debug)
+    client_args+=(--debug)
     log "Per-frame D435i detection and target-point logging is enabled"
+  fi
+  if [[ -n "${B_FRUIT}" ]]; then
+    client_args+=("${B_FRUIT}")
   fi
   ros2 run fruit_mission d435i_arm_target_client \
     --require-stack-absent --ros-args --params-file "${CLIENT_CONFIG}" || {
@@ -216,7 +238,7 @@ main()
 
   log "Waiting for the perception stack"
   if ros2 run fruit_mission d435i_arm_target_client \
-    --zone "${ZONE}" "${DIRECTION}" "${client_debug_args[@]}" \
+    --zone "${ZONE}" "${DIRECTION}" "${client_args[@]}" \
     --ros-args --params-file "${CLIENT_CONFIG}" \
     2>&1 | tee -a "${CLIENT_LOG}"; then
     log "Task sequence completed"

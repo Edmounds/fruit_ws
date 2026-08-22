@@ -2,6 +2,37 @@
 
 本项目使用 `src.dataset_pipeline` 将多个 YOLO 检测数据集统一成可训练的 12 类水果数据集。流水线不会修改原始目录，所有结果保存在 `fruit_database/builds/<版本名>/`。
 
+## 采集训练图像
+
+在工作空间根目录加载统一的 ROS 运行环境，然后选择一台相机启动彩色图像采集 GUI：
+
+```bash
+cd /home/rc4/fruit_ws
+source setup_fruit_runtime.bash
+
+# 左侧 USB 相机：/dev/left_cam
+python3 collect_cam_img.py --cam 1
+
+# 右侧 USB 相机：/dev/right_cam
+python3 collect_cam_img.py --cam 2
+
+# D435i 彩色相机
+python3 collect_cam_img.py --cam 3
+```
+
+GUI 左侧显示相机的实时原始彩色画面，右侧“截图”按钮在收到第一帧后启用。
+截图保存为未缩放、无标注的无损彩色 PNG，目录分别为：
+
+```text
+/home/rc4/fruit_ws/img_output/cam1/
+/home/rc4/fruit_ws/img_output/cam2/
+/home/rc4/fruit_ws/img_output/cam3/
+```
+
+文件名使用本地时间戳，例如 `20260823_143012_527.png`。脚本会优先复用目标话题上
+已经运行的相机 publisher；没有 publisher 时，只启动 `--cam` 选中的相机。关闭窗口或
+按 `Ctrl-C` 后，脚本只停止由自己启动的相机进程，不会停止复用的现有相机进程。
+
 ## 类别定义
 
 | ID | 类别 |

@@ -15,6 +15,8 @@ from fruit_hardware_interfaces.msg import ExecutionCallback
 from fruit_hardware_interfaces.msg import StateMachineCommand
 from fruit_perception.msg import FruitDecision
 
+from fruit_mission.logic import decide_b_tree_targets
+from fruit_mission.logic import spoken_produce_name
 from fruit_mission.script_hardware_client import CommandResult
 from fruit_mission.script_hardware_client import HardwareCommandClient
 from fruit_mission.script_hardware_client import latched_qos
@@ -165,7 +167,12 @@ class D435iArmTargetClient(HardwareCommandClient):
             return False
         return True
 
-    def run_sequence(self, area: str, direction: str) -> int:
+    def run_sequence(
+        self,
+        area: str,
+        direction: str,
+        b_fruit: str | None = None,
+    ) -> int:
         """Set the area and direction, then run the D435i target sequence."""
         if not self.wait_for_stack():
             return int(CommandResult.BRIDGE_NOT_READY)
@@ -192,6 +199,14 @@ class D435iArmTargetClient(HardwareCommandClient):
         if not self._announce_current_area(area):
             return int(CommandResult.ENDPOINTS_NOT_READY)
 
+        if area == "B":
+            if b_fruit not in {"apple", "pear"}:
+                self.get_logger().error(
+                    "B-zone sequence requires apple or pear"
+                )
+                return 2
+            return self.run_b_tree(direction, b_fruit)
+
         self.get_logger().info(
             f"Moving to the {direction} observation position"
         )
@@ -207,35 +222,6 @@ class D435iArmTargetClient(HardwareCommandClient):
             return EXIT_MODE_TIMEOUT
 
         fresh_after_ns = self.get_clock().now().nanoseconds
-        if area == "B":
-            targets = self.sample_b_targets(fresh_after_ns)
-            if not targets:
-                self.get_logger().error(
-                    "No valid B-zone targets from the completed 50-frame perception window "
-                    f"within {self.detection_timeout_sec:.0f}s"
-                )
-                return EXIT_TARGET_TIMEOUT
-            for index, target in enumerate(targets):
-                self.get_logger().info(
-                    f"B target {index + 1}/{len(targets)} type={target.type!r} "
-                    f"confidence={target.confidence:.6f} "
-                    f"observations={target.observation_count} "
-                    f"inliers={target.inlier_count} "
-                    f"point=({target.point.x:.6f},{target.point.y:.6f},"
-                    f"{target.point.z:.6f})"
-                )
-                result = self.send_arm_target(target.point, f"B arm target {index + 1}")
-                if result != CommandResult.COMPLETED:
-                    return int(result)
-                if index + 1 < len(targets):
-                    self.get_logger().info(
-                        "Re-entering the B observation direction before the next target"
-                    )
-                    direction_result = self.send_pick_direction(direction)
-                    if direction_result != CommandResult.COMPLETED:
-                        return int(direction_result)
-            return int(CommandResult.COMPLETED)
-
         target = self.sample_target(fresh_after_ns)
         if target is None:
             self.get_logger().error(
@@ -253,6 +239,105 @@ class D435iArmTargetClient(HardwareCommandClient):
 
         result = self.send_arm_target(target.point, "arm target")
         return int(result)
+
+    def run_b_tree(self, direction: str, b_fruit: str) -> int:
+        """Run one B-tree attempt and always retract the arm afterward."""
+        status = self._run_b_tree_work(direction, b_fruit)
+        self.get_logger().info(
+            "B-zone tree attempt finished; retracting the arm"
+        )
+        retract_result = self.send_arm_retract()
+        if retract_result != CommandResult.COMPLETED:
+            self.get_logger().error(
+                "B-zone arm retract failed after tree status "
+                f"{status}; reporting the retract failure"
+            )
+            return int(retract_result)
+        return status
+
+    def _run_b_tree_work(self, direction: str, b_fruit: str) -> int:
+        target_name = spoken_produce_name(f"{b_fruit}_ripe")
+        expected_type = f"{b_fruit}_ripe"
+        self.get_logger().info(
+            f"B-zone expected fruit is {b_fruit}; moving to the "
+            f"{direction} observation position"
+        )
+        direction_result = self.send_pick_direction(direction)
+        if direction_result != CommandResult.COMPLETED:
+            return int(direction_result)
+
+        self.get_logger().info(
+            "Observation position reached; switching to TREE mode"
+        )
+        if not self.set_perception_mode("TREE", self.active_mode_timeout_sec):
+            self.get_logger().error("Perception stack did not enter TREE mode")
+            return EXIT_MODE_TIMEOUT
+
+        targets = self.sample_b_targets(self.get_clock().now().nanoseconds)
+        if targets is None:
+            self.get_logger().error(
+                "No completed B-zone 50-frame perception window within "
+                f"{self.detection_timeout_sec:.0f}s"
+            )
+            return EXIT_TARGET_TIMEOUT
+
+        for index, target in enumerate(targets):
+            self.get_logger().info(
+                f"B target {index + 1}/{len(targets)} type={target.type!r} "
+                f"confidence={target.confidence:.6f} "
+                f"observations={target.observation_count} "
+                f"inliers={target.inlier_count} "
+                f"point=({target.point.x:.6f},{target.point.y:.6f},"
+                f"{target.point.z:.6f})"
+            )
+
+        decision = decide_b_tree_targets(
+            target_name,
+            expected_type,
+            (
+                (
+                    target.type,
+                    float(target.point.x),
+                    float(target.point.y),
+                )
+                for target in targets
+            ),
+        )
+        if decision.reason_code == "no_detection":
+            self.get_logger().info(
+                "B-zone decision: no fruit detected; skipping arm targets"
+            )
+        elif decision.reason_code == "inconsistent_types":
+            self.get_logger().info(
+                "B-zone decision: inconsistent fruit types; "
+                "skipping arm targets"
+            )
+        elif decision.reason_code == "type_mismatch":
+            self.get_logger().info(
+                "B-zone decision: observed "
+                f"{decision.observed_name}, expected "
+                f"{target_name}; skipping arm targets"
+            )
+        elif decision.reason_code == "no_ripe_target":
+            self.get_logger().info(
+                f"B-zone decision: observed {target_name}, but no ripe "
+                "target; "
+                "skipping arm targets"
+            )
+        else:
+            target = targets[decision.target_index]
+            score = abs(float(target.point.x)) - float(target.point.y)
+            self.get_logger().info(
+                f"B-zone decision: observed {target_name}, matching the "
+                f"expected fruit; selected score={score:.6f}"
+            )
+            result = self.send_arm_target(
+                target.point,
+                "B selected ripe arm target",
+            )
+            if result != CommandResult.COMPLETED:
+                return int(result)
+        return int(CommandResult.COMPLETED)
 
     def send_pick_direction(self, direction: str) -> CommandResult:
         """Send a direction pose command and wait for its completion callback."""
@@ -285,6 +370,19 @@ class D435iArmTargetClient(HardwareCommandClient):
             message,
             ExecutionCallback.CALLBACK_ARM_TARGET,
             label,
+        )
+
+    def send_arm_retract(self) -> CommandResult:
+        """Send the B-zone arm retract command and wait for completion."""
+        message = StateMachineCommand()
+        message.task_id = StateMachineCommand.TASK_ARM_RETRACT_POSE
+        message.task_status = StateMachineCommand.ARM_RETRACT_POSE
+        return self.publish_and_wait(
+            self._state_command_publisher,
+            self.state_command_topic,
+            message,
+            ExecutionCallback.CALLBACK_ARM_RETRACT_POSE,
+            "arm retract pose",
         )
 
     def set_perception_mode(self, mode: str, timeout_sec: float) -> bool:
@@ -460,6 +558,13 @@ def main(args=None) -> None:
     mode.add_argument("--mode-off", action="store_true")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--zone", choices=("A", "B", "C"))
+    b_fruit = parser.add_mutually_exclusive_group()
+    b_fruit.add_argument(
+        "--apple", dest="b_fruit", action="store_const", const="apple"
+    )
+    b_fruit.add_argument(
+        "--pear", dest="b_fruit", action="store_const", const="pear"
+    )
     direction = parser.add_mutually_exclusive_group()
     direction.add_argument(
         "--left", dest="direction", action="store_const", const="left"
@@ -474,6 +579,10 @@ def main(args=None) -> None:
             parser.error("--zone A, --zone B, or --zone C is required")
         if options.direction is None:
             parser.error("--left or --right is required")
+        if options.zone == "B" and options.b_fruit is None:
+            parser.error("--zone B requires exactly one of --apple or --pear")
+        if options.zone != "B" and options.b_fruit is not None:
+            parser.error("--apple and --pear may only be used with --zone B")
 
     rclpy.init(args=ros_args)
     node = D435iArmTargetClient(debug=options.debug)
@@ -488,7 +597,11 @@ def main(args=None) -> None:
         elif options.mode_off:
             status = 0 if node.set_off_for_cleanup() else EXIT_MODE_TIMEOUT
         else:
-            status = node.run_sequence(options.zone, options.direction)
+            status = node.run_sequence(
+                options.zone,
+                options.direction,
+                options.b_fruit,
+            )
     except KeyboardInterrupt:
         status = 130
     finally:

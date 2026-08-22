@@ -37,7 +37,8 @@ Use --reuse-navigation after start_navigation.sh to keep its navigation,
 localization, and serial bridge running while starting perception and mission.
 Use --debug to record ROS diagnostics, LiDAR, point clouds, and the selected
 raw/annotated camera topics under rosbags/. Duplicate high-bandwidth image
-transports and D435i unaligned raw depth are excluded.
+transports and D435i unaligned raw depth are excluded. Recording starts after
+the navigation and perception stack is ready, immediately before the mission.
 EOF
 }
 
@@ -716,12 +717,6 @@ else
     /fruit_mission
 fi
 
-if ((DEBUG_RECORD_ENABLED)); then
-  start_process "rosbag" \
-    "$RECORD_SCRIPT" \
-    --no-monitor
-fi
-
 if [[ "$REUSE_NAVIGATION" != true ]]; then
   if [[ "$USE_ODOMETRY" == true ]]; then
     start_process "navigation" \
@@ -807,6 +802,13 @@ wait_for_topic_endpoint_count \
   1 \
   30
 wait_for_active_off 60
+
+if ((DEBUG_RECORD_ENABLED)); then
+  start_process "rosbag" \
+    "$RECORD_SCRIPT" \
+    --no-monitor
+  wait_for_node "debug rosbag recorder" /rosbag2_recorder 30
+fi
 
 log "READY navigation and perception stack; starting mission"
 start_process "mission" \

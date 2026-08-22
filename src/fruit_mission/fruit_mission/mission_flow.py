@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping, Optional
 
 from fruit_mission.logic import choose_maturity_side
+from fruit_mission.logic import decide_b_tree_targets
 from fruit_mission.logic import expected_ripe_type
 from fruit_mission.logic import format_b_announcement
 from fruit_mission.logic import format_c_announcement
@@ -12,7 +13,6 @@ from fruit_mission.logic import format_position_name
 from fruit_mission.logic import PickDecision
 from fruit_mission.logic import SideObservation
 from fruit_mission.logic import spoken_model_type
-from fruit_mission.logic import spoken_produce_name
 
 
 def run_mission(ctx) -> None:
@@ -285,15 +285,15 @@ def run_b_area(ctx, b_plan: Mapping[str, Any]) -> bool:
             ctx.announce(f"B区{goal_name}，{reason}，跳过。")
         else:
             targets = list(observation.get("targets", []))
-            ripe_targets = _announce_b_tree_decision(
+            selected_target = _announce_b_tree_decision(
                 ctx,
                 goal_name,
                 target_name,
                 expected_type,
                 targets,
             )
-            if ripe_targets:
-                pick_result = ctx.execute_b_tree_targets(side, ripe_targets)
+            if selected_target is not None:
+                pick_result = ctx.execute_b_tree_target(selected_target)
                 if not pick_result.get("success"):
                     reason_code = str(pick_result.get("reason_code"))
                     reason = _b_arm_failure_text(reason_code)
@@ -311,39 +311,44 @@ def _announce_b_tree_decision(
     target_name: str,
     expected_type: str,
     targets: list[Any],
-) -> list[Any]:
-    if not targets:
+) -> Optional[Any]:
+    decision = decide_b_tree_targets(
+        target_name,
+        expected_type,
+        (
+            (
+                target.model_type,
+                float(target.point.point.x),
+                float(target.point.point.y),
+            )
+            for target in targets
+        ),
+    )
+    if decision.reason_code == "no_detection":
         ctx.announce(f"B区{goal_name}，没有识别到果实，跳过。")
-        return []
-
-    observed_names = {
-        spoken_produce_name(target.model_type) for target in targets
-    }
-    if len(observed_names) != 1 or "未知果实" in observed_names:
+        return None
+    if decision.reason_code == "inconsistent_types":
         ctx.announce(f"B区{goal_name}，识别结果不一致，跳过。")
-        return []
-
-    observed_name = observed_names.pop()
-    if observed_name != target_name:
+        return None
+    if decision.reason_code == "type_mismatch":
         ctx.announce(
-            f"B区{goal_name}，识别到{observed_name}，和二维码不一致，跳过。"
+            f"B区{goal_name}，识别到{decision.observed_name}，"
+            "和二维码不一致，跳过。"
         )
-        return []
+        return None
 
-    ripe_targets = [
-        target for target in targets if target.model_type == expected_type
-    ]
-    if ripe_targets:
+    if decision.target_index is not None:
         ctx.announce(
-            f"B区{goal_name}，识别到{observed_name}，和二维码一致，"
+            f"B区{goal_name}，识别到{decision.observed_name}，和二维码一致，"
             f"开始抓成熟{target_name}。"
         )
     else:
         ctx.announce(
-            f"B区{goal_name}，识别到{observed_name}，和二维码一致，"
+            f"B区{goal_name}，识别到{decision.observed_name}，和二维码一致，"
             f"没有成熟{target_name}，跳过。"
         )
-    return ripe_targets
+        return None
+    return targets[decision.target_index]
 
 
 def _b_observation_failure_text(reason_code: str) -> str:

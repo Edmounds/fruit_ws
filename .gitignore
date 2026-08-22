@@ -39,5 +39,8 @@ venv/
 # Local RealSense captures
 /rs-save-to-disk-output-*
 
+# Local YOLO training captures
+/img_output/
+
 
 tmp/

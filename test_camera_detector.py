@@ -181,6 +181,20 @@ def parse_args() -> argparse.Namespace:
         help='model letter to load from src/fruit_perception/model',
     )
     parser.add_argument(
+        '--conf',
+        type=float,
+        default=None,
+        metavar='THRESHOLD',
+        help='confidence threshold override (default: from fruit_perception.yaml)',
+    )
+    parser.add_argument(
+        '--iou',
+        type=float,
+        default=None,
+        metavar='THRESHOLD',
+        help='NMS IoU threshold override (default: from fruit_perception.yaml)',
+    )
+    parser.add_argument(
         '--display',
         default=DEFAULT_DISPLAY,
         help=f'desktop display for the GUI window (default: {DEFAULT_DISPLAY})',
@@ -786,8 +800,18 @@ def run() -> int:
     selection = select_camera(args, config)
     model_path = model_path_for(args.model, config)
     perception = config['fruit_perception_node']['ros__parameters']
-    confidence_threshold = float(perception['confidence_threshold'])
-    nms_iou_threshold = float(perception['nms_iou_threshold'])
+    confidence_threshold = float(
+        perception['confidence_threshold'] if args.conf is None else args.conf,
+    )
+    nms_iou_threshold = float(
+        perception['nms_iou_threshold'] if args.iou is None else args.iou,
+    )
+    for name, value in (
+        ('confidence threshold', confidence_threshold),
+        ('NMS IoU threshold', nms_iou_threshold),
+    ):
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError(f'{name} must be between 0 and 1, got {value}')
 
     detector = Detector(model_path)
     rclpy.init()
@@ -797,14 +821,16 @@ def run() -> int:
     if wait_for_publisher(node, selection.topic, 1.0):
         print(
             f'Using existing publisher on {selection.topic}; '
-            f'model {model_path}',
+            f'model {model_path}; conf {confidence_threshold:.3f}; '
+            f'iou {nms_iou_threshold:.3f}',
             flush=True,
         )
     else:
         camera_process, log_path = start_camera(selection)
         print(
             f'Started {selection.name}; image topic {selection.topic}; '
-            f'model {model_path}; log {log_path}',
+            f'model {model_path}; conf {confidence_threshold:.3f}; '
+            f'iou {nms_iou_threshold:.3f}; log {log_path}',
             flush=True,
         )
     window_name = f'{selection.name} model {args.model}'
