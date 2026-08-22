@@ -95,7 +95,7 @@ def run_a_area(ctx) -> bool:
         if not decisions:
             continue
         for decision in decisions:
-            result = ctx.execute_closed_loop_pick(decision.side)
+            result = ctx.execute_a_open_loop_pick(decision.side)
             if not result.success and not result.safe_to_continue:
                 return False
         if not ctx.set_perception_mode("SIDES"):

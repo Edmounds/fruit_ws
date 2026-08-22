@@ -558,6 +558,17 @@ class MissionContext:
         """Send one A/B/C pick-direction command and wait for completion."""
         return self._send_pick_direction_and_wait(side).completed
 
+    def execute_a_open_loop_pick(self, side: str) -> PickExecutionResult:
+        """Run the A-zone open-loop pick selected by the side cameras."""
+        direction_result = self._send_pick_direction_and_wait(side)
+        if not direction_result.completed:
+            return PickExecutionResult(
+                False,
+                direction_result.reason_code,
+                safe_to_continue=direction_result.safe_to_continue,
+            )
+        return PickExecutionResult(True, "picked")
+
     def _send_pick_direction_and_wait(self, side: str) -> _CallbackWaitResult:
         if side not in ("left", "right"):
             raise ValueError("side must be left or right")

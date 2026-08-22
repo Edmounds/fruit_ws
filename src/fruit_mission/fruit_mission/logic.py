@@ -44,7 +44,7 @@ class PickDecision:
 
 @dataclass(frozen=True)
 class PickExecutionResult:
-    """Result of the side-turn, D435i depth, and arm-target pick flow."""
+    """Result of an A-zone open-loop or C-zone closed-loop pick."""
 
     success: bool
     reason_code: str

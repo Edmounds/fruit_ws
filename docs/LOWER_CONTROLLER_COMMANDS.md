@@ -36,8 +36,8 @@ grip              # task 0 0，夹爪抓取
 open              # task 0 1，夹爪打开
 gimbal-down       # task 1 0，云台向下
 gimbal-up         # task 1 1，云台向上
-left              # task 2 0，左侧观察位置
-right             # task 2 1，右侧观察位置
+left              # task 2 0，左侧方向任务；A区同时执行开环抓取
+right             # task 2 1，右侧方向任务；A区同时执行开环抓取
 qr-pose           # task 4 0，二维码识别姿态
 task 6 0          # 返回初始姿态
 task 7 0          # 机械臂收回姿态
