@@ -10,12 +10,15 @@ from threading import Event
 from threading import Lock
 from threading import Thread
 from typing import Callable, Mapping
+import wave
 
 
 @dataclass
 class _SpeechJob:
     text: str
     done: Event | None = None
+    playback_started: Event | None = None
+    playback_duration_sec: float | None = None
     result: bool = False
 
 
@@ -58,18 +61,29 @@ class PiperSpeaker:
             self._queue.put(_SpeechJob(str(text)))
         return True
 
-    def announce_and_wait(self, text: str) -> bool:
-        """Queue text for speech and wait until generation and playback finish."""
+    def announce_and_wait(self, text: str, lead_time_sec: float = 0.0) -> bool:
+        """Queue text and wait until playback finishes or reaches its lead time."""
         if not text:
             return True
         done = Event()
-        job = _SpeechJob(str(text), done)
+        playback_started = Event()
+        job = _SpeechJob(str(text), done, playback_started)
         with self._close_lock:
             if self._closed:
                 return False
             self._queue.put(job)
-        done.wait()
-        return job.result
+        if lead_time_sec <= 0.0:
+            done.wait()
+            return job.result
+
+        playback_started.wait()
+        if job.playback_duration_sec is None:
+            done.wait()
+            return job.result
+        remaining_sec = max(job.playback_duration_sec - float(lead_time_sec), 0.0)
+        if done.wait(remaining_sec):
+            return job.result
+        return True
 
     def close(self, wait: bool = False) -> None:
         """Stop the background speaker worker."""
@@ -86,13 +100,15 @@ class PiperSpeaker:
             try:
                 if job is None:
                     return
-                job.result = self._speak(job.text)
-                if job.done is not None:
-                    job.done.set()
+                job.result = self._speak(job)
             finally:
+                if job is not None and job.playback_started is not None:
+                    job.playback_started.set()
+                if job is not None and job.done is not None:
+                    job.done.set()
                 self._queue.task_done()
 
-    def _speak(self, text: str) -> bool:
+    def _speak(self, job: _SpeechJob) -> bool:
         """Speak text and return whether audio generation and playback succeeded."""
         self._wav_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -106,11 +122,14 @@ class PiperSpeaker:
                     "--output_file",
                     str(self._wav_path),
                 ],
-                input=text,
+                input=job.text,
                 text=True,
                 check=True,
                 timeout=self._generation_timeout_sec,
             )
+            job.playback_duration_sec = self._wav_duration_sec()
+            if job.playback_started is not None:
+                job.playback_started.set()
             self._run(
                 [self._aplay, str(self._wav_path)],
                 check=True,
@@ -120,3 +139,14 @@ class PiperSpeaker:
             self._logger.error(f"语音播报失败：{error}")
             return False
         return True
+
+    def _wav_duration_sec(self) -> float | None:
+        """Read the generated WAV duration for early mission continuation."""
+        try:
+            with wave.open(str(self._wav_path), "rb") as wav_file:
+                frame_rate = wav_file.getframerate()
+                if frame_rate <= 0:
+                    return None
+                return wav_file.getnframes() / frame_rate
+        except (OSError, EOFError, wave.Error):
+            return None
