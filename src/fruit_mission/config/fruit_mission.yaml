@@ -3,14 +3,16 @@ fruit_mission:
     stable_stop_sec: 1.0
     side_observation_timeout_sec: 4.0
     qr_plan_timeout_sec: 60.0
-    callback_timeout_sec: 60.0
+    callback_timeout_sec: 30.0
+    hardware_endpoint_timeout_sec: 10.0
     active_mode_timeout_sec: 30.0
-    d435i_detection_timeout_sec: 120.0
+    d435i_detection_timeout_sec: 20.0
     preferred_side: "left"
     c_distribution_output_dir: "/home/rc4/fruit_ws/tmp/fruit_mission"
     waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/A/competition_waypoints.yaml"
     mission_flow: "full"
     follow_waypoints_action: "/follow_waypoints"
+    navigation_action_server_timeout_sec: 5.0
     map_frame: "map"
     base_frame: "base_link"
     tf_lookup_timeout_sec: 1.0

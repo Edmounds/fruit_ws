@@ -10,10 +10,10 @@
     decision_topic: "/fruit_perception/decision"
 
     bridge_ready_timeout_sec: 30.0
-    endpoint_timeout_sec: 30.0
-    callback_timeout_sec: 60.0
+    endpoint_timeout_sec: 10.0
+    callback_timeout_sec: 30.0
     active_mode_timeout_sec: 30.0
-    detection_timeout_sec: 120.0
+    detection_timeout_sec: 20.0
     current_area_delivery_timeout_sec: 1.0
     perception_mode_min_subscribers: 2
     cleanup_mode_timeout_sec: 2.0

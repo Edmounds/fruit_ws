@@ -124,7 +124,8 @@ The D435i decision stream on `/fruit_perception/decision` contains:
 - all detections in confidence order, including ROI and optional 3D points
 - `has_target` and `target_point` only when the selected target lock is acquired
 - B-zone `targets_ready` and up to two aggregated `targets` after the configured
-  50-frame window; B targets are independent physical tracks and may share a type
+  50-frame window; B targets are independent physical tracks from one inferred
+  tree-fruit species and may differ in maturity
 - annotated RGB8 image: `/fruit_perception/d435i/annotated_image`
 
 The detection message contains every model result above the configured
@@ -152,11 +153,14 @@ only and never prevents the highest-scoring target from being published.
 
 The A/C winning physical target is locked, and its filtered 35-frame mean is
 published exactly once with `has_target=true`. B uses a separate selector that
-collects exactly 50 frames, keeps at most two physical tracks, removes 2-sigma
-coordinate outliers independently for each track, and publishes the resulting
-`targets` repeatedly after `targets_ready=true`. B association does not use the
-mission's expected fruit type. TREE-mode and current-area changes reset both
-selectors.
+collects exactly 50 frames and removes 2-sigma coordinate outliers independently
+for each physical track. The highest-median-confidence stable track determines
+whether the tree is apple or pear; stable tracks from the other species are
+excluded before at most two `targets` are published repeatedly after
+`targets_ready=true`. Per-frame `types`, `detections`, and annotated images keep
+all raw model results for diagnosis. B association and species selection do not
+use the mission's expected fruit type. TREE-mode and current-area changes reset
+both selectors.
 
 The target point published when the lock is acquired is the filtered mean from
 that winning track. Arm-target consumers wait for one fresh finite

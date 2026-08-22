@@ -57,6 +57,8 @@ TASK_ALIASES = {
     "left": (2, 0),
     "right": (2, 1),
     "qr-pose": (4, 0),
+    "home": (6, 0),
+    "retract": (7, 0),
 }
 AREA_STATUS = {"A": 0, "B": 1, "C": 2, "D": 3}
 CALLBACK_NAMES = {
@@ -66,14 +68,18 @@ CALLBACK_NAMES = {
     3: "arm target",
     4: "QR recognition pose",
     5: "current area",
+    6: "return initial pose",
+    7: "arm retract pose",
 }
-CALLBACK_STATUS_NAMES = {0: "completed", 1: "executing"}
+CALLBACK_STATUS_NAMES = {0: "completed", 1: "executing", 2: "failed"}
 TASK_NAMES = {
     0: "gripper",
     1: "camera gimbal",
     2: "side observation position",
     4: "QR recognition pose",
     5: "current area",
+    6: "return initial pose",
+    7: "arm retract pose",
 }
 
 
@@ -945,6 +951,8 @@ def help_text() -> str:
   gimbal-down | gimbal-up     camera gimbal position
   left | right                 side observation position
   qr-pose                      QR recognition pose
+  home                         return to the initial pose (task 6)
+  retract                      enter the arm retract pose (task 7)
   area A|B|C|D                set current area
   task <id> <status>           send a raw StateMachineCommand
   arm <x> <y> <z> <z_type>     send an arm target in meters

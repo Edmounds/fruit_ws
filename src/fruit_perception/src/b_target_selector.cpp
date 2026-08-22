@@ -29,6 +29,11 @@ double median(std::vector<double> values)
   return (lower + upper) * 0.5;
 }
 
+std::string fruit_species(const std::string & type)
+{
+  return type.substr(0, type.find('_'));
+}
+
 void validate_config(const BTargetSelectorConfig & config)
 {
   if (config.acquisition_frames == 0U) {
@@ -75,6 +80,17 @@ BTargetUpdate BTargetSelector::update(const std::vector<BTargetCandidate> & cand
       }
       return left.result.observation_count > right.result.observation_count;
     });
+  if (!statistics.empty()) {
+    // B-zone trees contain one fruit species; the strongest stable track defines it.
+    const auto dominant_species = fruit_species(statistics.front().result.type);
+    statistics.erase(
+      std::remove_if(
+        statistics.begin(), statistics.end(),
+        [&dominant_species](const auto & statistic) {
+          return fruit_species(statistic.result.type) != dominant_species;
+        }),
+      statistics.end());
+  }
   if (statistics.size() > config_.max_targets) {
     statistics.resize(config_.max_targets);
   }

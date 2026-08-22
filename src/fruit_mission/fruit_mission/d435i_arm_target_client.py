@@ -48,7 +48,7 @@ class D435iArmTargetClient(HardwareCommandClient):
         )
         self.declare_parameter("decision_topic", "/fruit_perception/decision")
         self.declare_parameter("active_mode_timeout_sec", 30.0)
-        self.declare_parameter("detection_timeout_sec", 120.0)
+        self.declare_parameter("detection_timeout_sec", 20.0)
         self.declare_parameter("current_area_delivery_timeout_sec", 1.0)
         self.declare_parameter("perception_mode_min_subscribers", 2)
         self.declare_parameter("cleanup_mode_timeout_sec", 2.0)

@@ -58,6 +58,21 @@ class _D435iSelection:
     matched_type: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class _CallbackWaitResult:
+    completed: bool
+    reason_code: str
+    safe_to_continue: bool
+
+
+@dataclass(frozen=True)
+class BTreeTarget:
+    """One stable B-zone perception target retained for mission decisions."""
+
+    model_type: str
+    point: PointStamped
+
+
 class MissionContext:
     """High-level blocking wrappers around the existing ROS interfaces."""
 
@@ -73,6 +88,7 @@ class MissionContext:
         self._route_cursor = 0
         self._current_waypoint_name: Optional[str] = None
         self._current_route_yaw: Optional[float] = None
+        self._current_area: Optional[str] = None
         self._latest_active_mode: Optional[str] = None
         self._active_mode_generation = 0
         self._latest_left: Optional[list[str]] = None
@@ -390,7 +406,9 @@ class MissionContext:
         except ValueError as error:
             self.node.get_logger().error(str(error))
             return False
-        if not self._follow_waypoints_client.wait_for_server(timeout_sec=2.0):
+        if not self._follow_waypoints_client.wait_for_server(
+            timeout_sec=float(self.config["navigation_action_server_timeout_sec"])
+        ):
             self.node.get_logger().error(
                 f"FollowWaypoints server unavailable: {self.config['follow_waypoints_action']}"
             )
@@ -538,6 +556,9 @@ class MissionContext:
 
     def send_pick_direction(self, side: str) -> bool:
         """Send one A/B/C pick-direction command and wait for completion."""
+        return self._send_pick_direction_and_wait(side).completed
+
+    def _send_pick_direction_and_wait(self, side: str) -> _CallbackWaitResult:
         if side not in ("left", "right"):
             raise ValueError("side must be left or right")
         status = (
@@ -545,10 +566,11 @@ class MissionContext:
             if side == "left"
             else StateMachineCommand.PICK_DIRECTION_RIGHT
         )
-        return self._send_command_and_wait(
+        return self._send_command_and_wait_result(
             StateMachineCommand.TASK_PICK_DIRECTION,
             status,
             ExecutionCallback.CALLBACK_PICK_DIRECTION,
+            recover_on_error=self._current_area not in {"B", "C"},
         )
 
     def execute_closed_loop_pick(
@@ -558,8 +580,13 @@ class MissionContext:
     ) -> PickExecutionResult:
         """Use D435i for the expected type, then send direction and ArmTarget."""
         self.set_expected_fruit_type(expected_type)
-        if not self.send_pick_direction(side):
-            return PickExecutionResult(False, "side_pose_timeout")
+        direction_result = self._send_pick_direction_and_wait(side)
+        if not direction_result.completed:
+            return PickExecutionResult(
+                False,
+                "side_pose_timeout",
+                safe_to_continue=direction_result.safe_to_continue,
+            )
         fresh_after_ns = self.node.get_clock().now().nanoseconds
         if not self.set_perception_mode("TREE"):
             return PickExecutionResult(False, "tree_mode_timeout")
@@ -570,43 +597,64 @@ class MissionContext:
                 selection.reason_code,
                 selection.matched_type,
             )
-        if not self._send_arm_target_and_wait(selection.target.point):
+        arm_result = self._send_arm_target_and_wait(selection.target.point)
+        if not arm_result.completed:
             return PickExecutionResult(
                 False,
-                "arm_callback_timeout",
+                arm_result.reason_code,
                 selection.matched_type,
+                arm_result.safe_to_continue,
             )
         return PickExecutionResult(True, "picked", selection.matched_type)
 
-    def execute_b_tree_pick(
+    def observe_b_tree(
         self,
         side: str,
-        expected_type: Optional[str],
     ) -> Dict[str, Any]:
-        """Acquire up to two B targets and send the same side between targets."""
-        self.set_expected_fruit_type(expected_type)
-        if not self.send_pick_direction(side):
-            return {"success": False, "reason_code": "side_pose_timeout", "picked": 0}
+        """Turn toward one B tree and return its stable perception targets."""
+        direction_result = self._send_pick_direction_and_wait(side)
+        if not direction_result.completed:
+            return {
+                "success": False,
+                "reason_code": "side_pose_timeout",
+                "safe_to_continue": direction_result.safe_to_continue,
+                "targets": [],
+            }
         if not self.set_perception_mode("TREE"):
-            return {"success": False, "reason_code": "tree_mode_timeout", "picked": 0}
+            return {
+                "success": False,
+                "reason_code": "tree_mode_timeout",
+                "targets": [],
+            }
         targets = self._wait_b_targets(
             self.node.get_clock().now().nanoseconds,
-            expected_type,
         )
         if targets is None:
-            return {"success": False, "reason_code": "d435i_target_timeout", "picked": 0}
-        if not targets:
-            return {"success": False, "reason_code": "type_mismatch", "picked": 0}
+            return {
+                "success": False,
+                "reason_code": "d435i_target_timeout",
+                "targets": [],
+            }
+        return {"success": True, "reason_code": "observed", "targets": targets}
+
+    def execute_b_tree_targets(
+        self,
+        side: str,
+        targets: Sequence[BTreeTarget],
+    ) -> Dict[str, Any]:
+        """Send stable B targets, returning to the same side between fruits."""
         picked = 0
-        for index, target in enumerate(targets[:2]):
-            if not self._send_arm_target_and_wait(target):
+        for index, target in enumerate(targets):
+            arm_result = self._send_arm_target_and_wait(target.point)
+            if not arm_result.completed:
                 return {
                     "success": False,
-                    "reason_code": "arm_callback_timeout",
+                    "reason_code": arm_result.reason_code,
+                    "safe_to_continue": arm_result.safe_to_continue,
                     "picked": picked,
                 }
             picked += 1
-            if index + 1 < min(2, len(targets)) and not self.send_pick_direction(side):
+            if index + 1 < len(targets) and not self.send_pick_direction(side):
                 return {
                     "success": False,
                     "reason_code": "side_pose_timeout",
@@ -634,6 +682,7 @@ class MissionContext:
             StateMachineCommand.TASK_ARM_RETRACT_POSE,
             StateMachineCommand.ARM_RETRACT_POSE,
             ExecutionCallback.CALLBACK_ARM_RETRACT_POSE,
+            recover_on_error=False,
         )
 
     def send_return_initial_pose(self) -> bool:
@@ -642,10 +691,12 @@ class MissionContext:
             StateMachineCommand.TASK_RETURN_INITIAL_POSE,
             StateMachineCommand.RETURN_INITIAL_POSE,
             ExecutionCallback.CALLBACK_RETURN_INITIAL_POSE,
+            recover_on_error=False,
         )
 
     def report_current_area(self, area: str) -> bool:
         """Report current competition area to the lower controller."""
+        self._current_area = area
         reported = self._send_command_and_wait(
             StateMachineCommand.TASK_CURRENT_AREA,
             AREA_STATUS[area],
@@ -703,12 +754,26 @@ class MissionContext:
         task_id: int,
         task_status: int,
         callback_id: int,
-        recover_on_failure: bool = True,
+        recover_on_error: bool = True,
     ) -> bool:
+        return self._send_command_and_wait_result(
+            task_id,
+            task_status,
+            callback_id,
+            recover_on_error,
+        ).completed
+
+    def _send_command_and_wait_result(
+        self,
+        task_id: int,
+        task_status: int,
+        callback_id: int,
+        recover_on_error: bool = True,
+    ) -> _CallbackWaitResult:
         if not self._wait_for_hardware_bridge_endpoints(
             str(self.config["state_command_topic"])
         ):
-            return False
+            return _CallbackWaitResult(False, "endpoints_not_ready", False)
         self._begin_callback_wait(callback_id)
         command = StateMachineCommand()
         command.task_id = task_id
@@ -721,15 +786,15 @@ class MissionContext:
         return self._finish_callback_wait(
             callback_id,
             f"callback_id={callback_id}",
-            recover_on_failure,
+            recover_on_error,
         )
 
-    def _send_arm_target_and_wait(self, point: PointStamped) -> bool:
+    def _send_arm_target_and_wait(self, point: PointStamped) -> _CallbackWaitResult:
         callback_id = ExecutionCallback.CALLBACK_ARM_TARGET
         if not self._wait_for_hardware_bridge_endpoints(
             str(self.config["arm_target_topic"])
         ):
-            return False
+            return _CallbackWaitResult(False, "arm_endpoints_not_ready", False)
         self._begin_callback_wait(callback_id)
         target = ArmTarget()
         target.target_x = float(point.point.x)
@@ -746,11 +811,11 @@ class MissionContext:
         return self._finish_callback_wait(
             callback_id,
             "ArmTarget callback",
-            True,
+            self._current_area not in {"B", "C"},
         )
 
     def _wait_for_hardware_bridge_endpoints(self, outbound_topic: str) -> bool:
-        timeout_sec = min(5.0, float(self.config["callback_timeout_sec"]))
+        timeout_sec = float(self.config["hardware_endpoint_timeout_sec"])
         callback_topic = str(self.config["callback_topic"])
         deadline = time.monotonic() + timeout_sec
         while rclpy.ok() and time.monotonic() < deadline:
@@ -776,50 +841,76 @@ class MissionContext:
         self,
         callback_id: int,
         timeout_label: str,
-        recover_on_failure: bool,
-    ) -> bool:
+        recover_on_error: bool,
+    ) -> _CallbackWaitResult:
         success = self._wait_until(
             self._callback_event.is_set,
             float(self.config["callback_timeout_sec"]),
         )
         self._pending_callback_id = None
         if not success:
-            self.node.get_logger().error(f"Timed out waiting for {timeout_label}")
-            return False
+            self.node.get_logger().error(
+                f"通信超时：{timeout_label} 在 "
+                f"{float(self.config['callback_timeout_sec']):.1f}s 内没有终态回调"
+            )
+            recovered = (
+                self._recover_safe_pose_after_error(callback_id)
+                if recover_on_error
+                else False
+            )
+            return _CallbackWaitResult(False, "arm_callback_timeout", recovered)
 
         status = self._matched_callback_status
         self._matched_callback_status = None
         if status == ExecutionCallback.STATUS_COMPLETED:
-            return True
+            return _CallbackWaitResult(True, "completed", True)
         if status == ExecutionCallback.STATUS_FAILED:
             self.node.get_logger().error(
-                f"Lower controller reported failed {timeout_label}"
+                f"下位机执行失败：{timeout_label} 返回 callback_status=2"
             )
-            if recover_on_failure:
-                self._return_initial_pose_after_failure(callback_id)
-            return False
+            recovered = (
+                self._recover_safe_pose_after_error(callback_id)
+                if recover_on_error
+                else False
+            )
+            return _CallbackWaitResult(False, "arm_callback_failed", recovered)
 
         self.node.get_logger().warning(
             f"Ignoring unexpected callback_status={status} for {timeout_label}"
         )
-        return False
+        return _CallbackWaitResult(False, "unexpected_callback_status", False)
 
-    def _return_initial_pose_after_failure(self, failed_callback_id: int) -> None:
-        if failed_callback_id == ExecutionCallback.CALLBACK_RETURN_INITIAL_POSE:
-            self.node.get_logger().error(
-                "Return-initial-pose callback failed; skipping recursive recovery"
-            )
-            return
+    def _recover_safe_pose_after_error(self, failed_callback_id: int) -> bool:
+        use_retract_pose = self._current_area in {"B", "C"}
+        task_id = (
+            StateMachineCommand.TASK_ARM_RETRACT_POSE
+            if use_retract_pose
+            else StateMachineCommand.TASK_RETURN_INITIAL_POSE
+        )
+        task_status = (
+            StateMachineCommand.ARM_RETRACT_POSE
+            if use_retract_pose
+            else StateMachineCommand.RETURN_INITIAL_POSE
+        )
+        callback_id = (
+            ExecutionCallback.CALLBACK_ARM_RETRACT_POSE
+            if use_retract_pose
+            else ExecutionCallback.CALLBACK_RETURN_INITIAL_POSE
+        )
         self.node.get_logger().info(
-            "Returning to initial pose after failed "
-            f"callback_id={failed_callback_id}"
+            f"callback_id={failed_callback_id} 异常，发送安全姿态 task_id={task_id}"
         )
-        self._send_command_and_wait(
-            StateMachineCommand.TASK_RETURN_INITIAL_POSE,
-            StateMachineCommand.RETURN_INITIAL_POSE,
-            ExecutionCallback.CALLBACK_RETURN_INITIAL_POSE,
-            recover_on_failure=False,
+        recovered = self._send_command_and_wait(
+            task_id,
+            task_status,
+            callback_id,
+            recover_on_error=False,
         )
+        if not recovered:
+            self.node.get_logger().error(
+                f"安全姿态 task_id={task_id} 未完成，不能继续后续任务"
+            )
+        return recovered
 
     def _wait_d435i_target(
         self,
@@ -896,8 +987,7 @@ class MissionContext:
     def _wait_b_targets(
         self,
         fresh_after_ns: int,
-        expected_type: Optional[str],
-    ) -> Optional[list[PointStamped]]:
+    ) -> Optional[list[BTreeTarget]]:
         self._latest_b_targets = None
         self._latest_b_targets_stamp_ns = 0
         deadline = time.monotonic() + float(self.config["d435i_detection_timeout_sec"])
@@ -909,8 +999,6 @@ class MissionContext:
                 continue
             targets = []
             for item in self._latest_b_targets:
-                if expected_type and str(item.type) != expected_type:
-                    continue
                 if not bool(item.has_point):
                     continue
                 point = PointStamped()
@@ -920,7 +1008,7 @@ class MissionContext:
                 point.point.z = float(item.point.z)
                 coordinates = (point.point.x, point.point.y, point.point.z)
                 if all(math.isfinite(value) for value in coordinates):
-                    targets.append(point)
+                    targets.append(BTreeTarget(str(item.type), point))
             return targets
         return None
 

@@ -49,6 +49,7 @@ class PickExecutionResult:
     success: bool
     reason_code: str
     matched_type: Optional[str] = None
+    safe_to_continue: bool = True
 
 
 def expected_ripe_type(target_name: str) -> str:
@@ -58,6 +59,14 @@ def expected_ripe_type(target_name: str) -> str:
     except KeyError as exc:
         raise ValueError(f"unknown target name: {target_name}") from exc
     return f"{prefix}_ripe"
+
+
+def spoken_produce_name(model_type: Optional[str]) -> str:
+    """Return the Chinese produce name from one model class."""
+    if not model_type:
+        return "未知果实"
+    prefix = model_type.rsplit("_", 1)[0]
+    return PRODUCE_PREFIX_NAMES.get(prefix, "未知果实")
 
 
 def spoken_model_type(model_type: Optional[str]) -> str:

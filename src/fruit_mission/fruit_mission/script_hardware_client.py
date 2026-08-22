@@ -55,8 +55,8 @@ class HardwareCommandClient(Node):
             "callback_topic", "/fruit_hardware_bridge/execution/callback"
         )
         self.declare_parameter("bridge_ready_timeout_sec", 30.0)
-        self.declare_parameter("endpoint_timeout_sec", 30.0)
-        self.declare_parameter("callback_timeout_sec", 60.0)
+        self.declare_parameter("endpoint_timeout_sec", 10.0)
+        self.declare_parameter("callback_timeout_sec", 30.0)
 
         self.bridge_ready_topic = str(
             self.get_parameter("bridge_ready_topic").value

@@ -36,6 +36,14 @@ def validate_config(params: Mapping[str, Any]) -> None:
         raise ValueError(f"waypoint_file is not readable: {waypoint_file}") from error
     if not str(params.get("follow_waypoints_action", "")).strip():
         raise ValueError("follow_waypoints_action must not be empty")
+    for timeout_name in (
+        "callback_timeout_sec",
+        "hardware_endpoint_timeout_sec",
+        "d435i_detection_timeout_sec",
+        "navigation_action_server_timeout_sec",
+    ):
+        if float(params.get(timeout_name, 0.0)) <= 0.0:
+            raise ValueError(f"{timeout_name} must be positive")
     if not str(params.get("map_frame", "")).strip():
         raise ValueError("map_frame must not be empty")
     if not str(params.get("base_frame", "")).strip():

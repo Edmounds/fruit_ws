@@ -12,6 +12,7 @@ from fruit_mission.logic import format_position_name
 from fruit_mission.logic import PickDecision
 from fruit_mission.logic import SideObservation
 from fruit_mission.logic import spoken_model_type
+from fruit_mission.logic import spoken_produce_name
 
 
 def run_mission(ctx) -> None:
@@ -94,7 +95,9 @@ def run_a_area(ctx) -> bool:
         if not decisions:
             continue
         for decision in decisions:
-            ctx.execute_closed_loop_pick(decision.side)
+            result = ctx.execute_closed_loop_pick(decision.side)
+            if not result.success and not result.safe_to_continue:
+                return False
         if not ctx.set_perception_mode("SIDES"):
             return False
     return ctx.set_perception_mode("OFF")
@@ -232,19 +235,90 @@ def run_b_area(ctx, b_plan: Mapping[str, Any]) -> bool:
         target_name = str(task["target"])
         expected_type = expected_ripe_type(target_name)
         side = "right" if position_id % 2 == 1 else "left"
-        result = ctx.execute_b_tree_pick(side, expected_type)
-        picked = int(result.get("picked", 0))
-        if result.get("success"):
-            ctx.announce(f"B区{goal_name}，向{side}完成{picked}个目标抓取。")
+        observation = ctx.observe_b_tree(side)
+        if not observation.get("success"):
+            reason_code = str(observation.get("reason_code"))
+            reason = _b_observation_failure_text(reason_code)
+            ctx.announce(f"B区{goal_name}，{reason}，跳过。")
         else:
-            ctx.announce(
-                f"B区{goal_name}，向{side}未完成目标抓取，继续下一棵。"
+            targets = list(observation.get("targets", []))
+            ripe_targets = _announce_b_tree_decision(
+                ctx,
+                goal_name,
+                target_name,
+                expected_type,
+                targets,
             )
+            if ripe_targets:
+                pick_result = ctx.execute_b_tree_targets(side, ripe_targets)
+                if not pick_result.get("success"):
+                    reason_code = str(pick_result.get("reason_code"))
+                    reason = _b_arm_failure_text(reason_code)
+                    ctx.announce(f"B区{goal_name}，{reason}，执行收臂。")
         if not _send_arm_retract(
             ctx, f"B区{goal_name}机械臂收缩姿态动作超时，任务停止。"
         ):
             return False
     return _send_arm_retract(ctx, "B区结束机械臂收缩姿态动作超时，任务停止。")
+
+
+def _announce_b_tree_decision(
+    ctx,
+    goal_name: str,
+    target_name: str,
+    expected_type: str,
+    targets: list[Any],
+) -> list[Any]:
+    if not targets:
+        ctx.announce(f"B区{goal_name}，没有识别到果实，跳过。")
+        return []
+
+    observed_names = {
+        spoken_produce_name(target.model_type) for target in targets
+    }
+    if len(observed_names) != 1 or "未知果实" in observed_names:
+        ctx.announce(f"B区{goal_name}，识别结果不一致，跳过。")
+        return []
+
+    observed_name = observed_names.pop()
+    if observed_name != target_name:
+        ctx.announce(
+            f"B区{goal_name}，识别到{observed_name}，和二维码不一致，跳过。"
+        )
+        return []
+
+    ripe_targets = [
+        target for target in targets if target.model_type == expected_type
+    ]
+    if ripe_targets:
+        ctx.announce(
+            f"B区{goal_name}，识别到{observed_name}，和二维码一致，"
+            f"开始抓成熟{target_name}。"
+        )
+    else:
+        ctx.announce(
+            f"B区{goal_name}，识别到{observed_name}，和二维码一致，"
+            f"没有成熟{target_name}，跳过。"
+        )
+    return ripe_targets
+
+
+def _b_observation_failure_text(reason_code: str) -> str:
+    messages = {
+        "side_pose_timeout": "机械臂转向采摘位置超时",
+        "tree_mode_timeout": "深度相机识别模式切换失败",
+        "d435i_target_timeout": "识别超时",
+    }
+    return messages.get(reason_code, "识别失败")
+
+
+def _b_arm_failure_text(reason_code: str) -> str:
+    messages = {
+        "arm_callback_failed": "机械臂执行报错",
+        "arm_callback_timeout": "机械臂执行通信超时",
+        "arm_endpoints_not_ready": "机械臂通信端点未就绪",
+    }
+    return messages.get(reason_code, "机械臂执行失败")
 
 
 def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
@@ -293,7 +367,7 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
             task["navigation_failure_detail"] = navigation.get("detail")
             ctx.announce(
                 f"C区{format_position_name(position_id)}，应该采{target_name}。"
-                "导航 action 失败，仍在当前位置执行方向调整和识别。"
+                "导航重试。"
             )
             ctx.save_c_distribution(c_distribution)
             if not bool(navigation.get("recovery_available", True)):
@@ -334,8 +408,7 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
                 observed = spoken_model_type(result.matched_type)
                 ctx.announce(
                     f"C区{format_position_name(position_id)}，应该采{target_name}。"
-                    f"识别到{observed}，但{_pick_failure_text(result.reason_code)}。"
-                    "继续下一项。"
+                    f"识别到{observed}，{_pick_failure_text(result.reason_code)}。"
                 )
         if not _send_arm_retract(
             ctx,
@@ -392,9 +465,9 @@ def _c_skip_text(
     if reason_code == "target_unripe":
         return prefix + f"识别到{observed or '未成熟' + target_name}，跳过。"
     if reason_code == "type_mismatch":
-        return prefix + f"识别到{observed or '其他目标'}，不是{target_name}，跳过。"
+        return prefix + f"识别到{observed or '其他目标'}，跳过。"
     if observed:
-        return prefix + f"识别到{observed}，不是成熟{target_name}，跳过。"
+        return prefix + f"识别到{observed}，跳过。"
     return prefix + f"没有识别到成熟{target_name}，跳过。"
 
 
@@ -403,6 +476,8 @@ def _pick_failure_text(reason_code: str) -> str:
         "side_pose_timeout": "机械臂转向采摘位置超时",
         "tree_mode_timeout": "深度相机识别模式切换失败",
         "d435i_target_timeout": "深度相机没有识别到可抓取目标",
-        "arm_callback_timeout": "机械臂抓取没有返回完成信号",
+        "arm_callback_failed": "机械臂执行报错",
+        "arm_callback_timeout": "机械臂执行通信超时",
+        "arm_endpoints_not_ready": "机械臂通信端点未就绪",
     }
     return messages.get(reason_code, "闭环抓取失败")
