@@ -168,7 +168,7 @@ def scan_b_qr_and_announce(
     save_b_plan = getattr(ctx, "save_b_plan", None)
     if callable(save_b_plan):
         save_b_plan(b_plan)
-    _announce_and_wait(ctx, format_b_announcement(b_plan))
+    ctx.announce(format_b_announcement(b_plan))
     if not _send_arm_retract(ctx, "B区二维码后机械臂收缩姿态动作超时，任务停止。"):
         return None
     return b_plan
@@ -202,15 +202,29 @@ def scan_c_qr_and_build_table(ctx) -> Optional[Dict[str, Any]]:
 
     distribution = ctx.route.build_c_distribution(c_plan)
     ctx.save_c_distribution(distribution)
-    _announce_and_wait(ctx, format_c_announcement(c_plan))
+    _announce_and_wait(
+        ctx,
+        format_c_announcement(c_plan),
+        lead_time_sec=float(ctx.config.get("c_qr_announce_lead_sec", 4.0)),
+    )
     if not _send_arm_retract(ctx, "C区二维码后机械臂收缩姿态动作超时，任务停止。"):
         return None
     return distribution
 
 
-def _announce_and_wait(ctx, text: str) -> bool:
+def _announce_and_wait(
+    ctx,
+    text: str,
+    *,
+    lead_time_sec: float = 0.0,
+) -> bool:
     announce_and_wait = getattr(ctx, "announce_and_wait", None)
     if callable(announce_and_wait):
+        if lead_time_sec > 0.0:
+            try:
+                return bool(announce_and_wait(text, lead_time_sec=lead_time_sec))
+            except TypeError:
+                pass
         return bool(announce_and_wait(text))
     return bool(ctx.announce(text))
 

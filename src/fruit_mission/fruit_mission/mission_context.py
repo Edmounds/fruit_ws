@@ -713,11 +713,16 @@ class MissionContext:
         self.node.get_logger().info(f"播报：{text}")
         return self.speaker.announce(text)
 
-    def announce_and_wait(self, text: str) -> bool:
-        """Speak text and wait until playback completes."""
+    def announce_and_wait(self, text: str, lead_time_sec: float = 0.0) -> bool:
+        """Speak text and wait until playback completes or reaches its lead time."""
         self.node.get_logger().info(f"同步播报：{text}")
         announce_and_wait = getattr(self.speaker, "announce_and_wait", None)
         if callable(announce_and_wait):
+            if lead_time_sec > 0.0:
+                try:
+                    return bool(announce_and_wait(text, lead_time_sec=lead_time_sec))
+                except TypeError:
+                    pass
             return bool(announce_and_wait(text))
         return self.speaker.announce(text)
 

@@ -17,6 +17,7 @@ fruit_mission:
     base_frame: "base_link"
     tf_lookup_timeout_sec: 1.0
     c_graph_max_start_distance: 0.75
+    c_qr_announce_lead_sec: 4.0
 
     perception_mode_topic: "/fruit_mission/perception_mode"
     current_area_topic: "/fruit_mission/current_area"
