@@ -6,8 +6,7 @@ git clone git@github.com:ConQU2026/livox_ros_driver2.git
 
 ## ROS 运行环境
 
-项目统一使用 Cyclone DDS，避免 Fast DDS 的 service request/reply 独立发现竞态导致
-Action 已执行但 goal response 丢失。首次部署需要安装：
+项目统一使用 Cyclone DDS，避免 Fast DDS 的 service request/reply 独立发现竞态导致Action 已执行但 goal response 丢失。首次部署需要安装：
 
 ```bash
 sudo apt install ros-humble-rmw-cyclonedds-cpp
