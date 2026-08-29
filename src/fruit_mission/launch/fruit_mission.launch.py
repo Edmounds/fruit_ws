@@ -72,9 +72,10 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "map_frame",
-                default_value="map",
+                default_value="odom",
                 description="Coordinate frame used by mission waypoints",
             ),
+
             OpaqueFunction(function=_validated_node),
         ]
     )

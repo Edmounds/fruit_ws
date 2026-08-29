@@ -4,7 +4,8 @@
 
 ```bash
 cd /home/rc4/fruit_ws
-source setup_fruit_runtime.bash
+source scripts/setup_fruit_runtime.bash
+
 ```
 
 确认 `fruit_perception` 只启动了一套后，再执行对应阶段的一条切换命令。

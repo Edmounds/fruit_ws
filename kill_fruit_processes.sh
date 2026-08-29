@@ -6,15 +6,13 @@ set -o pipefail
 target_pids=()
 
 # These tokens cover the launch files and executable nodes in the current
-# perception, mapping, localization, navigation, and teleop design.
+# perception, odometry, navigation, and teleop design.
 target_tokens=(
   # Project-level runners. They use setsid, so matching the runner as well as
   # its children is necessary when a runner was suspended with Ctrl-Z.
   "bash ./start_fruit_perception.sh"
   "bash ./start_fruit_mission.sh"
-  "bash ./start_mapping.sh"
   "bash ./start_navigation.sh"
-  "bash ./start_relocalization_test.sh"
   "bash ./start_odometry.sh"
   "bash ./start_tele.sh"
   "bash ./waypoints_maker.sh"
@@ -22,21 +20,17 @@ target_tokens=(
   "bash ./zone_witch.sh"
   "/home/rc4/fruit_ws/start_fruit_perception.sh"
   "/home/rc4/fruit_ws/start_fruit_mission.sh"
-  "/home/rc4/fruit_ws/start_mapping.sh"
   "/home/rc4/fruit_ws/start_navigation.sh"
-  "/home/rc4/fruit_ws/start_relocalization_test.sh"
   "/home/rc4/fruit_ws/start_odometry.sh"
   "/home/rc4/fruit_ws/start_tele.sh"
   "/home/rc4/fruit_ws/waypoints_maker.sh"
   "/home/rc4/fruit_ws/record_rosbag.sh"
   "/home/rc4/fruit_ws/zone_witch.sh"
-  "/home/rc4/fruit_ws/robot_debug_monitor.sh"
-  "/home/rc4/fruit_ws/gicp_debug_monitor.sh"
+  "/home/rc4/fruit_ws/scripts/robot_debug_monitor.sh"
   "fruit_robot_debug_monitor"
   "python3 - fruit-mission "
   "python3 - navigation "
   "python3 - perception "
-  "python3 - relocalization-test "
   "python3 - rosbag "
   "python3 - waypoints-maker "
   "/home/rc4/fruit_ws/test_camera_detector.py"
@@ -55,8 +49,8 @@ target_tokens=(
   "ros2 launch fruit_hardware_bridge "
   "ros2 launch fruit_qr_planner "
   "ros2 launch auto_serial_bridge "
-  "ros2 launch glim_ros "
-  "ros2 launch pb2025_nav_bringup "
+  "ros2 launch fruit_nav_bringup "
+  "ros2 launch fruit_navigation "
   "ros2 launch point_lio "
   "ros2 launch loam_interface "
   "ros2 launch sensor_scan_generation "
@@ -69,11 +63,11 @@ target_tokens=(
   "/home/rc4/fruit_ws/src/joy_linux/launch/joy_cmd_vel_serial.launch.py"
   "/home/rc4/fruit_ws/src/joy_linux/launch/joy_conventor.launch.py"
   "/home/rc4/fruit_ws/src/joy_linux/launch/joy_conventor_component.launch.py"
-  "/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/glim_mapping.launch.py"
-  "/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/localization_navigation_launch.py"
-  "/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/pointlio_odometry.launch.py"
-  "/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/sensor_frames.launch.py"
-  "/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/point_lio/launch/point_lio.launch.py"
+  "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.py"
+  "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/launch/pointlio_odometry.launch.py"
+  "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/launch/sensor_frames.launch.py"
+  "/home/rc4/fruit_ws/src/navigation/fruit_navigation/launch/axis_navigation.launch.py"
+  "/home/rc4/fruit_ws/src/navigation/point_lio/launch/point_lio.launch.py"
   "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/launch/waypoint_recorder.launch.py"
   "__node:=fruit_perception_container"
   "__node:=auto_serial_bridge_container"
@@ -89,18 +83,14 @@ target_tokens=(
   "/lib/fruit_qr_planner/"
   "/lib/fruit_hardware_bridge/"
   "/lib/auto_serial_bridge/"
-  "/lib/glim_ros/"
   "/lib/livox_ros_driver2/"
   "/lib/fruit_navigation/"
+  "/lib/fruit_nav_bringup/"
   "/lib/fruit_waypoint_recorder/waypoint_recorder_node"
   "/lib/pointcloud_to_laserscan/"
   "/lib/point_lio/"
   "/lib/loam_interface/"
   "/lib/sensor_scan_generation/"
-  "/lib/pb_gicp_localization/"
-  "/lib/pb_glim_map_tools/"
-  "/lib/nav2_"
-  "/lib/slam_toolbox/"
   "/lib/twist_mux/"
   "/lib/joy_linux/"
   "/lib/tf2_ros/static_transform_publisher"
@@ -110,19 +100,14 @@ target_tokens=(
   "ros2 run fruit_qr_planner "
   "ros2 run fruit_hardware_bridge "
   "ros2 run auto_serial_bridge "
-  "ros2 run glim_ros "
   "ros2 run livox_ros_driver2 "
   "ros2 run pointcloud_to_laserscan "
   "ros2 run point_lio "
   "ros2 run loam_interface "
   "ros2 run sensor_scan_generation "
-  "ros2 run pb_gicp_localization "
-  "ros2 run slam_toolbox "
   "ros2 run fruit_navigation "
   "ros2 run fruit_waypoint_recorder "
-  "ros2 run nav2_"
   "ros2 run joy_linux "
-  "ros2 run pb_glim_map_tools "
   "ros2 run tf2_ros static_transform_publisher "
   "ros2 run tf2_ros tf2_echo "
 )
@@ -132,14 +117,15 @@ usage() {
 Usage: ./kill_fruit_processes.sh [--dry-run]
 
 Stop task scripts, helper processes, nodes, and launch processes in the current
-fruit robot project design. This includes perception, mapping, localization,
-navigation, teleop, camera tuning, direct serial diagnostics, and rosbag
-recording. RViz, foxglove_bridge, and the system-managed waypoint editor are
-intentionally excluded.
+fruit robot project design. This includes perception, odometry, navigation,
+teleop, camera tuning, direct serial diagnostics, and rosbag recording. RViz,
+foxglove_bridge, and the system-managed waypoint editor are intentionally
+excluded.
 
 --dry-run  Print matching processes without sending signals.
 EOF
 }
+
 
 is_target_process() {
   local command_line=$1

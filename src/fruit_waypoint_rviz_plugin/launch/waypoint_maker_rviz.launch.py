@@ -34,10 +34,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "rviz_config",
             default_value=(
-                "/home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/"
-                "pb2025_nav_bringup/rviz/waypoints_maker.rviz"
+                "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/"
+                "rviz/waypoints_maker.rviz"
             ),
         ),
+
     ]
     for node_config in nodes_to_launch:
         launch_actions.append(

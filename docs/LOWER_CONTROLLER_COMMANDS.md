@@ -3,7 +3,8 @@
 先启动控制台：
 
 ```bash
-source /home/rc4/fruit_ws/setup_fruit_runtime.bash
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
+
 /usr/bin/python3 /home/rc4/fruit_ws/lower_controller_console.py
 ```
 

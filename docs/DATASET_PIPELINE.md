@@ -8,7 +8,8 @@
 
 ```bash
 cd /home/rc4/fruit_ws
-source setup_fruit_runtime.bash
+source scripts/setup_fruit_runtime.bash
+
 
 # 左侧 USB 相机：/dev/left_cam
 python3 collect_cam_img.py --cam 1

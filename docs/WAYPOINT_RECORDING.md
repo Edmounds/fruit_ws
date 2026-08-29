@@ -1,90 +1,66 @@
-# 比赛路线打点说明
+# 比赛路线航点打点与编辑说明
 
-## 0. 两套场地地图与任务区域
+## 1. 航点坐标系与文件规范
 
-本项目有两个不同的物理比赛场地：`map A` 和 `map B`。这里的 A/B 是地图 profile
-标识，不是任务流程中的 A 区、B 区。`--map A|B` 只选择对应场地的地图、定位数据和
-waypoint 文件，不会选择或跳过任何采摘区域。
+本项目采用纯 Point-LIO 里程计导航架构，航点全部基于开机 `odom` 坐标系。
 
-采摘区域由独立的 `--flow full|ac|a|b|c` 选择。例如，`--map A --flow b` 表示在 A
-场地地图上调试 B 区流程；`--map B --flow full` 表示在 B 场地地图上执行全流程。
+- **航点文件**: `src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml`
+- **航点模板**: `src/fruit_waypoint_recorder/waypoints/template.yaml`
+- **坐标系**: `frame_id: odom`
 
-## 0.1 场地 profile
-
-默认模式的路径点使用 `map` 坐标系，`--odom` 模式使用 `odom` 坐标系；两者禁止混用。
-A、B 在 `map_profiles.yaml` 中分别配置地图 waypoint 文件和里程计 waypoint 文件。
-
-启动打点流程时必须显式选择场地：
-
-```bash
-./waypoints_maker.sh --map A
-./waypoints_maker.sh --map B --tele
-```
-
-脚本的 ROS 节点重复启动检查使用系统自带的 `grep`，不要求安装 ripgrep（`rg`）。启动前仍
-须先执行项目运行环境脚本：
-
-```bash
-source /home/rc4/fruit_ws/setup_fruit_runtime.bash
-```
-
-不使用地图和 GICP、直接按 Point-LIO 里程计打点时增加 `--odom`：
-
-```bash
-./waypoints_maker.sh --map A --odom
-./waypoints_maker.sh --map B --odom --tele
-```
-
-该模式启动 MID-360、Point-LIO、`odom -> base_link`、轴向导航、RViz 和 waypoint
-recorder，RViz Fixed Frame 自动设为 `odom`。启动后机器人必须保持静止；坐标适配器会
-先等待第一条有效 Point-LIO 里程计，再从连续约 1.5 秒的低速、低位置/yaw 方差数据计算
-平均起始位姿。稳定完成后才发布 `odom -> base_link` 并启动 recorder；收到有效里程计后
-5 秒内未稳定则脚本退出，不会在漂移中的坐标系录点。
-点位分别保存到：
-
-```text
-A -> src/fruit_waypoint_recorder/waypoints/A/odometry_waypoints.yaml
-B -> src/fruit_waypoint_recorder/waypoints/B/odometry_waypoints.yaml
-```
-
-里程计模式每次启动都会把稳定窗口内的平均车体位置和朝向作为 `odom` 原点。打点和后续
-回放必须把机器人放在同一个物理起点并保持相同朝向后再启动；起点不同会让全部点整体平移或旋转，
-纯里程计没有全局地图可以自动修正。`--odom` 不读取 `field.yaml`、`field.pcd`、
-`field.initial_pose.yaml`，也不启动 GICP。
-
-地图模式脚本会同时选择对应的地图、定位 PCD、GICP 初始位姿和 waypoint 文件。起点只有小范围
-xy/yaw 偏差时，优先检查 GICP registration 和初始位姿，不要为了启动位置偏差修改所有
-路径点；只有场地相对地图发生平移、旋转或布置变化时才重新录制对应 profile。
-
-## 1. 路点文件由配置决定
-
-正式任务按地图 profile 选择 waypoint 文件。当前实际使用的文件固定为：
-
-```text
-A -> src/fruit_waypoint_recorder/waypoints/A/competition_waypoints.yaml
-B -> src/fruit_waypoint_recorder/waypoints/B/competition_waypoints.yaml
-```
-
-Mission、waypoint maker、网页编辑器和 `start_fruit_mission.sh` 都跟随当前 `--map` 选择加载
-对应文件。不要把地图 profile 和任务流程名称混用。
-
-路点文件使用以下结构：
+航点文件规范：
 
 ```yaml
 schema_version: 1
-frame_id: map
+frame_id: odom
 points:
-- name: example
+- name: A1
   position: {x: 0.0, y: 0.0, z: 0.0}
   orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
   yaw: 0.0
   type: waypoint
 ```
 
-`waypoint` 是必须经过的通行点，`goal` 是需要停车处理的目标点。名称必须唯一，坐标必须
-是机器人 `base_link` 在 `map` 坐标系中的实际停车位置。
+`waypoint` 为通行途径点，`goal` 为停车作业目标点。名称必须唯一且符合 template 定义，坐标为机器人 `base_link` 在 `odom` 坐标系下的位置。
 
-## 2. C 区路点拓扑
+---
+
+## 2. 启动航点录制工具
+
+启动打点工具：
+
+```bash
+# 启动基础录制（包含雷达、Point-LIO、RViz 与 Waypoint Maker 面板）
+./waypoints_maker.sh
+
+# 若需配合手柄遥控移动车体打点：
+./waypoints_maker.sh --tele
+```
+
+启动前请确保加载了运行环境：
+
+```bash
+source scripts/setup_fruit_runtime.bash
+```
+
+启动后：
+1. 保持机器人静止，等待 Point-LIO 稳定并发布 `odom -> base_link` TF（约 2-3 秒）。
+2. 在 RViz 界面中通过 **Waypoint Maker** 面板进行航点添加、保存、撤回或前往下一个航点。
+3. 录制完成点击保存，数据将直接写入 `src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml`。
+
+---
+
+## 3. Web 航点可视化编辑器
+
+系统提供 Web 航点编辑服务，支持通过浏览器拖拽调整与微调航点：
+- 默认监听端口：`http://<机器人IP>:8000`
+- 配置文件：`src/fruit_waypoint_recorder/config/waypoint_editor.yaml`
+- 服务单元：`waypoint-editor.service`
+
+---
+
+## 4. C 区路点拓扑
+
 
 C 区不是任意两点直连。二维码只确定 8 个采摘任务的顺序，Mission 使用固定名称表达
 可通行拓扑，点的实际位置全部取自当前 waypoint YAML 的 XY。
@@ -222,17 +198,17 @@ journalctl -u waypoint-editor.service -n 100 --no-pager
 curl http://127.0.0.1:8000/health
 ```
 
-服务启动会复用 `/home/rc4/fruit_ws/setup_fruit_runtime.bash`。修改网页服务端、launch 或
+服务启动会复用 `/home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash`。修改网页服务端、launch 或
 package 入口后先重新构建 `fruit_waypoint_recorder`，再重启服务；只修改根目录 HTML 时直接
 刷新浏览器即可。
 
 ## 7. 现场检查
 
-- [ ] `map_profiles.yaml` 中所选 profile 的 `mission_waypoint_file` 和 `recorder_waypoint_file`
-      都指向预期的 `competition_waypoints.yaml`。
-- [ ] 所有名称唯一，`schema_version` 为 1；地图模式 `frame_id` 为 `map`，里程计模式为 `odom`。
-- [ ] 里程计打点使用对应 profile 的 `odometry_waypoint_file`，`frame_id` 为 `odom`；后续复用时必须从同一个物理起点、同一个朝向启动。
+- [ ] 航点文件 `src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml` 存在且 `frame_id: odom`。
+- [ ] 所有点名称唯一，`schema_version` 为 1。
+- [ ] 里程计打点使用 `odom_waypoints.yaml`；后续复用时必须从同一个物理起点、同一个朝向启动。
 - [ ] `waypoint-editor.service` 为 enabled/active，局域网设备可以访问机器人 TCP `8000`。
+
 - [ ] 网页编辑 yaw 时使用角度，保存后的 YAML `yaw` 和 `orientation` 使用一致的弧度姿态。
 - [ ] 网页始终按 `template.yaml` 显示 33 个名称；缺失点为灰色，补点后占位显示被实际点替换。
 - [ ] 启动 odom 打点后保持机器人静止，终端出现 `stable odom origin is ready` 后再移动或录点。

@@ -1,8 +1,9 @@
 fruit_waypoint_recorder:
   ros__parameters:
-    frame_id: "map"
+    frame_id: "odom"
     base_frame: "base_link"
-    waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/A/competition_waypoints.yaml"
+    waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml"
+
     sample_duration_sec: 1.0
     sample_period_sec: 0.05
     command_topic: "/fruit/waypoint_maker/command"

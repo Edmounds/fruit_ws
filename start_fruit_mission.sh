@@ -3,38 +3,36 @@
 set -eo pipefail
 
 WORKSPACE=/home/rc4/fruit_ws
-MAP_PROFILE_HELPER="$WORKSPACE/scripts/map_profile.sh"
 
-LOCALIZATION_NAV_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/localization_navigation_launch.py"
-ODOMETRY_NAV_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/odometry_navigation.launch.py"
+NAV_LAUNCH="$WORKSPACE/src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.py"
 PERCEPTION_LAUNCH="$WORKSPACE/src/fruit_perception/launch/fruit_perception.launch.py"
 MISSION_LAUNCH="$WORKSPACE/src/fruit_mission/launch/fruit_mission.launch.py"
 RECORD_SCRIPT="$WORKSPACE/record_rosbag.sh"
+MONITOR_SCRIPT="$WORKSPACE/scripts/robot_debug_monitor.sh"
 
-PARAMS="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/localization_params.yaml"
-AXIS_PARAMS="$WORKSPACE/src/fruit_navigation/config/axis_navigation.yaml"
+PARAMS="$WORKSPACE/src/navigation/fruit_nav_bringup/config/reality/pointlio_params.yaml"
+AXIS_PARAMS="$WORKSPACE/src/navigation/fruit_navigation/config/axis_navigation.yaml"
 MISSION_CONFIG="$WORKSPACE/src/fruit_mission/config/fruit_mission.yaml"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
+WAYPOINT_FILE="$WORKSPACE/src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml"
+MAP_FRAME="odom"
 
 RUN_ROOT="$WORKSPACE/tmp/fruit_mission/runs"
 RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
 RUN_DIR="$RUN_ROOT/$RUN_ID"
 ORCHESTRATOR_LOG="$RUN_DIR/orchestrator.log"
-MAP_ID=""
 MISSION_FLOW="full"
 DEBUG_RECORD_ENABLED=0
-USE_ODOMETRY=false
 REUSE_NAVIGATION=false
 
 usage() {
   cat <<'EOF'
-Usage: ./start_fruit_mission.sh --map A|B [--odom] [--reuse-navigation] [--flow full|ac|a|b|c] [--debug]
+Usage: ./start_fruit_mission.sh [--reuse-navigation] [--flow full|ac|a|b|c] [--debug]
 
-Start the complete perception, navigation, and mission stack for a field profile.
-Use --odom to skip map/GICP startup and run navigation and mission in the
-startup-relative odom frame using the profile's odometry waypoint file.
-Use --reuse-navigation after start_navigation.sh to keep its navigation,
-localization, and serial bridge running while starting perception and mission.
+Start the complete perception, odometry navigation, and mission stack in the
+startup-relative odom frame.
+Use --reuse-navigation after start_navigation.sh to keep its navigation
+and serial bridge running while starting perception and mission.
 Use --debug to record ROS diagnostics, LiDAR, point clouds, and the selected
 raw/annotated camera topics under rosbags/. Duplicate high-bandwidth image
 transports and D435i unaligned raw depth are excluded. Recording starts after
@@ -44,19 +42,10 @@ EOF
 
 while (($# > 0)); do
   case "$1" in
-    --map)
-      (($# >= 2)) || { usage >&2; exit 2; }
-      MAP_ID=$2
-      shift 2
-      ;;
     --flow)
       (($# >= 2)) || { usage >&2; exit 2; }
       MISSION_FLOW=$2
       shift 2
-      ;;
-    --odom)
-      USE_ODOMETRY=true
-      shift
       ;;
     --reuse-navigation)
       REUSE_NAVIGATION=true
@@ -77,7 +66,6 @@ while (($# > 0)); do
   esac
 done
 
-[[ -n "$MAP_ID" ]] || { usage >&2; exit 2; }
 case "$MISSION_FLOW" in
   full|ac|a|b|c) ;;
   *) usage >&2; exit 2 ;;
@@ -90,22 +78,9 @@ debug_pids=()
 readiness_pid=""
 stopped=0
 
-source "$WORKSPACE/setup_fruit_runtime.bash"
+source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
 set -u
-source "$MAP_PROFILE_HELPER"
-resolve_map_profile "$WORKSPACE" "$MAP_ID"
 
-if [[ "$USE_ODOMETRY" == true ]]; then
-  NAV_LAUNCH="$ODOMETRY_NAV_LAUNCH"
-  WAYPOINT_FILE="$ODOMETRY_WAYPOINT_FILE"
-  MAP_FRAME=odom
-  require_map_profile_odometry
-else
-  NAV_LAUNCH="$LOCALIZATION_NAV_LAUNCH"
-  WAYPOINT_FILE="$MISSION_WAYPOINT_FILE"
-  MAP_FRAME=map
-  require_map_profile_runtime
-fi
 
 mkdir -p "$RUN_DIR"
 
@@ -317,138 +292,6 @@ wait_for_odometry() {
   die "timeout waiting for $label topic=$topic"
 }
 
-wait_for_localization() {
-  local timeout_sec=$1
-  local deadline=$((SECONDS + timeout_sec))
-  local remaining
-  local poll_timeout
-
-  log "WAIT GICP localization accepted timeout=${timeout_sec}s"
-  while ((SECONDS < deadline)); do
-    all_children_alive || die "localization process exited before readiness"
-    remaining=$((deadline - SECONDS))
-    poll_timeout=$((remaining < 5 ? remaining : 5))
-    if python3 - "$poll_timeout" <<'PY'
-import sys
-import time
-
-import rclpy
-from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
-from rclpy.executors import ExternalShutdownException
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-
-
-def diagnostic_level_value(level):
-    if isinstance(level, int):
-        return level
-    if isinstance(level, bytes):
-        return level[0] if level else -1
-    if isinstance(level, str):
-        return ord(level) if len(level) == 1 else -1
-    return -1
-
-
-def level_is_ok(level):
-    return diagnostic_level_value(level) == diagnostic_level_value(DiagnosticStatus.OK)
-
-
-ready = False
-latest_status = None
-
-
-def level_name(level):
-    value = diagnostic_level_value(level)
-    if value == diagnostic_level_value(DiagnosticStatus.OK):
-        return "OK"
-    if value == diagnostic_level_value(DiagnosticStatus.WARN):
-        return "WARN"
-    if value == diagnostic_level_value(DiagnosticStatus.ERROR):
-        return "ERROR"
-    if value == diagnostic_level_value(DiagnosticStatus.STALE):
-        return "STALE"
-    return str(value)
-
-
-def diagnostic_summary(status):
-    values = {item.key: item.value for item in status.values}
-    fields = [
-        ("accepted", values.get("accepted")),
-        ("has_accepted_once", values.get("has_accepted_once")),
-        ("rejects", values.get("consecutive_rejects")),
-        ("source_points", values.get("source_points")),
-        ("inliers", values.get("inliers")),
-        ("inlier_ratio", values.get("inlier_ratio")),
-        ("mean_error", values.get("mean_error")),
-        ("translation_jump", values.get("translation_jump")),
-        ("rotation_jump", values.get("rotation_jump")),
-    ]
-    detail = " ".join(f"{key}={value}" for key, value in fields if value is not None)
-    return (
-        f"DEBUG GICP wait: level={level_name(status.level)} "
-        f"message={status.message!r} {detail}"
-    )
-
-
-def on_diagnostics(message):
-    global latest_status, ready
-    for status in message.status:
-        if status.name != "pb_gicp_localization/registration":
-            continue
-        latest_status = status
-        values = {item.key: item.value for item in status.values}
-        if (
-            level_is_ok(status.level)
-            and values.get("accepted") == "1"
-            and values.get("has_accepted_once") == "1"
-        ):
-            ready = True
-
-
-timeout_sec = max(0.1, float(sys.argv[1]))
-rclpy.init(args=["--ros-args", "--log-level", "fatal"])
-node = rclpy.create_node("fruit_mission_wait_gicp_ready")
-
-volatile_qos = QoSProfile(depth=10)
-volatile_qos.reliability = ReliabilityPolicy.RELIABLE
-node.create_subscription(DiagnosticArray, "/diagnostics", on_diagnostics, volatile_qos)
-
-latched_qos = QoSProfile(depth=1)
-latched_qos.reliability = ReliabilityPolicy.RELIABLE
-latched_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
-node.create_subscription(DiagnosticArray, "/diagnostics", on_diagnostics, latched_qos)
-
-deadline = time.monotonic() + timeout_sec
-try:
-    while rclpy.ok() and not ready:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        rclpy.spin_once(node, timeout_sec=min(0.2, remaining))
-except (KeyboardInterrupt, ExternalShutdownException):
-    pass
-finally:
-    if not ready:
-        if latest_status is None:
-            print(
-                "DEBUG GICP wait: no pb_gicp_localization/registration diagnostics received "
-                "during this poll"
-            )
-        else:
-            print(diagnostic_summary(latest_status))
-    node.destroy_node()
-    if rclpy.ok():
-        rclpy.shutdown()
-
-raise SystemExit(0 if ready else 1)
-PY
-    then
-      log "READY GICP localization accepted"
-      return 0
-    fi
-  done
-  die "timeout waiting for GICP localization to accept a registration"
-}
-
 wait_for_active_off() {
   local timeout_sec=$1
   local status
@@ -603,13 +446,10 @@ required_files=(
   "$MISSION_LAUNCH" \
   "$PARAMS" \
   "$AXIS_PARAMS" \
-  "$WORKSPACE/robot_debug_monitor.sh" \
+  "$MONITOR_SCRIPT" \
   "$MISSION_CONFIG" \
   "$SCRIPT_CLIENT_CONFIG"
 )
-if [[ "$USE_ODOMETRY" != true ]]; then
-  required_files+=("$MAP_YAML" "$LOCALIZATION_MAP" "$INITIAL_POSE_FILE")
-fi
 for required_file in "${required_files[@]}"; do
   check_file "$required_file"
 done
@@ -663,16 +503,13 @@ for required_device in /dev/left_cam /dev/right_cam /dev/stm32; do
 done
 
 log "RUN directory: $RUN_DIR"
-log "RUN profile: $MAP_ID"
 log "RUN mission flow: $MISSION_FLOW"
 log "RUN branch: $(git -C "$WORKSPACE" branch --show-current)"
 log "RUN commit: $(git -C "$WORKSPACE" rev-parse --short HEAD)"
 if [[ "$REUSE_NAVIGATION" == true ]]; then
-  log "RUN mode: reuse existing navigation, localization, and serial bridge"
-elif [[ "$USE_ODOMETRY" == true ]]; then
-  log "RUN mode: pure odometry; Point-LIO navigation owns odom and no GICP/map localization is started"
+  log "RUN mode: reuse existing navigation and serial bridge"
 else
-  log "RUN mode: map localization; perception owns the only serial bridge; navigation does not launch hardware_bridge"
+  log "RUN mode: pure odometry; Point-LIO navigation owns odom and no GICP/map localization is started"
 fi
 if ((DEBUG_RECORD_ENABLED)); then
   log "RUN debug rosbag: enabled with visual-topic exclusions; output is under $WORKSPACE/rosbags"
@@ -701,12 +538,9 @@ else
     /laserMapping \
     /loam_interface \
     /sensor_scan_generation \
-    /map_server \
-    /lifecycle_manager_map \
     /serial_controller \
     /axis_waypoint_action_server \
     /twist_mux \
-    /pb_gicp_localization \
     /fruit_perception_container \
     /left_camera \
     /right_camera \
@@ -718,70 +552,38 @@ else
 fi
 
 if [[ "$REUSE_NAVIGATION" != true ]]; then
-  if [[ "$USE_ODOMETRY" == true ]]; then
-    start_process "navigation" \
-      ros2 launch "$NAV_LAUNCH" \
-        "params_file:=$PARAMS" \
-        "axis_params_file:=$AXIS_PARAMS" \
-        "use_teleop:=false" \
-        "use_rviz:=false"
-  else
-    start_process "navigation" \
-      ros2 launch "$NAV_LAUNCH" \
-        "map:=$MAP_YAML" \
-        "localization_map:=$LOCALIZATION_MAP" \
-        "params_file:=$PARAMS" \
-        "axis_params_file:=$AXIS_PARAMS" \
-        "initial_pose_file:=$INITIAL_POSE_FILE" \
-        "use_teleop:=false" \
-        "use_rviz:=false"
-  fi
+  start_process "navigation" \
+    ros2 launch "$NAV_LAUNCH" \
+      "params_file:=$PARAMS" \
+      "axis_params_file:=$AXIS_PARAMS" \
+      "use_teleop:=false" \
+      "use_rviz:=false"
 
   start_debug_process "robot_debug" \
-    "$WORKSPACE/robot_debug_monitor.sh" fruit-mission
+    "$MONITOR_SCRIPT" fruit-mission
 fi
 
 START_SERIAL_BRIDGE=true
 if [[ "$REUSE_NAVIGATION" == true ]]; then
   START_SERIAL_BRIDGE=false
-  log "RUN reuse: existing navigation, localization, serial bridge, and debug monitor remain owned by start_navigation.sh"
+  log "RUN reuse: existing navigation, serial bridge, and debug monitor remain owned by start_navigation.sh"
 fi
 
-if [[ "$USE_ODOMETRY" == true ]]; then
-  wait_for_nodes "odometry navigation readiness" 60 \
-    /axis_waypoint_action_server \
-    /laserMapping \
-    /loam_interface \
-    /sensor_scan_generation
-  wait_for_action "waypoint navigation" "/follow_waypoints" 60
-  wait_for_odometry "Point-LIO odometry" /aft_mapped_to_init 60
-  wait_for_tf "stable odometry origin" odom base_link 5
-  start_process "perception" \
-    ros2 launch "$PERCEPTION_LAUNCH" \
-      "use_sim_time:=false" \
-      "serial_debug_raw_frame:=true" \
-      "start_serial_bridge:=$START_SERIAL_BRIDGE"
-else
-  if [[ "$REUSE_NAVIGATION" != true ]]; then
-    start_process "perception" \
-      ros2 launch "$PERCEPTION_LAUNCH" \
-        "use_sim_time:=false" \
-        "serial_debug_raw_frame:=true" \
-        "start_serial_bridge:=$START_SERIAL_BRIDGE"
-  fi
-  wait_for_nodes "navigation readiness" 60 \
-    /axis_waypoint_action_server \
-    /pb_gicp_localization
-  wait_for_action "waypoint navigation" "/follow_waypoints" 60
-  wait_for_localization 180
-  if [[ "$REUSE_NAVIGATION" == true ]]; then
-    start_process "perception" \
-      ros2 launch "$PERCEPTION_LAUNCH" \
-        "use_sim_time:=false" \
-        "serial_debug_raw_frame:=true" \
-        "start_serial_bridge:=$START_SERIAL_BRIDGE"
-  fi
-fi
+wait_for_nodes "odometry navigation readiness" 60 \
+  /axis_waypoint_action_server \
+  /laserMapping \
+  /loam_interface \
+  /sensor_scan_generation
+wait_for_action "waypoint navigation" "/follow_waypoints" 60
+wait_for_odometry "Point-LIO odometry" /aft_mapped_to_init 60
+wait_for_tf "stable odometry origin" odom base_link 5
+
+start_process "perception" \
+  ros2 launch "$PERCEPTION_LAUNCH" \
+    "use_sim_time:=false" \
+    "serial_debug_raw_frame:=true" \
+    "start_serial_bridge:=$START_SERIAL_BRIDGE"
+
 
 wait_for_nodes "perception readiness" 120 \
   /serial_controller \

@@ -3,7 +3,8 @@
 set -Eeo pipefail
 
 readonly WORKSPACE_DIR="/home/rc4/fruit_ws"
-readonly RUNTIME_SETUP="${WORKSPACE_DIR}/setup_fruit_runtime.bash"
+readonly RUNTIME_SETUP="${WORKSPACE_DIR}/scripts/setup_fruit_runtime.bash"
+
 readonly START_SCRIPT="${WORKSPACE_DIR}/start_fruit_perception.sh"
 readonly CLIENT_CONFIG="${WORKSPACE_DIR}/src/fruit_mission/config/script_ros_clients.yaml"
 readonly RUN_DIR="${WORKSPACE_DIR}/tmp/d435i-arm-target"

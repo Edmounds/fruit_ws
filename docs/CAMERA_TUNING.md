@@ -8,7 +8,8 @@
 
 ```bash
 cd /home/rc4/fruit_ws
-source setup_fruit_runtime.bash
+source scripts/setup_fruit_runtime.bash
+
 ```
 
 按要调整的摄像头选择一条命令：

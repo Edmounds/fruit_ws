@@ -75,7 +75,8 @@ node and are not forwarded directly to the lower controller. The serial device
 is fixed to `/dev/ttyACM0`.
 
 ```bash
-source /home/rc4/fruit_ws/setup_fruit_runtime.bash
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
+
 colcon build --packages-select fruit_perception \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 ros2 launch fruit_perception fruit_perception.launch.py

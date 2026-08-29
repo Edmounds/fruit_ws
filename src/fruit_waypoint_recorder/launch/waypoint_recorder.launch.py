@@ -46,9 +46,10 @@ def generate_launch_description():
     )
     declare_frame_id = DeclareLaunchArgument(
         "frame_id",
-        default_value="map",
+        default_value="odom",
         description="Coordinate frame stored in the waypoint YAML",
     )
+
     declare_auto_name_prefix = DeclareLaunchArgument(
         "auto_name_prefix",
         default_value="",

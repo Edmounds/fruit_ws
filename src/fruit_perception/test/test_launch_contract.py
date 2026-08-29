@@ -252,14 +252,14 @@ def test_kill_script_resumes_stopped_targets_before_interrupting_them():
 
 def test_kill_script_finds_navigation_and_mapping_processes():
     command_lines = (
-        "bash ./start_mapping.sh",
+        "bash ./start_odometry.sh",
         "bash ./start_navigation.sh",
-        "ros2 launch /home/rc4/fruit_ws/src/navigation/pb2025_sentry_nav/"
-        "pb2025_nav_bringup/launch/glim_mapping.launch.py",
+        "ros2 launch /home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/"
+        "launch/fruit_nav.launch.py",
         "/opt/ros/humble/lib/pointcloud_to_laserscan/"
         "pointcloud_to_laserscan_node",
-        "/opt/ros/humble/lib/slam_toolbox/sync_slam_toolbox_node",
     )
+
     processes = [
         subprocess.Popen(
             [

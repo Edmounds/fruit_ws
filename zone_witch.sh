@@ -3,7 +3,8 @@
 set -Eeo pipefail
 
 WORKSPACE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-RUNTIME_SETUP="${WORKSPACE_DIR}/setup_fruit_runtime.bash"
+RUNTIME_SETUP="${WORKSPACE_DIR}/scripts/setup_fruit_runtime.bash"
+
 CLIENT_CONFIG="${WORKSPACE_DIR}/src/fruit_mission/config/script_ros_clients.yaml"
 HARDWARE_LAUNCH="${WORKSPACE_DIR}/src/fruit_hardware_bridge/launch/fruit_hardware_bridge.launch.py"
 RUN_DIR="${WORKSPACE_DIR}/tmp/zone-witch"

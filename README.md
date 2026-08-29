@@ -16,8 +16,9 @@ sudo apt install ros-humble-rmw-cyclonedds-cpp
 `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`，缺少运行库时直接停止：
 
 ```bash
-source /home/rc4/fruit_ws/setup_fruit_runtime.bash
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 ```
+
 
 切换前已经启动的 ROS 进程仍使用旧 RMW，不能与新进程混跑。停止整套旧进程后重新加载
 环境并启动；若 ROS 2 daemon 曾由旧环境启动，切换时执行一次 `ros2 daemon stop`。
@@ -73,9 +74,10 @@ cd /home/rc4/fruit_ws
 `auto_serial_bridge`。启动前先确认没有其他进程占用 `/dev/stm32`。
 
 ```bash
-source /home/rc4/fruit_ws/setup_fruit_runtime.bash
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 /usr/bin/python3 /home/rc4/fruit_ws/lower_controller_console.py
 ```
+
 
 默认串口和波特率从
 `src/auto_serial_bridge/config/protocol.yaml` 读取，也可以覆盖：
@@ -116,9 +118,10 @@ source /home/rc4/fruit_ws/setup_fruit_runtime.bash
 ## 录制调试 ROS 话题
 ```bash
 cd /home/rc4/fruit_ws
-source setup_fruit_runtime.bash
+source scripts/setup_fruit_runtime.bash
 ./record_rosbag.sh --full
 ```
+
 
 录包保留所有非视觉话题。视觉数据只保留左右 USB 相机的原始图和标注图，以及
 D435i 的彩色原图、对齐深度图和标注图。D435i 未对齐的

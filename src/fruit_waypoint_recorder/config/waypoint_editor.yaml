@@ -1,6 +1,8 @@
 host: "0.0.0.0"
 port: 8000
 html_file: "/home/rc4/fruit_ws/waypoint_editor.html"
-profile_config: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/config/map_profiles.yaml"
+waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml"
+template_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/template.yaml"
 backup_dir: "/home/rc4/fruit_ws/tmp/waypoint_editor_backups"
 max_request_bytes: 1048576
+

@@ -23,10 +23,11 @@ on_signal()
 trap cleanup EXIT
 trap on_signal INT TERM
 
-source "$WORKSPACE/setup_fruit_runtime.bash"
+source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
 set -u
 
-"$WORKSPACE/robot_debug_monitor.sh" perception &
+"$WORKSPACE/scripts/robot_debug_monitor.sh" perception &
 DEBUG_PID=$!
 
 ros2 launch fruit_perception fruit_perception.launch.py "$@"
+

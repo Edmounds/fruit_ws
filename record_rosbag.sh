@@ -64,8 +64,9 @@ if [[ -n "$BAG_LABEL" && ! "$BAG_LABEL" =~ ^[A-Za-z0-9_.-]+$ ]]; then
   exit 2
 fi
 
-source "$WORKSPACE/setup_fruit_runtime.bash"
+source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
 set -u
+
 
 cleanup()
 {
@@ -127,9 +128,10 @@ printf '[rosbag] retaining the newest %s date-named bags\n' "$MAX_BAGS"
 printf '[rosbag] press Ctrl-C once when the failure has been captured\n'
 
 if ((START_MONITOR)); then
-  "$WORKSPACE/robot_debug_monitor.sh" rosbag &
+  "$WORKSPACE/scripts/robot_debug_monitor.sh" rosbag &
   DEBUG_MONITOR_PID=$!
 fi
+
 
 ros2 bag record \
   --all \

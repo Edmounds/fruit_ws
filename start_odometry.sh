@@ -3,33 +3,26 @@
 set -eo pipefail
 
 WORKSPACE=/home/rc4/fruit_ws
-MAP_PROFILE_HELPER="$WORKSPACE/scripts/map_profile.sh"
-ODOMETRY_LAUNCH="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/launch/pointlio_odometry.launch.py"
-PARAMS="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/localization_params.yaml"
-LIVOX_CONFIG="$WORKSPACE/src/navigation/pb2025_sentry_nav/pb2025_nav_bringup/config/reality/mid360_user_config.json"
+ODOMETRY_LAUNCH="$WORKSPACE/src/navigation/fruit_nav_bringup/launch/pointlio_odometry.launch.py"
+PARAMS="$WORKSPACE/src/navigation/fruit_nav_bringup/config/reality/pointlio_params.yaml"
+LIVOX_CONFIG="$WORKSPACE/src/navigation/fruit_nav_bringup/config/reality/mid360_user_config.json"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
 PCL_PRELOAD=/lib/x86_64-linux-gnu/libusb-1.0.so.0
-MAP_ID=""
 pid=""
 stopped=0
 
 usage() {
   cat <<'EOF'
-Usage: ./start_odometry.sh --map A|B
+Usage: ./start_odometry.sh
 
-Start the Livox MID-360 and Point-LIO odometry stack. The selected map profile identifies
-the physical starting point; no PCD map or GICP relocalization is loaded.
+Start the Livox MID-360 and Point-LIO odometry stack in the startup-relative
+odom frame. No map or GICP relocalization is loaded.
 The odometry origin is published after the initial Point-LIO pose is stable.
 EOF
 }
 
 while (($# > 0)); do
   case "$1" in
-    --map)
-      (($# >= 2)) || { usage >&2; exit 2; }
-      MAP_ID=$2
-      shift 2
-      ;;
     --help|-h)
       usage
       exit 0
@@ -40,8 +33,6 @@ while (($# > 0)); do
       ;;
   esac
 done
-
-[[ -n "$MAP_ID" ]] || { usage >&2; exit 2; }
 
 stop_children() {
   trap - INT TERM EXIT
@@ -60,10 +51,8 @@ stop_children() {
 
 trap stop_children INT TERM EXIT
 
-source "$WORKSPACE/setup_fruit_runtime.bash"
+source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
 set -u
-source "$MAP_PROFILE_HELPER"
-resolve_map_profile "$WORKSPACE" "$MAP_ID"
 
 for required_file in \
   "$ODOMETRY_LAUNCH" \
@@ -77,7 +66,7 @@ for required_file in \
   fi
 done
 
-printf '[odometry] starting source launch for profile=%s\n' "$MAP_ID"
+printf '[odometry] starting Point-LIO odometry launch...\n'
 printf '[odometry] waiting for a stable Point-LIO origin; no map or GICP is loaded.\n'
 setsid ros2 launch "$ODOMETRY_LAUNCH" \
   "params_file:=$PARAMS" \
@@ -113,3 +102,4 @@ fi
 
 stop_children
 exit "$status"
+

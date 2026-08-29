@@ -3,7 +3,8 @@
 set -Eeo pipefail
 
 readonly WORKSPACE_DIR="/home/rc4/fruit_ws"
-readonly RUNTIME_SETUP="${WORKSPACE_DIR}/setup_fruit_runtime.bash"
+readonly RUNTIME_SETUP="${WORKSPACE_DIR}/scripts/setup_fruit_runtime.bash"
+
 readonly PIPER="${WORKSPACE_DIR}/.venv/piper-tts/bin/piper"
 readonly MODEL="${WORKSPACE_DIR}/.cache/piper-tts/zh_CN-huayan-medium/zh_CN-huayan-medium.onnx"
 readonly MODEL_CONFIG="${WORKSPACE_DIR}/.cache/piper-tts/zh_CN-huayan-medium/zh_CN-huayan-medium.onnx.json"

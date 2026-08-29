@@ -53,7 +53,8 @@ class EditorConfig:
     host: str
     port: int
     html_file: Path
-    profile_config: Path
+    waypoint_file: Path
+    template_file: Path
     backup_dir: Path
     max_request_bytes: int
 
@@ -72,8 +73,7 @@ class EditorFile:
 
     @property
     def label(self) -> str:
-        mode_label = "地图" if self.mode == "competition" else "里程计"
-        return f"场地 {self.profile} / {mode_label} / {self.waypoint_file.name}"
+        return f"里程计 / {self.waypoint_file.name}"
 
 
 def _required_mapping(document: Any, label: str) -> Mapping[str, Any]:
@@ -109,8 +109,11 @@ def load_editor_config(path: Path) -> EditorConfig:
         host=host,
         port=port,
         html_file=_configured_path(document.get("html_file"), "html_file"),
-        profile_config=_configured_path(
-            document.get("profile_config"), "profile_config"
+        waypoint_file=_configured_path(
+            document.get("waypoint_file"), "waypoint_file"
+        ),
+        template_file=_configured_path(
+            document.get("template_file"), "template_file"
         ),
         backup_dir=_configured_path(document.get("backup_dir"), "backup_dir"),
         max_request_bytes=max_request_bytes,
@@ -118,42 +121,20 @@ def load_editor_config(path: Path) -> EditorConfig:
 
 
 def load_file_catalog(config: EditorConfig) -> Dict[str, EditorFile]:
-    """Resolve the four files exposed by the editor from map profiles."""
-    with config.profile_config.open(encoding="utf-8") as stream:
-        document = _required_mapping(yaml.safe_load(stream), "map profile 配置")
-    profiles = _required_mapping(document.get("maps"), "maps")
-    reference_profile = _required_mapping(profiles.get("A"), "A")
-    reference_file = _configured_path(
-        reference_profile.get("mission_waypoint_file"),
-        "maps.A.mission_waypoint_file",
-    )
+    """Resolve the single odom waypoint file exposed by the editor."""
+    file_id = "odom"
+    return {
+        file_id: EditorFile(
+            file_id=file_id,
+            profile="odom",
+            mode="odometry",
+            frame_id="odom",
+            waypoint_file=config.waypoint_file,
+            template_file=config.template_file,
+            reference_file=config.waypoint_file,
+        )
+    }
 
-    catalog: Dict[str, EditorFile] = {}
-    for profile_name in ("A", "B"):
-        profile = _required_mapping(profiles.get(profile_name), profile_name)
-        template_file = _configured_path(
-            profile.get("waypoint_template_file"),
-            f"maps.{profile_name}.waypoint_template_file",
-        )
-        definitions = (
-            ("competition", "map", "recorder_waypoint_file"),
-            ("odometry", "odom", "odometry_waypoint_file"),
-        )
-        for mode, frame_id, config_key in definitions:
-            file_id = f"{profile_name}:{mode}"
-            catalog[file_id] = EditorFile(
-                file_id=file_id,
-                profile=profile_name,
-                mode=mode,
-                frame_id=frame_id,
-                waypoint_file=_configured_path(
-                    profile.get(config_key),
-                    f"maps.{profile_name}.{config_key}",
-                ),
-                template_file=template_file,
-                reference_file=reference_file,
-            )
-    return catalog
 
 
 def _finite_number(value: Any, label: str) -> float:
@@ -240,7 +221,7 @@ def load_waypoint_document(editor_file: EditorFile) -> Tuple[dict, List[dict]]:
 def load_template_geometry(
     editor_file: EditorFile,
 ) -> List[dict]:
-    """Load formal order and A-map geometry relative to A1."""
+    """Load formal order and geometry relative to A1."""
     with editor_file.template_file.open(encoding="utf-8") as stream:
         template_document = _required_mapping(
             yaml.safe_load(stream), "waypoint template"
@@ -252,10 +233,10 @@ def load_template_geometry(
         raise ValueError("waypoint template 的 points 必须是列表")
 
     reference_file = EditorFile(
-        file_id="A:reference",
-        profile="A",
-        mode="competition",
-        frame_id="map",
+        file_id="odom:reference",
+        profile="odom",
+        mode="odometry",
+        frame_id="odom",
         waypoint_file=editor_file.reference_file,
         template_file=editor_file.template_file,
         reference_file=editor_file.reference_file,
@@ -266,7 +247,7 @@ def load_template_geometry(
     }
     reference_a1 = reference_by_name.get("A1")
     if reference_a1 is None:
-        raise ValueError("A 正式 waypoint YAML 缺少参考点 A1")
+        raise ValueError("正式 waypoint YAML 缺少参考点 A1")
 
     result: List[dict] = []
     seen = set()
@@ -284,7 +265,7 @@ def load_template_geometry(
             )
         reference = reference_by_name.get(name)
         if reference is None:
-            raise ValueError(f"A 正式 waypoint YAML 缺少 template 点 {name}")
+            raise ValueError(f"正式 waypoint YAML 缺少 template 点 {name}")
         result.append(
             {
                 "index": index,
@@ -301,8 +282,9 @@ def load_template_geometry(
     extra_reference_names = set(reference_by_name) - seen
     if extra_reference_names:
         names = ", ".join(sorted(extra_reference_names))
-        raise ValueError(f"A 正式 waypoint YAML 存在 template 外名称: {names}")
+        raise ValueError(f"正式 waypoint YAML 存在 template 外名称: {names}")
     return result
+
 
 
 def order_actual_points(

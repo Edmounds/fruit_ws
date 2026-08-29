@@ -22,23 +22,23 @@
 D435i 整树目标 -----> |                        |
                     +-----------+------------+
                                 |
-             Nav2 action        | typed hardware actions
+             Action /follow_waypoints | typed hardware actions
                                 v
 +-------------------+   +------------------------+
 | fruit_navigation  |   | fruit_hardware_bridge  |
-| GLIM 离线地图工具  |   | ROS 语义接口           |
-| Point-LIO 里程计   |   | task/callback 映射     |
-| small_gicp 重定位  |   +-----------+------------+
-| Nav2 + 动态障碍物  |               |
-+---------+---------+               v
-          |                 +--------------------+
-          | cmd_vel         | auto_serial_bridge |
-          v                 | YAML/串口/心跳/CRC  |
-+-------------------+       +----------+---------+
-| cmd_vel_safety_mux|                  |
-| 导航/抓取/急停仲裁 |                  v
-+---------+---------+       +--------------------+
-          +---------------->| 下位机              |
+| Point-LIO 里程计   |   | ROS 语义接口           |
+| 轴向定点导航服务端 |   | task/callback 映射     |
+| 偏航角平滑控制     |   +-----------+------------+
++---------+---------+               |
+          |                         v
+          | cmd_vel         +--------------------+
+          v                 | auto_serial_bridge |
++-------------------+       | YAML/串口/心跳/CRC  |
+| twist_mux         |       +----------+---------+
+| 导航/遥控速度仲裁  |                  |
++---------+---------+                  v
+          +---------------->+--------------------+
+                            | 下位机              |
                             | 底盘/舵机/4DOF/末端  |
                             +--------------------+
 ```
@@ -49,12 +49,11 @@ D435i 整树目标 -----> |                        |
 2. `fruit_hardware_bridge` 是业务语义与 `task_id/task_status` 协议之间唯一的映射层。
 3. `auto_serial_bridge` 只处理串口帧、代码生成、握手、心跳、校验和可靠传输，不承载比赛流程。
 4. 下位机不决定 A/B/C 任务顺序和是否采收；上位机只上报所在区域并指定左/右抓取方向，下位机按当前区域解释 A/B/C 不同的识别和动作方向；B/D 执行上位机给出的机械臂目标，并通过 callback 返回执行阶段。
-5. 只有速度仲裁节点能向串口通信层发布最终底盘速度，禁止 Nav2 和任务节点同时直接控制底盘。
+5. 只有速度仲裁节点能向串口通信层发布最终底盘速度，禁止导航和任务节点同时直接控制底盘。
 
 ### 2.1 ROS 2 中间件
 
-- 比赛运行环境统一使用 `rmw_cyclonedds_cpp`，由根目录
-  `setup_fruit_runtime.bash` 固定并校验；所有 ROS 2 节点和 CLI 必须加载同一环境。
+- 比赛运行环境统一使用 `rmw_cyclonedds_cpp`，由 `scripts/setup_fruit_runtime.bash` 固定并校验；所有 ROS 2 节点和 CLI 必须加载同一环境。
 - 不再使用 Humble 默认的 `rmw_fastrtps_cpp`。Fast DDS Basic Service Mapping 的 request 和
   reply 端点独立发现，冷启动时可能出现请求已送达、Action 已执行并发布 `SUCCEEDED`，但
   goal response 因 reply reader 尚未匹配而被丢弃，mission 因拿不到 goal handle 无法推进；
@@ -63,73 +62,49 @@ D435i 整树目标 -----> |                        |
   mission ActionClient 已完成反向响应端点发现；禁止用延长 future 超时、固定 `sleep` 或
   盲目重发导航 goal 掩盖响应丢失。
 - RMW 只能在进程启动时选择。切换时必须停止整套旧进程和旧 ROS 2 daemon，再从
-  `setup_fruit_runtime.bash` 启动完整链路，禁止 Fast DDS 与 Cyclone DDS 混跑。
+  `scripts/setup_fruit_runtime.bash` 启动完整链路，禁止 Fast DDS 与 Cyclone DDS 混跑。
 
 ## 3. ROS 2 工作区划分
 
-保留现有第三方仓库，不直接把比赛业务写进上游代码：
-
 ```text
-ros2_ws/src/
-├── auto_serial_bridge/       # 已拉取，串口协议生成与传输
-├── glim/                     # 仅用于赛前离线建图
-├── pb2025_sentry_nav/        # 复用 Livox、Point-LIO、small_gicp 等模块
-├── fruit_hardware_interfaces/# 上下位机控制与回调 msg
-├── fruit_bringup/            # 全车 launch、参数、模式切换
-├── fruit_navigation/         # 本车 Nav2 配置、地图、路线和速度仲裁
-├── fruit_perception/         # 双侧 UVC、D435i、模式管理与 OpenVINO
-├── fruit_qr_planner/         # D435i 彩色图扫码并持久发布 B/C 计划
-├── fruit_hardware_bridge/    # 语义动作到 task/callback 协议的适配
-└── fruit_mission/            # A/B/C 状态机（尚未创建）
+fruit_ws/src/
+├── driver/
+│   ├── livox_ros_driver2/        # MID-360 驱动
+│   └── realsense-ros/            # D435i 相机驱动
+├── navigation/
+│   ├── point_lio/                # Point-LIO LiDAR-IMU 紧耦合里程计
+│   ├── loam_interface/          # TF 转换与里程计适配
+│   ├── sensor_scan_generation/   # 点云生成
+│   ├── fruit_navigation/         # 轴向航点跟踪 action server
+│   └── fruit_nav_bringup/        # 纯里程计导航集成 bringup
+├── auto_serial_bridge/           # 串口协议生成与传输
+├── fruit_hardware_interfaces/    # 上下位机控制与回调 msg
+├── fruit_hardware_bridge/        # 语义动作到 task/callback 协议的适配
+├── fruit_perception/             # 双侧 UVC、D435i、模式管理与 OpenVINO
+├── fruit_qr_planner/             # D435i 彩色图扫码并持久发布 B/C 计划
+├── fruit_waypoint_recorder/      # 航点录制与 Web 航点编辑器
+├── fruit_mission/                # A/B/C 比赛状态机与编排
+└── joy_linux/                    # 手柄遥控节点
 ```
 
 `auto_serial_bridge` 不由本仓库作为 Git submodule 管理，而是从 Edmounds fork 的
-`dev` 分支独立克隆；父仓库通过 `.gitignore` 忽略该目录：
-
-```bash
-git clone --branch dev git@github.com:Edmounds/auto_serial_bridge.git src/auto_serial_bridge
-git -C src/auto_serial_bridge pull --ff-only origin dev
-```
-
-机械臂尺寸确定后再增加 `fruit_description`，保存 URDF、关节限制、相机和雷达外参。现在不要根据未知尺寸编写正式 IK 参数或运动轨迹。
-
-`model_train_ws` 继续作为独立训练工作区。ROS 运行包只使用导出的模型，不依赖 Ultralytics 训练环境。
+`dev` 分支独立克隆；父仓库通过 `.gitignore` 忽略该目录。
 
 ## 4. 导航结构
 
-### 4.1 离线建图与比赛运行分离
+### 4.1 纯里程计导航架构
 
-- GLIM 仅在赛前建图阶段运行，输出全局点云先验图。
-- 从同一建图结果生成 small_gicp 使用的先验点云，以及 Nav2 使用的二维占据栅格；两份地图必须使用同一原点和方向。
-- 比赛运行时不启动 GLIM，避免与 Point-LIO、small_gicp、双路 YOLO 争抢 NUC 资源。
-- 比赛时运行链为 `MID360 -> Point-LIO -> small_gicp -> map->odom`，Nav2 使用该 TF 完成全局导航。
-- 调试时可运行 `./start_odometry.sh --map A|B` 进入纯里程计模式；该模式只启动 Livox 和
-  Point-LIO 及坐标适配节点，不读取场地 PCD，也不启动 small_gicp。适配节点只在连续约
-  1.5 秒的低速、低位置/yaw 方差数据满足条件后，使用平均位姿建立 `odom` 原点；最多等待
-  5 秒且不会降级采用漂移中的首帧。`--map` 仍沿用现场 profile 标识，但不会把地图定位初值
-  传给 Point-LIO。地图/GICP 模式默认关闭该稳定门控，保持原有启动行为。
-- 随机障碍物不得固化到先验地图中，必须由 MID360 在线加入 local/global costmap。
+- 导航采用纯 Point-LIO 激光雷达-IMU 里程计方案，彻底去除了离线建图（GLIM）与重定位（GICP）环节。
+- 坐标系拓扑简化为 `odom -> base_link -> sensors/arm`，不再使用 `map` 全局坐标系。
+- Point-LIO 在开机时以静止状态建立初始参考系，`loam_interface` 在接收到稳定里程计后开始发布 `odom -> base_link` TF。
+- 航点文件（`src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml`）中的坐标全部基于 `odom` 坐标系。
 
-### 4.2 不直接使用现有实车启动文件
+### 4.2 轴向定点导航控制器 (`fruit_navigation`)
 
-当前 `pb2025_sentry_nav` 面向 RoboMaster 全向哨兵，其配置包含：
+- `axis_waypoint_action_server` 提供 `/follow_waypoints` Action 接口。
+- 支持按轴直线行走、原地旋转调整航向（`rotate_in_place`）与沿路径平滑插值偏航角（`blend_on_path`）。
+- 速度输出经由 `twist_mux` 输出至串口控制器。
 
-- 输出 `linear.y` 的 `pb_omni_pid_pursuit_controller`；
-- `gimbal_yaw` 和 `gimbal_yaw_fake` 坐标系；
-- 默认启动手柄遥控节点；
-- 最高约 `2.5 m/s` 的比赛外场速度参数。
-
-这些行为不适合差速/滑移转向采摘车，也不满足本比赛禁止遥控和全向轮的约束。项目应新建自己的 bringup 和 Nav2 参数，只复用底层定位、重定位和点云处理包。
-
-### 4.3 本车导航约束
-
-- TF 主链固定为 `map -> odom -> base_footprint -> base_link -> sensors/arm`，不得继续使用云台坐标系充当底盘基准。
-- Nav2 控制器使用差速兼容控制器，首选 `nav2_regulated_pure_pursuit_controller`；速度命令只允许 `linear.x` 和 `angular.z`。
-- 全局规划首选 `SmacPlanner2D`，因为差速底盘可原地旋转，不需要为首版引入阿克曼模型。
-- footprint 必须在整车和机械臂实际尺寸确定后填写，不能沿用当前 `robot_radius: 0.2`。
-- 抓取阶段由速度仲裁器强制输出零速度；机械臂未收回安全姿态时禁止 Nav2 恢复移动。
-- 障碍物碰撞扣分高，速度、膨胀半径和最小障碍距离应以保守通过为目标，而不是沿用竞速导航参数。
-- C 区当前的 `axis_waypoint_action_server` 是按命名路点逐段直线控制的专用动作服务器，不是带局部代价地图避障的 Nav2 控制器；动态障碍物避让仍依赖后续的 collision monitor/速度仲裁接入，不能把静态路点和在线 costmap 视为已经完成动态避障。
 
 ## 5. 感知结构与资源调度
 
