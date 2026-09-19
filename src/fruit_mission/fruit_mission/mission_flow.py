@@ -13,6 +13,8 @@ from fruit_mission.logic import format_position_name
 from fruit_mission.logic import PickDecision
 from fruit_mission.logic import SideObservation
 from fruit_mission.logic import spoken_model_type
+from fruit_qr_planner.planner import build_b_plan
+from fruit_qr_planner.planner import build_c_plan
 
 
 def run_mission(ctx) -> None:
@@ -30,7 +32,9 @@ def run_mission(ctx) -> None:
 
         if flow in {"full", "ac", "a"}:
             if not run_a_area(ctx) or not _send_arm_retract(
-                ctx, "A区结束机械臂收缩姿态动作超时，任务停止。"
+                ctx,
+                "A区结束机械臂收缩姿态动作失败，任务停止。",
+                continue_on_timeout=True,
             ):
                 return
             if flow == "a":
@@ -87,7 +91,7 @@ def run_a_area(ctx) -> bool:
     if not ctx.set_perception_mode("SIDES"):
         return False
     for waypoint in ctx.route.a_goal_names():
-        if not ctx.go_to(waypoint):
+        if not ctx.navigate_named([waypoint]):
             continue
         ctx.stable_stop()
         observation = ctx.observe_sides(float(ctx.config["side_observation_timeout_sec"]))
@@ -98,7 +102,7 @@ def run_a_area(ctx) -> bool:
         if not decisions:
             continue
         for decision in decisions:
-            result = ctx.execute_a_open_loop_pick(decision.side)
+            result = ctx.execute_closed_loop_pick(decision.side)
             if not result.success and not result.safe_to_continue:
                 return False
         if not ctx.set_perception_mode("SIDES"):
@@ -127,8 +131,10 @@ def _a_pick_decisions(
 def _send_arm_retract(
     ctx,
     failure_text: str,
+    *,
+    continue_on_timeout: bool = False,
 ) -> bool:
-    if ctx.send_arm_retract_pose():
+    if ctx.send_arm_retract_pose(continue_on_timeout=continue_on_timeout):
         return True
     ctx.announce(failure_text)
     return False
@@ -165,9 +171,15 @@ def scan_b_qr_and_announce(
         return None
     b_plan = ctx.wait_b_plan()
     if b_plan is None:
-        if announce_before_plan:
-            ctx.announce("B区二维码计划等待超时。")
-        return None
+        fallback_targets = ctx.config.get("b_qr_fallback_targets")
+        if not fallback_targets:
+            if announce_before_plan:
+                ctx.announce("B区二维码计划等待超时。")
+            return None
+        ctx.node.get_logger().warning(
+            "B区二维码计划等待超时，使用配置的兜底顺序"
+        )
+        b_plan = build_b_plan("\n".join(str(target) for target in fallback_targets))
     save_b_plan = getattr(ctx, "save_b_plan", None)
     if callable(save_b_plan):
         save_b_plan(b_plan)
@@ -203,8 +215,19 @@ def scan_c_qr_and_build_table(ctx) -> Optional[Dict[str, Any]]:
         return None
     c_plan = ctx.wait_c_plan()
     if c_plan is None:
-        ctx.announce("C区二维码计划等待超时。")
-        return None
+        fallback_targets = ctx.config.get("c_qr_fallback_targets")
+        fallback_positions = ctx.config.get("c_qr_fallback_positions")
+        if not fallback_targets or not fallback_positions:
+            ctx.announce("C区二维码计划等待超时。")
+            return None
+        ctx.node.get_logger().warning(
+            "C区二维码计划等待超时，使用配置的兜底顺序"
+        )
+        fallback_lines = [str(target) for target in fallback_targets]
+        fallback_lines.append(
+            ",".join(str(position) for position in fallback_positions)
+        )
+        c_plan = build_c_plan("\n".join(fallback_lines))
 
     distribution = ctx.route.build_c_distribution(c_plan)
     ctx.save_c_distribution(distribution)
@@ -321,8 +344,9 @@ def _announce_b_tree_decision(
         (
             (
                 target.model_type,
-                float(target.point.point.x),
-                float(target.point.point.y),
+                target.pixel_x,
+                target.pixel_y,
+                target.image_width,
             )
             for target in targets
         ),

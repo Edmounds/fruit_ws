@@ -194,18 +194,19 @@ USB 接线时，D435i 与两台 UVC 相机尽量分配到不同 USB 控制器；
 ```
 
 - 原 `FruitDetection(0x10)` 已删除且 ID 暂不复用；感知结果只留在 ROS 话题中供上位机决策。
-- `task_id=0/1/2` 分别表示夹爪、摄像头云台和 ABC 通用抓取方向；当 `task_id=2` 时，`task_status=0/1` 分别表示左侧和右侧，具体动作由下位机结合最近一次 `task_id=5` 所在区域判断。A 区将该命令解释为对应方向的完整开环抓取任务，B/C 区仍只执行各自既有的方向动作。
+- `task_id=0/1/2` 分别表示夹爪、摄像头云台和 ABC 通用抓取方向；当 `task_id=2` 时，`task_status=0/1` 分别表示左侧和右侧，具体识别/动作方向由下位机结合最近一次 `task_id=5` 所在区域判断。
 - `task_id=4` 表示进入二维码识别姿态，当前仅定义 `task_status=0`。
 - `task_id=5` 表示机器人所在区域，`task_status=0/1/2/3` 分别表示 A/B/C/D 区。
 - `task_id=6` 表示返回初始姿态，当前仅定义 `task_status=0`。
 - `task_id=7` 表示机械臂收缩姿态，当前仅定义 `task_status=0`，用于转弯通过狭窄通道前收回机械臂。
-- `callback_id=0/1/2/3/4/5/6/7` 分别表示夹爪、摄像头云台、ABC 通用抓取方向任务、B/D 机械臂目标、二维码识别姿态、所在区域、返回初始姿态和机械臂收缩姿态；A 区的 `callback_id=2, callback_status=0` 表示对应方向的开环抓取已经完成。
+- `callback_id=0/1/2/3/4/5/6/7` 分别表示夹爪、摄像头云台、ABC 通用抓取方向、B/D 机械臂目标、二维码识别姿态、所在区域、返回初始姿态和机械臂收缩姿态。
 - `callback_status=1` 表示正在执行，`callback_status=0` 表示执行完成，`callback_status=2` 表示下位机因自身动作故障执行失败。
 - 左右抓取方向命令和 B/D 机械臂目标各发布一次，并使用可靠消息保证送达；链路 ACK 只表示收到数据，只有对应的 `ExecutionCallback` 完成状态才能推进任务状态机。
 - 舵机、末端定位等离散动作使用可靠消息；底盘速度属于连续刷新数据，不做历史重传。
 - 上位机重复发送同一离散状态时，下位机不得重复执行已经完成的危险动作。
 - 上位机收到 `callback_status=1` 后继续等待，但不会重新计算超时起点；从命令发布开始 30 秒内必须收到 `callback_status=0/2` 终态。
 - `callback_status=2` 和 30 秒内没有终态回调是两类不同故障，分别记录“下位机执行失败”和“通信超时”；通信超时不得解释为动作完成。
+- A 区结束、准备进入 B 区二维码流程时，`task_id=7` 若 30 秒内没有收到终态回调，mission 记录通信超时并继续下一个任务；下位机明确返回失败或通信端点未就绪仍停止流程。
 
 当前 mission 的通信和识别超时如下：
 
@@ -213,7 +214,7 @@ USB 接线时，D435i 与两台 UVC 相机尽量分配到不同 USB 控制器；
 | --- | ---: | --- |
 | 串口桥 ROS 命令/回调端点 | 10 秒 | 记录端点数量并返回失败；端点不可用时无法下发安全姿态命令 |
 | 方向、二维码姿态、区域上报、`ArmTarget`、返回初始姿态、收臂等执行终态 | 30 秒 | 记录通信超时；按下方区域恢复规则进入安全姿态 |
-| D435i 目标识别 | 20 秒 | 当前目标记为识别超时且不发送 `ArmTarget`；B/C 区按逐项流程发送 `task_id=7`，A 区不使用 D435i 目标识别 |
+| D435i 目标识别 | 20 秒 | 当前目标记为识别超时且不发送 `ArmTarget`；A 区发送 `task_id=6` 并确认返回初始姿态，B/C 区按逐项流程发送 `task_id=7` |
 | Nav2 `FollowWaypoints` action server | 5 秒 | 本次导航返回失败，由现有区域流程决定跳过、重试或停止；已发送的导航 goal 仍没有执行总时限 |
 | 串口可靠消息 ACK | 每 1 秒重发 | 收到 ACK 或进程退出前持续重发；`reliable_max_retries=3` 只是每累计三次输出告警，不是停止重发 |
 
@@ -232,7 +233,7 @@ USB 接线时，D435i 与两台 UVC 相机尽量分配到不同 USB 控制器；
 
 业务层不直接构造 `task_id`。建议由 `fruit_hardware_bridge` 暴露以下强类型接口：
 
-- `SetPickDirection`: 左侧或右侧；侧相机确认目标后只调用一次并等待回调。下位机用最近一次所在区域区分 A/B/C 的动作；A 区回调完成即代表开环抓取完成。
+- `SetPickDirection`: 左侧或右侧；侧相机确认目标后只调用一次，等待抓取方向回调。下位机用最近一次所在区域区分 A/B/C 的识别和动作方向。
 - `SetCameraMode`: 左/右/双侧，`GROUND` 或 `TREE`，等待舵机到位反馈。
 - `MoveArmJoints`: 四个目标角、速度档或速度比例、超时，持续反馈执行阶段和当前角度。
 - `RunEndEffector`: 夹取、释放、复位等离散动作。
@@ -265,6 +266,10 @@ ENTER_A
   -> STABLE_STOP
   -> PUBLISH_PICK_DIRECTION_ONCE
   -> WAIT_PICK_DIRECTION_CALLBACK_COMPLETED
+  -> SET_D435I_TREE_MODE
+  -> WAIT_D435I_TARGET
+  -> SEND_ARM_TARGET
+  -> WAIT_ARM_TARGET_CALLBACK_COMPLETED
   -> RESUME_COVERAGE_ROUTE
   -> LEAVE_A
 ```
@@ -274,10 +279,11 @@ ENTER_A
 - A 区不接受 `apple_ripe`、`pumpkin_ripe` 等带品种的旧类别，也不做苹果、梨或其他品种过滤。
 - 未检测到成熟目标、目标不成熟或坏水果时，不向下位机发布左右抓取方向命令。
 - 仅左侧或右侧存在成熟目标时分别发送 `task_status=0/1`，让下位机按当前区域执行对应方向动作。
-- 侧面 USB 相机确认 `ripe` 后，mission 直接发送一次对应方向的 `task_id=2`。下位机在 A 区把方向观察和开环抓取作为同一个任务执行；mission 不切换 `TREE` 模式、不等待 D435i 目标，也不发送 `ArmTarget`。
-- 业务层不重复发送该命令；`auto_serial_bridge` 负责可靠重传，只有收到 `callback_id=2, callback_status=0` 才把本次抓取记为完成并恢复路线。
-- A 区方向开环抓取返回 `callback_status=2` 或 30 秒内没有终态回调时，先发送 `task_id=6` 并确认 home 完成；只有恢复成功才处理下一个候选或作业点。
+- 侧面 USB 相机确认 `ripe` 后才允许机械臂转向；D435i 随后先跨帧聚类，再按综合评分及近似同分时的置信度规则锁定一个物理目标。锁定目标漏检时不会改发其他目标，mission 不再按类型进行第二次筛选，并且只有坐标稳定性检查通过后才向下位机发送。
+- 业务层不重复发送抓取方向命令；`auto_serial_bridge` 负责可靠重传，方向动作收到 `callback_id=2, callback_status=0` 后才进入 D435i 识别，`ArmTarget` 收到 `callback_id=3, callback_status=0` 后才恢复路线。
+- A 区方向或 `ArmTarget` 返回 `callback_status=2`、30 秒内没有终态回调，或者方向动作完成后 TREE 模式切换失败、D435i 未获得抓取目标时，先发送 `task_id=6` 并确认 home 完成；只有恢复成功才处理下一个候选或作业点。
 - 路线必须保存当前段索引，抓取后从安全恢复点继续，而不是从 A 区入口重新开始。
+- A 区各作业点按名称独立发送导航 goal；当前点重试耗尽后只跳过当前点，下一次必须直接尝试下一个 A 点，禁止把失败点重新拼接到后续路线前面而阻塞剩余作业点。
 
 ### 7.2 C 区
 
@@ -306,6 +312,7 @@ READ_C_QR
 - FollowWaypoints 导航失败时记录失败状态，但仍继续当前目标的稳定停车、方向调整、识别和抓取流程，再按二维码顺序推进下一项，避免因导航 action 状态丢失而放弃现场目标。
 - C 区 `axis_waypoint_action_server` 将中间 waypoint 视为通行参考点：横向误差超限时先以低速继续修正，并允许一次从实时位姿重试；重试后距离 waypoint 不超过 `waypoint_pass_tolerance` 时容错通过。最终 goal 仍使用严格位置和方向收敛。
 - FollowWaypoints 已接受但执行为 `ABORTED` 时，Mission 按 `missed_waypoints` 截取未完成路线后缀重试，最多使用既有的三次 action 尝试，不重复经过已完成 waypoint。TF 不可用、GICP ERROR 或取消请求仍保持停车和恢复边界。
+- `axis_waypoint_action_server` 读到超过 `tf_timeout_sec` 的瞬时陈旧 TF 时，先发布零速度，再在同一个 `tf_timeout_sec` 窗口内等待新变换；新鲜 TF 到达后才恢复控制，窗口结束后仍没有新鲜 TF 则保持停车并将 action 标记为 `ABORTED`，避免发布周期边界上的单次陈旧采样立即终止导航，也禁止等待期间沿用上一条速度命令。
 - 每项任务开始时记录 task index；当前方向回调协议只有 `callback_id`，无法区分同一 ID 的迟到回调，
   因此下位机协议增加命令序号前不得把跨任务回调校验写成已完成能力。
 - C 区方向或 `ArmTarget` 执行失败、通信超时后，不直接停止整区任务；当前项继续发送 `task_id=7`，确认收臂完成后再按二维码顺序推进下一项。收臂失败或超时才停止 C 区流程。

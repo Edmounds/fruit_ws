@@ -14,6 +14,8 @@ struct BTargetCandidate
 {
   std::string type;
   cv::Point3d point;
+  cv::Point2d pixel_center;
+  std::size_t image_width;
   double confidence;
 };
 
@@ -29,6 +31,8 @@ struct BTargetResult
 {
   std::string type;
   cv::Point3d point{};
+  cv::Point2d pixel_center{};
+  std::size_t image_width{0U};
   std::size_t observation_count{0U};
   std::size_t inlier_count{0U};
   double confidence{0.0};
@@ -53,6 +57,8 @@ private:
   {
     std::string type;
     cv::Point3d point;
+    cv::Point2d pixel_center;
+    std::size_t image_width;
     double confidence;
   };
 

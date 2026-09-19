@@ -1,19 +1,26 @@
 # fruit_qr_planner
 
 ROS 2 Humble package for the competition's one-shot QR workflow. It reads camera images,
-uses the first decoded official QR payload, publishes the B-zone plan, then publishes the
-C-zone plan and stops accepting further codes.
+uses the decoded official QR payloads to publish the B-zone plan followed by the C-zone
+plan, then stops accepting further codes.
 
 ## Interfaces
 
 - Input: `/camera/camera/color/image_raw` (`sensor_msgs/msg/Image`)
+- Current area: `/fruit_mission/current_area` (`std_msgs/msg/String`)
 - B plan: `/fruit/b_pick_plan` (`std_msgs/msg/String`, UTF-8 JSON)
 - C plan: `/fruit/c_pick_plan` (`std_msgs/msg/String`, UTF-8 JSON)
-- Parameters: `image_topic` (default `/camera/camera/color/image_raw`) and `confirm_frames` (default `1`)
+- Parameters: `image_topic`, `current_area_topic`, and `confirm_frames` (default `1`)
 
 Both plan topics use Reliable, Transient Local QoS with depth 1, so the mission
 node can start after scanning and still receive the last B and C plans. After C
 is confirmed, the node destroys its image subscription.
+
+If mission enters C before a B code was decoded, the current-area message advances the
+scanner directly to C. This preserves the C scan opportunity when mission used its
+configured B fallback after the 20-second plan wait. QR timeout fallback contents are
+owned by `fruit_mission/config/fruit_mission.yaml`; this node only decodes and publishes
+codes that were actually read.
 
 The official B/C QR payloads are trusted. The planner only normalizes formatting before
 building JSON: BOM, CRLF line endings, surrounding whitespace, ASCII commas, Chinese

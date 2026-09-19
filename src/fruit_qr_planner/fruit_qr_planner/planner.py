@@ -135,6 +135,14 @@ class PlanSequence:
         self.state = self.WAITING_FOR_C if self.state == self.WAITING_FOR_B else self.COMPLETED
         return plan, None
 
+    def expect_c(self) -> bool:
+        """Advance an unfinished B scan when mission has already entered C."""
+        if self.state != self.WAITING_FOR_B:
+            return False
+        self._reset_candidate()
+        self.state = self.WAITING_FOR_C
+        return True
+
     def _parse_for_current_state(self, payload: str) -> Dict[str, Any]:
         if self.state == self.WAITING_FOR_B:
             return build_b_plan(payload)

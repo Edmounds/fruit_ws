@@ -37,6 +37,7 @@ def validate_config(params: Mapping[str, Any]) -> None:
     if not str(params.get("follow_waypoints_action", "")).strip():
         raise ValueError("follow_waypoints_action must not be empty")
     for timeout_name in (
+        "qr_plan_timeout_sec",
         "callback_timeout_sec",
         "hardware_endpoint_timeout_sec",
         "d435i_detection_timeout_sec",
@@ -60,9 +61,41 @@ def validate_config(params: Mapping[str, Any]) -> None:
         raise ValueError("decision_topic must not be empty")
     if params.get("preferred_side") not in ("left", "right"):
         raise ValueError("preferred_side must be left or right")
+    _validate_qr_fallbacks(params)
     tts = params.get("tts", {})
     if "qr_length_scale" in tts and float(tts["qr_length_scale"]) <= 0.0:
         raise ValueError("tts.qr_length_scale must be positive")
     mission_flow = str(params.get("mission_flow", "full")).strip().lower()
     if mission_flow not in {"full", "ac", "a", "b", "c"}:
         raise ValueError("mission_flow must be full, ac, a, b, or c")
+
+
+def _validate_qr_fallbacks(params: Mapping[str, Any]) -> None:
+    b_targets = params.get("b_qr_fallback_targets")
+    if not isinstance(b_targets, list) or len(b_targets) != 8:
+        raise ValueError("b_qr_fallback_targets must contain 8 targets")
+    if any(target not in {"苹果", "梨子"} for target in b_targets):
+        raise ValueError("b_qr_fallback_targets may only contain 苹果 or 梨子")
+
+    c_targets = params.get("c_qr_fallback_targets")
+    if not isinstance(c_targets, list) or len(c_targets) != 8:
+        raise ValueError("c_qr_fallback_targets must contain 8 targets")
+    if any(target not in {"南瓜", "西红柿", "辣椒", "洋葱"} for target in c_targets):
+        raise ValueError(
+            "c_qr_fallback_targets may only contain 南瓜, 西红柿, 辣椒, or 洋葱"
+        )
+
+    c_positions = params.get("c_qr_fallback_positions")
+    if (
+        not isinstance(c_positions, list)
+        or len(c_positions) != 8
+        or any(
+            type(position) is not int or not 1 <= position <= 12
+            for position in c_positions
+        )
+        or len(set(c_positions)) != 8
+    ):
+        raise ValueError(
+            "c_qr_fallback_positions must contain 8 unique position IDs "
+            "from 1 to 12"
+        )

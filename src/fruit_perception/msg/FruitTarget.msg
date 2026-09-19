@@ -2,5 +2,8 @@ string type
 float32 confidence
 bool has_point
 geometry_msgs/Point point
+float32 pixel_x
+float32 pixel_y
+uint32 image_width
 uint32 observation_count
 uint32 inlier_count

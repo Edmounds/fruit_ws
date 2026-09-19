@@ -70,9 +70,9 @@ points:
   orientation:
     x: 0.0
     y: 0.0
-    z: -0.7099178082475669
-    w: 0.7042845344979335
-  yaw: -1.578763
+    z: -0.7261451465407297
+    w: 0.6875414359552028
+  yaw: -1.625397
   type: goal
 - name: to_C_waypoint_1
   position:
@@ -232,7 +232,7 @@ points:
   type: goal
 - name: C_3_7
   position:
-    x: 0.996
+    x: 1.006
     y: -1.956690059
     z: 0.06108941103933936
   orientation:
@@ -244,7 +244,7 @@ points:
   type: goal
 - name: C_4_8
   position:
-    x: 0.503
+    x: 0.513
     y: -1.956690059
     z: 0.06434763323885069
   orientation:

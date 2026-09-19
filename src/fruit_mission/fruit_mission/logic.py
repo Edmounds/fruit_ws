@@ -44,7 +44,7 @@ class PickDecision:
 
 @dataclass(frozen=True)
 class PickExecutionResult:
-    """Result of an A-zone open-loop or C-zone closed-loop pick."""
+    """Result of the side-turn, D435i depth, and arm-target pick flow."""
 
     success: bool
     reason_code: str
@@ -59,6 +59,7 @@ class BTreeDecision:
     reason_code: str
     observed_name: Optional[str] = None
     target_index: Optional[int] = None
+    score: Optional[float] = None
 
 
 def expected_ripe_type(target_name: str) -> str:
@@ -99,11 +100,14 @@ def spoken_model_type(model_type: Optional[str]) -> str:
 def decide_b_tree_targets(
     target_name: str,
     expected_type: str,
-    candidates: Iterable[tuple[str, float, float]],
+    candidates: Iterable[tuple[str, float, float, int]],
 ) -> BTreeDecision:
     """Compare one B-tree result and select at most one ripe target."""
     candidate_list = list(candidates)
-    types = [model_type for model_type, _x, _y in candidate_list]
+    types = [
+        model_type
+        for model_type, _pixel_x, _pixel_y, _image_width in candidate_list
+    ]
     if not types:
         return BTreeDecision("no_detection")
 
@@ -123,9 +127,14 @@ def decide_b_tree_targets(
         return BTreeDecision("no_ripe_target", observed_name)
     target_index = max(
         ripe_indices,
-        key=lambda index: abs(candidate_list[index][1]) - candidate_list[index][2],
+        key=lambda index: (
+            abs(candidate_list[index][1] - candidate_list[index][3] * 0.5)
+            - candidate_list[index][2]
+        ),
     )
-    return BTreeDecision("matched", observed_name, target_index)
+    target = candidate_list[target_index]
+    score = abs(target[1] - target[3] * 0.5) - target[2]
+    return BTreeDecision("matched", observed_name, target_index, score)
 
 
 def format_position_name(position_id: int) -> str:

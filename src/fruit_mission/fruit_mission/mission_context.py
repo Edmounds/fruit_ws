@@ -71,6 +71,9 @@ class BTreeTarget:
 
     model_type: str
     point: PointStamped
+    pixel_x: float
+    pixel_y: float
+    image_width: int
 
 
 class MissionContext:
@@ -679,14 +682,23 @@ class MissionContext:
             ExecutionCallback.CALLBACK_QR_RECOGNITION_POSE,
         )
 
-    def send_arm_retract_pose(self) -> bool:
-        """Ask the lower controller to retract the arm."""
-        return self._send_command_and_wait(
+    def send_arm_retract_pose(self, continue_on_timeout: bool = False) -> bool:
+        """Ask the lower controller to retract the arm.
+
+        The A-zone to B-zone transition may continue when the lower
+        controller sends no terminal callback, but explicit action failures
+        and unavailable communication endpoints remain fatal.
+        """
+        result = self._send_command_and_wait_result(
             StateMachineCommand.TASK_ARM_RETRACT_POSE,
             StateMachineCommand.ARM_RETRACT_POSE,
             ExecutionCallback.CALLBACK_ARM_RETRACT_POSE,
             recover_on_error=False,
         )
+        if continue_on_timeout and result.reason_code == "arm_callback_timeout":
+            self.node.get_logger().warning("A区结束收臂通信超时，继续下一个任务")
+            return True
+        return result.completed
 
     def send_return_initial_pose(self) -> bool:
         """Ask the lower controller to return to the initial pose."""
@@ -1046,9 +1058,26 @@ class MissionContext:
                 point.point.x = float(item.point.x)
                 point.point.y = float(item.point.y)
                 point.point.z = float(item.point.z)
-                coordinates = (point.point.x, point.point.y, point.point.z)
-                if all(math.isfinite(value) for value in coordinates):
-                    targets.append(BTreeTarget(str(item.type), point))
+                coordinates = (
+                    point.point.x,
+                    point.point.y,
+                    point.point.z,
+                    float(item.pixel_x),
+                    float(item.pixel_y),
+                )
+                if (
+                    int(item.image_width) > 0
+                    and all(math.isfinite(value) for value in coordinates)
+                ):
+                    targets.append(
+                        BTreeTarget(
+                            str(item.type),
+                            point,
+                            float(item.pixel_x),
+                            float(item.pixel_y),
+                            int(item.image_width),
+                        )
+                    )
             return targets
         return None
 

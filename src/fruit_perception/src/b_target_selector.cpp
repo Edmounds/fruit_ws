@@ -137,7 +137,9 @@ void BTargetSelector::add_frame(const std::vector<BTargetCandidate> & candidates
       }
     }
 
-    const Observation observation{candidate.type, candidate.point, candidate.confidence};
+    const Observation observation{
+      candidate.type, candidate.point, candidate.pixel_center,
+      candidate.image_width, candidate.confidence};
     if (closest == nullptr) {
       Track track;
       track.observations.push_back(observation);
@@ -182,6 +184,7 @@ std::vector<BTargetSelector::TrackStatistics> BTargetSelector::select_tracks() c
 
     std::vector<const Observation *> inliers;
     cv::Point3d inlier_sum{};
+    cv::Point2d pixel_center_sum{};
     for (const auto & observation : track.observations) {
       const cv::Point3d difference = observation.point - initial_mean;
       const bool within_x = initial_stddev.x == 0.0 ||
@@ -193,12 +196,14 @@ std::vector<BTargetSelector::TrackStatistics> BTargetSelector::select_tracks() c
       if (within_x && within_y && within_z) {
         inliers.push_back(&observation);
         inlier_sum += observation.point;
+        pixel_center_sum += observation.pixel_center;
       }
     }
     if (inliers.empty()) {
       for (const auto & observation : track.observations) {
         inliers.push_back(&observation);
         inlier_sum += observation.point;
+        pixel_center_sum += observation.pixel_center;
       }
     }
 
@@ -218,6 +223,8 @@ std::vector<BTargetSelector::TrackStatistics> BTargetSelector::select_tracks() c
         BTargetResult{
           best_type->first,
           inlier_sum * (1.0 / static_cast<double>(inliers.size())),
+          pixel_center_sum * (1.0 / static_cast<double>(inliers.size())),
+          track.observations.front().image_width,
           track.observations.size(),
           inliers.size(),
           confidence},

@@ -62,9 +62,18 @@ class FruitQrPlannerNode(Node):
     def __init__(self) -> None:
         super().__init__("fruit_qr_planner")
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
+        self.declare_parameter(
+            "current_area_topic",
+            "/fruit_mission/current_area",
+        )
         self.declare_parameter("confirm_frames", 1)
 
         image_topic = self.get_parameter("image_topic").get_parameter_value().string_value
+        current_area_topic = (
+            self.get_parameter("current_area_topic")
+            .get_parameter_value()
+            .string_value
+        )
         confirm_frames = self.get_parameter("confirm_frames").get_parameter_value().integer_value
         if confirm_frames <= 0:
             raise ValueError("confirm_frames must be greater than zero")
@@ -92,9 +101,23 @@ class FruitQrPlannerNode(Node):
             self._on_image,
             qos_profile_sensor_data,
         )
+        self._area_subscription = self.create_subscription(
+            String,
+            current_area_topic,
+            self._on_current_area,
+            plan_qos(),
+        )
         self.get_logger().info(
             f"Waiting for B-zone QR code on {image_topic}; confirm_frames={confirm_frames}"
         )
+
+    def _on_current_area(self, message: String) -> None:
+        entered_c = message.data.strip().upper() == "C"
+        if entered_c and self._sequence.expect_c():
+            self.get_logger().info(
+                "Mission entered C before a B QR plan was decoded; "
+                "now waiting for C"
+            )
 
     def _on_image(self, message: Image) -> None:
         if self._sequence.state == PlanSequence.COMPLETED:

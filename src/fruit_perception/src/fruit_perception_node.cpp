@@ -639,7 +639,15 @@ private:
             }
             candidates.push_back(
               BTargetCandidate{
-                output.type, output.point, static_cast<double>(output.confidence)});
+                output.type,
+                output.point,
+                cv::Point2d{
+                  static_cast<double>(output.roi.x) +
+                  static_cast<double>(output.roi.width) * 0.5,
+                  static_cast<double>(output.roi.y) +
+                  static_cast<double>(output.roi.height) * 0.5},
+                static_cast<std::size_t>(stream.transform.original_width),
+                static_cast<double>(output.confidence)});
           }
 
           const auto target_update = stream.b_target_selector->update(candidates);
@@ -653,6 +661,9 @@ private:
             item.point.x = target.point.x;
             item.point.y = target.point.y;
             item.point.z = target.point.z;
+            item.pixel_x = static_cast<float>(target.pixel_center.x);
+            item.pixel_y = static_cast<float>(target.pixel_center.y);
+            item.image_width = static_cast<std::uint32_t>(target.image_width);
             item.observation_count = static_cast<std::uint32_t>(target.observation_count);
             item.inlier_count = static_cast<std::uint32_t>(target.inlier_count);
             result.targets.push_back(std::move(item));

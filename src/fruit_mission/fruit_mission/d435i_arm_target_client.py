@@ -287,6 +287,8 @@ class D435iArmTargetClient(HardwareCommandClient):
                 f"confidence={target.confidence:.6f} "
                 f"observations={target.observation_count} "
                 f"inliers={target.inlier_count} "
+                f"pixel=({target.pixel_x:.3f},{target.pixel_y:.3f}) "
+                f"image_width={target.image_width} "
                 f"point=({target.point.x:.6f},{target.point.y:.6f},"
                 f"{target.point.z:.6f})"
             )
@@ -297,8 +299,9 @@ class D435iArmTargetClient(HardwareCommandClient):
             (
                 (
                     target.type,
-                    float(target.point.x),
-                    float(target.point.y),
+                    float(target.pixel_x),
+                    float(target.pixel_y),
+                    int(target.image_width),
                 )
                 for target in targets
             ),
@@ -326,10 +329,9 @@ class D435iArmTargetClient(HardwareCommandClient):
             )
         else:
             target = targets[decision.target_index]
-            score = abs(float(target.point.x)) - float(target.point.y)
             self.get_logger().info(
                 f"B-zone decision: observed {target_name}, matching the "
-                f"expected fruit; selected score={score:.6f}"
+                f"expected fruit; selected pixel score={decision.score:.3f}"
             )
             result = self.send_arm_target(
                 target.point,
@@ -454,7 +456,12 @@ class D435iArmTargetClient(HardwareCommandClient):
                     float(target.point.y),
                     float(target.point.z),
                 )
-                if target.has_point and all(math.isfinite(value) for value in point):
+                pixel = (float(target.pixel_x), float(target.pixel_y))
+                if (
+                    target.has_point
+                    and int(target.image_width) > 0
+                    and all(math.isfinite(value) for value in point + pixel)
+                ):
                     valid_targets.append(target)
             return valid_targets
         return None

@@ -535,23 +535,51 @@ class AxisWaypointActionServer(Node):
         return False
 
     def _lookup_pose(self) -> Optional[AxisPose]:
-        try:
-            transform = self._tf_buffer.lookup_transform(
-                self._map_frame,
-                self._base_frame,
-                Time(),
-                timeout=Duration(seconds=self._tf_timeout_sec),
-            )
-        except TransformException as error:
-            self.get_logger().error(f"Aborting waypoint goal: TF unavailable: {error}")
-            self._publish_stop_burst()
-            return None
-        transform_time = Time.from_msg(transform.header.stamp)
-        transform_age = (self.get_clock().now() - transform_time).nanoseconds / 1e9
-        if transform_age > self._tf_timeout_sec:
-            self.get_logger().error(
-                f"Aborting waypoint goal: TF is {transform_age:.3f}s old"
-            )
+        deadline = time.monotonic() + self._tf_timeout_sec
+        transform = None
+        last_error = None
+        last_transform_age = None
+        stop_published = False
+        while rclpy.ok():
+            try:
+                candidate = self._tf_buffer.lookup_transform(
+                    self._map_frame,
+                    self._base_frame,
+                    Time(),
+                    timeout=Duration(),
+                )
+            except TransformException as error:
+                last_error = error
+            else:
+                transform_time = Time.from_msg(candidate.header.stamp)
+                transform_age = (
+                    self.get_clock().now() - transform_time
+                ).nanoseconds / 1e9
+                if transform_age <= self._tf_timeout_sec:
+                    transform = candidate
+                    break
+                last_transform_age = transform_age
+
+            if not stop_published:
+                self._publish_stop()
+                stop_published = True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                break
+            time.sleep(min(0.01, remaining))
+
+        if transform is None:
+            if last_transform_age is not None:
+                self.get_logger().error(
+                    "Aborting waypoint goal: "
+                    f"TF is {last_transform_age:.3f}s old after waiting "
+                    f"{self._tf_timeout_sec:.3f}s for a fresh transform"
+                )
+            else:
+                detail = f": {last_error}" if last_error is not None else ""
+                self.get_logger().error(
+                    f"Aborting waypoint goal: TF unavailable{detail}"
+                )
             self._publish_stop_burst()
             return None
         translation = transform.transform.translation

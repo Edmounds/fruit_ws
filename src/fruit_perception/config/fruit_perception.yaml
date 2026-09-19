@@ -14,8 +14,8 @@ left_camera:
     saturation: 69
     sharpness: 2
     gain: 1
-    auto_white_balance: false
-    white_balance: 6500
+    auto_white_balance: true
+    white_balance: 5159
     autoexposure: false
     exposure: 24
 
@@ -42,7 +42,7 @@ right_camera:
 
 usb_camera_controls:
   ros__parameters:
-    left_backlight_compensation: 125
+    left_backlight_compensation: 121
     right_backlight_compensation: 121
     left_gamma: 84
     right_gamma: 84

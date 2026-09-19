@@ -4,7 +4,7 @@
   <name>fruit_nav_bringup</name>
   <version>1.3.2</version>
   <description>Fruit competition pure odometry navigation bringup</description>
-  <maintainer email="rc4@fruit_ws.local">rc4</maintainer>
+  <maintainer email="edmounds@163.com">rc4</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
