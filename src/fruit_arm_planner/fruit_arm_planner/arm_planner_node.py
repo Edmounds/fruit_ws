@@ -70,6 +70,7 @@ class ArmPlannerNode(Node):
         self.interpolation_step_ms = 50
         self.status_max_age_sec = 0.25
         self.execution_timeout_buffer_sec = 2.0
+        self.mode_start_delay_ms = 100
         self.hover_height_m = 0.06
         self.presets: Dict[str, dict] = {}
 
@@ -226,9 +227,11 @@ class ArmPlannerNode(Node):
             self.hover_height_m = float(planning_cfg.get('hover_height_m', 0.06))
             self.status_max_age_sec = float(planning_cfg.get('status_max_age_sec', 0.25))
             self.execution_timeout_buffer_sec = float(planning_cfg.get('execution_timeout_buffer_sec', 2.0))
+            self.mode_start_delay_ms = int(planning_cfg.get('mode_start_delay_ms', 100))
             if (self.default_duration_ms <= 0 or self.interpolation_step_ms <= 0
                     or not 0 < self.status_max_age_sec < 10
                     or not 0 < self.execution_timeout_buffer_sec < 60
+                    or not 0 <= self.mode_start_delay_ms <= 10000
                     or not math.isfinite(self.hover_height_m)):
                 raise ValueError('Invalid planning parameters')
 
@@ -391,6 +394,11 @@ class ArmPlannerNode(Node):
         # 3. 后台自动点火启动 (Mode=0)
         mode = ArmControlMode()
         mode.control_mode = ArmControlMode.MODE_TRAJECTORY
+        if self.mode_start_delay_ms:
+            self.get_logger().info(
+                f'Waiting {self.mode_start_delay_ms}ms before publishing TRAJECTORY mode'
+            )
+            time.sleep(self.mode_start_delay_ms / 1000.0)
         with self._state_lock:
             if self._interrupt_reason:
                 return False, traj_id, self._interrupt_reason

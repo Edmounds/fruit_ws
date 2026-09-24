@@ -40,6 +40,13 @@ colcon build --packages-select fruit_arm_planner
 ros2 launch fruit_arm_planner fruit_arm_planner.launch.py
 ```
 
+实机调试时可用 `ros2 launch fruit_arm_planner fruit_arm_debug.launch.py` 同时启动
+通信桥与规划器，再于另一终端运行
+`python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py`。
+控制台命令及 Ctrl+C 急停语义见[启动与调试手册](docs/04_SETUP_AND_DEBUGGING.md)。
+控制台支持 `--log-level info|debug|trace`，运行中可用 `level` 命令切换；
+`debug` 显示每帧状态，`trace` 还显示每个 ROS 轨迹路点。
+
 ### 3. 常用调试指令
 ```bash
 # 触发安全 Home 姿态复位
@@ -77,7 +84,10 @@ src/fruit_arm_planner/
 │   ├── kinematics.py                # 4-DOF 纯几何运动学求解器 (FK/IK)
 │   └── trajectory_planner.py        # 五次多项式平滑轨迹插值器
 ├── launch/
-│   └── fruit_arm_planner.launch.py  # 启动文件 (指向 src 下的 config)
+│   ├── fruit_arm_planner.launch.py  # 单独启动规划器
+│   └── fruit_arm_debug.launch.py    # 同时启动通信桥与规划器
+├── test/
+│   └── cartesian_console.py         # 手动运行的实机笛卡尔调试控制台
 ├── package.xml                      # ROS 2 包定义
 ├── README.md                        # 总导航入口与快速上手手册
 ├── resource/

@@ -45,6 +45,40 @@ common_config = '/home/rc4/fruit_ws/src/fruit_arm_planner/config/arm_presets.yam
 ros2 launch fruit_arm_planner fruit_arm_planner.launch.py
 ```
 
+**实机联调一键启动桥和规划器**（只在调试时使用；不要与已运行的通信桥重复启动）：
+
+```bash
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
+ros2 launch fruit_arm_planner fruit_arm_debug.launch.py
+# 串口设备不同可传 port:=/dev/ttyUSB0
+```
+
+另开一个终端运行交互式笛卡尔控制台：
+
+```bash
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
+python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
+# 启动时显示全部 20 Hz 状态与 Header/Mode：添加 --log-level debug
+# 同时逐点显示轨迹：添加 --log-level trace
+```
+
+控制台命令为 `move X Y Z PITCH_DEG [DURATION_MS] [ptp|lin] [hold|open|close]`、
+`status`、`stop`、`estop`、`level`、`help`、`quit`。例如 `move 0.20 0 0.25 0 2500 ptp hold`。
+运行中输入 `level info`、`level debug` 或 `level trace` 可立即切换，不需要重启：
+
+| 等级 | 输出 |
+| --- | --- |
+| `info`（默认） | 请求结果、状态变化、轨迹 ID 和错误码 |
+| `debug` | `info` 加每帧 20 Hz 状态、轨迹 Header 和控制 Mode |
+| `trace` | `debug` 加每个轨迹路点的 ID、时间、四轴弧度和夹爪动作 |
+
+`ROS TX` 日志来自控制台对规划器输出话题的订阅，表示**观测到 ROS 消息**，
+不表示通信桥已获得 ACK 或下位机已装载路点；不同话题的日志先后顺序也不是串口到达顺序。
+`move` 会实际驱动机械臂；`status` 可检查最新四轴反馈和控制器状态。运动服务异步返回，
+期间仍可输入 `stop` 或 `estop`。**在控制台按 Ctrl+C 会请求急停，再退出**；
+控制台最多等待急停服务响应 2 秒。服务响应仅证明规划器发布了急停 Mode，
+是否已到达下位机、是否进入 `EMERGENCY` 仍须观察状态。
+
 规划器只提供运动规划节点。发出运动命令前，必须由现有硬件桥接系统提供
 `/fruit_hardware_bridge/arm/status`；节点须收到四轴均有限、处于配置限位内且接收时间不超过
 `status_max_age_sec` 的状态。没有状态时服务会拒绝运动，STOP 和急停仍可调用。
@@ -53,7 +87,7 @@ ros2 launch fruit_arm_planner fruit_arm_planner.launch.py
 ### 3. 正常启动控制台输出核对
 当节点启动成功时，终端将打印加载的参数信息：
 ```text
-[arm_planner_node-1] [INFO] [arm_planner_node]: Loaded arm geometry: d1=0.14m, a2=0.16m, a3=0.16m, a4=0.08m
+[arm_planner_node-1] [INFO] [arm_planner_node]: Loaded arm geometry: d1=0.14m, a2=0.26m, a3=0.26m, a4=0.08m
 [arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q1] mapping: offset=0.0°, dir=+1.0, limits=[-180.0°, 180.0°]
 [arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q2] mapping: offset=-90.0°, dir=+1.0, limits=[-87.0°, 45.0°]
 [arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q3] mapping: offset=90.0°, dir=+1.0, limits=[-135.0°, 90.0°]
@@ -73,8 +107,8 @@ ros2 launch fruit_arm_planner fruit_arm_planner.launch.py
 ```yaml
 geometry:
   d1: 0.14       # 底座安装面至肩轴中心距
-  a2: 0.16       # 肩轴至肘轴距
-  a3: 0.16       # 肘轴至腕轴距
+  a2: 0.26       # 肩轴至肘轴距
+  a3: 0.26       # 肘轴至腕轴距
   a4: 0.08       # 腕轴至夹爪采摘作用点中心距
 ```
 
@@ -95,6 +129,7 @@ geometry:
 - `status_max_age_sec`：状态到达规划器后的最大可用时长，默认 0.25 秒。20 Hz 回报正常时约每 50 ms 更新一次。
 - `execution_timeout_buffer_sec`：从发布启动 Mode 起，轨迹末点时间之外的等待余量，默认 2 秒。超时会发布 STOP，但该发布不等于固件确认停止。
 - `interpolation_step_ms`：路点时间间隔目标值。每条轨迹均从最新实测角的 0 ms 路点开始；预设 `duration_ms` 为逐段时长。
+- `mode_start_delay_ms`：发布全部路点后、发布 `Mode=TRAJECTORY` 前的调试等待时间，默认 100 ms。它只是时间缓冲，不能证明通信桥已经完成逐点发送或下位机已经装载全部路点；正式修复仍应由通信桥提供跨消息发送屏障。
 
 配置缺失或几何、关节映射、预设的基本结构无效时，节点启动会报错退出。修改限位前应核实四轴实测角仍在新范围内，否则规划器会拒绝运动。
 
