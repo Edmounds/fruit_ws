@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import secrets
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Dict, List, Optional, Tuple
@@ -44,7 +45,7 @@ class TrajectoryPlanner:
 
     def __init__(self, kinematics: Optional[RobotKinematics] = None):
         self.kinematics = kinematics or RobotKinematics()
-        self._next_trajectory_id = 1000
+        self._next_trajectory_id = secrets.randbelow(0xFFFFFFFE) + 1
 
     def get_new_trajectory_id(self) -> int:
         self._next_trajectory_id = (self._next_trajectory_id % 0xFFFFFFFE) + 1
@@ -67,6 +68,8 @@ class TrajectoryPlanner:
         gripper_action: int = GripperAction.HOLD,
     ) -> List[TrajectoryPoint]:
         """关节空间点到点平滑规划 (PTP，五次多项式 S-Curve)."""
+        if duration_ms <= 0 or duration_ms > 0xFFFFFFFF or num_points > duration_ms + 1:
+            raise ValueError('PTP duration must allow a distinct millisecond timestamp per point')
         points: List[TrajectoryPoint] = []
         if num_points < 2:
             num_points = 2
@@ -86,10 +89,10 @@ class TrajectoryPlanner:
             points.append(
                 TrajectoryPoint(
                     point_id=start_point_id + i,
-                    joint_1=round(q1, 4),
-                    joint_2=round(q2, 4),
-                    joint_3=round(q3, 4),
-                    joint_4=round(q4, 4),
+                    joint_1=q1,
+                    joint_2=q2,
+                    joint_3=q3,
+                    joint_4=q4,
                     time_from_start=t,
                     gripper_action=action,
                 )
@@ -105,6 +108,7 @@ class TrajectoryPlanner:
         duration_ms: int = 2500,
         step_ms: int = 50,
         transformer: Optional[Any] = None,
+        start_q_hw: Optional[Tuple[float, float, float, float]] = None,
         start_time_offset_ms: int = 0,
         start_point_id: int = 0,
         gripper_action: int = GripperAction.HOLD,
@@ -113,7 +117,9 @@ class TrajectoryPlanner:
 
         在 3D 空间以 step_ms 时间片切分，沿线逐点逆解并由 transformer 校验物理限位。
         """
-        num_points = max(2, duration_ms // step_ms)
+        if duration_ms <= 0 or step_ms <= 0 or duration_ms > 0xFFFFFFFF:
+            return False, [], 'LIN duration and step must be positive and fit uint32 milliseconds'
+        num_points = max(2, min(duration_ms + 1, math.ceil(duration_ms / step_ms) + 1))
         points: List[TrajectoryPoint] = []
 
         for i in range(num_points):
@@ -131,7 +137,9 @@ class TrajectoryPlanner:
             if not ok:
                 return False, [], f"LIN failed at step {i} (x={x:.3f}, y={y:.3f}, z={z:.3f}): {msg}"
 
-            if transformer:
+            if i == 0 and start_q_hw is not None:
+                q_final = start_q_hw
+            elif transformer:
                 q_hw = transformer.algo_to_hardware(q_algo)
                 lim_ok, lim_msg = transformer.check_hardware_limits(q_hw)
                 if not lim_ok:
@@ -146,10 +154,10 @@ class TrajectoryPlanner:
             points.append(
                 TrajectoryPoint(
                     point_id=start_point_id + i,
-                    joint_1=round(q_final[0], 4),
-                    joint_2=round(q_final[1], 4),
-                    joint_3=round(q_final[2], 4),
-                    joint_4=round(q_final[3], 4),
+                    joint_1=q_final[0],
+                    joint_2=q_final[1],
+                    joint_3=q_final[2],
+                    joint_4=q_final[3],
                     time_from_start=t,
                     gripper_action=action,
                 )
@@ -177,6 +185,8 @@ class TrajectoryPlanner:
         """
         if not waypoints:
             return False, [], "Empty waypoints sequence"
+        if coordinate_frame not in ('cartesian', 'joints') or step_ms <= 0:
+            return False, [], 'Invalid coordinate frame or interpolation step'
 
         all_points: List[TrajectoryPoint] = []
         cur_q_hw = current_q_hw
@@ -188,6 +198,10 @@ class TrajectoryPlanner:
             gripper = int(wp.get("gripper", GripperAction.HOLD))
             linear = bool(wp.get("linear", False))
             dwell_ms = int(wp.get("dwell_ms", default_dwell_ms if gripper != GripperAction.HOLD else 0))
+            if duration_ms <= 0 or dwell_ms < 0 or gripper not in (0, 1, 2):
+                return False, [], f'Waypoint {idx} has invalid duration, dwell or gripper action'
+            if cur_time_ms + duration_ms + dwell_ms > 0xFFFFFFFF:
+                return False, [], f'Waypoint {idx} exceeds uint32 trajectory time'
 
             target = wp.get("target", [])
             if coordinate_frame == "cartesian":
@@ -217,36 +231,60 @@ class TrajectoryPlanner:
                 if not lim_ok:
                     return False, [], f"Waypoint {idx} joint limit exceeded: {lim_msg}"
 
-            # --- 阶段 1: 移动段 (强制 gripper=HOLD，到达前绝不开合) ---
-            num_pts = max(2, duration_ms // step_ms)
-            move_pts = self.plan_joint_point_to_point(
-                start_q=cur_q_hw,
-                end_q=target_q_hw,
-                duration_ms=duration_ms,
-                num_points=num_pts,
-                start_time_offset_ms=cur_time_ms,
-                start_point_id=point_id,
-                gripper_action=GripperAction.HOLD,
-            )
+            if linear:
+                if coordinate_frame != "cartesian":
+                    return False, [], f"Waypoint {idx} linear path requires cartesian coordinates"
+                q_algo_start = transformer.hardware_to_algo(cur_q_hw)
+                fk_start = self.kinematics.forward_kinematics(*q_algo_start)
+                ok, move_pts, msg = self.plan_cartesian_linear_path(
+                    start_xyz=fk_start["end_effector"][:3],
+                    target_xyz=(x, y, z),
+                    start_pitch=fk_start["end_effector"][3],
+                    target_pitch=pitch_rad,
+                    duration_ms=duration_ms,
+                    step_ms=step_ms,
+                    transformer=transformer,
+                    start_q_hw=cur_q_hw,
+                    start_time_offset_ms=cur_time_ms,
+                    gripper_action=GripperAction.HOLD,
+                )
+                if not ok:
+                    return False, [], f"Waypoint {idx}: {msg}"
+            else:
+                num_pts = max(2, min(duration_ms + 1, math.ceil(duration_ms / step_ms) + 1))
+                move_pts = self.plan_joint_point_to_point(
+                    start_q=cur_q_hw,
+                    end_q=target_q_hw,
+                    duration_ms=duration_ms,
+                    num_points=num_pts,
+                    start_time_offset_ms=cur_time_ms,
+                    gripper_action=GripperAction.HOLD if dwell_ms > 0 else gripper,
+                )
+            if dwell_ms == 0 and gripper != GripperAction.HOLD:
+                move_pts[-1].gripper_action = gripper
+            if all_points:
+                move_pts = move_pts[1:]
+            for move_pt in move_pts:
+                move_pt.point_id = point_id
+                point_id += 1
             all_points.extend(move_pts)
             cur_time_ms += duration_ms
-            point_id += len(move_pts)
             cur_q_hw = target_q_hw
 
             # --- 阶段 2: 夹取驻留段 (Dwell Point: 原地静止并执行夹紧/张开) ---
             if dwell_ms > 0 and gripper != GripperAction.HOLD:
-                num_dwell_pts = max(1, dwell_ms // step_ms)
+                num_dwell_pts = max(1, math.ceil(dwell_ms / step_ms))
                 for d_i in range(1, num_dwell_pts + 1):
                     d_t = cur_time_ms + int(dwell_ms * (d_i / num_dwell_pts))
                     all_points.append(
                         TrajectoryPoint(
                             point_id=point_id,
-                            joint_1=round(cur_q_hw[0], 4),
-                            joint_2=round(cur_q_hw[1], 4),
-                            joint_3=round(cur_q_hw[2], 4),
-                            joint_4=round(cur_q_hw[3], 4),
+                            joint_1=cur_q_hw[0],
+                            joint_2=cur_q_hw[1],
+                            joint_3=cur_q_hw[2],
+                            joint_4=cur_q_hw[3],
                             time_from_start=d_t,
-                            gripper_action=gripper,
+                            gripper_action=gripper if d_i == 1 else GripperAction.HOLD,
                         )
                     )
                     point_id += 1

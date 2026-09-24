@@ -2,6 +2,8 @@
 
 本文档面向任务状态机（`fruit_mission`）、视觉决策层以及上层二次开发人员，详细列举 `arm_planner_node` 对外提供的所有 **ROS 2 话题接口、服务接口、消息字段规范及代码调用示例**。
 
+本篇描述当前接口。三类正式调用共用运动占用权；必须有新鲜、有效的四轴回传，轨迹首点为 `t=0` 实测角。跨层通信时序及其限制见[通信架构文档](02_COMMUNICATION_PROTOCOL.md)。
+
 ---
 
 ## 目录
@@ -11,7 +13,7 @@
 - [四、预设动作工序数组规范 (Multi-Waypoint Sequence API)](#四预设动作工序数组规范-multi-waypoint-sequence-api)
 - [五、服务控制接口 (Services)](#五服务控制接口-services)
 - [六、遥测广播接口 (Telemetry)](#六遥测广播接口-telemetry)
-- [七、Python 代码端调用示例 (Client SDK)](#七python-代码端调用示例-client-sdk)
+- [七、mission 客户端调用约定](#七mission-客户端调用约定)
 
 ---
 
@@ -119,7 +121,7 @@ ros2 topic pub --once /arm_planner_node/cmd_preset std_msgs/msg/String "{data: '
 
 ### 2. 动态切换在接口中的承载方案
 1. **服务接口调用时**：在 `MoveArmCartesian` 服务请求中，显式传入布尔字段 `linear_path = true/false`；
-2. **话题接口发布时**：可在 `config/arm_presets.yaml` 中配置 `default_cartesian_mode: "ptp"` 作为默认值；若需临时以直线移动，可通过发布专门的直线话题 `~/cmd_cartesian_linear` 或在未来扩展字段中指定。
+2. **现有调试话题**：`~/cmd_cartesian` 固定使用 PTP，不提供 LIN 选择。正式业务要选择 LIN，应调用 `MoveArmCartesian` 服务并设置 `linear_path=true`。
 
 ---
 
@@ -132,20 +134,13 @@ ros2 topic pub --once /arm_planner_node/cmd_preset std_msgs/msg/String "{data: '
 
 ```yaml
 presets:
-  # 复合采摘工序预设示例
+  # 与当前解析器一致的关节预设示例；时间均为逐段时长
   pick_sequence:
-    description: "苹果采摘多段复合工序"
+    coordinate_frame: "joints"
     waypoints:
-      # 阶段 0: 移动到果树前方准备位，耗时 1500ms，夹爪张开 (gripper=1)
-      - { joints_deg: [0.0, 10.0, -20.0, 0.0], duration_ms: 1500, gripper: 1 }
-      # 阶段 1: 伸向果实并包裹，耗时 1000ms，保持张开 (gripper=1)
-      - { joints_deg: [0.0, -10.0, -40.0, 0.0], duration_ms: 1000, gripper: 1 }
-      # 阶段 2: 闭合夹爪夹紧水果，原地停留 600ms，夹爪闭合 (gripper=2)
-      - { joints_deg: [0.0, -10.0, -40.0, 0.0], duration_ms: 600,  gripper: 2 }
-      # 阶段 3: 向上垂直提拉脱柄，耗时 1200ms，保持闭合 (gripper=2)
-      - { joints_deg: [0.0, 10.0, -20.0, 0.0], duration_ms: 1200, gripper: 2 }
-      # 阶段 4: 折叠收回底盘上方，耗时 2000ms，保持闭合 (gripper=2)
-      - { joints_deg: [0.0, 20.0, -100.0, 0.0], duration_ms: 2000, gripper: 2 }
+      - { target: [0.0, 20.0, -40.0, 0.0], duration_ms: 1500, gripper: 1, dwell_ms: 400 }
+      - { target: [0.0, 10.0, -60.0, 0.0], duration_ms: 1000, gripper: 2, dwell_ms: 600 }
+      - { target: [0.0, 20.0, -100.0, 0.0], duration_ms: 2000, gripper: 0 }
 ```
 
 ### 2. 底层插值与时间片无缝拼接机制
@@ -153,7 +148,7 @@ presets:
 1. **自动提取起点**：解算节点实时提取下位机当前物理角度 $Q_{\text{current}}$；
 2. **引导段插值（当前位置 $\to$ 阶段 0）**：根据阶段 0 的 `duration_ms`，以 50ms 时间步长生成连续五次多项式过渡点；
 3. **工序段连续缝合（阶段 0 $\to$ 阶段 1 $\to$ ...）**：各阶段依次以五次多项式在各自指定的 `duration_ms` 内离散化，时间戳累加单调递增；
-4. **生成单一连续点流**：将整套工序合成一条完整的 `TrajectoryPoint` 序列一次性下发至下位机，电机连续丝滑运转，无任何段间停顿。
+4. **生成单一连续点流**：将整套工序合成一条 `TrajectoryPoint` 序列下发；配置了 `dwell_ms` 的段会在目标位置驻留。
 
 ---
 
@@ -173,7 +168,7 @@ presets:
   - `success` (`bool`): 是否成功执行完毕
   - `message` (`string`): 执行状态描述或报错原因
   - `trajectory_id` (`uint32`): 任务流水号
-- **安全看门狗**：节点在后台监控下位机 20Hz 状态，若在 `duration_ms + 2.0s` 缓冲期内收到 `COMPLETED` 则返回成功；若超时未报完成，节点自动发送 `ArmControlMode(1)` (STOP) 停机保护并返回超时失败。
+- **执行结果**：节点从发布启动 Mode 起，以轨迹末点时间加配置的 `execution_timeout_buffer_sec` 等待本次轨迹 ID 的新状态。收到 `COMPLETED` 才返回成功；`FAILED`、`EMERGENCY`、主动停止或超时返回失败。超时会发布 STOP；发布成功不代表硬件已停稳。
 
 ---
 
@@ -204,7 +199,7 @@ presets:
 ### 机械臂实时状态广播 (`~/joint_states`)
 - **完整话题名**：`/arm_planner_node/joint_states`
 - **消息类型**：`sensor_msgs/msg/JointState`
-- **发布频率**：与下位机状态回传频率同步（**20Hz / 每 50ms 一帧**）
+- **发布频率**：仅在收到有效四轴反馈时发布，正常情况下跟随下位机约 20 Hz 状态回传。
 - **功能描述**：实时将下位机回传的物理编码器数值转为标准 ROS 2 `JointState`，供 RViz 机械臂 3D 模型联动或上层监控节点监视。
 - **字段规范**：
   - `name`: `['joint_1', 'joint_2', 'joint_3', 'joint_4']`
@@ -213,72 +208,10 @@ presets:
 
 ---
 
-## 七、Python 代码端调用示例 (Client SDK)
+## 七、mission 客户端调用约定
 
-在 `fruit_mission` 业务状态机节点中，推荐使用以下范式与机械臂进行高精度或快速交互：
-
-```python
-import rclpy
-from rclpy.node import Node
-from geometry_msgs.msg import PointStamped
-from std_srvs.srv import Trigger
-from fruit_arm_interfaces.srv import MoveArmCartesian, ExecuteArmPreset
-
-class MissionArmCommander(Node):
-    def __init__(self):
-        super().__init__('mission_arm_commander')
-
-        # 1. 创建笛卡尔末端控制服务客户端
-        self._cartesian_client = self.create_client(
-            MoveArmCartesian,
-            '/arm_planner_node/move_cartesian'
-        )
-
-        # 2. 创建预设动作服务客户端
-        self._preset_client = self.create_client(
-            ExecuteArmPreset,
-            '/arm_planner_node/execute_preset'
-        )
-
-    def pick_fruit_straight_line(self, x: float, y: float, z: float, pitch_deg: float = 0.0) -> bool:
-        """【高精度采摘模式】：末端严格走 3D 直线平直探入果实 (linear_path=True)."""
-        if not self._cartesian_client.wait_for_service(timeout_sec=2.0):
-            self.get_logger().error("Arm cartesian service not ready!")
-            return False
-
-        req = MoveArmCartesian.Request()
-        req.x = x
-        req.y = y
-        req.z = z
-        req.pitch_deg = pitch_deg
-        req.duration_ms = 2500
-        req.gripper_action = 1          # 探入时张开夹爪
-        req.linear_path = True          # 启用严格空间几何直线插补！
-
-        future = self._cartesian_client.call_async(req)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
-        return future.result().success
-
-    def move_to_hover_fast(self, x: float, y: float, z: float, pitch_deg: float = 0.0) -> bool:
-        """【快速转移模式】：关节平滑过渡，空中走平滑弧线 (linear_path=False)."""
-        req = MoveArmCartesian.Request()
-        req.x = x
-        req.y = y
-        req.z = z
-        req.pitch_deg = pitch_deg
-        req.duration_ms = 2000
-        req.gripper_action = 0          # 保持夹爪
-        req.linear_path = False         # 仅终点逆解，关节平滑过渡，速度更快
-
-        future = self._cartesian_client.call_async(req)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
-        return future.result().success
-
-    def run_pick_sequence(self, sequence_name: str = "pick_sequence") -> bool:
-        """执行完整的多动作数组预设工序."""
-        req = ExecuteArmPreset.Request()
-        req.preset_name = sequence_name
-        future = self._preset_client.call_async(req)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
-        return future.result().success
-```
+1. 分别创建 `MoveArmJoints`、`MoveArmCartesian` 和 `ExecuteArmPreset` service 客户端。mission 只提交这三类请求，不直接发布 `TrajectoryHeader`、`TrajectoryPoint` 或 `ArmControlMode`。
+2. 调用笛卡尔服务前，由负责视觉和坐标转换的模块把目标转换到机械臂根部固定坐标系。`pitch_deg` 是末端俯仰角；`linear_path` 只选择 PTP 或 LIN，不改变坐标系。
+3. 客户端异步发出 service 请求，由 mission 现有 executor/状态机等待其 future；等待期限需覆盖轨迹发送、全部逐段运动和超时缓冲。不要在正在由同一 executor 调用的回调中再次 `spin_until_future_complete`，避免回调互相等待。
+4. future 完成后先处理 service 异常，再判断 `response.success`。仅 `success=true` 表示对应轨迹已由下位机报告完成；`trajectory_id` 用于诊断关联，`message` 记录失败原因。客户端自身等待超时不能推断机械臂已停止，应使用明确的 STOP 流程。
+5. 若任务中途需中断，调用独立的 STOP 或急停入口。它们当前的 `Trigger.success=true` 只表示规划器已发布控制 Mode；下位机是否停稳应观察后续状态。详细时序和残余风险见[通信架构文档](02_COMMUNICATION_PROTOCOL.md)。

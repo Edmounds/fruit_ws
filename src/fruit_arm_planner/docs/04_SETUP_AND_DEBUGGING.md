@@ -1,4 +1,4 @@
-# 04. 启动流程、参数调参配置与实机调试手册 (SETUP_AND_DEBUGGING)
+# 04. 启动流程、配置与调试
 
 本文档面向现场调试工程师与操作人员，提供 `fruit_arm_planner` 的**环境准备、编译启动、`arm_presets.yaml` 调参校准指南、CLI 快速调试命令集以及常见故障排查手册**。
 
@@ -21,7 +21,7 @@
 # 1. 注入统一运行环境 (设置 CycloneDDS 与系统库路径)
 source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 
-# 2. 编译本功能包 (增量编译仅耗时约 0.8s)
+# 2. 编译本功能包
 cd /home/rc4/fruit_ws
 colcon build --packages-select fruit_arm_planner
 ```
@@ -45,6 +45,11 @@ common_config = '/home/rc4/fruit_ws/src/fruit_arm_planner/config/arm_presets.yam
 ros2 launch fruit_arm_planner fruit_arm_planner.launch.py
 ```
 
+规划器只提供运动规划节点。发出运动命令前，必须由现有硬件桥接系统提供
+`/fruit_hardware_bridge/arm/status`；节点须收到四轴均有限、处于配置限位内且接收时间不超过
+`status_max_age_sec` 的状态。没有状态时服务会拒绝运动，STOP 和急停仍可调用。
+修改本包 Python 代码后需要重新构建并重新 source 运行环境；仅修改 YAML 时重启节点即可。
+
 ### 3. 正常启动控制台输出核对
 当节点启动成功时，终端将打印加载的参数信息：
 ```text
@@ -53,8 +58,8 @@ ros2 launch fruit_arm_planner fruit_arm_planner.launch.py
 [arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q2] mapping: offset=-90.0°, dir=+1.0, limits=[-87.0°, 45.0°]
 [arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q3] mapping: offset=90.0°, dir=+1.0, limits=[-135.0°, 90.0°]
 [arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q4] mapping: offset=0.0°, dir=+1.0, limits=[-90.0°, 92.4°]
-[arm_planner_node-1] [INFO] [arm_planner_node]: Loaded 3 arm presets: ['zero', 'home', 'retract']
-[arm_planner_node-1] [INFO] [arm_planner_node]: Fruit Arm Planner Node ready.
+[arm_planner_node-1] [INFO] [arm_planner_node]: Loaded 4 arm presets: ['zero', 'home', 'retract', 'pick_sequence']
+[arm_planner_node-1] [INFO] [arm_planner_node]: Fruit Arm Planner Node fully ready with Service API.
 ```
 
 ---
@@ -85,11 +90,22 @@ geometry:
 - `q2` 的最小限位 `-87.0°` 设定是为了防止大臂俯得过低磕碰车身顶盖；
 - 如果现场发现手臂触碰避障结构，可适度收紧限位范围（例如将 `q2` 下限收紧至 `-75.0°`）。
 
+### 4. 反馈和等待参数 (`planning`)
+
+- `status_max_age_sec`：状态到达规划器后的最大可用时长，默认 0.25 秒。20 Hz 回报正常时约每 50 ms 更新一次。
+- `execution_timeout_buffer_sec`：从发布启动 Mode 起，轨迹末点时间之外的等待余量，默认 2 秒。超时会发布 STOP，但该发布不等于固件确认停止。
+- `interpolation_step_ms`：路点时间间隔目标值。每条轨迹均从最新实测角的 0 ms 路点开始；预设 `duration_ms` 为逐段时长。
+
+配置缺失或几何、关节映射、预设的基本结构无效时，节点启动会报错退出。修改限位前应核实四轴实测角仍在新范围内，否则规划器会拒绝运动。
+
 ---
 
 ## 四、命令行快速调试指令大全
 
 在单独调试机械臂节点时，可打开另一终端执行以下 CLI 测试命令：
+
+下列运动命令会使实机动作，现场确认机械臂周围安全、硬件桥接状态正常后再执行。
+正式任务使用三个运动 service；`cmd_*` 话题只供调试，没有同步结果。并发运动请求会收到忙错误。
 
 ```bash
 # 激活环境
@@ -149,11 +165,24 @@ ros2 topic pub --once /arm_planner_node/cmd_joints sensor_msgs/msg/JointState \
 # ========================================================
 # 监听 20Hz 实时物理角度与速度
 ros2 topic echo /arm_planner_node/joint_states
+
+# 核对底层 20 Hz 状态和轨迹 ID；仅 joint_states 不能证明动作完成
+ros2 topic echo /fruit_hardware_bridge/arm/status
 ```
 
 ---
 
 ## 五、现场常见故障排查手册 (Troubleshooting)
+
+### 故障 0：服务返回 `Fresh valid four-joint feedback is required` 或 `Arm is not idle`
+- 确认 `/fruit_hardware_bridge/arm/status` 持续更新，四关节角均为有限值且处于 YAML 限位内。
+- 检查 `task_status`；运动中或急停锁定时不能发新运动。急停后按固件协议发送 STOP 解锁，并等待新鲜的 IDLE 回报。
+- 调用 STOP 的服务成功只表示 Mode 已交给 ROS 发布器；必须观察后续状态确认硬件已经返回空闲。
+
+### 故障 0.1：服务超时或已发布轨迹但机械臂没有运行
+- 记录服务返回的 `trajectory_id`，对照 `/fruit_hardware_bridge/arm/status` 的 ID、`task_status` 与 `error_code`。
+- 规划器按 Header、全部 Point、Mode 顺序发布，但 ROS 话题及桥接层不同报文 ID 之间没有跨队列到达屏障；如果 Mode 在点收齐前到达，固件应报错，具体错误行为仍需现场核实。
+- 超时 STOP 可能在桥接层排队；不要把返回超时当作电机已经停稳。
 
 ### 故障 1：发布指令后机械臂毫无反应
 - **排查步骤 1**：检查底层串口通信桥 `auto_serial_bridge` 是否已启动：

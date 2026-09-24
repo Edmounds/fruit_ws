@@ -7,8 +7,9 @@ interpolation (PTP / LIN), multi-waypoint presets, and hardware communication.
 from __future__ import annotations
 
 import math
+import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -67,16 +68,20 @@ class ArmPlannerNode(Node):
 
         self.default_duration_ms = 3000
         self.interpolation_step_ms = 50
+        self.status_max_age_sec = 0.25
+        self.execution_timeout_buffer_sec = 2.0
         self.hover_height_m = 0.06
         self.presets: Dict[str, dict] = {}
 
         self._load_config_from_yaml()
 
-        # 下位机硬件实时状态缓存 (20Hz，默认物理零位为大臂竖直朝天、小臂水平朝前)
+        self._state_lock = threading.Lock()
+        self._motion_active = False
+        self._interrupt_reason: Optional[str] = None
+        self._require_idle = False
         self.latest_status: Optional[ArmStatus] = None
-        self.current_joints = (0.0, 0.0, 0.0, 0.0)
-        self.current_gripper_state = 0
-        self.latest_trajectory_id = 0
+        self._status_received_at = 0.0
+        self.current_joints: Optional[Tuple[float, float, float, float]] = None
 
         # --------------------------------------------------------------------
         # 3. 对接底层硬件通信 (fruit_hardware_bridge / auto_serial_bridge)
@@ -178,7 +183,22 @@ class ArmPlannerNode(Node):
             import yaml
             with open(config_path, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f)
-            params = data.get('arm_planner_node', {}).get('ros__parameters', {})
+            params = data['arm_planner_node']['ros__parameters']
+            for key in ('geometry', 'joint_mapping', 'planning', 'presets'):
+                if key not in params:
+                    raise ValueError(f'Missing configuration section: {key}')
+            for key in ('d1', 'a2', 'a3', 'a4'):
+                value = float(params['geometry'][key])
+                if not math.isfinite(value) or value <= 0:
+                    raise ValueError(f'Invalid geometry.{key}')
+            for key in ('q1', 'q2', 'q3', 'q4'):
+                cfg = params['joint_mapping'][key]
+                limits = cfg['limits_deg']
+                if (len(limits) != 2 or not all(math.isfinite(float(v)) for v in limits)
+                        or float(limits[0]) >= float(limits[1])
+                        or not math.isfinite(float(cfg['offset_deg']))
+                        or float(cfg['direction']) not in (-1.0, 1.0)):
+                    raise ValueError(f'Invalid joint_mapping.{key}')
 
             # 1. 连杆几何参数
             if 'geometry' in params:
@@ -204,14 +224,32 @@ class ArmPlannerNode(Node):
             self.default_duration_ms = int(planning_cfg.get('default_duration_ms', 3000))
             self.interpolation_step_ms = int(planning_cfg.get('interpolation_step_ms', 50))
             self.hover_height_m = float(planning_cfg.get('hover_height_m', 0.06))
+            self.status_max_age_sec = float(planning_cfg.get('status_max_age_sec', 0.25))
+            self.execution_timeout_buffer_sec = float(planning_cfg.get('execution_timeout_buffer_sec', 2.0))
+            if (self.default_duration_ms <= 0 or self.interpolation_step_ms <= 0
+                    or not 0 < self.status_max_age_sec < 10
+                    or not 0 < self.execution_timeout_buffer_sec < 60
+                    or not math.isfinite(self.hover_height_m)):
+                raise ValueError('Invalid planning parameters')
 
             # 4. 预设工序与固定轨迹
             presets_data = params.get('presets', {})
+            for name, preset in presets_data.items():
+                if preset.get('coordinate_frame', 'joints') not in ('joints', 'cartesian') or not preset.get('waypoints'):
+                    raise ValueError(f'Invalid preset {name}')
+                for wp in preset['waypoints']:
+                    target = wp['target']
+                    expected = 4 if preset.get('coordinate_frame', 'joints') == 'joints' else 3
+                    if (len(target) < expected or not all(math.isfinite(float(v)) for v in target)
+                            or int(wp['duration_ms']) <= 0 or int(wp['duration_ms']) > 0xFFFFFFFF
+                            or int(wp.get('dwell_ms', 0)) < 0
+                            or int(wp.get('gripper', 0)) not in (0, 1, 2)):
+                        raise ValueError(f'Invalid waypoint in preset {name}')
             self.presets = presets_data
             self.get_logger().info(f"Loaded {len(self.presets)} arm presets: {list(self.presets.keys())}")
 
         except Exception as e:
-            self.get_logger().error(f"Failed to load configuration from {config_path}: {e}")
+            raise RuntimeError(f'Failed to load configuration from {config_path}: {e}') from e
 
     # ========================================================================
     # 状态回调
@@ -219,27 +257,28 @@ class ArmPlannerNode(Node):
 
     def _on_arm_status(self, msg: ArmStatus) -> None:
         """处理来自下位机的 20Hz 状态遥测."""
-        self.latest_status = msg
-        self.latest_trajectory_id = msg.trajectory_id
-
-        # 保护：开环舵机或无回传引脚可能返回 NaN，过滤保护避免污染插值
-        j1 = msg.joint_1 if not math.isnan(msg.joint_1) else 0.0
-        j2 = msg.joint_2 if not math.isnan(msg.joint_2) else 0.0
-        j3 = msg.joint_3 if not math.isnan(msg.joint_3) else 0.0
-        j4 = msg.joint_4 if not math.isnan(msg.joint_4) else self.current_joints[3]
-        self.current_joints = (j1, j2, j3, j4)
-        self.current_gripper_state = msg.gripper_state
+        joints = (msg.joint_1, msg.joint_2, msg.joint_3, msg.joint_4)
+        valid = all(math.isfinite(q) for q in joints) and self.transformer.check_hardware_limits(joints)[0]
+        with self._state_lock:
+            self.latest_status = msg
+            self._status_received_at = time.monotonic()
+            self.current_joints = joints if valid else None
+            if valid and msg.task_status == ArmStatus.STATUS_IDLE:
+                self._require_idle = False
+        if not valid:
+            self.get_logger().warn('Ignoring arm status with invalid joint feedback')
+            return
 
         # 发布标准 JointState
         js_msg = JointState()
         js_msg.header.stamp = self.get_clock().now().to_msg()
         js_msg.name = ['joint_1', 'joint_2', 'joint_3', 'joint_4']
-        js_msg.position = list(self.current_joints)
+        js_msg.position = list(joints)
         js_msg.velocity = [
-            msg.joint_1_velocity if not math.isnan(msg.joint_1_velocity) else 0.0,
-            msg.joint_2_velocity if not math.isnan(msg.joint_2_velocity) else 0.0,
-            msg.joint_3_velocity if not math.isnan(msg.joint_3_velocity) else 0.0,
-            msg.joint_4_velocity if not math.isnan(msg.joint_4_velocity) else 0.0,
+            v if math.isfinite(v) else 0.0 for v in (
+                msg.joint_1_velocity, msg.joint_2_velocity,
+                msg.joint_3_velocity, msg.joint_4_velocity,
+            )
         ]
         self._joint_state_pub.publish(js_msg)
 
@@ -247,21 +286,77 @@ class ArmPlannerNode(Node):
     # 核心下发与看门狗执行
     # ========================================================================
 
+    def _run_motion(
+        self, build: Callable[[Tuple[float, float, float, float]], Tuple[bool, List[PlannerTrajectoryPoint], str]],
+        description: str,
+    ) -> Tuple[bool, int, str]:
+        with self._state_lock:
+            if self._motion_active:
+                return False, 0, 'Arm planner is busy'
+            self._motion_active = True
+            self._interrupt_reason = None
+            status = self.latest_status
+            age = time.monotonic() - self._status_received_at
+            start = self.current_joints
+            require_idle = self._require_idle
+        try:
+            if status is None or start is None or age > self.status_max_age_sec:
+                return False, 0, 'Fresh valid four-joint feedback is required'
+            if require_idle or status.task_status not in (ArmStatus.STATUS_IDLE, ArmStatus.STATUS_COMPLETED):
+                return False, 0, f'Arm is not idle (status={status.task_status})'
+            ok, points, message = build(start)
+            if not ok:
+                return False, 0, message
+            return self.execute_trajectory_sync(points, start, description)
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, 0, f'Invalid motion request: {exc}'
+        finally:
+            with self._state_lock:
+                self._motion_active = False
+                self._interrupt_reason = None
+
+    def _validate_trajectory(
+        self, points: List[PlannerTrajectoryPoint], start: Tuple[float, float, float, float]
+    ) -> Optional[str]:
+        if not 2 <= len(points) <= 0xFFFF:
+            return 'Trajectory point count must be 2..65535'
+        if points[0].joints != start or points[0].gripper_action != GripperAction.HOLD:
+            return 'Trajectory first point must be measured joints with HOLD'
+        previous_time = -1
+        for index, point in enumerate(points):
+            if point.point_id != index or not previous_time < point.time_from_start <= 0xFFFFFFFF:
+                return f'Invalid point ID or timestamp at point {index}'
+            if not all(math.isfinite(q) for q in point.joints):
+                return f'Non-finite joint angle at point {index}'
+            ok, message = self.transformer.check_hardware_limits(point.joints)
+            if not ok:
+                return f'Point {index}: {message}'
+            if point.gripper_action not in (0, 1, 2):
+                return f'Invalid gripper action at point {index}'
+            previous_time = point.time_from_start
+        if points[0].time_from_start != 0:
+            return 'Trajectory must start at 0 ms'
+        return None
+
     def execute_trajectory_sync(
         self,
         points: List[PlannerTrajectoryPoint],
-        expected_duration_ms: int,
+        start: Tuple[float, float, float, float],
         description: str = 'trajectory',
-        timeout_buffer_sec: float = 2.0,
     ) -> Tuple[bool, int, str]:
         """将轨迹下发至单片机并同步阻塞等待 COMPLETED (带自动超时 STOP 保护)."""
-        if not points:
-            return False, 0, 'Empty trajectory points'
+        error = self._validate_trajectory(points, start)
+        if error:
+            return False, 0, error
+
+        with self._state_lock:
+            if self._interrupt_reason:
+                return False, 0, self._interrupt_reason
 
         traj_id = self.planner.get_new_trajectory_id()
         point_num = len(points)
         actual_traj_duration_ms = points[-1].time_from_start
-        timeout_sec = (actual_traj_duration_ms / 1000.0) + timeout_buffer_sec
+        timeout_sec = (actual_traj_duration_ms / 1000.0) + self.execution_timeout_buffer_sec
 
         self.get_logger().info(
             f"Dispatching {description}: traj_id={traj_id}, points={point_num}, "
@@ -272,7 +367,10 @@ class ArmPlannerNode(Node):
         header = TrajectoryHeader()
         header.trajectory_id = traj_id
         header.point_num = point_num
-        self._header_pub.publish(header)
+        with self._state_lock:
+            if self._interrupt_reason:
+                return False, 0, self._interrupt_reason
+            self._header_pub.publish(header)
 
         # 2. 逐点传输
         for pt in points:
@@ -285,28 +383,39 @@ class ArmPlannerNode(Node):
             hw_pt.joint_3 = float(pt.joint_3)
             hw_pt.joint_4 = float(pt.joint_4)
             hw_pt.gripper_action = int(pt.gripper_action)
-            self._point_pub.publish(hw_pt)
+            with self._state_lock:
+                if self._interrupt_reason:
+                    return False, traj_id, self._interrupt_reason
+                self._point_pub.publish(hw_pt)
 
         # 3. 后台自动点火启动 (Mode=0)
         mode = ArmControlMode()
         mode.control_mode = ArmControlMode.MODE_TRAJECTORY
-        self._mode_pub.publish(mode)
+        with self._state_lock:
+            if self._interrupt_reason:
+                return False, traj_id, self._interrupt_reason
+            self._mode_pub.publish(mode)
+            dispatched_at = time.monotonic()
 
         # 4. 同步监视看门狗等待
-        deadline = time.time() + timeout_sec
-        start_wait = time.time()
+        deadline = dispatched_at + timeout_sec
         poll_interval = 0.05  # 50ms (20Hz)
 
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             time.sleep(poll_interval)
-            status = self.latest_status
-            if status is None:
+            with self._state_lock:
+                reason = self._interrupt_reason
+                status = self.latest_status
+                received_at = self._status_received_at
+            if reason:
+                return False, traj_id, reason
+            if status is None or received_at <= dispatched_at:
                 continue
 
             # 匹配当前任务
             if status.trajectory_id == traj_id:
                 if status.task_status == ArmStatus.STATUS_COMPLETED:
-                    elapsed = time.time() - start_wait
+                    elapsed = time.monotonic() - dispatched_at
                     self.get_logger().info(
                         f"Trajectory {traj_id} executed successfully in {elapsed:.2f}s"
                     )
@@ -324,7 +433,7 @@ class ArmPlannerNode(Node):
         self.stop()
         timeout_msg = (
             f"Execution timeout for trajectory {traj_id} after {timeout_sec:.1f}s. "
-            f"Safety STOP sent to hardware."
+            f"STOP published; hardware stop is not yet confirmed."
         )
         self.get_logger().error(timeout_msg)
         return False, traj_id, timeout_msg
@@ -337,151 +446,95 @@ class ArmPlannerNode(Node):
         self, req: MoveArmCartesian.Request, res: MoveArmCartesian.Response
     ) -> MoveArmCartesian.Response:
         """笛卡尔空间控制服务 (支持动态选择 linear_path 直线 vs PTP 弧线)."""
-        duration_ms = int(req.duration_ms) if req.duration_ms > 0 else self.default_duration_ms
-        pitch_rad = math.radians(float(req.pitch_deg))
-        target_xyz = (float(req.x), float(req.y), float(req.z))
-        gripper = int(req.gripper_action)
-
-        if req.linear_path:
-            # 模式 B：严格笛卡尔直线插补 (LIN，沿线切片逐点逆解)
-            q_algo_current = self.transformer.hardware_to_algo(self.current_joints)
-            fk_current = self.kinematics.forward_kinematics(*q_algo_current)
-            start_xyz = fk_current["points"][4]
-            start_pitch = fk_current["end_effector"][3]
-
-            ok, points, msg = self.planner.plan_cartesian_linear_path(
-                start_xyz=start_xyz,
-                target_xyz=target_xyz,
-                start_pitch=start_pitch,
-                target_pitch=pitch_rad,
-                duration_ms=duration_ms,
-                step_ms=self.interpolation_step_ms,
-                transformer=self.transformer,
-                gripper_action=gripper,
-            )
-            if not ok:
-                res.success = False
-                res.message = f"LIN planning failed: {msg}"
-                res.trajectory_id = 0
-                return res
-
-            success, traj_id, exec_msg = self.execute_trajectory_sync(
-                points, duration_ms, f"LIN_move_cartesian({target_xyz})"
-            )
-            res.success = success
-            res.message = exec_msg
-            res.trajectory_id = traj_id
-            return res
-
-        else:
-            # 模式 A：关节空间平滑过渡 (PTP，仅终点逆解，快速平滑弧线)
+        def build(start):
+            duration_ms = int(req.duration_ms) if req.duration_ms > 0 else self.default_duration_ms
+            pitch_rad = math.radians(float(req.pitch_deg))
+            target_xyz = (float(req.x), float(req.y), float(req.z))
+            gripper = int(req.gripper_action)
+            if (duration_ms <= 0 or duration_ms > 0xFFFFFFFF
+                    or not all(math.isfinite(v) for v in (*target_xyz, pitch_rad))
+                    or gripper not in (0, 1, 2)):
+                return False, [], 'Invalid Cartesian target, duration or gripper action'
+            if req.linear_path:
+                fk_current = self.kinematics.forward_kinematics(
+                    *self.transformer.hardware_to_algo(start)
+                )
+                return self.planner.plan_cartesian_linear_path(
+                    start_xyz=fk_current['end_effector'][:3],
+                    target_xyz=target_xyz,
+                    start_pitch=fk_current['end_effector'][3],
+                    target_pitch=pitch_rad,
+                    duration_ms=duration_ms,
+                    step_ms=self.interpolation_step_ms,
+                    transformer=self.transformer,
+                    start_q_hw=start,
+                    gripper_action=gripper,
+                )
             ok, q_algo, ik_msg = self.kinematics.inverse_kinematics(
                 target_xyz[0], target_xyz[1], target_xyz[2], pitch=pitch_rad, force_elbow_up=True
             )
             if not ok:
-                res.success = False
-                res.message = f"PTP IK failed for {target_xyz}: {ik_msg}"
-                res.trajectory_id = 0
-                return res
+                return False, [], f'PTP IK failed: {ik_msg}'
 
             target_q_hw = self.transformer.algo_to_hardware(q_algo)
             lim_ok, lim_msg = self.transformer.check_hardware_limits(target_q_hw)
             if not lim_ok:
-                res.success = False
-                res.message = f"PTP limit exceeded: {lim_msg}"
-                res.trajectory_id = 0
-                return res
-
-            num_pts = max(2, duration_ms // self.interpolation_step_ms)
+                return False, [], f'PTP limit exceeded: {lim_msg}'
+            num_pts = max(2, min(duration_ms + 1, math.ceil(duration_ms / self.interpolation_step_ms) + 1))
             points = self.planner.plan_joint_point_to_point(
-                start_q=self.current_joints,
+                start_q=start,
                 end_q=target_q_hw,
                 duration_ms=duration_ms,
                 num_points=num_pts,
                 gripper_action=gripper,
             )
+            return True, points, ''
 
-            success, traj_id, exec_msg = self.execute_trajectory_sync(
-                points, duration_ms, f"PTP_move_cartesian({target_xyz})"
-            )
-            res.success = success
-            res.message = exec_msg
-            res.trajectory_id = traj_id
-            return res
+        res.success, res.trajectory_id, res.message = self._run_motion(build, 'move_cartesian')
+        return res
 
     def _srv_move_joints_cb(
         self, req: MoveArmJoints.Request, res: MoveArmJoints.Response
     ) -> MoveArmJoints.Response:
         """关节角直接控制服务."""
-        duration_ms = int(req.duration_ms) if req.duration_ms > 0 else self.default_duration_ms
-        target_q_hw = tuple(math.radians(float(d)) for d in req.joints_deg)
-        gripper = int(req.gripper_action)
+        def build(start):
+            duration_ms = int(req.duration_ms) if req.duration_ms > 0 else self.default_duration_ms
+            target_q_hw = tuple(math.radians(float(d)) for d in req.joints_deg)
+            gripper = int(req.gripper_action)
+            if (len(target_q_hw) != 4 or not all(math.isfinite(q) for q in target_q_hw)
+                    or duration_ms <= 0 or duration_ms > 0xFFFFFFFF or gripper not in (0, 1, 2)):
+                return False, [], 'Invalid joint target, duration or gripper action'
+            lim_ok, lim_msg = self.transformer.check_hardware_limits(target_q_hw)
+            if not lim_ok:
+                return False, [], f'Joint limit exceeded: {lim_msg}'
+            num_pts = max(2, min(duration_ms + 1, math.ceil(duration_ms / self.interpolation_step_ms) + 1))
+            points = self.planner.plan_joint_point_to_point(
+                start_q=start, end_q=target_q_hw, duration_ms=duration_ms,
+                num_points=num_pts, gripper_action=gripper,
+            )
+            return True, points, ''
 
-        lim_ok, lim_msg = self.transformer.check_hardware_limits(target_q_hw)
-        if not lim_ok:
-            res.success = False
-            res.message = f"Joint limit exceeded: {lim_msg}"
-            res.trajectory_id = 0
-            return res
-
-        num_pts = max(2, duration_ms // self.interpolation_step_ms)
-        points = self.planner.plan_joint_point_to_point(
-            start_q=self.current_joints,
-            end_q=target_q_hw,
-            duration_ms=duration_ms,
-            num_points=num_pts,
-            gripper_action=gripper,
-        )
-
-        success, traj_id, exec_msg = self.execute_trajectory_sync(
-            points, duration_ms, f"move_joints({req.joints_deg}°)"
-        )
-        res.success = success
-        res.message = exec_msg
-        res.trajectory_id = traj_id
+        res.success, res.trajectory_id, res.message = self._run_motion(build, 'move_joints')
         return res
 
     def _srv_execute_preset_cb(
         self, req: ExecuteArmPreset.Request, res: ExecuteArmPreset.Response
     ) -> ExecuteArmPreset.Response:
         """预设工序序列调用服务 (支持笛卡尔坐标多点序列与双点驻留法夹取)."""
-        preset_name = req.preset_name.strip()
-        if preset_name not in self.presets:
-            res.success = False
-            res.message = f"Unknown preset '{preset_name}'. Available: {list(self.presets.keys())}"
-            res.trajectory_id = 0
-            return res
+        def build(start):
+            preset_name = req.preset_name.strip()
+            if preset_name not in self.presets:
+                return False, [], f"Unknown preset '{preset_name}'. Available: {list(self.presets.keys())}"
+            preset_data = self.presets[preset_name]
+            return self.planner.plan_multi_waypoint_sequence(
+                current_q_hw=start,
+                waypoints=preset_data['waypoints'],
+                transformer=self.transformer,
+                coordinate_frame=preset_data.get('coordinate_frame', 'joints'),
+                step_ms=self.interpolation_step_ms,
+            )
 
-        preset_data = self.presets[preset_name]
-        coord_frame = preset_data.get("coordinate_frame", "joints")
-        waypoints = preset_data.get("waypoints", [])
-
-        if not waypoints:
-            res.success = False
-            res.message = f"Preset '{preset_name}' has empty waypoints"
-            res.trajectory_id = 0
-            return res
-
-        ok, points, plan_msg = self.planner.plan_multi_waypoint_sequence(
-            current_q_hw=self.current_joints,
-            waypoints=waypoints,
-            transformer=self.transformer,
-            coordinate_frame=coord_frame,
-            step_ms=self.interpolation_step_ms,
-        )
-        if not ok:
-            res.success = False
-            res.message = f"Preset planning failed: {plan_msg}"
-            res.trajectory_id = 0
-            return res
-
-        total_ms = points[-1].time_from_start
-        success, traj_id, exec_msg = self.execute_trajectory_sync(
-            points, total_ms, f"preset({preset_name})"
-        )
-        res.success = success
-        res.message = exec_msg
-        res.trajectory_id = traj_id
+        res.success, res.trajectory_id, res.message = self._run_motion(build, f'preset({req.preset_name})')
         return res
 
     def _srv_home_cb(self, _req, res: Trigger.Response) -> Trigger.Response:
@@ -518,14 +571,20 @@ class ArmPlannerNode(Node):
         """平滑减速停止 (mode=1)."""
         mode = ArmControlMode()
         mode.control_mode = ArmControlMode.MODE_STOP
-        self._mode_pub.publish(mode)
+        with self._state_lock:
+            self._interrupt_reason = 'Motion interrupted by STOP'
+            self._require_idle = True
+            self._mode_pub.publish(mode)
         self.get_logger().info('Dispatched STOP (mode=1)')
 
     def emergency_stop(self) -> None:
         """硬件紧急停止 (mode=2)."""
         mode = ArmControlMode()
         mode.control_mode = ArmControlMode.MODE_ESTOP
-        self._mode_pub.publish(mode)
+        with self._state_lock:
+            self._interrupt_reason = 'Motion interrupted by ESTOP'
+            self._require_idle = True
+            self._mode_pub.publish(mode)
         self.get_logger().warn('Dispatched ESTOP (mode=2)')
 
     # ========================================================================
@@ -548,7 +607,7 @@ class ArmPlannerNode(Node):
         if len(msg.position) >= 4:
             req = MoveArmJoints.Request()
             req.joints_deg = [float(math.degrees(p)) for p in msg.position[:4]]
-            req.duration_ms = int(msg.effort[0]) if (msg.effort and msg.effort[0] > 0) else self.default_duration_ms
+            req.duration_ms = int(msg.effort[0]) if (msg.effort and math.isfinite(msg.effort[0]) and msg.effort[0] > 0) else self.default_duration_ms
             req.gripper_action = 0
             res = MoveArmJoints.Response()
             self._srv_move_joints_cb(req, res)

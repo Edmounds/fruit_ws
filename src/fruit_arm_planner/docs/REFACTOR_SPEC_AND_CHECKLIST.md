@@ -1,164 +1,109 @@
-# 机械臂解算包重构技术规格书与逐项改动实施计划 (REFACTOR_SPEC_AND_CHECKLIST)
+# fruit_arm_planner 逻辑与通信重构记录
 
-> ⚠️ **执行原则**：本文档为技术方案规划与改动实施指导书。**代码尚未改动**，后续代码开发将严格依照本文档中的检查清单（Checklist）逐项完成。
+**状态：包内代码已按确认的方案调整；实机传输与固件行为仍待现场核实。** 完整消息字段、字节布局和跨层时序见[机械臂规划器通信架构与数据流](02_COMMUNICATION_PROTOCOL.md)。
 
----
+## 1. 已确认的目标
 
-## 目录
-- [一、重构背景与设计目标](#一重构背景与设计目标)
-- [二、五大核心技术规格规范 (Architecture Specs)](#二五大核心技术规格规范-architecture-specs)
-  - [规格 1：Service 为唯一官方业务控制接口（同步阻塞与超时监护）](#规格-1service-为唯一官方业务控制接口同步阻塞与超时监护)
-  - [规格 2：动态解算模式选择参数 (PTP 快速弧线 vs LIN 严格直线)](#规格-2动态解算模式选择参数-ptp-快速弧线-vs-lin-严格直线)
-  - [规格 3：以笛卡尔空间为主的多航路点预设工序规范](#规格-3以笛卡尔空间为主的多航路点预设工序规范)
-  - [规格 4：工业级双点驻留法（Dwell Point）到位后夹取时序机制](#规格-4工业级双点驻留法dwell-point到位后夹取时序机制)
-  - [规格 5：首航路点 duration_ms 驱动的当前位置平滑引导过渡](#规格-5首航路点-duration_ms-驱动的当前位置平滑引导过渡)
-- [三、逐项改动实施计划表 (Step-by-Step Checklist)](#三逐项改动实施计划表-step-by-step-checklist)
+1. mission 只调用关节单目标、笛卡尔单目标、预设名称三类入口。关节目标使用物理角度；笛卡尔目标已由其他模块转换到机械臂根部固定坐标系，输入 `x/y/z`（米）和末端连杆相对水平面的俯仰角（度）。规划器不负责相机标定、相机 TF 或比赛区域流程。
+2. 4 自由度逆解只使用肘上构型。规划器读取真实回传的四关节角作为每次规划的起点；不能用全零默认值、NaN 替换值或过期状态来生成运动轨迹。
+3. 不论单目标或预设，下位机收到的 `point_id=0` 必须是冻结的实测关节角、`time_from_start=0`、夹爪保持。预设 YAML 的 `duration_ms` 是逐段时长，第一段从这个自动补入的起点走到第一个 YAML 目标。
+4. 同时只允许一条运动轨迹。普通新请求在忙时明确失败；STOP/急停可发起打断。运动 service 必须等匹配本次轨迹的下位机 `COMPLETED` 才报告成功。
+5. 本轮保留现有 ROS 服务、串口话题、四种机械臂业务报文和下位机协议。通信桥和下位机已调通，但桥目前没有向规划器提供“N 个点已装载”的确认；跨消息类型送达顺序作为已知限制记录，不用固定延时假装已解决。
+6. 未来修改只在 `src/fruit_arm_planner/` 内实施。对 `fruit_arm_interfaces`、`fruit_hardware_interfaces`、`auto_serial_bridge`、`fruit_mission` 和下位机的需求只写为协作事项，不在本方案实施范围内。
 
----
+## 2. 架构判断与取舍
 
-## 一、重构背景与设计目标
+| 议题 | 当前证据 | 建议方案及理由 |
+| --- | --- | --- |
+| 对外接口 | 三个 service 已存在；还暴露三个无结果的调试话题 | mission 继续用 service；调试话题与 service 进入同一执行仲裁路径。暂不引入 Action 或新服务，避免扩大接口面 |
+| 节点职责 | `arm_planner_node.py` 同时处理服务、状态、规划和发布 | 保留单节点与现有算法文件；只抽出必要的“冻结状态 -> 生成轨迹 -> 校验 -> 下发与等待”共用流程，不加新的 ROS 节点或包 |
+| 当前姿态 | `current_joints` 初始全零，NaN 被替换为零或旧值 | 无有效新鲜四关节状态时拒绝运动。既然四轴都有真实回传，就不需要推测性回退 |
+| 并发 | `ReentrantCallbackGroup` + 多线程 executor，多个服务可同时规划和发布 | 使用一个明确的运动占用状态，整个请求生命周期只有一个持有者；忙时直接回复，STOP/急停单独处理 |
+| 时间与插值 | 单目标和预设已有五次插值；相邻预设段会产生同时间戳点 | 强制第 0 点为原始实测值，段间只保留一个边界点；时间与 `point_id` 连续有效后才发布任何消息 |
+| 完成判定 | 轮询最近状态并比较 `trajectory_id` 和终态 | 记录本次请求 ID、发布时间和状态接收时间；只消费本次请求之后的新状态，区分执行成功、失败、主动停止和超时 |
+| 串口顺序 | 桥按报文 ID 各自等待 ACK，规划器只按代码顺序发布 | 包内无法观察逐点 ACK，不能证明实际到达顺序。本轮记录残余风险并验证，未来若需严格证明再讨论跨包确认机制 |
 
-在前期初步架构设计中，控制接口优先采用了 Topic 异步流式发布，预设动作采用了单一目标姿态。经过深入推敲与实车业务契约对齐，暴露出以下必须重构的关键问题：
+这里不推荐仅在 Header、Point、Mode 之间加固定 `sleep`：睡眠时长不能证明串口 ACK 或下位机缓存完成，丢包重传时尤其无效。也不建议现在把三个 service 全换成 Action：当前需求是一次请求等待一个终态，STOP/急停另有入口；先把互斥与完成判定做对更直接。
 
-1. **业务闭环跟踪缺失**：机械臂运动耗时通常为 1.5 ~ 3.5 秒。如果 `fruit_mission` 仅发 Topic，无法原生获知“机械臂何时停稳到位、是否夹紧成功、能否继续导航”，迫使任务层自行轮询监听，极易造成代码臃肿与死锁。**必须将 Service 提升为唯一官方业务控制接口**。
-2. **缺乏动态精度切换机制**：大范围移臂需要快速平滑关节弧线（PTP），而靠近果树刺入采摘需要严格沿 3D 空间直线前进（LIN）。**必须支持在调用时由上层动态传参选择解算模式**。
-3. **关节角配置不直观**：在 YAML 中手动测量和定义各电机的弯曲角度极为抽象；而末端笛卡尔空间坐标（前方 $X\text{m}$，高度 $Z\text{m}$，俯仰角 $\text{pitch}^\circ$）与视觉测量值直接对应，极其直观。**预设工序应优先使用笛卡尔空间坐标定义**。
-4. **到点夹取时序模糊**：下位机协议是时间连续点流，若在移动过程中同时触发夹爪动作，极易在飞驰中磕碰撞飞果实。**必须在算法层严格实现“停稳到位后再夹紧”的时序硬约束**。
-
----
-
-## 二、五大核心技术规格规范 (Architecture Specs)
-
-### 规格 1：Service 为唯一官方业务控制接口（同步阻塞与超时监护）
-- **核心定位**：`fruit_mission` 任务状态机**只与 Service 交互**；Topic 降级为只读遥测（`~/joint_states`）与命令行轻量辅助调试；
-- **同步返回语义**：
-  - 任务层发起 `MoveArmCartesian` 或 `ExecuteArmPreset` 请求后，客户端挂起等待；
-  - 解算节点将轨迹整体打包下发并自动打出 `ArmControlMode(0)` 点火；
-  - 节点在后台启动超时监护器（超时时限 = `轨迹总规划耗时 + 2.0s 缓冲`）；
-  - 监听到下位机 20Hz 状态上报 `task_status == 2 (COMPLETED)` 时，服务立即返回 `success=True`，任务层无缝推进下一步！
-  - 若超时未完成，解算节点主动打出 `ArmControlMode(1)` (STOP) 停机保护，服务返回 `success=False, message="Timeout waiting for execution"`。
-
----
-
-### 规格 2：动态解算模式选择参数 (PTP 快速弧线 vs LIN 严格直线)
-在笛卡尔服务中通过布尔参数 `linear_path` 实现解算模式切换：
-
-| 模式 | 参数取值 | 规划所在空间 | 逆解调用逻辑 | 末端空间几何轨迹 | 适用场景 |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| **快速平滑过渡 (PTP)** | `linear_path: false` | 关节空间 | 仅终点求解 1 次 IK | 平滑三维空间弧线 | 大范围移臂、收纳折叠、快速转移 |
-| **严格笛卡尔直线 (LIN)** | `linear_path: true` | 笛卡尔操作空间 | 沿空间直线按 50ms 逐点求解 $N$ 次 IK | **严格三维几何直线** | 水平笔直刺入果实分支、垂直提拉脱柄 |
-
----
-
-### 规格 3：以笛卡尔空间为主的多航路点预设工序规范
-在 `config/arm_presets.yaml` 中，预设工序格式升级为**以笛卡尔空间坐标为主、兼顾关键关节角**的双格式体系：
-
-```yaml
-presets:
-  # 格式 A：以笛卡尔空间为主的复合采摘工序 (推荐，直观易调)
-  pick_apple_sequence:
-    description: "苹果采摘多动作时间切片序列"
-    coordinate_frame: "cartesian"  # 声明采用末端笛卡尔空间坐标
-    waypoints:
-      # 段 0: 移动到果实前方 5cm 处准备位 (耗时 1500ms, 夹爪张开)
-      - { target: [0.20, 0.0, 0.25, 0.0], duration_ms: 1500, gripper: 1 } # [x, y, z, pitch_deg]
-      # 段 1: 严格沿直线向前探入 8cm 包裹果实 (耗时 800ms, 夹爪保持张开)
-      - { target: [0.28, 0.0, 0.25, 0.0], duration_ms: 800,  gripper: 1 }
-      # 段 2: 闭合夹爪夹紧水果 (原地停顿 600ms, 夹爪闭合)
-      - { target: [0.28, 0.0, 0.25, 0.0], duration_ms: 600,  gripper: 2 }
-      # 段 3: 向上垂直直线拔起 6cm 脱柄 (耗时 1000ms, 夹爪保持闭合)
-      - { target: [0.28, 0.0, 0.31, 0.0], duration_ms: 1000, gripper: 2 }
-
-  # 格式 B：纯关节角度定义的特殊避障姿态 (用于紧贴车身的折叠收纳)
-  retract:
-    description: "底盘避障折叠姿态"
-    coordinate_frame: "joints"     # 声明采用 4 电机物理角度
-    waypoints:
-      - { target: [0.0, 20.0, -100.0, 0.0], duration_ms: 2500, gripper: 0 }
-```
-
----
-
-### 规格 4：工业级双点驻留法（Dwell Point）到位后夹取时序机制
-为了在时间连续路点流中 100% 确保机械臂**“停稳到位后再夹取，绝不在飞行过程中夹取”**，算法采用工业机器人经典的**双点驻留法 (Dwell Point)**：
+## 3. 建议的单请求状态机
 
 ```text
-       [移动阶段: 耗时 T_move]               [夹取驻留阶段: 耗时 T_dwell]
-起点 P0 ─────────────────────────────► 目标点 P1 ─────────────────────────────► 目标点 P1 (保持坐标不变)
-夹爪动作: 保持 (HOLD)                    到达目标点    夹爪动作: 闭合 (CLOSE) / 张开 (OPEN)
-                                                     机械臂原地静止，电机抱死，等待夹爪到位
+READY
+  | 普通请求且状态有效
+  v
+PLANNING -> DISPATCHING -> WAITING_RESULT -> READY
+  | 规划失败       | 发送异常        | COMPLETED / FAILED / 超时
+  +--------------+-----------------+-------------------------> 返回明确结果
+
+任意活动阶段接到 STOP / ESTOP：记录本地中断原因，发布对应 Mode，
+原运动请求不再返回 success=true；确认下位机后再允许下一普通请求。
 ```
 
-1. **移动阶段**：从当前位置插值运动到目标点 $P_1$，耗时为 `duration_ms`。在移动过程中，夹爪动作强制锁定为 `HOLD (0)`，保持原有开合状态，严禁变动；
-2. **夹取驻留阶段**：在目标点 $P_1$ 原地停留指定的驻留时间（例如 500ms），坐标不发生位移，此时下发目标夹爪状态（`OPEN` 或 `CLOSE`）；
-3. 这样保证机械臂在空间中速度已完全降为 0、机械完全静止后，夹爪才通电开合，杜绝碰落果实。
+这个图对应当前节点的请求生命周期；具体规则如下：
 
----
+- **READY 前提**：缓存中的 `ArmStatus` 是本机最近收到的状态，四关节角全部有限且符合配置的物理限位；下位机不是 RUNNING/EMERGENCY/FAILED。新鲜度阈值由包内 YAML 配置，并用本机单调时钟判断。若下位机在 `COMPLETED` 后如何回到 `IDLE` 未明确，应先核实，不猜测终态的持续时间。
+- **占用点**：普通请求在读取状态快照前原子取得运动占用权。另一个普通 service 或调试话题不能越过该占用权；拒绝“忙”不得发布任何轨迹报文。
+- **PLANNING**：同一次请求仅使用一份冻结的实测角快照。全部 IK、关节映射、限位和时间校验成功后才能进入发送阶段。规划失败不分配并暴露一个实际未发送的轨迹 ID。
+- **DISPATCHING**：发布 Header、N 个 Point、Mode 0。由于现有桥未暴露跨 ID ACK 屏障，此状态只能表示“已按顺序交给 ROS”，不能命名为“已装载到下位机”。若发生 STOP/急停，应停止继续发布尚未发出的 Point 和启动 Mode；已进入桥队列的报文是否仍会到达属于跨包待核实问题。
+- **WAITING_RESULT**：只接受发布时间之后收到的、`trajectory_id` 匹配的状态。`COMPLETED` 返回成功；`FAILED` 或 `EMERGENCY` 返回失败；超时发布 STOP 后返回超时失败。状态消息中 `error_code` 应原样记录在结果和日志里。
+- **STOP/急停**：快捷入口允许在运动占用期间使用，并使被打断的运动请求返回失败。STOP/急停 service 的“已发布”与下位机“已确认停止/锁定”是两个阶段，当前 `Trigger` 响应结构不足以同时携带两种状态，因此文档和日志必须精确表述。
 
-### 规格 5：首航路点 duration_ms 驱动的当前位置平滑引导过渡
-对于工序预设：
-1. 算法启动时，从下位机 20Hz 实时状态提取当前物理角度 $\mathbf{Q}_{\text{current}}$；
-2. 取预设中第 0 个航路点，读取其配置的 `duration_ms`（例如 1500ms）：
-   - 如果目标是笛卡尔坐标，先通过高位逆解转为硬件角度 $\mathbf{Q}_{\text{target\_0}}$；
-   - 算法自动在 $0 \sim \text{duration\_ms}$ 时间窗口内，使用五次多项式在 $\mathbf{Q}_{\text{current}}$ 与 $\mathbf{Q}_{\text{target\_0}}$ 之间插补生成 50ms 连续平滑过渡点集；
-3. 后续各航路点紧随其后时间单调累加，形成完整的无缝整体轨迹。
+注意：`ArmControlMode` 没有轨迹 ID，桥对同一个 `0x12` 报文 ID 按 FIFO 发送。若先前的启动 Mode 没有 ACK，后发的 STOP/急停可能在桥队列中等待，**“服务可随时触发”不等于“硬件立即收到”**。这不是规划器内部锁或线程数能解决的，应作为现场操作安全限制和未来桥接层优化议题保留。
 
----
+## 4. 三类请求的具体规划规则
 
-## 三、逐项改动实施计划表 (Step-by-Step Checklist)
+### 4.1 关节单目标
 
-后续改动实施时，必须严格按照以下 5 个阶段逐项勾选推进：
+请求 `MoveArmJoints.joints_deg[4]` 是四个电机的物理角度。规划器将其转弧度、检查有限值和配置限位，并以冻结的实测四关节角为起点，在请求时长内做关节空间五次插值。首点必须精确等于实测值；末点到达目标，夹爪动作仅在末点触发。实际夹爪是否已达到开合状态，应以真实固件状态语义核实，不能仅凭 ROS 发布推断。
 
-### 阶段一：接口包定义升级 (`fruit_arm_interfaces`)
-- [x] **1.1** 在 `src/fruit_arm_interfaces/srv/` 目录下新增 `MoveArmCartesian.srv`：
-  - 输入：`x, y, z, pitch_deg, duration_ms, gripper_action, bool linear_path`
-  - 输出：`bool success, string message, uint32 trajectory_id`
-- [x] **1.2** 在 `src/fruit_arm_interfaces/srv/` 目录下新增 `MoveArmJoints.srv`：
-  - 输入：`float32[4] joints_deg, uint32 duration_ms, uint8 gripper_action`
-  - 输出：`bool success, string message, uint32 trajectory_id`
-- [x] **1.3** 在 `src/fruit_arm_interfaces/srv/` 目录下新增 `ExecuteArmPreset.srv`：
-  - 输入：`string preset_name`
-  - 输出：`bool success, string message, uint32 trajectory_id`
-- [x] **1.4** 编写 `src/fruit_arm_interfaces/CMakeLists.txt`，将上述 3 个 `.srv` 加入 `rosidl_generate_interfaces`；
-- [x] **1.5** 执行 `colcon build --packages-select fruit_arm_interfaces` 编译生成 C++ / Python 服务头文件与类型绑定。
+### 4.2 笛卡尔单目标
 
----
+请求 `MoveArmCartesian` 的 `x/y/z` 是根部固定坐标系下的米值，`pitch_deg` 是末端连杆的绝对俯仰角。规划器执行肘上 IK，再用 `joint_mapping` 转换为物理角，并在下发前检查整条轨迹。`linear_path=false` 时用 PTP，`linear_path=true` 时由实测姿态 FK 得到当前末端位置，并沿笛卡尔直线逐点做 IK。LIN 路径的第一个**下发关节点**仍要使用冻结的原始实测角，不应用 FK 后的逆解值覆盖，以免起点发生跳变。
 
-### 阶段二：算法内核升级 (`fruit_arm_planner`)
-- [x] **2.1** 在 `trajectory_planner.py` 中升级 `plan_cartesian_linear_path`：
-  - 输入起点与终点 $(X, Y, Z, \text{pitch})$ 与时间，沿空间直线按 50ms 离散化；
-  - 对每个时间片点调用 `kinematics.inverse_kinematics()`，由 transformer 校验限位，输出保证空间绝对直线的点流。
-- [x] **2.2** 在 `trajectory_planner.py` 中新增 `plan_multi_waypoint_sequence`：
-  - 支持多航路点输入，支持 `coordinate_frame` 为 `cartesian` 与 `joints`；
-  - 实现双点驻留法（Dwell Point）：到位点与夹取动作用时间切片分离；
-  - 实现首航路点平滑引导段生成。
+当前接口没有携带 `frame_id`。因此“调用方已完成坐标转换”必须写在接口文档里；不能在规划器中猜测相机坐标系或自动套用一个未经标定的外参。四自由度只约束 `(x,y,z,pitch)`，没有独立末端滚转和偏航。
 
----
+### 4.3 预设
 
-### 阶段三：配置文件规范升级 (`config/arm_presets.yaml`)
-- [x] **3.1** 重构 `config/arm_presets.yaml` 中的 `presets`：
-  - 将 `zero`、`home`、`retract` 改写为符合新标准的格式；
-  - 增加标准的笛卡尔采摘工序预设 `pick_sequence` 示例，包含完整的悬停、探入、夹紧、提拉与收回阶段。
+`ExecuteArmPreset` 只传名称。规划器从 [`config/arm_presets.yaml`](../config/arm_presets.yaml) 读 `coordinate_frame`、`target`、`duration_ms`、`gripper` 和可选驻留时间。每段 `duration_ms` 都是**本段时长**。如果第一段为 500 ms，第二段为 800 ms，则关键时间是 `0 -> 500 -> 1300 ms`。在 `t=0` 加入当前实测姿态，再走到第一个 YAML 目标；不能把第一 YAML 目标当作零时刻起点。
 
----
+预设一段若请求夹爪动作，`dwell_ms>0` 时在到位后的第一个静止路点触发，后续驻留点保持；`dwell_ms=0` 时在到位点触发。`linear: true` 的笛卡尔段逐点逆解，关节段若写 `linear: true` 会被拒绝。示例 `pick_sequence` 的提拉与收回段使用 `gripper: 0` 表示保持已闭合状态。
 
-### 阶段四：ROS 2 服务端点与安全看门狗重构 (`arm_planner_node.py`)
-- [x] **4.1** 在 `arm_planner_node.py` 中注册 3 个新服务服务端：
-  - `/arm_planner_node/move_cartesian`
-  - `/arm_planner_node/move_joints`
-  - `/arm_planner_node/execute_preset`
-- [x] **4.2** 在 `_srv_move_cartesian_cb` 中根据请求中的 `linear_path` 动态分支：
-  - 若 `linear_path == True`：调用笛卡尔逐点逆解直线规划；
-  - 若 `linear_path == False`：调用终点单次逆解关节平滑插补；
-- [x] **4.3** 实现执行闭环监视看门狗函数 `execute_trajectory_sync(points, duration_ms)`：
-  - 后台自动下发 `Header -> Points -> Mode(0)`；
-  - 使用 `MultiThreadedExecutor` 与 `ReentrantCallbackGroup` 周期监听 `ArmStatus` 直至收到 `COMPLETED`；
-  - 若超时未收到，主动下发 `ArmControlMode(1)` (STOP) 停机，保障硬件安全。
+## 5. 风险与依赖的优先级
 
----
+| 优先级 | 现状问题 | 影响 | 本轮方案的处理范围 |
+| --- | --- | --- | --- |
+| P0 | 首次遥测前以全零起步，NaN 角度被回退 | 实际起点可能与规划起点不符 | 包内：新鲜四轴状态门禁及冻结快照 |
+| P0 | 并发 service/调试话题可以交错下发 | Header、Point、Mode 与结果归属可能混乱 | 包内：单运动占用和统一命令入口 |
+| P0 | Header / Point / Mode 跨消息 ID 缺少装载确认 | 下位机可能在 N 点未齐时收到启动 | 跨包已知限制；本轮不改协议，现场验证并记录，不虚称包内彻底修复 |
+| P1 | 预设段边界同时间戳，过短时长可能产生重复毫秒 | MCU 时间插值行为不明确 | 包内：全轨迹时间检查和边界去重 |
+| P1 | 等待循环没有主动停止的请求状态；STOP 返回“发布成功” | mission 可能误判动作结果 | 包内：中断结果与响应语义澄清 |
+| P1 | 配置加载失败后继续使用静默默认值 | 标定失误可能在未察觉情况下执行 | 包内：启动时显式拒绝无效配置，校验物理参数和预设结构 |
+| P1 | `COMPLETED` 上报持续时间、实际 MCU 点数上限未在仓库确认 | 可能误超时或超容量 | 记录待固件核实；包内避免宣称未知上限 |
+| P2 | `linear` 预设字段未生效，夹爪零驻留动作被忽略 | 配置意图和实行为不一致 | 包内：确定并实现一致语义 |
 
-### 阶段五：文档与工程最终归档 (`docs/`)
-- [x] **5.1** 更新 `03_INTERFACES_AND_API.md`，将 Service 置为一等公民，采用 `fruit_arm_interfaces`；
-- [x] **5.2** 更新 `04_SETUP_AND_DEBUGGING.md`，提供针对新服务的完整 CLI 调试指令；
-- [x] **5.3** 更新 `README.md`，更新接口调用总览；
-- [x] **5.4** 执行全包编译与端到端运行测试验证。
+这份优先级依据的是对实机动作的影响，而不是代码改动行数。P0 中的跨包限制不能通过修改规划器文档或简单延时消除；如果现场传输证明存在错序，应与通信/下位机负责人另定接口升级，本方案不擅自改他们的模块。
+
+## 6. 待核实的下位机事实
+
+这些问题不应由规划器代码凭想象填充：
+
+1. 固件缓存的最大 `point_num`，收到超容量 Header 时如何报错。
+2. Header / Point / Mode 重复到达时是否按 `trajectory_id`、`point_id` 幂等处理；协议 ACK 在业务接收回调返回后发送，ACK 本身没有“业务已接受”的结果位。
+3. N 个点没收齐却收到 Mode 0 时，固件是否拒绝、是否发送带相同 `trajectory_id` 的 `FAILED`，使用哪个 `error_code`。
+4. `COMPLETED`、`FAILED`、`EMERGENCY` 各保持多久；是否至少能被 20 Hz 状态采样观察到。STOP 后何时上报 IDLE。
+5. `gripper_state` 是实际到位反馈，还是仅记录最近一次开合命令；夹爪动作失败是否让整个轨迹进入 FAILED。
+6. 失联或固件复位时，当前轨迹与电机状态如何处理。当前串口配置 `strict_heartbeat=false`，不能把上位机心跳当作固件硬件看门狗的证据。
+
+## 7. 实施顺序与验收边界
+
+以下是包内实施记录。仓库约定不新增 tests；实机动作仍需现场负责人确认条件后执行。
+
+- [x] 1. 三类 service 和调试话题共用运动占用；忙时拒绝，STOP/急停可打断。
+- [x] 2. ArmStatus 以本机单调时间记录；请求冻结新鲜、有效、限位内的四轴反馈。
+- [x] 3. 首点使用实测角与 `t=0`，预设时间逐段累加；发布前检查整条轨迹的 ID、时间、数值、限位与夹爪动作。
+- [x] 4. PTP、LIN 和预设使用相同起点；LIN 保留实测首点，预设去除重复边界，`linear` 配置生效。
+- [x] 5. 等待本次轨迹的新终态；主动中断、失败及超时均返回失败，超时发布 STOP。
+- [ ] 6. 在现有桥和固件上观察 Header、N 个 Point、Mode 及状态时序，并记录正常传输与故障情况下能确认的事实；若发现跨 ID 提前启动，只形成跨包问题说明，不在规划器里加入任意睡眠时间。
+- [ ] 7. 同步本包 README、接口文档、配置与本通信文档，使运行说明只承诺已验证的行为。
+
+**完成定义**：在不改外部接口或串口协议的前提下，规划器的三类请求都从真实起点生成可检查的轨迹；并发请求不会交错；服务返回与本次轨迹终态对应。只要跨 ID 到达顺序、固件报错方式和终态持续时间仍未经核实，就必须在交付说明中保留相应限制，不能把“链路调通”写成“任何故障场景下顺序已证明”。
