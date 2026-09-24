@@ -33,6 +33,7 @@ class JointTransformer:
     """
     关节坐标系转换器 (Joint Coordinate Transformer)
     负责算法理论空间 (全部伸直为0) 与下位机物理硬件空间 (舵机/电机零点) 之间的双向映射与限位校验。
+    Q3 硬件角对应小臂绝对俯仰角，映射时需包含算法 Q2。
     """
 
     def __init__(self, channels: Optional[List[JointChannelConfig]] = None):
@@ -86,7 +87,7 @@ class JointTransformer:
         return (
             self.channels[0].to_hardware(q_algo[0]),
             self.channels[1].to_hardware(q_algo[1]),
-            self.channels[2].to_hardware(q_algo[2]),
+            self.channels[2].to_hardware(q_algo[1] + q_algo[2]),
             self.channels[3].to_hardware(q_algo[3]),
         )
 
@@ -94,10 +95,11 @@ class JointTransformer:
         self, q_hw: Tuple[float, float, float, float]
     ) -> Tuple[float, float, float, float]:
         """将 4 关节下位机物理硬件角反推为算法理论角 (rad)."""
+        q2_algo = self.channels[1].to_algo(q_hw[1])
         return (
             self.channels[0].to_algo(q_hw[0]),
-            self.channels[1].to_algo(q_hw[1]),
-            self.channels[2].to_algo(q_hw[2]),
+            q2_algo,
+            self.channels[2].to_algo(q_hw[2]) - q2_algo,
             self.channels[3].to_algo(q_hw[3]),
         )
 

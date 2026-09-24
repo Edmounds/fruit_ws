@@ -90,7 +90,7 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 [arm_planner_node-1] [INFO] [arm_planner_node]: Loaded arm geometry: d1=0.14m, a2=0.26m, a3=0.26m, a4=0.08m
 [arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q1] mapping: offset=0.0°, dir=+1.0, limits=[-180.0°, 180.0°]
 [arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q2] mapping: offset=-90.0°, dir=+1.0, limits=[-87.0°, 45.0°]
-[arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q3] mapping: offset=90.0°, dir=+1.0, limits=[-135.0°, 90.0°]
+[arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q3] mapping: offset=90.0°, dir=+1.0, limits=[-135.0°, 180.0°]
 [arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q4] mapping: offset=0.0°, dir=+1.0, limits=[-90.0°, 92.4°]
 [arm_planner_node-1] [INFO] [arm_planner_node]: Loaded 4 arm presets: ['zero', 'home', 'retract', 'pick_sequence']
 [arm_planner_node-1] [INFO] [arm_planner_node]: Fruit Arm Planner Node fully ready with Service API.
@@ -116,8 +116,7 @@ geometry:
 - **若某关节旋转方向与预期相反（例如给正角反而向下运动）**：
   将该关节的 `direction` 由 `1.0` 修改为 `-1.0` 即可反相，无需拆改电机连线。
 - **若机械臂安装初始零位发生变动**：
-  修改 `offset_deg`。换算关系始终满足：
-  $$q_{\text{hardware}} = \text{direction} \cdot q_{\text{algo}} + \text{offset\_deg}$$
+  修改 `offset_deg`。Q1、Q2、Q4 满足 $q_{\text{hardware}} = \text{direction} \cdot q_{\text{algo}} + \text{offset}$；Q3 电机角是小臂相对水平面的绝对角，满足 $q_{3,\text{hardware}} = \text{direction}_3 \cdot (q_{2,\text{algo}} + q_{3,\text{algo}}) + \text{offset}_3$。反馈计算相对肘角时，需要从小臂绝对角中减去大臂理论角。当前 YAML 的 Q3 偏置是 `90°`，与“小臂水平时硬件读数为 0°”的描述冲突；核查方法和数值示例见[四轴角度与解算链路核查](05_PHYSICAL_ARM_MAPPING_REVIEW.md)。
 
 ### 3. 安全限位边界设定 (`limits_deg`)
 `limits_deg: [min_deg, max_deg]` 对应物理电机的极限安全读数。

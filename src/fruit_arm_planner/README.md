@@ -21,6 +21,7 @@ mission 可调用关节单目标、机械臂根部坐标系下的笛卡尔单目
 | **03** | [**对外暴露接口与 API 说明**](docs/03_INTERFACES_AND_API.md) | 节点对外暴露的所有 ROS 2 服务 (`move_cartesian`, `move_joints`, `execute_preset`, `home`, `retract`, `stop`)、双模式解算与 Python 客户端代码调用范式 |
 | **04** | [**启动、调参配置与实机调试**](docs/04_SETUP_AND_DEBUGGING.md) | Launch 启动与参数注入、`arm_presets.yaml` 零位偏置与限位调参手册、CLI 命令行快速调试指令集与现场常见故障排查手册 (Troubleshooting) |
 | **附录** | [**重构清单**](docs/REFACTOR_SPEC_AND_CHECKLIST.md) | 已实施的包内改造、验收边界及待核实的固件事实 |
+| **实机核查** | [**四轴角度与解算链路核查**](docs/05_PHYSICAL_ARM_MAPPING_REVIEW.md) | 同步带小臂与相对腕部的角度关系、当前 Q3 偏置冲突和校准顺序 |
 
 ---
 

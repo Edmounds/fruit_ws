@@ -98,7 +98,7 @@ gripper_action = HOLD
 | 笛卡尔 LIN | 用实测角做 FK 得到当前末端位置与俯仰角；在笛卡尔直线各采样点做肘上 IK、映射和限位核验 | 第 0 个下发点仍必须是原始实测关节角，不能由 FK 后再次 IK 的近似值替换 |
 | 预设 | 从 YAML 读取 `coordinate_frame`、各 `target`、逐段 `duration_ms` 和夹爪动作，拼接为一条轨迹 | 每段起点来自上一段终点；`linear` 等配置只有实现了才可宣称有效 |
 
-`q_hardware = direction * q_algo + offset` 的映射和物理角限位均在规划器包内完成。下位机协议中的四个关节角一律是**物理关节弧度**；mission 的 `move_joints` 输入则是物理关节**角度**。这是两个不同单位边界。现有 YAML 几何、偏置和限位属于待实机标定参数，不能把当前数值写成永久机械常量。
+关节映射和物理角限位均在规划器包内完成：Q1/Q2/Q4 各自使用 `q_hardware = direction * q_algo + offset`，Q3 使用 `q3_hardware = direction * (q2_algo + q3_algo) + offset`，其反馈映射相应减去 `q2_algo`。下位机协议中的四个关节角一律是**物理关节弧度**，其中 Q3 是小臂相对水平面的绝对角；mission 的 `move_joints` 输入则是物理关节**角度**。这是两个不同单位边界。现有 YAML 几何、偏置和限位属于待实机标定参数，不能把当前数值写成永久机械常量。
 
 ### 4.3 发送前的一次性检查
 

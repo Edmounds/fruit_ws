@@ -13,7 +13,8 @@ arm_planner_node:
     # 2. 关节坐标系映射与零位偏置
     # 用户物理零位基准: 大臂竖直朝天，小臂水平朝前，腕部水平朝前 (0位)
     # 运动方向定义: 所有关节向上抬为正 (+), 向下降为负 (-)
-    # 换算公式: q_hardware = direction * q_algo + offset_deg
+    # Q1/Q2/Q4: q_hardware = direction * q_algo + offset_deg
+    # Q3: q_hardware = direction * (q2_algo + q3_algo) + offset_deg
     # ------------------------------------------------------------------------
     joint_mapping:
       q1:
@@ -25,9 +26,9 @@ arm_planner_node:
         direction: 1.0
         limits_deg: [-87.0, 45.0] # -87°为接近底盘水平极限，+45°为后仰极限
       q3:
-        offset_deg: 90.0         # 小臂水平朝前为0° (向上翘为正，向下折为负)
+        offset_deg: 90.0          # 小臂相对水平面的绝对角：水平朝前为0°，向上为正
         direction: 1.0
-        limits_deg: [-135.0, 90.0]
+        limits_deg: [-135.0, 180.0]
       q4:
         offset_deg: 0.0          # 腕部水平朝前为0°
         direction: 1.0

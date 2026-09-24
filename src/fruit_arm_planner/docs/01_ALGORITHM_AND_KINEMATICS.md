@@ -1,6 +1,6 @@
 # 01. 4自由度机械臂底层算法与运动学推导 (ALGORITHM_AND_KINEMATICS)
 
-本文档详细剖析 `fruit_arm_planner` 的底层数学算法原理，包括：**连杆几何拓扑、正向运动学 (FK)、解析几何法逆向运动学 (IK)、高位构型 (Elbow-Up) 约束、双向坐标系偏置映射 (JointTransformer) 以及五次多项式平滑插值算法**。
+本文档详细剖析 `fruit_arm_planner` 的底层数学算法原理，包括：**连杆几何拓扑、正向运动学 (FK)、解析几何法逆向运动学 (IK)、高位构型 (Elbow-Up) 约束、双向坐标系偏置映射 (JointTransformer) 以及五次多项式平滑插值算法**。当前实机零位与配置的核查结果见[四轴角度与解算链路核查](05_PHYSICAL_ARM_MAPPING_REVIEW.md)。
 
 ---
 
@@ -148,11 +148,15 @@ $$\alpha = \text{atan2}(z_w, r_w)$$
 
 ### 1. 为什么需要坐标映射解耦？
 - **算法理论空间 ($q_{\text{algo}}$)**：伸直为 0°，便于几何三角公式推导；
-- **物理硬件空间 ($q_{\text{hardware}}$)**：实机电机安装后，**大臂竖直朝天定义为 0°，小臂水平朝前定义为 0°，腕部水平朝前定义为 0°**。
+- **物理硬件空间 ($q_{\text{hardware}}$)**：实机电机安装后，**大臂竖直朝天定义为 0°，小臂水平朝前定义为 0°，腕部与小臂同向时定义为 0°**。当前 Q3 配置偏置与该定义冲突，见下文。
 
 ### 2. 双向线性映射关系
-$$q_{\text{hardware}} = \text{direction} \cdot q_{\text{algo}} + \text{offset}$$
-$$q_{\text{algo}} = \frac{q_{\text{hardware}} - \text{offset}}{\text{direction}}$$
+Q1、Q2、Q4 使用各自独立的角度映射：
+$$q_{i,\text{hardware}} = \text{direction}_i \cdot q_{i,\text{algo}} + \text{offset}_i \quad (i=1,2,4)$$
+
+小臂通过同步带传动，Q3 电机角表示小臂相对水平面的绝对俯仰角，而算法中的 $q_3$ 仍表示小臂相对大臂的夹角。因此 Q3 必须使用大臂角参与双向换算：
+$$q_{3,\text{hardware}} = \text{direction}_3 \cdot (q_{2,\text{algo}} + q_{3,\text{algo}}) + \text{offset}_3$$
+$$q_{3,\text{algo}} = \frac{q_{3,\text{hardware}} - \text{offset}_3}{\text{direction}_3} - q_{2,\text{algo}}$$
 
 ### 3. 各关节偏置推导详解
 - **Q1（偏航基座）**：正前为 0°，左正右负 $\implies \text{offset} = 0.0^\circ, \text{direction} = +1.0$；
@@ -162,12 +166,11 @@ $$q_{\text{algo}} = \frac{q_{\text{hardware}} - \text{offset}}{\text{direction}}
   - 故：$0^\circ = 1.0 \times 90^\circ + \text{offset} \implies \mathbf{offset = -90.0^\circ}$；
   - 向上抬为正，向前下方俯低为负，大臂俯下到接近水平时对应 $-87^\circ \sim -90^\circ$；
 - **Q3（小臂）**：
-  - 当大臂竖直朝天（$q_{2,\text{algo}} = 90^\circ$）时，小臂水平朝前意味着绝对倾角 $q_2 + q_3 = 0^\circ \implies q_{3,\text{algo}} = -90^\circ$；
-  - 硬件将此状态定义为 0°；
-  - 故：$0^\circ = 1.0 \times (-90^\circ) + \text{offset} \implies \mathbf{offset = +90.0^\circ}$；
-  - 小臂向上翘为正，向下折为负；
+  - 小臂水平朝前时，绝对倾角 $q_2 + q_3 = 0^\circ$，硬件角也为 $0^\circ$；
+  - 若硬件反馈在该零位也为 $0^\circ$，则所需偏置为 $\mathbf{offset = 0.0^\circ}$。当前 YAML 实际写为 $90^\circ$，与这一零位定义冲突，须核实下位机反馈后修正；
+  - 小臂相对水平面向上为正，向下为负；
 - **Q4（腕部）**：
-  - 水平朝前为 0°，向上抬头为正，向下低头为负 $\implies \mathbf{offset = 0.0^\circ, direction = +1.0}$。
+  - 电机安装在小臂上，算法将 Q4 定义为末端相对小臂的角度。当前映射配置为 $\mathbf{offset = 0.0^\circ, direction = +1.0}$；当小臂不水平时，Q4 为零并不代表末端水平。
 
 ---
 
