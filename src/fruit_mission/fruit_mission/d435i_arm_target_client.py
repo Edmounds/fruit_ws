@@ -10,9 +10,17 @@ from geometry_msgs.msg import PointStamped
 import rclpy
 from std_msgs.msg import String
 
-from fruit_hardware_interfaces.msg import ArmTarget
-from fruit_hardware_interfaces.msg import ExecutionCallback
-from fruit_hardware_interfaces.msg import StateMachineCommand
+try:
+    from fruit_hardware_interfaces.msg import (
+        ArmTarget,
+        ExecutionCallback,
+        StateMachineCommand,
+    )
+except ImportError:
+    ArmTarget = None  # type: ignore[assignment,misc]
+    ExecutionCallback = None  # type: ignore[assignment,misc]
+    StateMachineCommand = None  # type: ignore[assignment,misc]
+
 from fruit_perception.msg import FruitDecision
 
 from fruit_mission.logic import decide_b_tree_targets

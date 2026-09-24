@@ -24,9 +24,37 @@ from rclpy.time import Time
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
-from fruit_hardware_interfaces.msg import ArmTarget
-from fruit_hardware_interfaces.msg import ExecutionCallback
-from fruit_hardware_interfaces.msg import StateMachineCommand
+try:
+    from fruit_hardware_interfaces.msg import (
+        ArmTarget,
+        ExecutionCallback,
+        StateMachineCommand,
+    )
+except ImportError:
+    class StateMachineCommand:  # type: ignore[no-redef]
+        AREA_A = 0
+        AREA_B = 1
+        AREA_C = 2
+        AREA_D = 3
+        TASK_GRIPPER = 0
+        TASK_CAMERA_GIMBAL = 1
+        TASK_PICK_DIRECTION = 2
+        TASK_QR_RECOGNITION_POSE = 4
+        TASK_CURRENT_AREA = 5
+        TASK_RETURN_INITIAL_POSE = 6
+        TASK_ARM_RETRACT_POSE = 7
+        GRIPPER_GRIP = 0
+        GRIPPER_OPEN = 1
+        GIMBAL_LOOK_DOWN = 0
+        GIMBAL_LOOK_UP = 1
+        PICK_DIRECTION_LEFT = 0
+        PICK_DIRECTION_RIGHT = 1
+        QR_RECOGNITION_POSE = 0
+        RETURN_INITIAL_POSE = 0
+        ARM_RETRACT_POSE = 0
+    ArmTarget = None  # type: ignore[assignment,misc]
+    ExecutionCallback = None  # type: ignore[assignment,misc]
+
 from fruit_perception.msg import FruitDecision
 
 from fruit_mission.logic import PickExecutionResult

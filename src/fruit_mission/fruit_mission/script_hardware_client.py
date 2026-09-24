@@ -15,7 +15,15 @@ from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
 from std_msgs.msg import Bool
 
-from fruit_hardware_interfaces.msg import ExecutionCallback
+try:
+    from fruit_hardware_interfaces.msg import ExecutionCallback
+except ImportError:
+    class ExecutionCallback:  # type: ignore[no-redef]
+        STATUS_COMPLETED = 0
+        STATUS_FAILED = 2
+        callback_id = 0
+        callback_status = 0
+
 
 
 class CommandResult(IntEnum):

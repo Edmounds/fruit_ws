@@ -68,52 +68,48 @@ cd /home/rc4/fruit_ws
 单树抓取、跳过或执行失败后都会发送 `task_id=7` 并等待机械臂收缩姿态回调；感知进程
 继续保留，便于现场检查，按 `Ctrl-C` 后退出。
 
-## 下位机直连交互脚本
+## 下位机交互调试控制台
 
-这个脚本直接打开串口与下位机通信，不启动 ROS，也不启动
-`auto_serial_bridge`。启动前先确认没有其他进程占用 `/dev/stm32`。
+控制台通过 `auto_serial_bridge` 发布的 ROS 2 标准话题（`/fruit_hardware_bridge/arm/*` 与 `/cmd_vel`）与下位机进行通信，依托桥接底层的 CRC 校验、自动心跳与可靠重传保障通信健壮性。
+
+控制台会自动检测系统中是否已运行 `auto_serial_bridge`：
+- 若已运行则直接复用；
+- 若未运行则自动在后台拉起 `serial_node`，默认以 DEBUG 模式流式在终端彩色输出底层通信与心跳调试信息；
+- 串口设备与波特率直接从 `src/auto_serial_bridge/config/protocol.yaml` 严格读取，并在启动时对所需 5 条关键消息进行结构校验；
+- 退出控制台时自动平滑停机并清理释放串口。
 
 ```bash
 source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 /usr/bin/python3 /home/rc4/fruit_ws/lower_controller_console.py
 ```
 
-
-默认串口和波特率从
-`src/auto_serial_bridge/config/protocol.yaml` 读取，也可以覆盖：
-
-```bash
-/usr/bin/python3 /home/rc4/fruit_ws/lower_controller_console.py \
-  --port /dev/stm32 --baudrate 115200
-```
+支持参数：
+- `--log-level`：设置 bridge 日志级别，支持 `debug`（默认）、`info`、`warn`、`error`。
+- `--yes` / `-y`：跳过机械臂动作前的 `[y/N]` 二次确认提示。
+- `--no-spawn`：禁用后台自动拉起 bridge（仅在外部已启动 bridge 时连接）。
+- `--no-color`：禁用终端 ANSI 彩色输出。
 
 进入 `fruit> ` 提示符后使用以下命令：
 
-| 命令 | 发送状态 |
+| 命令 | 功能说明 |
 | --- | --- |
-| `grip` | 夹爪抓取：`task_id=0, task_status=0` |
-| `open` | 夹爪打开：`task_id=0, task_status=1` |
-| `gimbal-down` | 摄像头云台向下：`task_id=1, task_status=0` |
-| `gimbal-up` | 摄像头云台向上：`task_id=1, task_status=1` |
-| `left` | 左侧观察位置：`task_id=2, task_status=0` |
-| `right` | 右侧观察位置：`task_id=2, task_status=1` |
-| `qr-pose` | 进入二维码识别姿态：`task_id=4, task_status=0` |
-| `area A` | 设置当前区域为 A：`task_id=5, task_status=0` |
-| `area B` | 设置当前区域为 B：`task_id=5, task_status=1` |
-| `area C` | 设置当前区域为 C：`task_id=5, task_status=2` |
-| `area D` | 设置当前区域为 D：`task_id=5, task_status=3` |
-| `task <id> <status>` | 直接发送通用状态命令 |
-| `arm <x> <y> <z> <z_type>` | 发送机械臂目标，坐标单位为米 |
-| `vel <linear_x> <angular_z>` | 发送一次速度命令 |
-| `stop` | 发送零速度命令 |
+| `home` | 机械臂回到初始安全复位姿态：`[0°, 110°, 50°, 0°]` |
+| `retract` | 机械臂收拢到避障收纳姿态：`[0°, 110°, 150°, 0°]` |
+| `grip` | 夹爪闭合（`gripper_action=2`） |
+| `open` | 夹爪张开（`gripper_action=1`） |
+| `traj <q1> <q2> <q3> <q4> [act] [ms]` | 自定义发送 4 关节轨迹（角度 deg，act: 0=保持/1=开/2=闭，默认 3000ms） |
+| `mode <0\|1\|2>` | 发送控制模式（0: 轨迹执行, 1: 平滑停止, 2: 硬件急停） |
+| `vel <linear_x> <angular_z>` | 发送一次底盘速度命令（线速度 m/s，角速度 rad/s） |
+| `stop` | 平滑停机：下发 `ArmControlMode(STOP)` 并将底盘速度置零 |
+| `estop` | 紧急硬件停机：下发 `ArmControlMode(ESTOP)` 硬件锁死脉冲 |
+| `status` | 打印当前下位机 20Hz `ArmStatus`（关节角度、速度、进度、状态与故障码） |
 | `help` | 显示命令帮助 |
 | `quit` | 退出脚本 |
 
-脚本会自动发送心跳，并对状态命令和机械臂目标进行可靠重试。可靠帧收到的
-`Ack` 只表示下位机已收到，动作是否完成要看回传的
-`ExecutionCallback`：`executing` 表示执行中，`completed` 表示完成。
-默认不显示心跳收发和心跳超时日志；需要调试心跳时加 `--show-heartbeat`。
-`vel` 只发送一帧，不会持续刷新速度。
+安全与保护说明：
+- **软限位拦截**：脚本端严格校验 4 关节软件限位（$Q_1 \in [-180^\circ, 180^\circ]$、$Q_2 \in [3^\circ, 180^\circ]$、$Q_3 \in [-190^\circ, -35^\circ]$、$Q_4 \in [-90^\circ, 92.4^\circ]$），超限指令直接拒绝下发。
+- **20Hz 遥测过滤**：静默接收 `ArmStatus`，仅在任务状态改变（如 IDLE $\to$ RUNNING $\to$ COMPLETED）或故障码非零时回显提示，彻底避免终端刷屏；完整状态可输入 `status` 随时查看。
+- **Ctrl-C 安全停止**：运行中首次按 `Ctrl-C` 立即下发平滑停机与底盘置零；2 秒内再次按 `Ctrl-C` 退出控制台。
 
 ## 录制调试 ROS 话题
 ```bash

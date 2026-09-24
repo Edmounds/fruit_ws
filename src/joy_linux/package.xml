@@ -32,7 +32,6 @@
   <depend>rclcpp_components</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
-  <depend>fruit_hardware_interfaces</depend>
   <exec_depend>auto_serial_bridge</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>

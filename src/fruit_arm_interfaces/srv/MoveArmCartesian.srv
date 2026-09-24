@@ -1,0 +1,13 @@
+# 机械臂笛卡尔末端空间运动服务 (支持动态选择解算模式)
+
+float32 x               # 目标前向距离 (m)
+float32 y               # 目标横向距离 (m, 左正右负)
+float32 z               # 目标高度 (m, 底盘安装面为0)
+float32 pitch_deg       # 末端对地俯仰角 (度, 0度严格水平, 抬头为正, 低头为负)
+uint32 duration_ms      # 期望运动总耗时 (毫秒, 若为0则使用默认值)
+uint8 gripper_action    # 夹爪动作 (0=保持 HOLD, 1=张开 OPEN, 2=闭合 CLOSE)
+bool linear_path        # 解算方式选择: true=严格笛卡尔直线插补 (高精度, 逐点逆解), false=关节平滑过渡 (快速, 终点单次逆解)
+---
+bool success            # 是否成功执行到位
+string message          # 详细结果或错误信息
+uint32 trajectory_id    # 任务流水号

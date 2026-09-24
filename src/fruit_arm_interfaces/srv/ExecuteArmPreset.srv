@@ -1,0 +1,7 @@
+# 机械臂预设固定工序调用服务
+
+string preset_name      # 预设工序名称 (如 "home", "retract", "pick_sequence")
+---
+bool success            # 工序整体是否成功执行完毕
+string message          # 详细结果或错误信息
+uint32 trajectory_id    # 任务流水号

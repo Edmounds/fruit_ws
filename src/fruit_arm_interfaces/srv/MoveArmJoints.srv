@@ -1,0 +1,9 @@
+# 机械臂关节物理角度控制服务
+
+float32[4] joints_deg   # 4个电机的物理硬件角度 [q1, q2, q3, q4] (度)
+uint32 duration_ms      # 期望运动时间 (毫秒, 若为0则使用默认值)
+uint8 gripper_action    # 夹爪动作 (0=保持 HOLD, 1=张开 OPEN, 2=闭合 CLOSE)
+---
+bool success            # 是否到位
+string message          # 详细结果或错误信息
+uint32 trajectory_id    # 任务流水号

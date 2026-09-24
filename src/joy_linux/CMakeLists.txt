@@ -17,8 +17,6 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(fruit_hardware_interfaces REQUIRED)
-find_package(rclcpp_components REQUIRED)
 
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
   # Look for <linux/joystick.h>
@@ -73,7 +71,6 @@ if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
       rclcpp_components::component
       ${sensor_msgs_TARGETS}
       ${geometry_msgs_TARGETS}
-      ${fruit_hardware_interfaces_TARGETS}
     )
     rclcpp_components_register_node(joy_convert_component PLUGIN "joy_conventor::JoyConvertNode" EXECUTABLE joy_convert_node)
 
@@ -92,7 +89,6 @@ if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
       ament_add_gtest(test_joy_convert_node test/test_joy_convert_node.cpp)
       target_link_libraries(test_joy_convert_node
         joy_convert_component
-        ${fruit_hardware_interfaces_TARGETS}
       )
       ament_target_dependencies(test_joy_convert_node rclcpp sensor_msgs geometry_msgs)
     endif()

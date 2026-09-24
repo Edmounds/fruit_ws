@@ -25,19 +25,25 @@ D435i 整树目标 -----> |                        |
              Action /follow_waypoints | typed hardware actions
                                 v
 +-------------------+   +------------------------+
-| fruit_navigation  |   | fruit_hardware_bridge  |
-| Point-LIO 里程计   |   | ROS 语义接口           |
-| 轴向定点导航服务端 |   | task/callback 映射     |
+| fruit_navigation  |   | fruit_arm_planner      |
+| Point-LIO 里程计   |   | 运动学解算/轨迹插值     |
+| 轴向定点导航服务端 |   | 关节偏置映射与预设姿态 |
 | 偏航角平滑控制     |   +-----------+------------+
 +---------+---------+               |
           |                         v
-          | cmd_vel         +--------------------+
-          v                 | auto_serial_bridge |
-+-------------------+       | YAML/串口/心跳/CRC  |
-| twist_mux         |       +----------+---------+
-| 导航/遥控速度仲裁  |                  |
-+---------+---------+                  v
-          +---------------->+--------------------+
+          | cmd_vel         +------------------------+
+          v                 | fruit_hardware_bridge  |
++-------------------+       | ROS 语义接口           |
+| twist_mux         |       | task/callback 映射     |
+| 导航/遥控速度仲裁  |       +-----------+------------+
++---------+---------+                   |
+          |                             v
+          |                 +--------------------+
+          |                 | auto_serial_bridge |
+          |                 | YAML/串口/心跳/CRC  |
+          |                 +----------+---------+
+          |                             |
+          +---------------->+-----------+--------+
                             | 下位机              |
                             | 底盘/舵机/4DOF/末端  |
                             +--------------------+
@@ -79,7 +85,8 @@ fruit_ws/src/
 │   └── fruit_nav_bringup/        # 纯里程计导航集成 bringup
 ├── auto_serial_bridge/           # 串口协议生成与传输
 ├── fruit_hardware_interfaces/    # 上下位机控制与回调 msg
-├── fruit_hardware_bridge/        # 语义动作到 task/callback 协议的适配
+├── fruit_hardware_bridge/        # 硬件启动与串口协议映射层
+├── fruit_arm_planner/            # 4-DOF 机械臂运动学解算、关节偏置映射与轨迹规划
 ├── fruit_perception/             # 双侧 UVC、D435i、模式管理与 OpenVINO
 ├── fruit_qr_planner/             # D435i 彩色图扫码并持久发布 B/C 计划
 ├── fruit_waypoint_recorder/      # 航点录制与 Web 航点编辑器
@@ -185,28 +192,23 @@ USB 接线时，D435i 与两台 UVC 相机尽量分配到不同 USB 控制器；
 
 ```text
 上位机 -> 下位机:
-  StateMachineCommand(0x11): task_id, task_status
-  ArmTarget(0x13): target_x, target_y, target_z, z_type
-  VelocityCommand(0x14): linear_x, angular_z
+  ChassisVelocity(0x01): linear_x, angular_z
+  TrajectoryHeader(0x10): trajectory_id, point_num
+  TrajectoryPoint(0x11): trajectory_id, point_id, time_from_start, joint_1..4, gripper_action
+  ArmControlMode(0x12): control_mode (0: TRAJECTORY, 1: STOP, 2: ESTOP)
 
 下位机 -> 上位机:
-  ExecutionCallback(0x12): callback_id, callback_status
+  ArmStatus(0x20): trajectory_id, task_status, progress, joint_1..4, joint_1..4_velocity, gripper_state, error_code
 ```
 
-- 原 `FruitDetection(0x10)` 已删除且 ID 暂不复用；感知结果只留在 ROS 话题中供上位机决策。
-- `task_id=0/1/2` 分别表示夹爪、摄像头云台和 ABC 通用抓取方向；当 `task_id=2` 时，`task_status=0/1` 分别表示左侧和右侧，具体识别/动作方向由下位机结合最近一次 `task_id=5` 所在区域判断。
-- `task_id=4` 表示进入二维码识别姿态，当前仅定义 `task_status=0`。
-- `task_id=5` 表示机器人所在区域，`task_status=0/1/2/3` 分别表示 A/B/C/D 区。
-- `task_id=6` 表示返回初始姿态，当前仅定义 `task_status=0`。
-- `task_id=7` 表示机械臂收缩姿态，当前仅定义 `task_status=0`，用于转弯通过狭窄通道前收回机械臂。
-- `callback_id=0/1/2/3/4/5/6/7` 分别表示夹爪、摄像头云台、ABC 通用抓取方向、B/D 机械臂目标、二维码识别姿态、所在区域、返回初始姿态和机械臂收缩姿态。
-- `callback_status=1` 表示正在执行，`callback_status=0` 表示执行完成，`callback_status=2` 表示下位机因自身动作故障执行失败。
-- 左右抓取方向命令和 B/D 机械臂目标各发布一次，并使用可靠消息保证送达；链路 ACK 只表示收到数据，只有对应的 `ExecutionCallback` 完成状态才能推进任务状态机。
-- 舵机、末端定位等离散动作使用可靠消息；底盘速度属于连续刷新数据，不做历史重传。
-- 上位机重复发送同一离散状态时，下位机不得重复执行已经完成的危险动作。
-- 上位机收到 `callback_status=1` 后继续等待，但不会重新计算超时起点；从命令发布开始 30 秒内必须收到 `callback_status=0/2` 终态。
-- `callback_status=2` 和 30 秒内没有终态回调是两类不同故障，分别记录“下位机执行失败”和“通信超时”；通信超时不得解释为动作完成。
-- A 区结束、准备进入 B 区二维码流程时，`task_id=7` 若 30 秒内没有收到终态回调，mission 记录通信超时并继续下一个任务；下位机明确返回失败或通信端点未就绪仍停止流程。
+- 新串口协议将机械臂运动学逆解与轨迹生成交给上位机，不再定义旧的 `ArmTarget(0x13)` 与 `StateMachineCommand(0x11)` 报文；当前 mission 代码仍使用旧消息与回调，尚未迁移到规划器服务。
+- 轨迹下发时序：上位机先发送 `TrajectoryHeader(0x10)` 声明点数，随后发送 N 个 `TrajectoryPoint(0x11)` 写入下位机缓冲区，最后发送 `ArmControlMode(0x12)` 启动执行。
+- 状态与遥测：下位机以 20Hz (50ms) 周期主动上报 `ArmStatus(0x20)`，包含当前任务状态码、进度、4关节角度/角速度、夹爪状态与错误码。
+- 停止与急停：平滑停止 `STOP` (mode=1) 清除未走完轨迹并恢复 IDLE；急停 `ESTOP` (mode=2) 切断电机脉冲进入 EMERGENCY 锁定，需先发 STOP 指令解除锁定。
+- 舵机与轨迹动作使用可靠消息传输 (Reliable ACK)；底盘速度 `ChassisVelocity(0x01)` 为连续高频刷新，不做重传。底盘移动与机械臂运动严格分阶段互斥执行。
+
+当前串口桥按消息 ID 分别排队重传。规划器连续发布 Header、Points、Mode 时，桥尚未提供跨消息类型的 ACK 顺序保证；实机使用前需完成顺序保障与端到端验证。
+
 
 当前 mission 的通信和识别超时如下：
 

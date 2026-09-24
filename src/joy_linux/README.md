@@ -12,9 +12,7 @@ This node should work with any joystick that is supported by Linux.
 
 For the Xbox Series controller used on this robot, the left stick vertical axis
 (axis 1) drives `linear.x`, and the right stick horizontal axis (axis 2) drives
-`angular.z`. Button X publishes the left observation-position command, button B
-publishes the right observation-position command, and button Y publishes the
-return-initial-pose command.
+`angular.z` (`geometry_msgs/msg/Twist` on `/cmd_vel`).
 
 ## Device Selection
 
