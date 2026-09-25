@@ -53,7 +53,7 @@ ros2 launch fruit_arm_planner fruit_arm_debug.launch.py
 # 串口设备不同可传 port:=/dev/ttyUSB0
 ```
 
-另开一个终端运行交互式笛卡尔控制台：
+另开一个终端运行交互式机械臂控制台：
 
 ```bash
 source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
@@ -62,8 +62,17 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 # 同时逐点显示轨迹：添加 --log-level trace
 ```
 
-控制台命令为 `move X Y Z PITCH_DEG [DURATION_MS] [ptp|lin] [hold|open|close]`、
-`status`、`stop`、`estop`、`level`、`help`、`quit`。例如 `move 0.20 0 0.25 0 2500 ptp hold`。
+控制台通过规划器服务规划并立即执行以下运动命令：
+
+| 命令 | 含义与示例 |
+| --- | --- |
+| `move X Y Z PITCH_DEG [DURATION_MS] [ptp|lin] [hold|open|close]` | 笛卡尔目标（m、绝对俯仰角度）；例如 `move 0.20 0 0.25 0 2500 ptp hold` |
+| `joints Q1 Q2 Q3 Q4 [DURATION_MS] [hold|open|close]` | 连杆目标角度（度）：Q2 相对竖直（后仰为正），Q3 为小臂相对水平面的绝对角，Q4 为末端相对水平面的绝对俯仰角。控制台按 YAML 偏置换算后下发；例如 `joints 0 20 -40 0 2500 hold` |
+| `motors Q1 Q2 Q3 Q4 [DURATION_MS] [hold|open|close]` | 直接输入四个原始电机硬件角（度），不再叠加偏置；沿用旧版 `joints` 的语义 |
+| `preset NAME` | 直接执行 YAML 中的预设，例如 `preset home`；现有名称为 `zero`、`home`、`retract`、`pick_sequence` |
+
+`DURATION_MS=0` 或省略时使用规划器默认时间；两种关节命令默认夹爪保持。当前标定下，`joints 0 0 0 0` 会换算成约 `[0, 1, -6, -5]°` 的硬件目标；`motors 0 0 0 0` 则原样下发全零硬件角。`status` 显示原始电机角以及按 YAML 反算的连杆角。还支持 `stop`、`estop`、`level`、`help`、`quit`。
+预设的 `coordinate_frame: link_angles` 使用与 `joints` 相同的四项定义，末端目标为 `0°` 时腕部会自动抵消小臂倾角；`coordinate_frame: joints` 则保留原始电机角定义。`retract` 当前设为小臂 `-100°`、末端 `-100°` 以维持折叠，若将末端改为 `0°`，所需腕电机目标为 `95°`，超过配置上限 `92.4°`，规划器会拒绝。
 运行中输入 `level info`、`level debug` 或 `level trace` 可立即切换，不需要重启：
 
 | 等级 | 输出 |
@@ -74,7 +83,7 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 
 `ROS TX` 日志来自控制台对规划器输出话题的订阅，表示**观测到 ROS 消息**，
 不表示通信桥已获得 ACK 或下位机已装载路点；不同话题的日志先后顺序也不是串口到达顺序。
-`move` 会实际驱动机械臂；`status` 可检查最新四轴反馈和控制器状态。运动服务异步返回，
+`move`、`joints`、`motors`、`preset` 都会实际驱动机械臂；`status` 可检查最新四轴反馈和控制器状态。运动服务异步返回，
 期间仍可输入 `stop` 或 `estop`。**在控制台按 Ctrl+C 会请求急停，再退出**；
 控制台最多等待急停服务响应 2 秒。服务响应仅证明规划器发布了急停 Mode，
 是否已到达下位机、是否进入 `EMERGENCY` 仍须观察状态。
@@ -82,16 +91,18 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 规划器只提供运动规划节点。发出运动命令前，必须由现有硬件桥接系统提供
 `/fruit_hardware_bridge/arm/status`；节点须收到四轴均有限、处于配置限位内且接收时间不超过
 `status_max_age_sec` 的状态。没有状态时服务会拒绝运动，STOP 和急停仍可调用。
-修改本包 Python 代码后需要重新构建并重新 source 运行环境；仅修改 YAML 时重启节点即可。
+修改本包 Python 代码后需要重新构建，并重启已运行的规划节点；它从 `install/fruit_arm_planner` 加载 Python 包，不会因 `src` 文件或安装文件更新而自动替换进程内的代码。控制台在启动时从自身旁边的 `config/arm_presets.yaml` 读取关节映射，因此调整偏置后应重启规划节点和控制台，保证二者使用同一版标定；新终端仍须 source 统一运行环境。
+
+笛卡尔 `pitch_deg=0` 时，不能直接用硬件角 `joint_3 + joint_4` 判断末端是否水平：先按配置将 Q3/Q4 分别换回理论角，俯仰角应为 `(joint_3 - q3.offset_deg) / q3.direction + (joint_4 - q4.offset_deg) / q4.direction`（各项单位一致）。当前 YAML 两轴方向均为 `+1`、偏置为 `-6°` 和 `-5°`，所以 `joint_3 + joint_4` 应为 `-11°`。修改 YAML 后需要重启规划节点；修改 Python 后还需重构建。
 
 ### 3. 正常启动控制台输出核对
 当节点启动成功时，终端将打印加载的参数信息：
 ```text
 [arm_planner_node-1] [INFO] [arm_planner_node]: Loaded arm geometry: d1=0.14m, a2=0.26m, a3=0.26m, a4=0.08m
 [arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q1] mapping: offset=0.0°, dir=+1.0, limits=[-180.0°, 180.0°]
-[arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q2] mapping: offset=-90.0°, dir=+1.0, limits=[-87.0°, 45.0°]
-[arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q3] mapping: offset=90.0°, dir=+1.0, limits=[-135.0°, 180.0°]
-[arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q4] mapping: offset=0.0°, dir=+1.0, limits=[-90.0°, 92.4°]
+[arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q2] mapping: offset=-89.0°, dir=+1.0, limits=[-87.0°, 45.0°]
+[arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q3] mapping: offset=-6.0°, dir=+1.0, limits=[-135.0°, 90.0°]
+[arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q4] mapping: offset=-5.0°, dir=+1.0, limits=[-90.0°, 92.4°]
 [arm_planner_node-1] [INFO] [arm_planner_node]: Loaded 4 arm presets: ['zero', 'home', 'retract', 'pick_sequence']
 [arm_planner_node-1] [INFO] [arm_planner_node]: Fruit Arm Planner Node fully ready with Service API.
 ```
@@ -116,7 +127,7 @@ geometry:
 - **若某关节旋转方向与预期相反（例如给正角反而向下运动）**：
   将该关节的 `direction` 由 `1.0` 修改为 `-1.0` 即可反相，无需拆改电机连线。
 - **若机械臂安装初始零位发生变动**：
-  修改 `offset_deg`。Q1、Q2、Q4 满足 $q_{\text{hardware}} = \text{direction} \cdot q_{\text{algo}} + \text{offset}$；Q3 电机角是小臂相对水平面的绝对角，满足 $q_{3,\text{hardware}} = \text{direction}_3 \cdot (q_{2,\text{algo}} + q_{3,\text{algo}}) + \text{offset}_3$。反馈计算相对肘角时，需要从小臂绝对角中减去大臂理论角。当前 YAML 的 Q3 偏置是 `90°`，与“小臂水平时硬件读数为 0°”的描述冲突；核查方法和数值示例见[四轴角度与解算链路核查](05_PHYSICAL_ARM_MAPPING_REVIEW.md)。
+  修改 `offset_deg`。Q1、Q2、Q4 满足 $q_{\text{hardware}} = \text{direction} \cdot q_{\text{algo}} + \text{offset}$；Q3 电机角与小臂绝对俯仰角对应，满足 $q_{3,\text{hardware}} = \text{direction}_3 \cdot (q_{2,\text{algo}} + q_{3,\text{algo}}) + \text{offset}_3$。反馈计算相对肘角时，先减 Q3 偏置，再减大臂理论角。控制台 `joints` 和 YAML 中 `link_angles` 预设会按偏置换算；ROS `move_joints` 服务、控制台 `motors` 和 YAML 中 `joints` 预设则直接使用硬件角。更多角度关系见[四轴角度与解算链路核查](05_PHYSICAL_ARM_MAPPING_REVIEW.md)。
 
 ### 3. 安全限位边界设定 (`limits_deg`)
 `limits_deg: [min_deg, max_deg]` 对应物理电机的极限安全读数。
@@ -125,12 +136,13 @@ geometry:
 
 ### 4. 反馈和等待参数 (`planning`)
 
-- `status_max_age_sec`：状态到达规划器后的最大可用时长，默认 0.25 秒。20 Hz 回报正常时约每 50 ms 更新一次。
+- `status_max_age_sec`：状态到达规划器后的最大可用时长，当前配置为 0.25 秒。20 Hz 回报正常时约每 50 ms 更新一次。
 - `execution_timeout_buffer_sec`：从发布启动 Mode 起，轨迹末点时间之外的等待余量，默认 2 秒。超时会发布 STOP，但该发布不等于固件确认停止。
 - `interpolation_step_ms`：路点时间间隔目标值。每条轨迹均从最新实测角的 0 ms 路点开始；预设 `duration_ms` 为逐段时长。
+- `default_dwell_ms`：预设夹爪动作路点未指定 `dwell_ms` 时的默认驻留时间。
 - `mode_start_delay_ms`：发布全部路点后、发布 `Mode=TRAJECTORY` 前的调试等待时间，默认 100 ms。它只是时间缓冲，不能证明通信桥已经完成逐点发送或下位机已经装载全部路点；正式修复仍应由通信桥提供跨消息发送屏障。
 
-配置缺失或几何、关节映射、预设的基本结构无效时，节点启动会报错退出。修改限位前应核实四轴实测角仍在新范围内，否则规划器会拒绝运动。
+节点启动时从源码目录的 `arm_presets.yaml` 读取几何、四轴偏置/方向/限位、规划时间参数与预设；缺少必需项或基本结构无效时启动失败，不回退到 Python 中的机械参数。修改限位前应核实四轴实测角仍在新范围内，否则规划器会拒绝运动。
 
 ---
 

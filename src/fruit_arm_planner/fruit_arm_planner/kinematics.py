@@ -15,10 +15,10 @@ class RobotKinematics:
 
     def __init__(
         self,
-        d1: float = 0.14,  # 基座高度 (m)
-        a2: float = 0.16,  # 大臂长度 (m)
-        a3: float = 0.16,  # 小臂长度 (m)
-        a4: float = 0.08,  # 末端/夹爪长度 (m)
+        d1: float,  # 基座高度 (m)
+        a2: float,  # 大臂长度 (m)
+        a3: float,  # 小臂长度 (m)
+        a4: float,  # 末端/夹爪长度 (m)
         joint_limits: Optional[Dict[str, Tuple[float, float]]] = None,
     ):
         self.d1 = d1
@@ -31,10 +31,10 @@ class RobotKinematics:
     def from_geometry_dict(cls, geo_dict: Dict[str, Any]) -> RobotKinematics:
         """从几何参数字典创建运动学求解器."""
         return cls(
-            d1=float(geo_dict.get("d1", 0.14)),
-            a2=float(geo_dict.get("a2", 0.16)),
-            a3=float(geo_dict.get("a3", 0.16)),
-            a4=float(geo_dict.get("a4", 0.08)),
+            d1=float(geo_dict["d1"]),
+            a2=float(geo_dict["a2"]),
+            a3=float(geo_dict["a3"]),
+            a4=float(geo_dict["a4"]),
         )
 
     def forward_kinematics(

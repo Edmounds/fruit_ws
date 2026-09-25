@@ -94,10 +94,10 @@ ros2 topic pub --once /arm_planner_node/cmd_cartesian geometry_msgs/msg/PointSta
 ### 3. 预设固定姿态调用 (`~/cmd_preset`)
 - **完整话题名**：`/arm_planner_node/cmd_preset`
 - **消息类型**：`std_msgs/msg/String`
-- **通信语义**：异步非阻塞下发。通过名称索引触发 `arm_presets.yaml` 中配置的固定姿态。
+- **通信语义**：异步非阻塞下发。通过名称索引触发 `arm_presets.yaml` 中配置的固定姿态；当前关节预设使用 `link_angles`（大臂相对竖直、小臂相对水平、末端绝对俯仰），其中末端设为 `0°` 时会按小臂角度和偏置换算腕电机目标。若预设改为 `coordinate_frame: joints`，四项则是原始硬件角。
 - **支持名称**：
   - `"zero"`：物理基准零位（大臂竖直朝天，小臂水平朝前）；
-  - `"home"`：安全初始复位位姿（大臂微后仰稳固重心，小臂水平微收）；
+  - `"home"`：大臂后仰、小臂下折，末端保持水平；
   - `"retract"`：底盘导航避障折叠收纳位姿。
 
 - **命令行测试示例**：

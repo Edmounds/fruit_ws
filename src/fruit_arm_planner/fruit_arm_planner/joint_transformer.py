@@ -10,11 +10,11 @@ from typing import Dict, List, Optional, Tuple
 @dataclass
 class JointChannelConfig:
     """单个关节的映射配置参数."""
-    name: str = "q"
-    offset_rad: float = 0.0          # 零位偏置 (rad)
-    direction: float = 1.0           # 方向系数 (+1.0 或 -1.0)
-    min_limit_rad: float = -math.pi  # 硬件最小限位 (rad)
-    max_limit_rad: float = math.pi   # 硬件最大限位 (rad)
+    name: str
+    offset_rad: float         # 零位偏置 (rad)
+    direction: float          # 方向系数 (+1.0 或 -1.0)
+    min_limit_rad: float      # 硬件最小限位 (rad)
+    max_limit_rad: float      # 硬件最大限位 (rad)
 
     def to_hardware(self, algo_val: float) -> float:
         """算法理论角 -> 下位机物理硬件角."""
@@ -36,36 +36,24 @@ class JointTransformer:
     Q3 硬件角对应小臂绝对俯仰角，映射时需包含算法 Q2。
     """
 
-    def __init__(self, channels: Optional[List[JointChannelConfig]] = None):
-        if channels is None or len(channels) != 4:
-            # 默认直通配置
-            self.channels = [
-                JointChannelConfig(name="q1", offset_rad=0.0, direction=1.0, min_limit_rad=-math.pi, max_limit_rad=math.pi),
-                JointChannelConfig(name="q2", offset_rad=0.0, direction=1.0, min_limit_rad=math.radians(3.0), max_limit_rad=math.pi),
-                JointChannelConfig(name="q3", offset_rad=0.0, direction=1.0, min_limit_rad=math.radians(-190.0), max_limit_rad=math.radians(190.0)),
-                JointChannelConfig(name="q4", offset_rad=0.0, direction=1.0, min_limit_rad=math.radians(-90.0), max_limit_rad=math.radians(92.4)),
-            ]
-        else:
-            self.channels = channels
+    def __init__(self, channels: List[JointChannelConfig]):
+        if len(channels) != 4:
+            raise ValueError('Exactly four configured joint channels are required')
+        self.channels = channels
 
     @classmethod
     def from_config_dict(cls, mapping_dict: Dict[str, dict]) -> JointTransformer:
         """从 YAML 字典结构加载关节映射配置 (输入单位为 deg, 内部自动转为 rad)."""
         joint_keys = ["q1", "q2", "q3", "q4"]
-        default_limits = [
-            (-180.0, 180.0),
-            (3.0, 180.0),
-            (-190.0, 190.0),
-            (-90.0, 92.4),
-        ]
-
         channels = []
-        for i, key in enumerate(joint_keys):
-            cfg = mapping_dict.get(key, {})
-            offset_deg = float(cfg.get("offset_deg", 0.0))
-            direction = 1.0 if float(cfg.get("direction", 1.0)) >= 0 else -1.0
+        for key in joint_keys:
+            cfg = mapping_dict[key]
+            offset_deg = float(cfg["offset_deg"])
+            direction = float(cfg["direction"])
+            if direction not in (-1.0, 1.0):
+                raise ValueError(f'Invalid direction for {key}')
 
-            lim_deg = cfg.get("limits_deg", default_limits[i])
+            lim_deg = cfg["limits_deg"]
             min_deg = float(lim_deg[0])
             max_deg = float(lim_deg[1])
 
@@ -90,6 +78,16 @@ class JointTransformer:
             self.channels[2].to_hardware(q_algo[1] + q_algo[2]),
             self.channels[3].to_hardware(q_algo[3]),
         )
+
+    def link_angles_to_hardware(self, link_deg: Tuple[float, float, float, float]
+                                ) -> Tuple[float, float, float, float]:
+        """连杆角转硬件弧度：基座、竖直起算大臂、绝对小臂、绝对末端（输入为度）."""
+        q2 = math.radians(link_deg[1] + 90.0)
+        forearm = math.radians(link_deg[2])
+        return self.algo_to_hardware((
+            math.radians(link_deg[0]), q2, forearm - q2,
+            math.radians(link_deg[3] - link_deg[2]),
+        ))
 
     def hardware_to_algo(
         self, q_hw: Tuple[float, float, float, float]

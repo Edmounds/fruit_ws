@@ -21,7 +21,7 @@ mission 可调用关节单目标、机械臂根部坐标系下的笛卡尔单目
 | **03** | [**对外暴露接口与 API 说明**](docs/03_INTERFACES_AND_API.md) | 节点对外暴露的所有 ROS 2 服务 (`move_cartesian`, `move_joints`, `execute_preset`, `home`, `retract`, `stop`)、双模式解算与 Python 客户端代码调用范式 |
 | **04** | [**启动、调参配置与实机调试**](docs/04_SETUP_AND_DEBUGGING.md) | Launch 启动与参数注入、`arm_presets.yaml` 零位偏置与限位调参手册、CLI 命令行快速调试指令集与现场常见故障排查手册 (Troubleshooting) |
 | **附录** | [**重构清单**](docs/REFACTOR_SPEC_AND_CHECKLIST.md) | 已实施的包内改造、验收边界及待核实的固件事实 |
-| **实机核查** | [**四轴角度与解算链路核查**](docs/05_PHYSICAL_ARM_MAPPING_REVIEW.md) | 同步带小臂与相对腕部的角度关系、当前 Q3 偏置冲突和校准顺序 |
+| **实机核查** | [**四轴角度与解算链路核查**](docs/05_PHYSICAL_ARM_MAPPING_REVIEW.md) | 同步带小臂与相对腕部的角度关系、Q3 零位修正和剩余校准项 |
 
 ---
 
@@ -45,7 +45,8 @@ ros2 launch fruit_arm_planner fruit_arm_planner.launch.py
 通信桥与规划器，再于另一终端运行
 `python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py`。
 控制台命令及 Ctrl+C 急停语义见[启动与调试手册](docs/04_SETUP_AND_DEBUGGING.md)。
-控制台支持 `--log-level info|debug|trace`，运行中可用 `level` 命令切换；
+控制台支持 `move` 笛卡尔目标、`joints` 连杆角目标（第四项为末端绝对俯仰角，按 YAML 标定映射到硬件角）、`motors` 原始硬件角目标和 `preset` 预设动作，命令提交后由规划器直接执行；
+还支持 `--log-level info|debug|trace`，运行中可用 `level` 命令切换；
 `debug` 显示每帧状态，`trace` 还显示每个 ROS 轨迹路点。
 
 ### 3. 常用调试指令

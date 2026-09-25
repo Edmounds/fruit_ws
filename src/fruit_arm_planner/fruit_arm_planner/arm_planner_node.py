@@ -62,16 +62,6 @@ class ArmPlannerNode(Node):
         # --------------------------------------------------------------------
         # 2. 算法与核心模块初始化 (由 YAML 配置参数驱动)
         # --------------------------------------------------------------------
-        self.kinematics = RobotKinematics()
-        self.transformer = JointTransformer()
-        self.planner = TrajectoryPlanner(self.kinematics)
-
-        self.default_duration_ms = 3000
-        self.interpolation_step_ms = 50
-        self.status_max_age_sec = 0.25
-        self.execution_timeout_buffer_sec = 2.0
-        self.mode_start_delay_ms = 100
-        self.hover_height_m = 0.06
         self.presets: Dict[str, dict] = {}
 
         self._load_config_from_yaml()
@@ -202,33 +192,33 @@ class ArmPlannerNode(Node):
                     raise ValueError(f'Invalid joint_mapping.{key}')
 
             # 1. 连杆几何参数
-            if 'geometry' in params:
-                self.kinematics = RobotKinematics.from_geometry_dict(params['geometry'])
-                self.planner = TrajectoryPlanner(self.kinematics)
-                self.get_logger().info(
-                    f"Loaded arm geometry: d1={self.kinematics.d1}m, "
-                    f"a2={self.kinematics.a2}m, a3={self.kinematics.a3}m, a4={self.kinematics.a4}m"
-                )
+            self.kinematics = RobotKinematics.from_geometry_dict(params['geometry'])
+            self.planner = TrajectoryPlanner(self.kinematics)
+            self.get_logger().info(
+                f"Loaded arm geometry: d1={self.kinematics.d1}m, "
+                f"a2={self.kinematics.a2}m, a3={self.kinematics.a3}m, a4={self.kinematics.a4}m"
+            )
 
             # 2. 关节坐标系映射与零位偏置
-            if 'joint_mapping' in params:
-                self.transformer = JointTransformer.from_config_dict(params['joint_mapping'])
-                for ch in self.transformer.channels:
-                    self.get_logger().info(
-                        f"Joint [{ch.name}] mapping: offset={math.degrees(ch.offset_rad):.1f}°, "
-                        f"dir={ch.direction:+.1f}, "
-                        f"limits=[{math.degrees(ch.min_limit_rad):.1f}°, {math.degrees(ch.max_limit_rad):.1f}°]"
-                    )
+            self.transformer = JointTransformer.from_config_dict(params['joint_mapping'])
+            for ch in self.transformer.channels:
+                self.get_logger().info(
+                    f"Joint [{ch.name}] mapping: offset={math.degrees(ch.offset_rad):.1f}°, "
+                    f"dir={ch.direction:+.1f}, "
+                    f"limits=[{math.degrees(ch.min_limit_rad):.1f}°, {math.degrees(ch.max_limit_rad):.1f}°]"
+                )
 
             # 3. 规划参数
-            planning_cfg = params.get('planning', {})
-            self.default_duration_ms = int(planning_cfg.get('default_duration_ms', 3000))
-            self.interpolation_step_ms = int(planning_cfg.get('interpolation_step_ms', 50))
-            self.hover_height_m = float(planning_cfg.get('hover_height_m', 0.06))
-            self.status_max_age_sec = float(planning_cfg.get('status_max_age_sec', 0.25))
-            self.execution_timeout_buffer_sec = float(planning_cfg.get('execution_timeout_buffer_sec', 2.0))
-            self.mode_start_delay_ms = int(planning_cfg.get('mode_start_delay_ms', 100))
+            planning_cfg = params['planning']
+            self.default_duration_ms = int(planning_cfg['default_duration_ms'])
+            self.interpolation_step_ms = int(planning_cfg['interpolation_step_ms'])
+            self.default_dwell_ms = int(planning_cfg['default_dwell_ms'])
+            self.hover_height_m = float(planning_cfg['hover_height_m'])
+            self.status_max_age_sec = float(planning_cfg['status_max_age_sec'])
+            self.execution_timeout_buffer_sec = float(planning_cfg['execution_timeout_buffer_sec'])
+            self.mode_start_delay_ms = int(planning_cfg['mode_start_delay_ms'])
             if (self.default_duration_ms <= 0 or self.interpolation_step_ms <= 0
+                    or self.default_dwell_ms < 0
                     or not 0 < self.status_max_age_sec < 10
                     or not 0 < self.execution_timeout_buffer_sec < 60
                     or not 0 <= self.mode_start_delay_ms <= 10000
@@ -236,14 +226,13 @@ class ArmPlannerNode(Node):
                 raise ValueError('Invalid planning parameters')
 
             # 4. 预设工序与固定轨迹
-            presets_data = params.get('presets', {})
+            presets_data = params['presets']
             for name, preset in presets_data.items():
-                if preset.get('coordinate_frame', 'joints') not in ('joints', 'cartesian') or not preset.get('waypoints'):
+                if preset['coordinate_frame'] not in ('joints', 'cartesian', 'link_angles') or not preset.get('waypoints'):
                     raise ValueError(f'Invalid preset {name}')
                 for wp in preset['waypoints']:
                     target = wp['target']
-                    expected = 4 if preset.get('coordinate_frame', 'joints') == 'joints' else 3
-                    if (len(target) < expected or not all(math.isfinite(float(v)) for v in target)
+                    if (len(target) < 4 or not all(math.isfinite(float(v)) for v in target)
                             or int(wp['duration_ms']) <= 0 or int(wp['duration_ms']) > 0xFFFFFFFF
                             or int(wp.get('dwell_ms', 0)) < 0
                             or int(wp.get('gripper', 0)) not in (0, 1, 2)):
@@ -538,8 +527,9 @@ class ArmPlannerNode(Node):
                 current_q_hw=start,
                 waypoints=preset_data['waypoints'],
                 transformer=self.transformer,
-                coordinate_frame=preset_data.get('coordinate_frame', 'joints'),
+                coordinate_frame=preset_data['coordinate_frame'],
                 step_ms=self.interpolation_step_ms,
+                default_dwell_ms=self.default_dwell_ms,
             )
 
         res.success, res.trajectory_id, res.message = self._run_motion(build, f'preset({req.preset_name})')

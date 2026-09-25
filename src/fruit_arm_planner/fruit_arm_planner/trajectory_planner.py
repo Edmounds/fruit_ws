@@ -43,8 +43,8 @@ class TrajectoryPlanner:
     3. 多航路点工序时间片拼接与双点驻留法夹取 (Dwell Point)
     """
 
-    def __init__(self, kinematics: Optional[RobotKinematics] = None):
-        self.kinematics = kinematics or RobotKinematics()
+    def __init__(self, kinematics: RobotKinematics):
+        self.kinematics = kinematics
         self._next_trajectory_id = secrets.randbelow(0xFFFFFFFE) + 1
 
     def get_new_trajectory_id(self) -> int:
@@ -61,8 +61,8 @@ class TrajectoryPlanner:
         self,
         start_q: Tuple[float, float, float, float],
         end_q: Tuple[float, float, float, float],
-        duration_ms: int = 3000,
-        num_points: int = 20,
+        duration_ms: int,
+        num_points: int,
         start_time_offset_ms: int = 0,
         start_point_id: int = 0,
         gripper_action: int = GripperAction.HOLD,
@@ -103,12 +103,12 @@ class TrajectoryPlanner:
         self,
         start_xyz: Tuple[float, float, float],
         target_xyz: Tuple[float, float, float],
-        start_pitch: float = 0.0,
-        target_pitch: float = 0.0,
-        duration_ms: int = 2500,
-        step_ms: int = 50,
-        transformer: Optional[Any] = None,
-        start_q_hw: Optional[Tuple[float, float, float, float]] = None,
+        start_pitch: float,
+        target_pitch: float,
+        duration_ms: int,
+        step_ms: int,
+        transformer: Any,
+        start_q_hw: Tuple[float, float, float, float],
         start_time_offset_ms: int = 0,
         start_point_id: int = 0,
         gripper_action: int = GripperAction.HOLD,
@@ -170,22 +170,22 @@ class TrajectoryPlanner:
         current_q_hw: Tuple[float, float, float, float],
         waypoints: List[Dict[str, Any]],
         transformer: Any,
-        coordinate_frame: str = "cartesian",
-        step_ms: int = 50,
-        default_dwell_ms: int = 500,
+        coordinate_frame: str,
+        step_ms: int,
+        default_dwell_ms: int,
     ) -> Tuple[bool, List[TrajectoryPoint], str]:
         """多航路点工序时间片无缝拼接 (支持双点驻留法 Dwell Point 实现到位后夹取).
 
         :param current_q_hw: 实车当前物理硬件角度 (弧度)
         :param waypoints: 预设航路点列表
         :param transformer: JointTransformer 实例
-        :param coordinate_frame: "cartesian" (末端空间坐标) 或 "joints" (硬件角度)
-        :param step_ms: 时间片步长 (默认 50ms)
-        :param default_dwell_ms: 夹取到位后的原地驻留时间 (默认 500ms)
+        :param coordinate_frame: "cartesian" (末端空间坐标)、"link_angles" (连杆角) 或 "joints" (硬件角)
+        :param step_ms: YAML 中配置的时间片步长
+        :param default_dwell_ms: YAML 中配置的夹取到位驻留时间
         """
         if not waypoints:
             return False, [], "Empty waypoints sequence"
-        if coordinate_frame not in ('cartesian', 'joints') or step_ms <= 0:
+        if coordinate_frame not in ('cartesian', 'joints', 'link_angles') or step_ms <= 0:
             return False, [], 'Invalid coordinate frame or interpolation step'
 
         all_points: List[TrajectoryPoint] = []
@@ -194,7 +194,7 @@ class TrajectoryPlanner:
         point_id = 0
 
         for idx, wp in enumerate(waypoints):
-            duration_ms = int(wp.get("duration_ms", 2000))
+            duration_ms = int(wp["duration_ms"])
             gripper = int(wp.get("gripper", GripperAction.HOLD))
             linear = bool(wp.get("linear", False))
             dwell_ms = int(wp.get("dwell_ms", default_dwell_ms if gripper != GripperAction.HOLD else 0))
@@ -205,10 +205,10 @@ class TrajectoryPlanner:
 
             target = wp.get("target", [])
             if coordinate_frame == "cartesian":
-                if len(target) < 3:
+                if len(target) < 4:
                     return False, [], f"Waypoint {idx} invalid cartesian target: {target}"
                 x, y, z = float(target[0]), float(target[1]), float(target[2])
-                pitch_deg = float(target[3]) if len(target) > 3 else 0.0
+                pitch_deg = float(target[3])
                 pitch_rad = math.radians(pitch_deg)
 
                 ok, q_algo, ik_msg = self.kinematics.inverse_kinematics(
@@ -223,10 +223,12 @@ class TrajectoryPlanner:
                     return False, [], f"Waypoint {idx} limit exceeded: {lim_msg}"
 
             else:
-                # joints 模式
+                # joints 为硬件角；link_angles 为竖直起算的大臂、绝对小臂及绝对末端角
                 if len(target) < 4:
                     return False, [], f"Waypoint {idx} invalid joint target: {target}"
-                target_q_hw = tuple(math.radians(float(d)) for d in target[:4])
+                target_q_hw = (transformer.link_angles_to_hardware(target[:4])
+                               if coordinate_frame == 'link_angles'
+                               else tuple(math.radians(float(d)) for d in target[:4]))
                 lim_ok, lim_msg = transformer.check_hardware_limits(target_q_hw)
                 if not lim_ok:
                     return False, [], f"Waypoint {idx} joint limit exceeded: {lim_msg}"

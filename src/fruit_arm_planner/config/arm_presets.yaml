@@ -11,7 +11,8 @@ arm_planner_node:
 
     # ------------------------------------------------------------------------
     # 2. 关节坐标系映射与零位偏置
-    # 用户物理零位基准: 大臂竖直朝天，小臂水平朝前，腕部水平朝前 (0位)
+    # 几何参考: 大臂竖直朝天，小臂水平朝前，腕部与小臂同向
+    # 原始电机读数的零位误差由以下 offset_deg 按现场标定值修正
     # 运动方向定义: 所有关节向上抬为正 (+), 向下降为负 (-)
     # Q1/Q2/Q4: q_hardware = direction * q_algo + offset_deg
     # Q3: q_hardware = direction * (q2_algo + q3_algo) + offset_deg
@@ -22,15 +23,15 @@ arm_planner_node:
         direction: 1.0
         limits_deg: [-180.0, 180.0]
       q2:
-        offset_deg: -90.0        # 大臂竖直朝天为0° (向下俯低为负)
+        offset_deg: -89.0        # 几何竖直 q2=90° 时，硬件目标角为1°
         direction: 1.0
         limits_deg: [-87.0, 45.0] # -87°为接近底盘水平极限，+45°为后仰极限
       q3:
-        offset_deg: 90.0          # 小臂相对水平面的绝对角：水平朝前为0°，向上为正
+        offset_deg: -6.0         # 模型小臂水平 q2+q3=0° 时，硬件目标角为-6°
         direction: 1.0
-        limits_deg: [-135.0, 180.0]
+        limits_deg: [-135.0, 90.0]
       q4:
-        offset_deg: 0.0          # 腕部水平朝前为0°
+        offset_deg: -5.0         # 模型腕部与小臂同向 q4=0° 时，硬件目标角为-5°
         direction: 1.0
         limits_deg: [-90.0, 92.4]
 
@@ -39,7 +40,8 @@ arm_planner_node:
     # ------------------------------------------------------------------------
     planning:
       default_duration_ms: 3000   # 默认点到点耗时 (ms)
-      interpolation_step_ms: 200   # 20Hz 插值周期 (ms)
+      interpolation_step_ms: 200   # 约5Hz 插值周期 (ms)
+      default_dwell_ms: 500       # 夹爪动作路点未写 dwell_ms 时的驻留时间 (ms)
       status_max_age_sec: 0.25    # 接受四轴实测反馈的最大接收时延 (s)
       execution_timeout_buffer_sec: 2.0  # 轨迹时长之外的状态等待余量 (s)
       mode_start_delay_ms: 100    # 调试缓冲：路点发布后等待再发送启动 Mode (ms)
@@ -49,28 +51,29 @@ arm_planner_node:
     # 4. 机械臂预设工序与固定轨迹动作库
     # coordinate_frame:
     #   - "cartesian": target 为 [x, y, z, pitch_deg] (米, 度)，直观可测
-    #   - "joints":    target 为 [q1, q2, q3, q4] (度)，适合折叠避障姿态
+    #   - "link_angles": target 为 [偏航, 大臂相对竖直, 小臂相对水平, 末端相对水平] (度)
+    #   - "joints":      target 为四个电机原始硬件角 (度)，不应用零位偏置
     # gripper: 0=保持 (HOLD), 1=张开 (OPEN), 2=闭合 (CLOSE)
     # dwell_ms: 到达该点后原地停顿夹取时长 (双点驻留法)
     # ------------------------------------------------------------------------
     presets:
       zero:
         description: "机械臂基准零位姿 (大臂竖直朝天，小臂水平朝前)"
-        coordinate_frame: "joints"
+        coordinate_frame: "link_angles"
         waypoints:
           - { target: [0.0, 0.0, 0.0, 0.0], duration_ms: 2500, gripper: 0 }
 
       home:
-        description: "安全初始复位位姿 (大臂微后仰稳固重心，小臂水平微收)"
-        coordinate_frame: "joints"
+        description: "安全初始复位位姿 (大臂后仰20°，小臂下折40°，末端保持水平)"
+        coordinate_frame: "link_angles"
         waypoints:
           - { target: [0.0, 20.0, -40.0, 0.0], duration_ms: 3000, gripper: 0 }
 
       retract:
         description: "底盘避障折叠收纳位姿 (贴合底盘结构)"
-        coordinate_frame: "joints"
+        coordinate_frame: "link_angles"
         waypoints:
-          - { target: [0.0, 20.0, -100.0, 0.0], duration_ms: 3000, gripper: 0 }
+          - { target: [0.0, 20.0, -100.0, -100.0], duration_ms: 3000, gripper: 0 }
 
       pick_sequence:
         description: "标准苹果采摘多动作工序 (以笛卡尔空间坐标定义)"
@@ -79,8 +82,8 @@ arm_planner_node:
           # 段 0: 移至果树前方 5cm 悬停准备位，耗时 1500ms，到位后张开夹爪 (停顿 400ms)
           - { target: [0.20, 0.0, 0.25, 0.0], duration_ms: 1500, gripper: 1, dwell_ms: 400 }
           # 段 1: 探入 8cm 包裹果实，耗时 1000ms，到位后闭合夹紧 (停顿 600ms)
-          - { target: [0.28, 0.0, 0.25, 0.0], duration_ms: 1000, gripper: 2, dwell_ms: 600 }
+          - { target: [0.40, 0.0, 0.25, 0.0], duration_ms: 1000, gripper: 2, dwell_ms: 600 }
           # 段 2: 垂直向上提拉 6cm 脱离果柄，耗时 1000ms，保持夹紧
-          - { target: [0.28, 0.0, 0.31, 0.0], duration_ms: 1000, gripper: 0, dwell_ms: 0 }
+          - { target: [0.40, 0.0, 0.40, 0.0], duration_ms: 1000, gripper: 0, dwell_ms: 0 }
           # 段 3: 带着果实收回到安全悬停高度，耗时 1500ms，保持夹紧
           - { target: [0.20, 0.0, 0.25, 0.0], duration_ms: 1500, gripper: 0, dwell_ms: 0 }
