@@ -20,9 +20,9 @@ joint_state_topic: /arm_planner_node/joint_states
 move_cartesian_service: /arm_planner_node/move_cartesian
 stop_service: /arm_planner_node/stop
 endpoint_timeout_sec: 10.0
-service_timeout_sec: 30.0
+service_timeout_sec: 10.0
 
-# 仅移动到目标点，夹爪 HOLD；不沿用旧固件的 Z=-100mm 或抓取工序。
+# mission 在目标末点闭爪，后续 Harvest/Home 由上位机调用预设。
 motion:
   pitch_deg: null  # null: 保持图像时刻的末端俯仰角；数值: 指定对地俯仰角（度）
   duration_ms: 0  # 0: 使用 planner 的默认耗时

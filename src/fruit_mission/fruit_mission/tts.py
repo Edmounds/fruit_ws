@@ -10,6 +10,7 @@ from threading import Event
 from threading import Lock
 from threading import Thread
 from typing import Callable, Mapping
+import time
 import wave
 
 
@@ -37,12 +38,12 @@ class PiperSpeaker:
         self._model_config = str(config["config_path"])
         self._aplay = str(config["aplay_executable"])
         self._wav_path = Path(str(config["wav_path"]))
-        fallback_timeout = float(config.get("timeout_sec", 20.0))
-        self._generation_timeout_sec = float(
-            config.get("generation_timeout_sec", fallback_timeout)
+        fallback_timeout = float(config.get("timeout_sec", 10.0))
+        self._generation_timeout_sec = min(
+            10.0, float(config.get("generation_timeout_sec", fallback_timeout))
         )
-        self._playback_timeout_sec = float(
-            config.get("playback_timeout_sec", fallback_timeout)
+        self._playback_timeout_sec = min(
+            10.0, float(config.get("playback_timeout_sec", fallback_timeout))
         )
         length_scale = config.get("length_scale")
         self._length_scale = None if length_scale is None else float(length_scale)
@@ -86,17 +87,22 @@ class PiperSpeaker:
                 return False
             self._queue.put(job)
         if lead_time_sec <= 0.0:
-            done.wait()
+            if not done.wait(10.0):
+                self._logger.warning('语音等待超时，继续任务')
+                return False
             return job.result
 
-        playback_started.wait()
+        deadline = time.monotonic() + 10.0
+        if not playback_started.wait(10.0):
+            self._logger.warning('语音开始等待超时，继续任务')
+            return False
         if job.playback_duration_sec is None:
-            done.wait()
-            return job.result
+            return done.wait(max(0.0, deadline - time.monotonic())) and job.result
         remaining_sec = max(job.playback_duration_sec - float(lead_time_sec), 0.0)
-        if done.wait(remaining_sec):
+        budget = max(0.0, deadline - time.monotonic())
+        if done.wait(min(remaining_sec, budget)):
             return job.result
-        return True
+        return remaining_sec <= budget
 
     def close(self, wait: bool = False) -> None:
         """Stop the background speaker worker."""
@@ -105,7 +111,7 @@ class PiperSpeaker:
                 self._closed = True
                 self._queue.put(None)
         if wait:
-            self._worker.join()
+            self._worker.join(timeout=10.0)
 
     def _worker_loop(self) -> None:
         while True:
@@ -123,8 +129,8 @@ class PiperSpeaker:
 
     def _speak(self, job: _SpeechJob) -> bool:
         """Speak text and return whether audio generation and playback succeeded."""
-        self._wav_path.parent.mkdir(parents=True, exist_ok=True)
         try:
+            self._wav_path.parent.mkdir(parents=True, exist_ok=True)
             command = [
                 self._piper,
                 "--model",
@@ -157,7 +163,7 @@ class PiperSpeaker:
                 timeout=self._playback_timeout_sec,
             )
         except Exception as error:
-            self._logger.error(f"语音播报失败：{error}")
+            self._logger.warning(f"语音播报失败，继续任务：{error}")
             return False
         return True
 

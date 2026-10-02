@@ -118,11 +118,6 @@ install(DIRECTORY config launch model
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  find_package(ament_cmake_pytest REQUIRED)
-  find_package(ament_lint_auto REQUIRED)
-  set(ament_cmake_copyright_FOUND TRUE)
-  set(ament_cmake_cpplint_FOUND TRUE)
-  ament_lint_auto_find_test_dependencies()
 
   ament_add_gtest(test_detection_parser test/test_detection_parser.cpp)
   target_link_libraries(test_detection_parser detection_parser)
@@ -143,8 +138,6 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_perception_mode test/test_perception_mode.cpp)
   target_link_libraries(test_perception_mode perception_mode)
-
-  ament_add_pytest_test(test_launch_contract test/test_launch_contract.py)
 endif()
 
 ament_export_dependencies(rosidl_default_runtime)

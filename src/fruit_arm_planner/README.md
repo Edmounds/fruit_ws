@@ -6,11 +6,12 @@ mission 可调用关节单目标、机械臂根部坐标系下的笛卡尔单目
 
 ## 当前集成状态
 
-mission 和单 camera 调试客户端已共用 `CameraTargetPlannerClient`，通过外参与新鲜实测关节 FK 将
-camera 光学点换为机械臂基座坐标，调用 `move_cartesian` 并等待结果；不再发送视觉 `ArmTarget`。
-当前夹爪 HOLD，仅到目标点，不是完整夹取工序。观察方向、区域、扫码姿态及收臂仍依赖旧
-`StateMachineCommand` / `ExecutionCallback`，已从接口生成列表移除；任务启动脚本尚未启动 planner。
-桥可靠发送按消息 ID 排队，Header/Point/Mode 尚无跨类型装载顺序保证。因此完整实机采摘闭环尚未验收。
+`fruit_mission` 和单 camera 调试客户端已通过本包服务编排 Look、二维码观察、目标 CLOSE、Harvest 和 Home。
+mission 负责相机坐标转换、目标筛选和 A/B/C 顺序，本包负责 FK/IK、关节映射、轨迹规划和执行结果；
+任务层不再发送旧 `ArmTarget` / `StateMachineCommand` 或等待 `ExecutionCallback`。
+目标 CLOSE 完成后，mission 复用 `move_joints` 在新鲜实测四轴角执行 planner 的 HOLD 驻留，再调用 Harvest/Home。
+启动脚本已启动 planner-only launch。桥可靠发送仍按消息 ID 排队，Header/Point/Mode 尚无跨类型装载顺序保证；
+真实预设轨迹、标定、STOP 优先级和下位机保护仍需现场验收，服务成功不能单独证明完整实机闭环。
 坐标边界见[mission 换算说明](../fruit_mission/docs/CAMERA_TARGET_TRANSFORM.md)，控制必须按[接口 API](docs/03_INTERFACES_AND_API.md)。
 
 ---

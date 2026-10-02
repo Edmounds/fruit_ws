@@ -81,13 +81,24 @@ P_B_mm = R_B_E * P_E_mm + 1000 * FK_position_m
 - `motion.pitch_deg: null`：默认保持观测姿态的绝对末端俯仰；数值则指定目标俯仰角（度）。
 - `motion.duration_ms: 0`：使用 planner 的默认耗时。
 - `motion.linear_path: false`：PTP；true 为 LIN，含义同 planner API。
-- 夹爪固定 HOLD，保留转换出的 XYZ，不沿用旧固件的 Z=-100mm、pitch=-90°，不额外接近、夹取、提拉或收臂。
+- 视觉目标末点使用 CLOSE，保留转换出的 XYZ，不沿用旧固件的 Z=-100mm、pitch=-90°，不编造接近或提拉坐标。
 
-当前功能是**移动到目标点**，不是完整水果抓取工序。任务结果记录 `target_reached`；到位不代表夹取成功。
+抓取流程为目标 CLOSE → 驻留 → 对应侧 Harvest（末点 OPEN、驻留）→ Home。
+`MoveArmCartesian` 没有驻留字段，因此 CLOSE 完成后复用 `move_joints`：以新鲜、有限、在限位内的实测原始四轴角为目标，HOLD 保持 `planning.default_dwell_ms`，仍由 planner 生成并执行轨迹，不在 mission 中生成轨迹或用 sleep 假冒执行完成。该驻留值须为正数。
+Harvest/Home 都必须返回成功才记录本次工序完成；这不是视觉证实果实实际入筐。
 
 planner 仍会叠加自身 `planning.cartesian_offset_m`。本次核对时其值是 `[0, 0, 0.03] m`，所以实际 IK 目标比 mission 发出的坐标高 30 mm。这里不自动抵消、不修改该配置；如希望严格到几何目标，现场应确认该偏置是否需要。外参 YAML 修改需重启 mission 客户端，不会自动热重载。
 
-`service_timeout_sec` 是客户端等待上限，应覆盖轨迹发送、执行及 planner 自身超时余量。超时或请求异常会尝试调用 `/arm_planner_node/stop`，仍返回失败；STOP 服务成功仅表示已发布停止命令，不证明硬件停稳。不得因调用成功、future 完成或发布成功而自行推断到位；必须检查 `response.success`。
+`service_timeout_sec` 默认 10 秒，每次运动单独计时；端点等待也不超过 10 秒，不设整个抓取工序共享预算。异步 Look 等待也有计时器保护。超时/请求异常取消 future 并请求 STOP，仍返回失败；STOP 服务成功仅表示已发布停止命令，不证明硬件停稳。恢复前须获得 STOP 请求之后新收到的无错误 IDLE、有限且在限位内的四轴低速反馈，再执行一次 Home；不自动清除 EMERGENCY。不得把 publish 或 future 完成当作运动成功，必须检查 `response.success`。
+
+## 观察与 A/B/C 编排
+
+- 导航与相应 Look 并行；导航成功、Look 成功后，底盘/机械臂必须连续静止 0.5 秒才启 DETECT/QR。初值：线速度 ≤0.02 m/s、角速度 ≤0.05 rad/s、各轴速度绝对值 ≤0.05 rad/s，均在 mission YAML 可调。底盘 `/odometry` 时间戳和本机接收年龄 ≤0.5 秒；机械臂沿用 planner 新鲜度。原始 Point-LIO 输出不提供可用速度，不作静止依据；不能使用 planner 可能替换 NaN 的 JointState 速度，需原始 ArmStatus。
+- A：导航与 left_look 并行 → 左侧识别/抓取/left_harvest/Home → right_look → 右侧对应工序。
+- B：每树只观察一次，按既有像素评分选择最多两个匹配且成熟的目标。在首次观察姿态下，一次性转换并保存两个基座坐标/绝对 pitch。第二抓直接用已保存请求，不重新 Look、识别或换算。第一抓失败但一次安全 Home 成功后，继续第二抓。
+- C：二维码任务顺序、路线与左右侧使用现有规划结果，导航时提前 Look，不增加到点方向复核。导航失败跳过当前项，不在未到达的位置抓取。
+- 局部失败跳过当前项，整场软件流程继续；状态未知时必须取消导航、请求 STOP 并确认安全，不确认则禁止后续危险运动。除既有导航重试外，没有识别/抓取/姿态重试。
+- 二维码导航、姿态、模式或识别失败均使用 `config/qr_fallback.yaml`，仍播报、导航、作业，不跳过整个区域。
 
 ## 离线算例（不控制硬件）
 
@@ -121,21 +132,18 @@ source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 
 需要先构建/安装 `fruit_arm_interfaces`、`fruit_arm_planner`。`start_fruit_mission.sh`
 现在启动 planner-only launch，不额外启动串口桥；已有 planner 时拒绝重复启动。
-启动检查覆盖 move_cartesian、execute_preset、STOP 服务及轨迹 Header/Point/Mode 订阅、ArmStatus 发布端点，不再等待旧 task/callback 端点。
+启动检查覆盖 move_cartesian、move_joints、execute_preset、STOP 服务及轨迹 Header/Point/Mode 订阅、ArmStatus 发布端点，不再等待旧 task/callback 端点。每项启动等待不超过 10 秒；就绪超时告警，不因外围节点退出直接结束 mission。
 
 正式 mission 的 `config/fruit_mission.yaml` 使用 `arm_presets` 名称映射：
 `observation_left=left_look`、`observation_right=right_look`、`qr=qr_look`、
-`retract=retract`、`home=home`。这里仅配置字符串；各姿态的真实关节轨迹仍须在
-planner 的 `arm_presets.yaml` 中完成，不补假姿态。缺失、越限、执行失败或超时均返回失败。
+`harvest_left=left_harvest`、`harvest_right=right_harvest`、`home=home`。这里仅配置字符串；各姿态的真实关节轨迹仍须由用户在
+planner 的 `arm_presets.yaml` 中完成：Look 末点 OPEN；Harvest 末点 OPEN 且驻留；Home 保持夹爪。本次不修改 planner 的代码、配置或文件，不补假姿态。缺失、越限、执行失败或超时均返回失败。
 区域只通过现有持久 ROS 话题通知感知/扫码节点，不再发送下位机区域命令。
-A 区每个作业点左右观察结束后必须确认 retract 完成，才允许导航到下一点；
-A 区结束收臂同样不允许超时后继续。观察/目标运动结果不明时停止任务，不叠加恢复运动。
-只有单纯感知失败且观察姿态已确认时，A 区才通过 home 预设恢复。
 
-独立 `camera_arm_target_client` / 区域调试工具的旧姿态与回调依赖未在本次迁移，
-不应据此声称这些工具已经兼容新协议。预设尚未补齐、串口顺序未经验证，也不能声称比赛整机可运行。
+独立 `camera_arm_target_client` 复用 MissionContext 的相同抓取流程，区域工具只发布 ROS 区域，不再引用已删除的旧消息。`test_camera_arm_target.sh` 同时启动唯一 perception/串口桥与 planner-only launch；复用模式不另启动 planner。运行前还需提供导航栈的 `/odometry`，否则静止门槛不能通过。该脚本会驱动硬件，不是自动测试。
+退出路径请求 STOP/取消导航；杀进程不代表停稳。预设尚未补齐、串口顺序未经验证，也不能声称比赛整机可运行。
 原串口桥的跨报文轨迹装载顺序也仍需端到端核验。
 
-本次离线检查：fruit_mission 构建、Python 语法/新增模块及单相机客户端 flake8、C++14 头文件编译及与 Python 的毫米算例一致性均通过。
+上一轮转换模块的离线检查：fruit_mission 构建、Python 语法/新增模块及单相机客户端 flake8、C++14 头文件编译及与 Python 的毫米算例一致性均通过。
 另外在隔离 ROS 域 137、专用 `/offline_camera_check/*` 服务名下模拟了四轴反馈和 planner 服务，验证基座坐标与独立矩阵/连杆几何计算一致、俯仰角映射正确、失败应答不报成功、错误 frame/NaN 深度不下发，以及服务超时请求 STOP。
 未启动真实机械臂服务或比赛任务，没有发送实机运动命令；未新增测试文件。

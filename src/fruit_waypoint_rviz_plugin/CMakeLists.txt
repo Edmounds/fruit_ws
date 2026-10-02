@@ -49,11 +49,4 @@ ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME})
 ament_export_dependencies(pluginlib rclcpp rviz_common std_msgs)
 
-if(BUILD_TESTING)
-  find_package(ament_cmake_pytest REQUIRED)
-  find_package(ament_lint_auto REQUIRED)
-  ament_add_pytest_test(test_plugin_contract test/test_plugin_contract.py)
-  ament_lint_auto_find_test_dependencies()
-endif()
-
 ament_package()

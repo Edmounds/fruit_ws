@@ -10,7 +10,7 @@
 - ROS 定义：`src/fruit_hardware_interfaces/msg/`；服务：`src/fruit_arm_interfaces/srv/`。
 - 设备与波特率从 source YAML 读取，当前为 `/dev/ttyACM0`、115200，不应假定所有入口都用 `/dev/stm32`。
 - 新协议不含旧 `ArmTarget`、`StateMachineCommand`、`ExecutionCallback`。
-  mission 视觉目标已调用 `move_cartesian`；观察、区域、扫码姿态和收臂仍使用旧消息，迁移未完成。
+  mission 视觉目标、观察、二维码、Harvest 和 Home 均通过 `fruit_arm_planner` 服务；区域状态只通过 ROS 话题通知感知/扫码节点。
 - `fruit_hardware_bridge` 当前仅提供串口 launch；`auto_serial_bridge` 负责帧、CRC、ACK、重传和心跳，不实现任务或 IK。
 
 ## 消息概览
@@ -49,7 +49,7 @@ ACK 也不是电机到位确认。详细线布局与时序见[通信文档](../s
 协议定义 Mode=1 为 STOP（清除剩余轨迹、解除急停锁定并恢复 IDLE），Mode=2 为 ESTOP
 （进入 EMERGENCY）。实际减速、驱动禁止和锁定行为须与固件核对。
 服务返回成功仅表示 ROS 发布成功，不是收到 ACK 或硬件停稳。
-重新发起运动前须观察新鲜有效反馈和可接受的控制状态；底盘与机械臂运动必须分阶段互斥。
+重新发起运动前须观察新鲜有效反馈和可接受的控制状态。导航与 Look 可以并行；进入识别、抓取或二维码判定前，mission 必须确认底盘和机械臂均已静止。
 
 ## ArmStatus（协议约定 20 Hz）
 

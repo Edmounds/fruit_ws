@@ -4,6 +4,8 @@
 
 This ROS 2 robot competes in the Agricultural Robot / Fruit-Picking Robot event of the 2026 RoboCup China selection competition. Read [docs/RULE.md](docs/RULE.md) for competition work; [the original rules](docs/2026水果采摘.pdf) and the judges' final interpretation take precedence. Current scope is A/B/C; do not add D, bad-produce removal, collection exchange, harvest summaries, or return-to-start flows without a scope change.
 
+**Competition flow must continue past local failures.** Skip failed observations, picks, QR acquisition or unavailable peripheral nodes and advance the A/B/C flow; QR failures use the mission-owned fixed plan. Reuse the existing deterministic route/side logic: do not add direction rechecks, non-navigation retries or speculative defensive policies without agreement. Keep necessary input validation, cancellation/STOP and measured standstill confirmation for unknown motion; continuing the software flow never authorizes unsafe physical motion. Recovery is one safe Home, not repeated grasp/pose attempts. Existing waits over 10 seconds are capped at 10 seconds; shorter waits stay unchanged, with separate per-operation timeouts, not a shared procedure budget.
+
 **The upper computer (NUC running ROS 2) now controls the arm through `fruit_arm_planner`, the arm kinematics and control package. All arm-control clients must use the interfaces documented in [src/fruit_arm_planner/docs/03_INTERFACES_AND_API.md](src/fruit_arm_planner/docs/03_INTERFACES_AND_API.md).** The upper computer computes IK, joint mapping and trajectories; the lower controller executes those trajectories, reports status and enforces hardware protection. Do not delegate Cartesian IK or task sequencing back to the lower controller.
 
 ## Core Directories and Responsibility Boundaries
@@ -68,28 +70,34 @@ ldd install/fruit_perception/lib/libfruit_perception_component.so
 
 Do not apply uncrustify to packages with their own formatter settings: `src/navigation/loam_interface/.clang-format` and `.clang-tidy` govern that package, whose CMake requests clang-format 21 for linting. That executable is currently unavailable; report the limitation instead of claiming a pass. No Python autoformatter is installed in the verified clean runtime; do not add one just to reformat unrelated code. `ldd` must show no `/usr/local/lib/libopencv*` dependencies.
 
-### Existing tests only
+### Testing Boundaries and Prohibitions
 
-**Do not write new tests.** Running existing tests is allowed. YAML checks must validate parsing, required fields, types/ranges and necessary cross-field relations, not freeze tunable thresholds, resolutions, switches, offsets or topic names. Stable protocol contracts must be checked against their authoritative definitions, not duplicated from deployment YAML.
+**Do not write brittle, whitebox, or source-scanning tests.** Tests must serve competition engineering and are strictly restricted to:
+1. **Stateless mathematical and kinematic algorithms**: e.g. `loam_interface` TF extrinsic mathematics, `fruit_navigation` heading/segment geometry (`test_axis_planner.py`), `fruit_perception` 2D/3D camera coordinate projection, letterbox math, and detection parsing.
+2. **Stable serialization and communication protocols**: e.g. `auto_serial_bridge` framing, CRC validation, and reliable packet roundtrips.
+
+**Strictly Prohibited Test Patterns:**
+- **Never write source-code string/regex matchers**: do not use Python `read_text()` or AST to assert whether `launch.py`, `CMakeLists.txt`, `package.xml`, or C++ headers contain specific strings, variable names, or comments.
+- **Never write deep-mock or private-state unit tests**: do not monkey-patch private methods (`_follow_one`, `_drive_axis`, etc.) or construct elaborate fake ROS node/QoS stubs to test private destruction or internal callbacks.
+- **Never freeze volatile competition strategies**: do not hard-code specific produce names, fixed sequence counts, or dynamic QR schemas into unit tests; strategy and sequence verification belongs in runtime configs/fallbacks checked via offline execution scripts.
+- **Do not embed whole-workspace style linters in test suites**: packages must not include `test_flake8.py`, `test_pep257.py`, or `test_copyright.py` that recursively scan repository directories or external submodules. Linters must be run targeted via CLI (`ament_flake8 <file>`).
 
 ```bash
-# Full existing suite: first enable/build CMake test targets.
+# Full clean algorithm & protocol test suite:
 colcon build --base-paths src --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 colcon test --base-paths src --return-code-on-test-failure
 colcon test-result --all --verbose
 
-# One existing Python file, or one test function within it.
+# Run specific pure mathematical algorithm tests:
 /usr/bin/python3 -m pytest -q src/navigation/fruit_navigation/test/test_axis_planner.py
-/usr/bin/python3 -m pytest -q src/navigation/fruit_navigation/test/test_axis_planner.py::test_normalize_angle_returns_minus_pi_to_pi
+/usr/bin/python3 -m pytest -q src/fruit_waypoint_recorder/test/test_recorder.py
 
-# One registered C++ test target, after building fruit_perception with BUILD_TESTING=ON.
-colcon test --base-paths src --packages-select fruit_perception \
-  --ctest-args -R '^test_perception_mode$' --output-on-failure \
-  --return-code-on-test-failure
+# Run perception C++ algorithm tests:
+colcon test --base-paths src --packages-select fruit_perception --return-code-on-test-failure
 ```
 
-These are execution recipes, not a claim that the entire current workspace passes. `src/fruit_arm_planner/test/cartesian_console.py` is an interactive **hardware-control tool**, not a unit test. Do not run it or motion services as an automated validation step.
+`src/fruit_arm_planner/test/cartesian_console.py` is an interactive **hardware-control tool**, not a unit test. Do not run it or motion services as an automated validation step.
 
 ## Coding Conventions
 
@@ -122,7 +130,7 @@ export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 - `config/arm_presets.yaml` owns geometry, mapping/limits, planning and presets. Do not hard-code its current calibration or assume home/retract preset names exist. `/arm_planner_node/reload_presets` validates and atomically replaces **presets only**, retaining the old set on error/busy; geometry/mapping/planning changes require restarting planner and console. Python code changes require rebuilding and restarting the node.
 - Preserve one-motion ownership, fresh finite in-limit four-axis feedback, and rejection of stale/missing feedback or unreachable targets. Never substitute zero/history for the measured start. Every trajectory starts at `t=0` with frozen measured hardware joints and HOLD, has at least two points, contiguous point IDs and strictly increasing uint32 millisecond timestamps within the uint16 point-count limit.
 - Dispatch Header → all Points → start Mode; match a newly received `ArmStatus.trajectory_id` and `STATUS_COMPLETED` before returning motion success. Failure/emergency/interruption/timeout return failure; timeout publishes STOP. STOP/ESTOP service success means **published**, not confirmed hardware standstill. Preserve feedback/stop processing via the existing reentrant callback group and multithreaded executor; do not nest `spin_until_future_complete` in an already executing client callback.
-- **Integration caveat:** mission and its camera debug client share `CameraTargetPlannerClient` for camera-to-arm conversion and `move_cartesian` target motion (HOLD, not a complete grasp). Formal mission observation/QR/retract/recovery now use `execute_preset` with names from mission config; area reporting is ROS-only. A-point and area-exit navigation require completed retract, never a timeout bypass. `start_fruit_mission.sh` owns planner-only launch and checks current services/trajectory endpoints. Preset trajectories are not yet complete; the independent camera/area debug clients still depend on removed legacy `StateMachineCommand` / `ExecutionCallback`. This is not proof of an operational mission. `auto_serial_bridge` queues reliable traffic by message ID; ROS publish order or `mode_start_delay_ms` does not guarantee all points are loaded before Mode. Verify end-to-end ordering before claiming an operational harvesting loop; do not mask the gap with longer sleeps.
+- **Mission integration:** mission and the camera debug client share planner-only Look/QR/target CLOSE/Harvest/Home orchestration. Navigation and Look run concurrently; recognition requires navigation completion, preset completion and measured base/arm standstill for the configured window. B observes once per tree and freezes up to two selected targets in arm-base coordinates before either grasp. C uses the existing route planner's side without an arrival-direction recheck. Preset strings are configured by mission; real poses and OPEN/dwell actions must be supplied by the operator in planner YAML. Region state remains a ROS topic, not MCU policy. `auto_serial_bridge` still queues reliable traffic by message ID: publish order or `mode_start_delay_ms` is not a loaded-trajectory guarantee. Verify transport ordering, STOP priority and hardware behavior before claiming an operational harvesting loop; do not mask the gap with longer sleeps.
 
 Planner entry points (after runtime setup); the debug launch owns a serial bridge, so never duplicate an already running bridge:
 

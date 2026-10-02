@@ -18,8 +18,8 @@ axis_waypoint_action_server:
     reverse_yaw_tolerance: 0.25
     linear_gain: 1.0
     yaw_gain: 2.0
-    lateral_gain: 0.8
-    final_yaw_mode: "blend_on_path"
+    lookahead_distance: 0.3
+    final_yaw_mode: "rotate_at_goal"
     final_yaw_blend_distance: 0.6
     tf_timeout_sec: 0.3
     progress_timeout_sec: 5.0

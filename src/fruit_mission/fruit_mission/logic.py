@@ -35,12 +35,13 @@ class PickExecutionResult:
 
 @dataclass(frozen=True)
 class BTreeDecision:
-    """B-zone species comparison and single-target selection result."""
+    """B-zone species comparison and up-to-two-target selection result."""
 
     reason_code: str
     observed_name: Optional[str] = None
     target_index: Optional[int] = None
     score: Optional[float] = None
+    target_indices: tuple[int, ...] = ()
 
 
 def expected_ripe_type(target_name: str) -> str:
@@ -83,7 +84,7 @@ def decide_b_tree_targets(
     expected_type: str,
     candidates: Iterable[tuple[str, float, float, int]],
 ) -> BTreeDecision:
-    """Compare one B-tree result and select at most one ripe target."""
+    """Compare one observation and rank at most two different ripe targets."""
     candidate_list = list(candidates)
     types = [
         model_type
@@ -106,16 +107,18 @@ def decide_b_tree_targets(
     )
     if not ripe_indices:
         return BTreeDecision("no_ripe_target", observed_name)
-    target_index = max(
+    ranked = sorted(
         ripe_indices,
         key=lambda index: (
             abs(candidate_list[index][1] - candidate_list[index][3] * 0.5)
             - candidate_list[index][2]
         ),
+        reverse=True,
     )
+    target_index = ranked[0]
     target = candidate_list[target_index]
     score = abs(target[1] - target[3] * 0.5) - target[2]
-    return BTreeDecision("matched", observed_name, target_index, score)
+    return BTreeDecision("matched", observed_name, target_index, score, tuple(ranked[:2]))
 
 
 def format_position_name(position_id: int) -> str:

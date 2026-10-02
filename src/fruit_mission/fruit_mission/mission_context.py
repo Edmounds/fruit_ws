@@ -12,6 +12,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Union
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PointStamped, PoseStamped
 from nav2_msgs.action import FollowWaypoints
+from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -27,11 +28,13 @@ from fruit_perception.msg import FruitDecision
 
 from fruit_mission.camera_target_planner_client import CameraTargetPlannerClient
 from fruit_mission.camera_target_planner_client import DEFAULT_EXTRINSIC_CONFIG
+from fruit_mission.config import _validate_qr_fallbacks
 from fruit_mission.logic import PickExecutionResult
 from fruit_mission.logic import merge_seen_types
 from fruit_mission.tts import PiperSpeaker
 from fruit_mission.waypoint_route import MissionWaypointRoute
 from fruit_mission.waypoint_route import WaypointPose
+from fruit_qr_planner.planner import build_b_plan, build_c_plan
 
 
 NAV_GOAL_ATTEMPTS = 3
@@ -93,6 +96,14 @@ class MissionContext:
         self._latest_b_targets_stamp_ns = 0
         self._latest_b_plan: Optional[Dict[str, Any]] = None
         self._latest_c_plan: Optional[Dict[str, Any]] = None
+        self._base_odometry = None
+        self._base_received_at = 0.0
+        self._pending_observation = None
+        self._observation_side = None
+        self._arm_home_confirmed = False
+        self._navigation_stopped = True
+        self._navigation_handle = None
+        self._navigation_result = None
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(
             self._tf_buffer,
@@ -123,6 +134,8 @@ class MissionContext:
             FollowWaypoints,
             str(config["follow_waypoints_action"]),
         )
+        node.create_subscription(
+            Odometry, config['odometry_topic'], self._on_odometry, 10)
         node.create_subscription(
             String,
             config["active_mode_topic"],
@@ -169,7 +182,9 @@ class MissionContext:
         self._current_route_yaw = self._waypoint_yaw(names[-1])
         return True
 
-    def navigate_named(self, waypoint_names: Sequence[str]) -> bool:
+    def navigate_named(
+        self, waypoint_names: Sequence[str], observation_side: Optional[str] = None,
+    ) -> bool:
         """Send exactly the requested names, without YAML-order expansion."""
         names = [str(name) for name in waypoint_names]
         if not names:
@@ -180,6 +195,8 @@ class MissionContext:
         except KeyError as error:
             self.node.get_logger().error(str(error))
             return False
+        if observation_side is not None:
+            self.start_observation(observation_side)
         if not self._send_waypoint_names(names):
             return False
         self._current_waypoint_name = names[-1]
@@ -270,14 +287,13 @@ class MissionContext:
                 "x": plan.rejoin_point[0],
                 "y": plan.rejoin_point[1],
             }
+        self.start_observation(plan.camera_side)
         if not self._send_waypoint_names(
             plan.navigation_names,
             plan.navigation_yaws,
         ):
-            self._update_c_arrival_side(result, plan.position_side, plan.camera_side)
             return result
 
-        self._update_c_arrival_side(result, plan.position_side, plan.camera_side)
         result["status"] = "succeeded"
         result["reason"] = None
         self._current_waypoint_name = plan.goal_name
@@ -300,26 +316,6 @@ class MissionContext:
         if yaw is None:
             yaw = self._waypoint_yaw(self._current_waypoint_name)
         return float(pose.x), float(pose.y), float(yaw)
-
-    def _update_c_arrival_side(
-        self,
-        result: Dict[str, Any],
-        position_side: str,
-        fallback_side: str,
-    ) -> None:
-        """Use the post-action vehicle yaw when selecting the arm side."""
-        arrival = self._lookup_map_pose()
-        if arrival is None:
-            result["arrival_yaw_source"] = "planned"
-            result["arrival_yaw"] = result["navigation_yaws"][-1]
-            result["camera_side"] = fallback_side
-            result["preferred_side"] = fallback_side
-            return
-        result["arrival_yaw_source"] = "tf"
-        result["arrival_yaw"] = arrival[2]
-        side = self.route.c_camera_side(position_side, arrival[2])
-        result["camera_side"] = side
-        result["preferred_side"] = side
 
     def _lookup_map_pose(self) -> Optional[tuple[float, float, float]]:
         deadline = time.monotonic() + float(self.config["tf_lookup_timeout_sec"])
@@ -377,6 +373,14 @@ class MissionContext:
     ) -> bool:
         if not names:
             return True
+        if not self._navigation_stopped or not (
+            self._arm_home_confirmed or (
+                self._pending_observation is not None
+                and self._pending_observation[1] is not None
+            )
+        ):
+            self.node.get_logger().warning('Skipping navigation: safe motion handoff unconfirmed')
+            return False
         try:
             if yaws is not None and len(yaws) != len(names):
                 raise ValueError("waypoint names and yaw values must have equal length")
@@ -415,14 +419,25 @@ class MissionContext:
                 f"Navigating through {route_text} "
                 f"attempt={attempt}/{NAV_GOAL_ATTEMPTS}"
             )
-            future = self._follow_waypoints_client.send_goal_async(goal)
+            try:
+                future = self._follow_waypoints_client.send_goal_async(goal)
+            except Exception as error:
+                self.node.get_logger().warning(f'Navigation submission failed: {error}')
+                return False
+            self._navigation_stopped = False
+            self._navigation_handle = None
+            self._navigation_result = None
             if not self._wait_future(future):
-                if attempt == NAV_GOAL_ATTEMPTS:
-                    return False
-                time.sleep(0.3)
-                continue
-            candidate_handle = future.result()
+                # A late accepted goal must not start after this step has been skipped.
+                future.add_done_callback(self._cancel_late_navigation)
+                return False
+            try:
+                candidate_handle = future.result()
+            except Exception as error:
+                self.node.get_logger().warning(f'Navigation response unknown: {error}')
+                return False
             if not candidate_handle.accepted:
+                self._navigation_stopped = True
                 self.node.get_logger().warning(
                     f"FollowWaypoints goal rejected "
                     f"attempt={attempt}/{NAV_GOAL_ATTEMPTS}: {route_text}"
@@ -431,14 +446,25 @@ class MissionContext:
                     time.sleep(0.3)
                 continue
 
+            self._navigation_handle = candidate_handle
             result_future = candidate_handle.get_result_async()
-            if not self._wait_future(result_future):
-                if attempt < NAV_GOAL_ATTEMPTS:
-                    time.sleep(0.3)
+            self._navigation_result = result_future
+            result_future.add_done_callback(self._on_navigation_result)
+            if not self._wait_future(result_future, watch_observation=True):
+                if not self.cancel_navigation():
+                    return False
+                if self._observation_failed():
+                    return False
                 continue
-            wrapped_result = result_future.result()
+            try:
+                wrapped_result = result_future.result()
+            except Exception as error:
+                self.node.get_logger().warning(f'Navigation result unknown: {error}')
+                self.cancel_navigation()
+                return False
             result = wrapped_result.result
             missed = list(result.missed_waypoints)
+            self._on_navigation_result(result_future)
             if wrapped_result.status == GoalStatus.STATUS_CANCELED:
                 self.node.get_logger().error(
                     f"FollowWaypoints canceled: {route_text}"
@@ -473,28 +499,91 @@ class MissionContext:
                 time.sleep(0.3)
         return False
 
-    def stable_stop(self) -> None:
-        """Wait after a navigation arrival so cameras see a steady target."""
-        time.sleep(float(self.config["stable_stop_sec"]))
+    def _on_navigation_result(self, future) -> None:
+        if future is not self._navigation_result:
+            return
+        try:
+            result = future.result()
+            self._navigation_stopped = result.status in (
+                GoalStatus.STATUS_SUCCEEDED, GoalStatus.STATUS_CANCELED,
+                GoalStatus.STATUS_ABORTED,
+            )
+        except Exception as error:
+            self.node.get_logger().warning(f'Cannot confirm navigation standstill: {error}')
+
+    def _cancel_late_navigation(self, future) -> None:
+        try:
+            handle = future.result()
+            if not handle.accepted:
+                self._navigation_stopped = True
+                return
+            self._navigation_handle = handle
+            self._navigation_result = handle.get_result_async()
+            self._navigation_result.add_done_callback(self._on_navigation_result)
+            handle.cancel_goal_async()
+        except Exception as error:
+            self.node.get_logger().warning(f'Cannot cancel late navigation: {error}')
+
+    def cancel_navigation(self) -> bool:
+        if self._navigation_stopped:
+            return True
+        if self._navigation_handle is None:
+            return False
+        try:
+            self._navigation_handle.cancel_goal_async()
+        except Exception as error:
+            self.node.get_logger().warning(f'Navigation cancel failed: {error}')
+            return False
+        return self._wait_until(lambda: self._navigation_stopped, 10.0)
+
+    def _on_odometry(self, message: Odometry) -> None:
+        self._base_odometry = message
+        self._base_received_at = time.monotonic()
+
+    def stable_stop(self) -> bool:
+        """Both measured mechanisms must stay stationary before a new window."""
+        limits = self.config['stationary']
+        stable_since = None
+
+        def stationary():
+            nonlocal stable_since
+            message = self._base_odometry
+            base_ok = False
+            if message is not None:
+                stamp = message.header.stamp
+                age = (self.node.get_clock().now().nanoseconds
+                       - stamp.sec * 1_000_000_000 - stamp.nanosec) / 1e9
+                twist = message.twist.twist
+                values = (twist.linear.x, twist.linear.y, twist.linear.z,
+                          twist.angular.x, twist.angular.y, twist.angular.z)
+                base_ok = (
+                    message.header.frame_id == self.config['map_frame']
+                    and 0 <= age <= limits['odometry_max_age_sec']
+                    and time.monotonic() - self._base_received_at <= limits['odometry_max_age_sec']
+                    and all(math.isfinite(v) for v in values)
+                    and math.sqrt(sum(v * v for v in values[:3])) <= limits['linear_speed_mps']
+                    and math.sqrt(sum(v * v for v in values[3:])) <= limits['angular_speed_rps']
+                )
+            if not (base_ok and self._camera_planner.is_stationary(limits['joint_speed_rps'])):
+                stable_since = None
+                return False
+            now = time.monotonic()
+            if stable_since is None:
+                stable_since = now
+            return now - stable_since >= limits['duration_sec']
+
+        return self._wait_until(stationary, limits['timeout_sec'])
 
     def set_perception_mode(self, mode: str) -> bool:
         """Publish a perception mode and wait for the active-mode echo."""
         message = String()
         message.data = mode
         previous_generation = self._active_mode_generation
-        deadline = time.monotonic() + float(self.config["active_mode_timeout_sec"])
-        while rclpy.ok() and time.monotonic() < deadline:
-            self._mode_publisher.publish(message)
-            remaining = deadline - time.monotonic()
-            if self._wait_until(
-                lambda: self._active_mode_generation > previous_generation
-                and self._latest_active_mode == mode,
-                min(0.5, max(0.0, remaining)),
-            ):
-                return True
-        return (
-            self._active_mode_generation > previous_generation
-            and self._latest_active_mode == mode
+        self._mode_publisher.publish(message)
+        return self._wait_until(
+            lambda: self._active_mode_generation > previous_generation
+            and self._latest_active_mode == mode,
+            float(self.config['active_mode_timeout_sec']),
         )
 
     def wait_b_plan(self) -> Optional[Dict[str, Any]]:
@@ -520,7 +609,46 @@ class MissionContext:
     def _send_pick_direction_and_wait(self, side: str) -> _ArmMotionResult:
         if side not in ("left", "right"):
             raise ValueError("side must be left or right")
-        return self._execute_arm_preset(f"observation_{side}")
+        if self._pending_observation is None:
+            self.start_observation(side)
+        pending_side, future = self._pending_observation
+        self._pending_observation = None
+        if pending_side != side:
+            raise ValueError('Observation side must match the navigation plan')
+        completed, reason = self._camera_planner.finish_motion(future, self._wait_until)
+        self._observation_side = side if completed else None
+        return _ArmMotionResult(completed, reason, completed)
+
+    def start_observation(self, side: str) -> None:
+        """Look and navigation share the executor, not blocking worker threads."""
+        if side not in ('left', 'right'):
+            raise ValueError('side must be left or right')
+        if self._pending_observation is not None:
+            raise RuntimeError('Previous observation has not been consumed')
+        self.set_perception_mode('OFF')
+        future = None
+        if self._arm_home_confirmed or self.recover_home():
+            name = self.config['arm_presets'][f'observation_{side}']
+            future = self._camera_planner.start_preset(name)
+            if future is not None:
+                self._arm_home_confirmed = False
+        self._pending_observation = (side, future)
+
+    def _observation_failed(self) -> bool:
+        if self._pending_observation is None:
+            return False
+        _side, future = self._pending_observation
+        if future is None:
+            return False  # No motion submitted; navigation can still reach this point.
+        if future.cancelled():
+            return True
+        if not future.done():
+            return False
+        try:
+            response = future.result()
+            return response is None or not response.success
+        except Exception:
+            return True
 
     def execute_closed_loop_pick(
         self,
@@ -534,8 +662,11 @@ class MissionContext:
             return PickExecutionResult(
                 False,
                 direction_result.reason_code,
-                safe_to_continue=direction_result.safe_to_continue,
+                safe_to_continue=self.recover_home(),
             )
+        if not self.stable_stop():
+            return PickExecutionResult(
+                False, 'stationary_timeout', safe_to_continue=self.recover_home())
         fresh_after_ns = self.node.get_clock().now().nanoseconds
         if not self.set_perception_mode("DETECT"):
             return PickExecutionResult(
@@ -551,15 +682,17 @@ class MissionContext:
                 selection.matched_type,
                 safe_to_continue=self._recover_after_perception_failure(),
             )
-        arm_result = self._send_arm_target_and_wait(selection.target.point)
-        if not arm_result.completed:
+        try:
+            request = self._camera_planner.target_request(selection.target.point)
+        except ValueError as error:
+            self.node.get_logger().warning(str(error))
             return PickExecutionResult(
-                False,
-                arm_result.reason_code,
-                selection.matched_type,
-                arm_result.safe_to_continue,
-            )
-        return PickExecutionResult(True, "target_reached", selection.matched_type)
+                False, 'camera_target_invalid', selection.matched_type,
+                self.recover_home())
+        result = self.execute_grasp(request, side)
+        return PickExecutionResult(
+            result.completed, result.reason_code, selection.matched_type,
+            result.safe_to_continue)
 
     def observe_b_tree(
         self,
@@ -571,13 +704,19 @@ class MissionContext:
             return {
                 "success": False,
                 "reason_code": direction_result.reason_code,
-                "safe_to_continue": direction_result.safe_to_continue,
+                "safe_to_continue": self.recover_home(),
                 "targets": [],
+            }
+        if not self.stable_stop():
+            return {
+                'success': False, 'reason_code': 'stationary_timeout',
+                'safe_to_continue': self.recover_home(), 'targets': [],
             }
         if not self.set_perception_mode("DETECT"):
             return {
                 "success": False,
                 "reason_code": "detect_mode_timeout",
+                "safe_to_continue": self.recover_home(),
                 "targets": [],
             }
         targets = self._wait_b_targets(
@@ -587,21 +726,46 @@ class MissionContext:
             return {
                 "success": False,
                 "reason_code": "camera_target_timeout",
+                "safe_to_continue": self.recover_home(),
                 "targets": [],
             }
         return {"success": True, "reason_code": "observed", "targets": targets}
 
-    def execute_b_tree_target(self, target: BTreeTarget) -> Dict[str, Any]:
-        """Send the single B-zone target selected by mission."""
-        arm_result = self._send_arm_target_and_wait(target.point)
-        if not arm_result.completed:
-            return {
-                "success": False,
-                "reason_code": arm_result.reason_code,
-                "safe_to_continue": arm_result.safe_to_continue,
-                "picked": 0,
-            }
-        return {"success": True, "reason_code": "target_reached", "picked": 0}
+    def freeze_b_targets(self, targets: Sequence[BTreeTarget]):
+        """Convert the entire single observation before grasp/Harvest/Home."""
+        requests = []
+        for target in targets:
+            try:
+                requests.append(self._camera_planner.target_request(target.point))
+            except ValueError as error:
+                self.node.get_logger().warning(f'Skipping invalid B target: {error}')
+        return requests
+
+    def execute_b_tree_target(self, request, side: str) -> Dict[str, Any]:
+        result = self.execute_grasp(request, side)
+        return {
+            'success': result.completed, 'reason_code': result.reason_code,
+            'safe_to_continue': result.safe_to_continue,
+            'picked': int(result.completed),
+        }
+
+    def execute_grasp(self, request, side: str) -> _ArmMotionResult:
+        """Grasp -> side Harvest (OPEN at end) -> Home; never repeat the grasp."""
+        self.set_perception_mode('OFF')
+        if not self._camera_planner.is_stationary(self.config['stationary']['joint_speed_rps']):
+            return _ArmMotionResult(False, 'arm_pose_unavailable', self.recover_home())
+        self._arm_home_confirmed = False
+        completed, reason = self._camera_planner.move_to_base_target(
+            request, self._wait_until, self.config['stationary']['joint_speed_rps'])
+        if not completed:
+            return _ArmMotionResult(False, reason, self.recover_home())
+        harvest = self._execute_arm_preset(f'harvest_{side}')
+        if not harvest.completed:
+            return _ArmMotionResult(False, harvest.reason_code, self.recover_home())
+        home = self._execute_arm_preset('home')
+        return _ArmMotionResult(
+            home.completed, 'harvest_completed' if home.completed else home.reason_code,
+            home.completed)
 
     def set_expected_fruit_type(self, expected_type: Optional[str]) -> None:
         """Set the Camera target class; an empty value disables filtering."""
@@ -613,24 +777,36 @@ class MissionContext:
         """Execute the configured QR observation preset."""
         return self._execute_arm_preset("qr").completed
 
-    def send_arm_retract_pose(self) -> bool:
-        """Require completed retract; missing/failed/timed-out presets are fatal."""
-        return self._execute_arm_preset("retract").completed
-
     def send_return_initial_pose(self) -> bool:
         """Execute the configured initial-pose recovery preset."""
         return self._execute_arm_preset("home").completed
 
     def _recover_after_perception_failure(self) -> bool:
-        """Return A-zone hardware to a safe pose before navigation resumes."""
-        if self._current_area != "A":
+        return self.recover_home()
+
+    def recover_home(self) -> bool:
+        """One recovery, not a retry loop; unsafe physical motion stays inhibited."""
+        self._pending_observation = None
+        # Do not automatically clear a hardware emergency lock with STOP.
+        status = self._camera_planner._status
+        if status is not None and status.task_status == status.STATUS_EMERGENCY:
+            self.cancel_navigation()
+            return False
+        stopped_after = time.monotonic()
+        if not self._arm_home_confirmed:
+            self._camera_planner.request_stop()
+        if not self.cancel_navigation():
+            return False
+        if self._arm_home_confirmed:
             return True
-        recovered = self.send_return_initial_pose()
-        if not recovered:
-            self.node.get_logger().error(
-                "A区感知失败后未能返回初始姿态，不能继续后续任务"
-            )
-        return recovered
+        if not self._wait_until(
+            lambda: self._camera_planner.is_stationary(
+                self.config['stationary']['joint_speed_rps'], stopped_after, require_idle=True),
+            10.0,
+        ):
+            self.node.get_logger().warning('Arm stop unconfirmed; skipping unsafe motion')
+            return False
+        return self.send_return_initial_pose()
 
     def report_current_area(self, area: str) -> bool:
         """Publish mission area for perception/QR; no lower-controller policy."""
@@ -683,6 +859,11 @@ class MissionContext:
 
     def close(self) -> None:
         """Release mission runtime helpers."""
+        self._camera_planner.request_stop()
+        self.cancel_navigation()
+        # Drain the STOP service request before tearing down its ROS client.
+        if rclpy.ok():
+            rclpy.spin_once(self.node, timeout_sec=0.2)
         close = getattr(self.speaker, "close", None)
         if callable(close):
             close(wait=False)
@@ -690,34 +871,31 @@ class MissionContext:
     def save_c_distribution(self, distribution: Mapping[str, Any]) -> None:
         """Write the latest C-zone position table for inspection."""
         output_dir = Path(str(self.config["c_distribution_output_dir"]))
-        output_dir.mkdir(parents=True, exist_ok=True)
         encoded = json.dumps(distribution, ensure_ascii=False, indent=2)
         latest_path = output_dir / "c_distribution_latest.json"
-        latest_path.write_text(encoded + "\n", encoding="utf-8")
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        (output_dir / f"c_distribution_{stamp}.json").write_text(
-            encoded + "\n",
-            encoding="utf-8",
-        )
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            latest_path.write_text(encoded + '\n', encoding='utf-8')
+            (output_dir / f'c_distribution_{stamp}.json').write_text(
+                encoded + '\n', encoding='utf-8')
+        except OSError as error:
+            self.node.get_logger().warning(f'Cannot save C task record: {error}')
 
     def save_b_plan(self, plan: Mapping[str, Any]) -> None:
         """Write the B QR plan so the later full-flow phase can be inspected."""
         output_dir = Path(str(self.config["c_distribution_output_dir"]))
-        output_dir.mkdir(parents=True, exist_ok=True)
         encoded = json.dumps(plan, ensure_ascii=False, indent=2)
-        (output_dir / "b_plan_latest.json").write_text(
-            encoded + "\n", encoding="utf-8"
-        )
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / 'b_plan_latest.json').write_text(encoded + '\n', encoding='utf-8')
+        except OSError as error:
+            self.node.get_logger().warning(f'Cannot save B plan record: {error}')
 
     def _execute_arm_preset(self, action: str) -> _ArmMotionResult:
         name = self.config["arm_presets"][action]
         completed, reason = self._camera_planner.execute_preset(name, self._wait_until)
-        # Do not run a second motion as recovery after an unknown hardware result.
-        return _ArmMotionResult(completed, reason, completed)
-
-    def _send_arm_target_and_wait(self, point: PointStamped) -> _ArmMotionResult:
-        completed, reason = self._camera_planner.move_to_target(point, self._wait_until)
-        # Failure/timeout does not establish that the hardware is safe to navigate.
+        self._arm_home_confirmed = action == 'home' and completed
         return _ArmMotionResult(completed, reason, completed)
 
     def _wait_camera_target(
@@ -837,13 +1015,12 @@ class MissionContext:
             rclpy.spin_once(self.node, timeout_sec=0.1)
         return predicate()
 
-    def _wait_future(self, future) -> bool:
-        while rclpy.ok() and not future.done():
-            rclpy.spin_once(self.node, timeout_sec=0.1)
-        if future.done():
-            return True
-        self.node.get_logger().error("Interrupted while waiting for navigation action")
-        return False
+    def _wait_future(self, future, watch_observation=False) -> bool:
+        ready = self._wait_until(
+            lambda: future.done() or (watch_observation and self._observation_failed()),
+            10.0,
+        )
+        return ready and future.done()
 
     def _waypoint_yaw(self, name: str) -> float:
         pose = self.route.pose(name)
@@ -894,10 +1071,40 @@ class MissionContext:
             self._latest_camera_target = target
 
     def _on_b_plan(self, message: String) -> None:
-        self._latest_b_plan = json.loads(message.data)
+        plan = self._receive_plan(message, 'B')
+        if plan is not None:
+            self._latest_b_plan = plan
 
     def _on_c_plan(self, message: String) -> None:
-        self._latest_c_plan = json.loads(message.data)
+        plan = self._receive_plan(message, 'C')
+        if plan is not None:
+            self._latest_c_plan = plan
+
+    def _receive_plan(self, message: String, zone: str):
+        """Reject invalid ROS input without throwing out of the executor callback."""
+        try:
+            plan = json.loads(message.data)
+            if plan['zone'] != zone:
+                raise ValueError('QR plan zone mismatch')
+            tasks = sorted(plan['tasks'], key=lambda task: task['sequence'])
+            if [task['sequence'] for task in tasks] != list(range(1, 9)):
+                raise ValueError('QR plan requires eight ordered tasks')
+            fallback = dict(self.config['qr_fallback'])
+            names = [task['target'] for task in tasks]
+            positions = [task['position_id'] for task in tasks]
+            if zone == 'B':
+                if positions != list(range(1, 9)):
+                    raise ValueError('B tree positions must remain ordered')
+                fallback['b_targets'] = names
+            else:
+                fallback['c_targets'], fallback['c_positions'] = names, positions
+            _validate_qr_fallbacks(fallback)
+            if zone == 'B':
+                return build_b_plan('\n'.join(names))
+            return build_c_plan('\n'.join(names + [','.join(map(str, positions))]))
+        except (ValueError, TypeError, KeyError) as error:
+            self.node.get_logger().warning(f'Invalid {zone} QR plan ignored: {error}')
+            return None
 
 
 def _latched_qos() -> QoSProfile:

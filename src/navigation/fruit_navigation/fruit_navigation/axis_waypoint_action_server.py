@@ -52,8 +52,8 @@ class AxisWaypointActionServer(Node):
         self.declare_parameter("reverse_yaw_tolerance", 0.25)
         self.declare_parameter("linear_gain", 0.8)
         self.declare_parameter("yaw_gain", 1.8)
-        self.declare_parameter("lateral_gain", 0.8)
-        self.declare_parameter("final_yaw_mode", "blend_on_path")
+        self.declare_parameter("lookahead_distance", 0.3)
+        self.declare_parameter("final_yaw_mode", "rotate_at_goal")
         self.declare_parameter("final_yaw_blend_distance", 0.6)
         self.declare_parameter("tf_timeout_sec", 0.3)
         self.declare_parameter("progress_timeout_sec", 5.0)
@@ -87,7 +87,7 @@ class AxisWaypointActionServer(Node):
         )
         self._linear_gain = float(self.get_parameter("linear_gain").value)
         self._yaw_gain = float(self.get_parameter("yaw_gain").value)
-        self._lateral_gain = float(self.get_parameter("lateral_gain").value)
+        self._lookahead_distance = float(self.get_parameter("lookahead_distance").value)
         self._final_yaw_mode = self.get_parameter("final_yaw_mode").value
         self._final_yaw_blend_distance = float(
             self.get_parameter("final_yaw_blend_distance").value
@@ -149,6 +149,8 @@ class AxisWaypointActionServer(Node):
             raise ValueError("yaw tolerances must be positive")
         if self._reverse_yaw_tolerance <= 0.0:
             raise ValueError("reverse_yaw_tolerance must be positive")
+        if not math.isfinite(self._lookahead_distance) or self._lookahead_distance <= 0.0:
+            raise ValueError("lookahead_distance must be finite and positive")
         if self._final_yaw_mode not in ("blend_on_path", "rotate_at_goal"):
             raise ValueError("final_yaw_mode must be blend_on_path or rotate_at_goal")
         if self._final_yaw_blend_distance <= 0.0:
@@ -409,12 +411,7 @@ class AxisWaypointActionServer(Node):
                 abs(remaining) <= self._forward_tolerance
                 and abs(lateral_error) <= self._lateral_tolerance
             )
-            final_yaw_error = (
-                normalize_angle(target.yaw - current.yaw)
-                if final_yaw is not None
-                else 0.0
-            )
-            if position_reached and abs(final_yaw_error) <= self._blend_yaw_tolerance:
+            if position_reached:
                 command = self._publish_limited_command(Twist())
                 if self._command_is_stopped(command):
                     self.get_logger().info(
@@ -427,7 +424,7 @@ class AxisWaypointActionServer(Node):
                     return True
                 time.sleep(period)
                 continue
-            progress_error = max(abs(remaining), abs(lateral_error))
+            progress_error = math.hypot(remaining, lateral_error)
             if watchdog.stalled(progress_error, time.monotonic()):
                 self.get_logger().error(
                     "Aborting waypoint goal: no progress "
@@ -460,24 +457,35 @@ class AxisWaypointActionServer(Node):
                 )
 
             heading_error = normalize_angle(yaw_target - current.yaw)
-            twist = Twist()
-            if position_reached and final_yaw is not None:
-                twist.angular.z = self._rotation_command(final_yaw_error)
-                self._publish_limited_command(twist)
-                time.sleep(period)
-                continue
-            if abs(remaining) > self._forward_tolerance:
-                speed = remaining * self._linear_gain * linear_direction
-                twist.linear.x = self._linear_command(speed)
-            elif abs(lateral_error) > self._lateral_tolerance:
-                twist.linear.x = self._linear_command(
-                    linear_direction * self._min_linear_speed
-                )
-            correction = (
-                self._yaw_gain * heading_error - self._lateral_gain * lateral_error
+            # Extend the steering carrot along the line near the endpoint;
+            # shortening it to zero would amplify noise and cause sharp turns.
+            lookahead = math.copysign(
+                self._lookahead_distance, remaining * linear_direction
             )
+            lateral = lateral_error * linear_direction
+            carrot_y = (
+                lookahead * math.sin(heading_error)
+                - lateral * math.cos(heading_error)
+            )
+            curvature = 2.0 * carrot_y / (lookahead ** 2 + lateral ** 2)
+
+            speed = abs(self._linear_command(remaining * self._linear_gain))
+            speed = min(
+                speed,
+                max(
+                    self._min_linear_speed,
+                    math.sqrt(2.0 * self._max_linear_acceleration * abs(remaining)),
+                ),
+            )
+            if curvature != 0.0:
+                speed = min(
+                    speed,
+                    max(self._min_linear_speed, self._max_angular_speed / abs(curvature)),
+                )
+            twist = Twist()
+            twist.linear.x = math.copysign(speed, remaining * linear_direction)
             twist.angular.z = self._clamp(
-                correction,
+                twist.linear.x * curvature,
                 -self._max_angular_speed,
                 self._max_angular_speed,
             )

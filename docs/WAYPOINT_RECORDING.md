@@ -207,6 +207,8 @@ package 入口后先重新构建 `fruit_waypoint_recorder`，再重启服务；�
 - [ ] `waypoint-editor.service` 为 enabled/active，局域网设备可以访问机器人 TCP `8000`。
 
 - [ ] 网页编辑 yaw 时使用角度，保存后的 YAML `yaw` 和 `orientation` 使用一致的弧度姿态。
+
+导航使用航点 `orientation/yaw` 作为**车体**最终朝向，不是机械臂朝向。当前默认先沿点间直线到点并减速停车，再原地转到该朝向（`final_yaw_mode: rotate_at_goal`）；航点坐标和保存的 yaw 不需要为此修改。转弯时仍须为整机轮廓预留空间，详见 [直线跟踪与到点判据](ODOMETRY_NAVIGATION.md#21-直线跟踪与到点判据)。
 - [ ] 网页始终按 `template.yaml` 显示 33 个名称；缺失点为灰色，补点后占位显示被实际点替换。
 - [ ] 启动 odom 打点后保持机器人静止，终端出现 `stable odom origin is ready` 后再移动或录点。
 - [ ] `C_QR` 的 yaw 能稳定识别二维码。

@@ -28,7 +28,7 @@ Point-LIO 原生的 `camera_init` / `body` 坐标系也保留；它们属于雷�
 1. **`livox_ros_driver2`**: MID-360 激光雷达驱动（位于 `src/driver/livox_ros_driver2`；该源码目录当前有 `COLCON_IGNORE`，普通 workspace 构建不会编译它，启动前须确认已安装驱动可发现）。
 2. **`point_lio`**: 高频 LiDAR-IMU 紧耦合里程计（位于 `src/navigation/point_lio`）。
 3. **`loam_interface`**: 转换 Point-LIO 的 `/aft_mapped_to_init` 并在 `odom` 坐标系下发布 `base_link` TF。
-4. **`fruit_navigation`**: 轴向定点导航 Action 服务端（`axis_waypoint_action_server`），执行逐轴对齐、直线行走与偏航角控制。
+4. **`fruit_navigation`**: 定点导航 Action 服务端（`axis_waypoint_action_server`），执行入段对齐、点间直线跟踪与航点偏航角控制，不在服务端重新拆分 X/Y 路段。
 5. **`fruit_nav_bringup`**: 纯里程计导航集成启动包（位于 `src/navigation/fruit_nav_bringup`）。
 
 ---
@@ -37,11 +37,36 @@ Point-LIO 原生的 `camera_init` / `body` 坐标系也保留；它们属于雷�
 
 `axis_waypoint_action_server` 的 `final_yaw_mode` 参数只支持两种值，配置在
 `src/navigation/fruit_navigation/config/axis_navigation.yaml`：
-1. **`blend_on_path`（默认）**: 移动过程中平滑插值偏航角，在接近目标点时融合到位，效率最高。
-2. **`rotate_at_goal`**: 到达目标 $(X, Y)$ 后原地调整到目标偏航角。
+1. **`rotate_at_goal`（默认）**: 沿点间直线到达目标 $(X, Y)$ 并减速停车后，原地调整到航点保存的目标偏航角，不提前切弯。
+2. **`blend_on_path`**: 最终航点的末段融合目标偏航角，位置到位并减速停车后，剩余航向误差交给独立转向阶段完成。目标航向不沿入射直线时仍可能产生弧线甚至无法到点，窄通道不推荐此模式。
 
 航点 YAML 保存目标 orientation/yaw，不提供逐点 `yaw_mode`。倒车由目标 yaw 与
 反向路径航向的夹角及 `reverse_yaw_tolerance` 自动判定，不是第三种模式。
+这里的 orientation/yaw 控制**车体朝向**，不是机械臂朝向；机械臂控制不由导航节点执行。
+
+### 2.1 直线跟踪与到点判据
+
+直线控制借鉴 [Nav2 Regulated Pure Pursuit（RPP）](https://github.com/ros-navigation/navigation2/tree/humble/nav2_regulated_pure_pursuit_controller)
+的前视点和曲率调速思路，不引入完整 Nav2 栈或新依赖：
+
+- 用 `lookahead_distance`（米）选取直线前方的转向参考点，按 `angular.z = linear.x * curvature` 耦合转向与有符号线速度。倒车以及纵向越过终点后的速度反向使用同一公式，不再使用固定符号的横向角速度反馈。
+- 转向参考点在末端仍保留前视距离，避免它缩到零时放大定位噪声；它只是转向参考，不是允许驶过目标的导航目标。
+- 线速度同时受现有速度范围、接近目标的比例减速、制动距离与角速度上限约束；保留底盘最低线速度和现有加速度限制。
+- `lookahead_distance` 替代旧 `lateral_gain`。较大值通常转向更柔和、纠偏更慢；较小值纠偏更快，也更敏感。调整前视距离后应重启导航节点。
+- 位置阶段只检查既有 `forward_tolerance` / `lateral_tolerance`；位置到位后先将速度指令减到零，再由既有 `_rotate_to` 检查目标 yaw。位置进度使用平面距离，转向进度使用角度误差，避免原地调朝向时被位置 watchdog 误报失败。
+- `waypoint_retry_attempts` 和 `waypoint_pass_tolerance` 的既有恢复语义不变，失败兜底仍仅用于非最终航点；不新增 mission 特判或扩大容差。航点位置、最终车体朝向以及机械臂行为不变；默认 `final_yaw_mode` 改为 `rotate_at_goal`，只改变最终航点的转向时机。
+
+此控制器没有 costmap、避障或整机轮廓碰撞检查，前视点跟踪不构成安全走廊保证；必须验证转弯和纠偏时的整机扫掠空间。速度指令归零也不等于实测底盘已经静止。
+源码变更后需构建 `fruit_navigation` 并重启导航；纯运动学检查不代表实机比赛验收。
+
+离线检查与单包构建（不启动节点、不命令底盘）：
+```bash
+cd /home/rc4/fruit_ws
+source scripts/setup_fruit_runtime.bash
+/usr/bin/python3 -m compileall -q src/navigation/fruit_navigation/fruit_navigation
+/usr/bin/python3 -m pytest -q src/navigation/fruit_navigation/test/test_axis_planner.py
+colcon build --base-paths src --packages-select fruit_navigation
+```
 
 ---
 

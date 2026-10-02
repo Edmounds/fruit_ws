@@ -12,6 +12,7 @@ readonly LAUNCH_LOG="${RUN_DIR}/launch.log"
 readonly CLIENT_LOG="${RUN_DIR}/client.log"
 
 LAUNCH_PID=""
+PLANNER_PID=""
 STOPPING=0
 ZONE=""
 DIRECTION=""
@@ -142,6 +143,11 @@ cleanup()
   trap - EXIT INT TERM
   log "Stopping perception stack"
 
+  if process_is_alive "${PLANNER_PID}"; then
+    timeout --foreground 2s ros2 service call /arm_planner_node/stop std_srvs/srv/Trigger '{}' \
+      >/dev/null 2>&1 || true
+  fi
+
   while read -r job_pid; do
     [[ -n "${job_pid}" && "${job_pid}" != "${LAUNCH_PID}" ]] || continue
     kill -TERM "${job_pid}" 2>/dev/null || true
@@ -153,6 +159,7 @@ cleanup()
       >/dev/null 2>&1 || true
   fi
   stop_process_group "${LAUNCH_PID}"
+  stop_process_group "${PLANNER_PID}"
   exit "${status}"
 }
 
@@ -236,6 +243,9 @@ main()
   setsid "${START_SCRIPT}" serial_debug_raw_frame:=true \
     > >(tee -a "${LAUNCH_LOG}") 2>&1 &
   LAUNCH_PID=$!
+  setsid ros2 launch fruit_arm_planner fruit_arm_planner.launch.py \
+    >>"${LAUNCH_LOG}" 2>&1 &
+  PLANNER_PID=$!
 
   log "Waiting for the perception stack"
   if ros2 run fruit_mission camera_arm_target_client \

@@ -119,9 +119,9 @@ ros2 launch fruit_arm_planner fruit_arm_planner.launch.py
 `status` 查看反馈，Ctrl+C 请求急停；STOP/ESTOP 成功响应只代表发布，不确认硬件停稳。
 旧 `lower_controller_console.py` 直接发轨迹，不再作为正常机械臂控制入口。
 
-**集成限制：**mission 视觉目标和单树客户端已通过共享坐标换算客户端调用 planner，
-当前夹爪 HOLD，仅到目标点；方向/区域/扫码姿态/收臂仍用旧接口，正式启动脚本也尚未启动 planner。
-串口桥跨类型轨迹装载顺序未验证，不能把上述命令或任务脚本视为完整采摘闭环已验收。
+**集成状态：**mission 和单树客户端通过 planner 服务编排 Look、二维码观察、目标 CLOSE、Harvest 和 Home；
+mission 负责相机坐标转换、目标筛选与 A/B/C 顺序，planner 负责运动学、映射和轨迹执行。
+启动脚本已启动 planner-only launch。串口桥跨类型轨迹装载顺序、真实预设轨迹、标定、STOP 优先级和下位机保护仍需现场验收，不能把服务成功当作完整实机闭环已验收。
 
 ## 录制调试 ROS 话题
 ```bash

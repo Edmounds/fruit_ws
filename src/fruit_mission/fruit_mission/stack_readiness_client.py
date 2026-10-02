@@ -8,7 +8,7 @@ import time
 
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import FollowWaypoints
-from fruit_arm_interfaces.srv import ExecuteArmPreset, MoveArmCartesian
+from fruit_arm_interfaces.srv import ExecuteArmPreset, MoveArmCartesian, MoveArmJoints
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -112,6 +112,7 @@ class StackReadinessClient(Node):
         deadline = time.monotonic() + timeout_sec
         for service_type, name in (
             (MoveArmCartesian, "/arm_planner_node/move_cartesian"),
+            (MoveArmJoints, "/arm_planner_node/move_joints"),
             (ExecuteArmPreset, "/arm_planner_node/execute_preset"),
             (Trigger, "/arm_planner_node/stop"),
         ):

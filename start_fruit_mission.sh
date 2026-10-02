@@ -134,28 +134,14 @@ process_alive() {
   [[ -n "$state" && "$state" != Z* ]]
 }
 
-all_children_alive() {
-  local pid
-  for pid in "${child_pids[@]}"; do
-    process_alive "$pid" || return 1
-  done
-  return 0
-}
-
 run_readiness_client() {
   local status=0
 
-  setsid ros2 run fruit_mission stack_readiness_client "$@" \
+  setsid timeout --foreground 10s ros2 run fruit_mission stack_readiness_client "$@" \
     --ros-args --params-file "$SCRIPT_CLIENT_CONFIG" \
     > >(tee -a "$ORCHESTRATOR_LOG") 2>&1 &
   readiness_pid=$!
   while process_alive "$readiness_pid"; do
-    if ! all_children_alive; then
-      kill -TERM -- "-$readiness_pid" 2>/dev/null || true
-      wait "$readiness_pid" 2>/dev/null || true
-      readiness_pid=""
-      return 2
-    fi
     sleep 0.2
   done
   wait "$readiness_pid" || status=$?
@@ -227,8 +213,7 @@ wait_for_nodes() {
   else
     status=$?
   fi
-  ((status != 2)) || die "$label process exited before readiness"
-  die "timeout waiting for $label nodes=$*"
+  log "WARNING: $label not ready (status=$status); mission will skip unavailable work"
 }
 
 wait_for_action() {
@@ -246,8 +231,7 @@ wait_for_action() {
   else
     status=$?
   fi
-  ((status != 2)) || die "$label process exited before readiness"
-  die "timeout waiting for $label action=$action_name"
+  log "WARNING: $label action unavailable; mission will skip unavailable work"
 }
 
 wait_for_arm_planner() {
@@ -261,8 +245,7 @@ wait_for_arm_planner() {
   else
     status=$?
   fi
-  ((status != 2)) || die "arm planner process exited before readiness"
-  die "timeout waiting for arm planner services"
+  log "WARNING: arm planner unavailable; no unsafe arm motion will be submitted"
 }
 
 wait_for_tf() {
@@ -283,8 +266,7 @@ wait_for_tf() {
   else
     status=$?
   fi
-  ((status != 2)) || die "$label process exited before readiness"
-  die "timeout waiting for $label tf=$parent_frame->$child_frame"
+  log "WARNING: $label TF unavailable; mission will skip unavailable work"
 }
 
 wait_for_odometry() {
@@ -302,8 +284,7 @@ wait_for_odometry() {
   else
     status=$?
   fi
-  ((status != 2)) || die "$label process exited before readiness"
-  die "timeout waiting for $label topic=$topic"
+  log "WARNING: $label odometry unavailable; no recognition without stationary feedback"
 }
 
 wait_for_active_off() {
@@ -317,8 +298,7 @@ wait_for_active_off() {
   else
     status=$?
   fi
-  ((status != 2)) || die "perception process exited before camera mode readiness"
-  die "timeout waiting for camera mode manager active=OFF"
+  log "WARNING: camera mode unavailable; mission will skip unavailable work"
 }
 
 wait_for_topic_endpoint_count() {
@@ -348,8 +328,7 @@ wait_for_topic_endpoint_count() {
   else
     status=$?
   fi
-  ((status != 2)) || die "$label process exited before readiness"
-  die "timeout waiting for $label topic=$topic $endpoint>=$expected_count"
+  log "WARNING: $label endpoint unavailable; mission will skip unavailable work"
 }
 
 wait_for_serial_bridge_running() {
@@ -364,8 +343,7 @@ wait_for_serial_bridge_running() {
   else
     status=$?
   fi
-  ((status != 2)) || die "serial bridge process exited before readiness"
-  die "timeout waiting for serial bridge RUNNING; see $log_file"
+  log "WARNING: serial bridge unavailable; see $log_file; mission remains bounded"
 }
 
 log_recent_child_output() {
@@ -406,7 +384,7 @@ stop_children() {
     kill -INT -- "-$pid" 2>/dev/null || true
   done
 
-  wait_deadline=$((SECONDS + 15))
+  wait_deadline=$((SECONDS + 10))
   while ((SECONDS < wait_deadline)); do
     local any_alive=0
     for pid in "${child_pids[@]}"; do
@@ -504,15 +482,16 @@ MODEL_PATH=${mission_runtime_path_values[1]}
 MODEL_CONFIG=${mission_runtime_path_values[2]}
 APLAY_EXECUTABLE=${mission_runtime_path_values[3]}
 
-for required_file in "$WAYPOINT_FILE" "$MODEL_PATH" "$MODEL_CONFIG"; do
-  check_file "$required_file"
+check_file "$WAYPOINT_FILE"
+for required_file in "$MODEL_PATH" "$MODEL_CONFIG"; do
+  [[ -r "$required_file" ]] || log "WARNING: speech file unavailable: $required_file"
 done
 for required_executable in "$PIPER_EXECUTABLE" "$APLAY_EXECUTABLE"; do
-  [[ -x "$required_executable" ]] || die "required executable is unavailable: $required_executable"
+  [[ -x "$required_executable" ]] || log "WARNING: speech executable unavailable: $required_executable"
 done
 
 for required_device in /dev/stm32; do
-  check_device "$required_device"
+  [[ -e "$required_device" ]] || log "WARNING: device unavailable: $required_device"
 done
 
 log "RUN directory: $RUN_DIR"
@@ -575,12 +554,12 @@ if [[ "$REUSE_NAVIGATION" == true ]]; then
   log "RUN reuse: existing navigation, serial bridge, and debug monitor remain owned by start_navigation.sh"
 fi
 
-wait_for_nodes "odometry navigation readiness" 60 \
+wait_for_nodes "odometry navigation readiness" 10 \
   /axis_waypoint_action_server \
   /laserMapping \
   /loam_interface
-wait_for_action "waypoint navigation" "/follow_waypoints" 60
-wait_for_odometry "Point-LIO odometry" /aft_mapped_to_init 60
+wait_for_action "waypoint navigation" "/follow_waypoints" 10
+wait_for_odometry "base odometry" /odometry 10
 wait_for_tf "stable odometry origin" odom base_link 5
 
 start_process "perception" \
@@ -590,47 +569,47 @@ start_process "perception" \
     "start_serial_bridge:=$START_SERIAL_BRIDGE"
 
 
-wait_for_nodes "perception readiness" 120 \
+wait_for_nodes "perception readiness" 10 \
   /serial_controller \
   /fruit_perception_node \
   /camera_mode_manager \
   /fruit_qr_planner
-wait_for_serial_bridge_running 30
+wait_for_serial_bridge_running 10
 start_process "arm_planner" \
   ros2 launch "$ARM_LAUNCH" "use_sim_time:=false"
-wait_for_nodes "arm planner readiness" 30 /arm_planner_node
-wait_for_arm_planner 30
+wait_for_nodes "arm planner readiness" 10 /arm_planner_node
+wait_for_arm_planner 10
 wait_for_topic_endpoint_count \
   "trajectory header bridge subscription" \
   "/fruit_hardware_bridge/arm/trajectory_header" \
   subscribers \
   1 \
-  30
+  10
 wait_for_topic_endpoint_count \
   "trajectory point bridge subscription" \
   "/fruit_hardware_bridge/arm/trajectory_point" \
   subscribers \
   1 \
-  30
+  10
 wait_for_topic_endpoint_count \
   "arm mode bridge subscription" \
   "/fruit_hardware_bridge/arm/control_mode" \
   subscribers \
   1 \
-  30
+  10
 wait_for_topic_endpoint_count \
   "arm status bridge publisher" \
   "/fruit_hardware_bridge/arm/status" \
   publishers \
   1 \
-  30
-wait_for_active_off 60
+  10
+wait_for_active_off 10
 
 if ((DEBUG_RECORD_ENABLED)); then
   start_process "rosbag" \
     "$RECORD_SCRIPT" \
     --no-monitor
-  wait_for_node "debug rosbag recorder" /rosbag2_recorder 30
+  wait_for_node "debug rosbag recorder" /rosbag2_recorder 10
 fi
 
 log "READY navigation, perception, and arm planner stack; starting mission"
@@ -646,22 +625,10 @@ else
   log "RUN mission started; press Ctrl-C to stop the complete stack"
 fi
 set +e
-wait -n "${child_pids[@]}"
+# A dead perception/QR/planner process must not tear down the competition.
+mission_pid=${child_pids[${#child_pids[@]}-1]}
+wait "$mission_pid"
 status=$?
 set -e
-ended_child_found=0
-for index in "${!child_pids[@]}"; do
-  if ! process_alive "${child_pids[index]}"; then
-    ended_child_found=1
-    log "EXIT ${child_names[index]} pid=${child_pids[index]} status=$status log=${child_logs[index]}"
-    log_recent_child_output "${child_names[index]}" "${child_logs[index]}"
-    if ((status == 0)) && grep -Eq '\[(ERROR|FATAL)\]|(ERROR|FATAL):' "${child_logs[index]}"; then
-      status=1
-      log "EXIT ${child_names[index]} log contains error output; treating exit as failure"
-    fi
-  fi
-done
-if ((ended_child_found == 0)); then
-  log "EXIT one child process ended with status=$status; stopping remaining processes"
-fi
+log "EXIT mission status=$status; local subsystem failures did not terminate the runner"
 exit "$status"

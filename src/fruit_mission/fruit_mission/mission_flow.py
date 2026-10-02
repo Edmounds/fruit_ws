@@ -17,7 +17,6 @@ from fruit_qr_planner.planner import build_c_plan
 def run_mission(ctx) -> None:
     """Run the selected field flow using the configured waypoint names."""
     flow = str(ctx.config.get("mission_flow", "full")).strip().lower()
-    mission_complete = False
     try:
         _announce_and_wait(
             ctx,
@@ -26,95 +25,56 @@ def run_mission(ctx) -> None:
         if flow not in {"full", "ac", "a", "b", "c"}:
             ctx.announce(f"未知任务流程{flow}，任务停止。")
             return
+        ctx.recover_home()
 
         if flow in {"full", "ac", "a"}:
-            if not run_a_area(ctx) or not _send_arm_retract(
-                ctx,
-                "A区结束机械臂收缩姿态动作失败，任务停止。",
-            ):
-                return
+            run_a_area(ctx)
             if flow == "a":
-                mission_complete = ctx.navigate_named(["to_B_QR_waypoint"])
+                ctx.navigate_named(["to_B_QR_waypoint"])
                 return
 
-            b_plan = scan_b_qr_and_announce(ctx, announce_before_plan=False)
-            if b_plan is None:
-                return
+            b_plan = scan_b_qr_and_announce(ctx)
             c_distribution = scan_c_qr_and_build_table(ctx)
-            if c_distribution is None or not run_c_area(ctx, c_distribution):
-                return
+            run_c_area(ctx, c_distribution)
             if flow == "ac":
-                mission_complete = True
                 return
 
-            if not ctx.navigate_named(
-                ctx.route.transition_names("c_to_b_first_tree")
-            ):
-                ctx.announce("C区返回B区导航失败，任务停止。")
-                return
-            mission_complete = run_b_area(ctx, b_plan)
+            ctx.navigate_named(ctx.route.transition_names("c_to_b_first_tree"))
+            run_b_area(ctx, b_plan)
             return
 
         if flow == "b":
-            b_plan = scan_b_qr_and_announce(ctx, announce_before_plan=True)
-            if b_plan is None:
-                return
-            if not ctx.navigate_named(
-                ctx.route.transition_names("b_to_first_tree")
-            ):
-                ctx.announce("B区第一个树位导航失败，任务停止。")
-                return
-            if not run_b_area(ctx, b_plan):
-                return
-            mission_complete = ctx.navigate_named(
-                ctx.route.transition_names("b_to_c_qr_end")
-            )
+            b_plan = scan_b_qr_and_announce(ctx)
+            ctx.navigate_named(ctx.route.transition_names("b_to_first_tree"))
+            run_b_area(ctx, b_plan)
+            ctx.navigate_named(ctx.route.transition_names("b_to_c_qr_end"))
             return
 
         c_distribution = scan_c_qr_and_build_table(ctx)
-        if c_distribution is not None:
-            mission_complete = run_c_area(ctx, c_distribution)
+        run_c_area(ctx, c_distribution)
     finally:
         ctx.set_perception_mode("OFF")
-        if mission_complete:
-            ctx.announce("任务结束")
+        ctx.announce("任务流程结束")
 
 
 def run_a_area(ctx) -> bool:
     """Run A-zone stop-and-pick points with single camera."""
-    if not ctx.report_current_area("A"):
-        return False
+    ctx.report_current_area("A")
     observation_order = ctx.config.get("a_observation_order", ["left", "right"])
     for waypoint in ctx.route.a_goal_names():
-        if not ctx.navigate_named([waypoint]):
+        if not ctx.navigate_named([waypoint], observation_side=observation_order[0]):
+            ctx.recover_home()
             continue
-        ctx.stable_stop()
         for side in observation_order:
             result = ctx.execute_closed_loop_pick(side, "ripe")
             if not result.success and not result.safe_to_continue:
-                return False
-        if not _send_arm_retract(
-            ctx, f"A区{waypoint}机械臂收缩姿态动作失败，任务停止。"
-        ):
-            return False
-    return ctx.set_perception_mode("OFF")
+                ctx.node.get_logger().warning(f'A区{waypoint}当前动作跳过: {result.reason_code}')
+                break
+    ctx.set_perception_mode('OFF')
+    return True
 
 
-def _send_arm_retract(
-    ctx,
-    failure_text: str,
-) -> bool:
-    if ctx.send_arm_retract_pose():
-        return True
-    ctx.announce(failure_text)
-    return False
-
-
-def scan_b_qr_and_announce(
-    ctx,
-    *,
-    announce_before_plan: bool = True,
-) -> Optional[Dict[str, Any]]:
+def scan_b_qr_and_announce(ctx) -> Dict[str, Any]:
     """Scan B QR and announce its ordered plan."""
     flow = str(ctx.config.get("mission_flow", "full")).strip().lower()
     route_names = (
@@ -122,47 +82,26 @@ def scan_b_qr_and_announce(
         if flow == "b"
         else ctx.route.transition_names("a_to_b_qr")
     )
-    if not ctx.navigate_named(route_names):
-        if announce_before_plan:
-            ctx.announce("B区二维码点导航失败，任务停止。")
-        return None
-    ctx.stable_stop()
-    if not ctx.report_current_area("B"):
-        if announce_before_plan:
-            ctx.announce("B区当前区域上报失败，任务停止。")
-        return None
-    if not ctx.set_perception_mode("QR"):
-        if announce_before_plan:
-            ctx.announce("B区二维码模式切换失败，任务停止。")
-        return None
-    if not ctx.send_qr_pose():
-        if announce_before_plan:
-            ctx.announce("B区二维码识别姿态动作超时，任务停止。")
-        return None
-    b_plan = ctx.wait_b_plan()
+    ctx.report_current_area('B')
+    ready = ctx.navigate_named(route_names) and ctx.send_qr_pose() and ctx.stable_stop()
+    b_plan = ctx.wait_b_plan() if ready and ctx.set_perception_mode('QR') else None
     if b_plan is None:
-        fallback_targets = ctx.config.get("b_qr_fallback_targets")
-        if not fallback_targets:
-            if announce_before_plan:
-                ctx.announce("B区二维码计划等待超时。")
-            return None
+        fallback_targets = ctx.config['qr_fallback']['b_targets']
         ctx.node.get_logger().warning(
             "B区二维码计划等待超时，使用配置的兜底顺序"
         )
         b_plan = build_b_plan("\n".join(str(target) for target in fallback_targets))
-    save_b_plan = getattr(ctx, "save_b_plan", None)
-    if callable(save_b_plan):
-        save_b_plan(b_plan)
+    ctx.save_b_plan(b_plan)
     _announce_qr(
         ctx,
         format_b_announcement(b_plan),
     )
-    if not _send_arm_retract(ctx, "B区二维码后机械臂收缩姿态动作超时，任务停止。"):
-        return None
+    ctx.set_perception_mode('OFF')
+    ctx.recover_home()
     return b_plan
 
 
-def scan_c_qr_and_build_table(ctx) -> Optional[Dict[str, Any]]:
+def scan_c_qr_and_build_table(ctx) -> Dict[str, Any]:
     """Scan C QR, save the planned task list, and announce task order."""
     flow = str(ctx.config.get("mission_flow", "full")).strip().lower()
     route_names = (
@@ -170,26 +109,12 @@ def scan_c_qr_and_build_table(ctx) -> Optional[Dict[str, Any]]:
         if flow == "c"
         else ctx.route.transition_names("b_to_c_qr")
     )
-    if not ctx.navigate_named(route_names):
-        ctx.announce("C区二维码点导航失败，任务停止。")
-        return None
-    ctx.stable_stop()
-    if not ctx.report_current_area("C"):
-        ctx.announce("C区当前区域上报失败，任务停止。")
-        return None
-    if not ctx.set_perception_mode("QR"):
-        ctx.announce("C区二维码模式切换失败，任务停止。")
-        return None
-    if not ctx.send_qr_pose():
-        ctx.announce("C区二维码识别姿态动作超时，任务停止。")
-        return None
-    c_plan = ctx.wait_c_plan()
+    ctx.report_current_area('C')
+    ready = ctx.navigate_named(route_names) and ctx.send_qr_pose() and ctx.stable_stop()
+    c_plan = ctx.wait_c_plan() if ready and ctx.set_perception_mode('QR') else None
     if c_plan is None:
-        fallback_targets = ctx.config.get("c_qr_fallback_targets")
-        fallback_positions = ctx.config.get("c_qr_fallback_positions")
-        if not fallback_targets or not fallback_positions:
-            ctx.announce("C区二维码计划等待超时。")
-            return None
+        fallback_targets = ctx.config['qr_fallback']['c_targets']
+        fallback_positions = ctx.config['qr_fallback']['c_positions']
         ctx.node.get_logger().warning(
             "C区二维码计划等待超时，使用配置的兜底顺序"
         )
@@ -207,8 +132,8 @@ def scan_c_qr_and_build_table(ctx) -> Optional[Dict[str, Any]]:
         lead_time_sec=float(ctx.config.get("c_qr_announce_lead_sec", 4.0)),
         length_scale=_qr_length_scale(ctx),
     )
-    if not _send_arm_retract(ctx, "C区二维码后机械臂收缩姿态动作超时，任务停止。"):
-        return None
+    ctx.set_perception_mode('OFF')
+    ctx.recover_home()
     return distribution
 
 
@@ -219,35 +144,13 @@ def _announce_and_wait(
     lead_time_sec: float = 0.0,
     length_scale: Optional[float] = None,
 ) -> bool:
-    announce_and_wait = getattr(ctx, "announce_and_wait", None)
-    if callable(announce_and_wait):
-        if lead_time_sec > 0.0:
-            try:
-                return bool(
-                    announce_and_wait(
-                        text,
-                        lead_time_sec=lead_time_sec,
-                        length_scale=length_scale,
-                    )
-                )
-            except TypeError:
-                pass
-        if length_scale is not None:
-            try:
-                return bool(announce_and_wait(text, length_scale=length_scale))
-            except TypeError:
-                pass
-        return bool(announce_and_wait(text))
-    return bool(ctx.announce(text))
+    return bool(ctx.announce_and_wait(
+        text, lead_time_sec=lead_time_sec, length_scale=length_scale))
 
 
 def _announce_qr(ctx, text: str) -> bool:
     """Queue a compact QR summary with the configured faster speech rate."""
-    length_scale = _qr_length_scale(ctx)
-    try:
-        return bool(ctx.announce(text, length_scale=length_scale))
-    except TypeError:
-        return bool(ctx.announce(text))
+    return bool(ctx.announce(text, length_scale=_qr_length_scale(ctx)))
 
 
 def _qr_length_scale(ctx) -> float:
@@ -256,8 +159,7 @@ def _qr_length_scale(ctx) -> float:
 
 def run_b_area(ctx, b_plan: Mapping[str, Any]) -> bool:
     """Execute B tree tasks in the QR order, using vehicle-side directions."""
-    if not ctx.report_current_area("B"):
-        return False
+    ctx.report_current_area("B")
     tasks = list(b_plan.get("tasks", []))
     tasks.sort(key=lambda item: int(item["sequence"]))
     b_names = ctx.route.b_goal_names()
@@ -267,44 +169,41 @@ def run_b_area(ctx, b_plan: Mapping[str, Any]) -> bool:
             ctx.announce(f"B区第{position_id}棵树编号无效，跳过。")
             continue
         goal_name = b_names[position_id - 1]
-        if not ctx.navigate_named([goal_name]):
+        side = "right" if position_id % 2 == 1 else "left"
+        if not ctx.navigate_named([goal_name], observation_side=side):
             ctx.announce(f"B区{goal_name}导航失败，跳过。")
+            ctx.recover_home()
             continue
-        ctx.stable_stop()
         target_name = str(task["target"])
         expected_type = expected_ripe_type(target_name)
-        side = "right" if position_id % 2 == 1 else "left"
         observation = ctx.observe_b_tree(side)
         if not observation.get("success"):
             reason_code = str(observation.get("reason_code"))
             reason = _b_observation_failure_text(reason_code)
-            if not observation.get("safe_to_continue", True):
-                ctx.announce(f"B区{goal_name}，{reason}，任务停止。")
-                return False
             ctx.announce(f"B区{goal_name}，{reason}，跳过。")
         else:
             targets = list(observation.get("targets", []))
-            selected_target = _announce_b_tree_decision(
+            selected_targets = _announce_b_tree_decision(
                 ctx,
                 goal_name,
                 target_name,
                 expected_type,
                 targets,
             )
-            if selected_target is not None:
-                pick_result = ctx.execute_b_tree_target(selected_target)
+            requests = ctx.freeze_b_targets(selected_targets)
+            for request in requests:
+                pick_result = ctx.execute_b_tree_target(request, side)
                 if not pick_result.get("success"):
                     reason_code = str(pick_result.get("reason_code"))
                     reason = _b_arm_failure_text(reason_code)
                     if not pick_result.get("safe_to_continue", True):
-                        ctx.announce(f"B区{goal_name}，{reason}，任务停止。")
-                        return False
-                    ctx.announce(f"B区{goal_name}，{reason}，执行收臂。")
-        if not _send_arm_retract(
-            ctx, f"B区{goal_name}机械臂收缩姿态动作超时，任务停止。"
-        ):
-            return False
-    return _send_arm_retract(ctx, "B区结束机械臂收缩姿态动作超时，任务停止。")
+                        ctx.announce(f"B区{goal_name}，{reason}，跳过剩余目标。")
+                        break
+                    ctx.announce(f"B区{goal_name}，{reason}，继续下一个目标。")
+            if not requests:
+                ctx.recover_home()
+    ctx.set_perception_mode('OFF')
+    return True
 
 
 def _announce_b_tree_decision(
@@ -313,7 +212,7 @@ def _announce_b_tree_decision(
     target_name: str,
     expected_type: str,
     targets: list[Any],
-) -> Optional[Any]:
+) -> list[Any]:
     decision = decide_b_tree_targets(
         target_name,
         expected_type,
@@ -329,16 +228,16 @@ def _announce_b_tree_decision(
     )
     if decision.reason_code == "no_detection":
         ctx.announce(f"B区{goal_name}，没有识别到果实，跳过。")
-        return None
+        return []
     if decision.reason_code == "inconsistent_types":
         ctx.announce(f"B区{goal_name}，识别结果不一致，跳过。")
-        return None
+        return []
     if decision.reason_code == "type_mismatch":
         ctx.announce(
             f"B区{goal_name}，识别到{decision.observed_name}，"
             "和二维码不一致，跳过。"
         )
-        return None
+        return []
 
     if decision.target_index is not None:
         ctx.announce(
@@ -350,8 +249,8 @@ def _announce_b_tree_decision(
             f"B区{goal_name}，识别到{decision.observed_name}，和二维码一致，"
             f"没有成熟{target_name}，跳过。"
         )
-        return None
-    return targets[decision.target_index]
+        return []
+    return [targets[index] for index in decision.target_indices]
 
 
 def _b_observation_failure_text(reason_code: str) -> str:
@@ -374,13 +273,14 @@ def _b_arm_failure_text(reason_code: str) -> str:
 
 def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
     """Execute C-zone tasks strictly in QR order."""
+    ctx.report_current_area('C')
     for task in ordered_c_tasks_from_distribution(c_distribution):
         position_id = int(task["position_id"])
         target_name = str(task["target_name"])
         expected_type = str(
             task.get("expected_ripe_type") or expected_ripe_type(target_name)
         )
-        navigation = _navigate_c_task(ctx, task)
+        navigation = dict(ctx.navigate_c_position(position_id))
         task["navigation_status"] = navigation.get("status")
         for key in (
             "navigation_start",
@@ -406,11 +306,11 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
             task["navigation_failure_detail"] = navigation.get("detail")
             ctx.announce(
                 f"C区{format_position_name(position_id)}，应该采{target_name}。"
-                "无法根据当前位置规划安全路线，C区任务停止。"
+                "当前项导航规划失败，跳过。"
             )
             ctx.save_c_distribution(c_distribution)
-            _send_arm_retract(ctx, "C区导航规划失败，机械臂收缩姿态动作超时。")
-            return False
+            ctx.recover_home()
+            continue
 
         if navigation["status"] == "navigation_failed":
             task["result"] = "navigation_failed"
@@ -418,16 +318,13 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
             task["navigation_failure_detail"] = navigation.get("detail")
             ctx.announce(
                 f"C区{format_position_name(position_id)}，应该采{target_name}。"
-                "导航重试。"
+                "导航失败，跳过。"
             )
             ctx.save_c_distribution(c_distribution)
-            if not bool(navigation.get("recovery_available", True)):
-                ctx.announce("C区当前位置无法用于重新规划，C区任务停止。")
-                _send_arm_retract(ctx, "C区导航恢复失败，机械臂收缩姿态动作超时。")
-                return False
+            ctx.recover_home()
+            continue
 
         camera_side = str(navigation["camera_side"])
-        ctx.stable_stop()
         task["last_observation"] = {
             "source": "camera",
             "expected_type": expected_type,
@@ -438,7 +335,7 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
             observed = spoken_model_type(result.matched_type)
             ctx.announce(
                 f"C区{format_position_name(position_id)}，应该采{target_name}。"
-                f"识别到{observed}，机械臂已到目标点。"
+                f"识别到{observed}，采摘放置工序完成。"
             )
         else:
             task["result"] = result.reason_code
@@ -461,40 +358,11 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
                     f"C区{format_position_name(position_id)}，应该采{target_name}。"
                     f"识别到{observed}，{_pick_failure_text(result.reason_code)}。"
                 )
-            if not result.safe_to_continue:
-                ctx.save_c_distribution(c_distribution)
-                return False
-        if not _send_arm_retract(
-            ctx,
-            f"C区{format_position_name(position_id)}，机械臂收缩姿态动作超时，任务停止。",
-        ):
-            ctx.save_c_distribution(c_distribution)
-            return False
+        ctx.save_c_distribution(c_distribution)
 
     ctx.save_c_distribution(c_distribution)
-    if not _send_arm_retract(ctx, "C区结束机械臂收缩姿态动作超时，任务停止。"):
-        return False
+    ctx.set_perception_mode('OFF')
     return True
-
-
-def _navigate_c_task(ctx, task: Mapping[str, Any]) -> Dict[str, Any]:
-    navigate = getattr(ctx, "navigate_c_position", None)
-    if callable(navigate):
-        return dict(navigate(int(task["position_id"])))
-
-    movement_points = list(task.get("movement_points", []))
-    go_through = getattr(ctx, "go_through", None)
-    success = (
-        bool(go_through(movement_points))
-        if callable(go_through)
-        else bool(ctx.go_to(movement_points))
-    )
-    return {
-        "status": "succeeded" if success else "navigation_failed",
-        "reason": None if success else "follow_waypoints_failed",
-        "movement_points": movement_points,
-        "camera_side": task.get("camera_side", task.get("preferred_side", "left")),
-    }
 
 
 def ordered_c_tasks_from_distribution(

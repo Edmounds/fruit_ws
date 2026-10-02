@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 from typing import Any, Dict, Mapping
 
 import yaml
@@ -15,6 +16,9 @@ def load_config(path: str, waypoint_file: str | None = None) -> Dict[str, Any]:
     params = document["fruit_mission"]["ros__parameters"]
     if waypoint_file is not None and waypoint_file.strip():
         params["waypoint_file"] = waypoint_file.strip()
+    fallback_path = Path(params['qr_fallback_file'])
+    with fallback_path.open(encoding='utf-8') as stream:
+        params['qr_fallback'] = yaml.safe_load(stream)
     validate_config(params)
     return params
 
@@ -62,7 +66,8 @@ def validate_config(params: Mapping[str, Any]) -> None:
     presets = params.get("arm_presets")
     if not isinstance(presets, dict):
         raise ValueError("arm_presets must be a mapping")
-    for action in ("observation_left", "observation_right", "qr", "retract", "home"):
+    for action in ('observation_left', 'observation_right', 'harvest_left',
+                   'harvest_right', 'qr', 'home'):
         name = presets.get(action)
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"arm_presets.{action} must be a nonempty string")
@@ -75,7 +80,20 @@ def validate_config(params: Mapping[str, Any]) -> None:
         raise ValueError(
             "a_observation_order must be a list containing exactly 'left' and 'right'"
         )
-    _validate_qr_fallbacks(params)
+    _validate_qr_fallbacks(params['qr_fallback'])
+    if not isinstance(params.get('odometry_topic'), str) or not params['odometry_topic'].strip():
+        raise ValueError('odometry_topic must be a nonempty string')
+    stationary = params.get('stationary')
+    if not isinstance(stationary, dict):
+        raise ValueError('stationary must be a mapping')
+    for name in ('linear_speed_mps', 'angular_speed_rps', 'joint_speed_rps',
+                 'duration_sec', 'odometry_max_age_sec', 'timeout_sec'):
+        value = stationary.get(name)
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value <= 0):
+            raise ValueError(f'stationary.{name} must be finite and positive')
+    if not stationary['duration_sec'] <= stationary['timeout_sec'] <= 10.0:
+        raise ValueError('stationary duration must fit within timeout <= 10s')
     tts = params.get("tts", {})
     if "qr_length_scale" in tts and float(tts["qr_length_scale"]) <= 0.0:
         raise ValueError("tts.qr_length_scale must be positive")
@@ -85,21 +103,23 @@ def validate_config(params: Mapping[str, Any]) -> None:
 
 
 def _validate_qr_fallbacks(params: Mapping[str, Any]) -> None:
-    b_targets = params.get("b_qr_fallback_targets")
+    if not isinstance(params, dict):
+        raise ValueError('QR fallback config must be a mapping')
+    b_targets = params.get("b_targets")
     if not isinstance(b_targets, list) or len(b_targets) != 8:
-        raise ValueError("b_qr_fallback_targets must contain 8 targets")
+        raise ValueError("b_targets must contain 8 targets")
     if any(target not in {"苹果", "梨子"} for target in b_targets):
-        raise ValueError("b_qr_fallback_targets may only contain 苹果 or 梨子")
+        raise ValueError("b_targets may only contain 苹果 or 梨子")
 
-    c_targets = params.get("c_qr_fallback_targets")
+    c_targets = params.get("c_targets")
     if not isinstance(c_targets, list) or len(c_targets) != 8:
-        raise ValueError("c_qr_fallback_targets must contain 8 targets")
+        raise ValueError("c_targets must contain 8 targets")
     if any(target not in {"南瓜", "西红柿", "辣椒", "洋葱"} for target in c_targets):
         raise ValueError(
-            "c_qr_fallback_targets may only contain 南瓜, 西红柿, 辣椒, or 洋葱"
+            "c_targets may only contain 南瓜, 西红柿, 辣椒, or 洋葱"
         )
 
-    c_positions = params.get("c_qr_fallback_positions")
+    c_positions = params.get("c_positions")
     if (
         not isinstance(c_positions, list)
         or len(c_positions) != 8
@@ -110,6 +130,6 @@ def _validate_qr_fallbacks(params: Mapping[str, Any]) -> None:
         or len(set(c_positions)) != 8
     ):
         raise ValueError(
-            "c_qr_fallback_positions must contain 8 unique position IDs "
+            "c_positions must contain 8 unique position IDs "
             "from 1 to 12"
         )
