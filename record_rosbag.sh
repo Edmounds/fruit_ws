@@ -9,7 +9,7 @@ DEBUG_MONITOR_PID=""
 START_MONITOR=1
 BAG_LABEL=""
 
-RECORD_EXCLUDE_REGEX='(^/camera/camera/depth/image_rect_raw$|^/camera/camera/rgbd$|/(compressed|compressedDepth|theora)$)'
+RECORD_EXCLUDE_REGEX='(^/camera/depth/image_rect_raw$|^/camera/rgbd$|/(compressed|compressedDepth|theora)$)'
 
 BAG_NAME_PATTERN='^([A-Za-z0-9_.-]+_)?([0-9]{8}_[0-9]{6})(_[0-9]+)?$'
 
@@ -18,10 +18,10 @@ usage() {
 Usage: ./record_rosbag.sh [label] [--full] [--no-monitor]
 
 Record all discovered ROS topics, including hidden Action topics, LiDAR, and
-point-cloud topics. To control camera load and bag size, D435i unaligned raw
+point-cloud topics. To control camera load and bag size, Camera unaligned raw
 depth, the composite RGBD topic, and image transport derivatives are excluded.
-The retained image topics are the two USB raw/annotated images and D435i color
-raw/aligned-depth/annotated images. --full is accepted as an explicit mode flag.
+The retained image topics are Camera color raw/aligned-depth/annotated images.
+--full is accepted as an explicit mode flag.
 The bag is written to:
   rosbags/YYYYMMDD_HHMMSS/
 
@@ -122,7 +122,7 @@ fi
 
 printf '[rosbag] output: %s\n' "$BAG_PATH"
 printf '[rosbag] recording all non-excluded topics, including LiDAR and point-cloud topics\n'
-printf '[rosbag] visual topics: USB raw/annotated; D435i color raw/aligned depth/annotated\n'
+printf '[rosbag] visual topics: Camera color raw/aligned depth/annotated\n'
 printf '[rosbag] excluded topic regex: %s\n' "$RECORD_EXCLUDE_REGEX"
 printf '[rosbag] retaining the newest %s date-named bags\n' "$MAX_BAGS"
 printf '[rosbag] press Ctrl-C once when the failure has been captured\n'

@@ -1,50 +1,11 @@
-import subprocess
-
 import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, GroupAction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.descriptions import ComposableNode
 from launch_ros.parameter_descriptions import ParameterValue
-
-
-def _set_v4l2_control(device, control, value):
-    subprocess.run(
-        [
-            'v4l2-ctl',
-            '--device', device,
-            '--set-ctrl', f'{control}={value}',
-        ],
-        check=True,
-    )
-
-
-def _apply_manual_camera_controls(camera_parameters, v4l2_controls):
-    device = camera_parameters['video_device']
-    for control, value in v4l2_controls.items():
-        _set_v4l2_control(device, control, value)
-    _set_v4l2_control(
-        device,
-        'white_balance_automatic',
-        int(camera_parameters['auto_white_balance']),
-    )
-    if not camera_parameters['auto_white_balance']:
-        _set_v4l2_control(
-            device,
-            'white_balance_temperature',
-            camera_parameters['white_balance'],
-        )
-
-    auto_exposure = camera_parameters['autoexposure']
-    _set_v4l2_control(device, 'auto_exposure', 3 if auto_exposure else 1)
-    if not auto_exposure:
-        _set_v4l2_control(
-            device,
-            'exposure_time_absolute',
-            camera_parameters['exposure'],
-        )
 
 
 def generate_launch_description():
@@ -72,89 +33,29 @@ def generate_launch_description():
     perception_parameters = camera_config[
         'fruit_perception_node'
     ]['ros__parameters']
-    usb_camera_controls = camera_config[
-        'usb_camera_controls'
-    ]['ros__parameters']
-    left_camera_parameters = dict(
-        camera_config['left_camera']['ros__parameters']
-    )
-    left_camera_controls = dict(
-        backlight_compensation=usb_camera_controls[
-            'left_backlight_compensation'
-        ],
-        gamma=usb_camera_controls['left_gamma'],
-        power_line_frequency=usb_camera_controls[
-            'left_power_line_frequency'
-        ],
-    )
-    right_camera_parameters = dict(
-        camera_config['right_camera']['ros__parameters']
-    )
-    right_camera_controls = dict(
-        backlight_compensation=usb_camera_controls[
-            'right_backlight_compensation'
-        ],
-        gamma=usb_camera_controls['right_gamma'],
-        power_line_frequency=usb_camera_controls[
-            'right_power_line_frequency'
-        ],
-    )
+
     # ========================================================================
     # 2. 节点清单
     # ========================================================================
     nodes_to_launch = []
-    camera_parameters_to_configure = []
-    if perception_parameters['enable_left_camera']:
-        nodes_to_launch.append({
-            'package': 'usb_cam',
-            'plugin': 'usb_cam::UsbCamNode',
-            'name': 'left_camera',
-            'parameters': [left_camera_parameters],
-            'remappings': [
-                ('image_raw', '/left_camera/image_raw'),
-                ('image_raw/compressed', '/left_camera/image_raw/compressed'),
-                ('image_raw/compressedDepth', '/left_camera/image_raw/compressedDepth'),
-                ('image_raw/theora', '/left_camera/image_raw/theora'),
-                ('camera_info', '/left_camera/camera_info'),
-                ('/set_capture', '/left_camera/set_capture'),
-            ],
-        })
-        camera_parameters_to_configure.append(
-            (left_camera_parameters, left_camera_controls)
-        )
-    if perception_parameters['enable_right_camera']:
-        nodes_to_launch.append({
-            'package': 'usb_cam',
-            'plugin': 'usb_cam::UsbCamNode',
-            'name': 'right_camera',
-            'parameters': [right_camera_parameters],
-            'remappings': [
-                ('image_raw', '/right_camera/image_raw'),
-                ('image_raw/compressed', '/right_camera/image_raw/compressed'),
-                ('image_raw/compressedDepth', '/right_camera/image_raw/compressedDepth'),
-                ('image_raw/theora', '/right_camera/image_raw/theora'),
-                ('camera_info', '/right_camera/camera_info'),
-                ('/set_capture', '/right_camera/set_capture'),
-            ],
-        })
-        camera_parameters_to_configure.append(
-            (right_camera_parameters, right_camera_controls)
-        )
-    if perception_parameters['enable_d435i']:
+    if perception_parameters.get('enable_camera', True):
         nodes_to_launch.append({
             'package': 'realsense2_camera',
             'plugin': 'realsense2_camera::RealSenseNodeFactory',
-            'namespace': 'camera',
+            'namespace': '/',
             'name': 'camera',
             'parameters': [
-                camera_config['d435i_camera']['ros__parameters']
+                camera_config['camera']['ros__parameters']
             ],
         })
+    perception_node_parameters = dict(perception_parameters)
+    perception_node_parameters['ripeness_model'] = LaunchConfiguration('ripeness_model')
+    perception_node_parameters['performance_hint'] = LaunchConfiguration('performance_hint')
     nodes_to_launch.append({
         'package': 'fruit_perception',
         'plugin': 'fruit_perception::FruitPerceptionNode',
         'name': 'fruit_perception_node',
-        'parameters': [common_config],
+        'parameters': [perception_node_parameters],
     })
 
     # ========================================================================
@@ -178,15 +79,28 @@ def generate_launch_description():
         default_value='true',
         description='Start auto_serial_bridge as part of this launch',
     )
+    declare_ripeness_model = DeclareLaunchArgument(
+        'ripeness_model',
+        default_value='edge',
+        choices=['edge', 'yolo'],
+        description='Startup choice of ripeness classifier',
+    )
+    declare_performance_hint = DeclareLaunchArgument(
+        'performance_hint',
+        default_value='latency',
+        choices=['latency', 'throughput'],
+        description='OpenVINO GPU detector performance hint',
+    )
+    declare_perception_log_level = DeclareLaunchArgument(
+        'perception_log_level',
+        default_value='warn',
+        choices=['debug', 'info', 'warn', 'error', 'fatal'],
+        description='Log level for fruit_perception_node',
+    )
 
     # ========================================================================
     # 4. 自动生成动作列表
     # ========================================================================
-    def apply_manual_camera_controls(_context):
-        for camera_parameters, v4l2_controls in camera_parameters_to_configure:
-            _apply_manual_camera_controls(camera_parameters, v4l2_controls)
-        return []
-
     composable_nodes = []
     for node_cfg in nodes_to_launch:
         final_parameters = [{'use_sim_time': use_sim_time}]
@@ -213,7 +127,10 @@ def generate_launch_description():
         composable_node_descriptions=composable_nodes,
         output='screen',
         emulate_tty=True,
-        arguments=['--ros-args', '--log-level', 'warn'],
+        arguments=[
+            '--ros-args', '--log-level', 'warn', '--log-level',
+            ['fruit_perception_node:=', LaunchConfiguration('perception_log_level')],
+        ],
     )
 
     camera_mode_manager = Node(
@@ -263,7 +180,9 @@ def generate_launch_description():
         declare_use_sim_time,
         declare_serial_debug_raw_frame,
         declare_start_serial_bridge,
-        OpaqueFunction(function=apply_manual_camera_controls),
+        declare_ripeness_model,
+        declare_performance_hint,
+        declare_perception_log_level,
         container,
         camera_mode_manager,
         qr_planner,

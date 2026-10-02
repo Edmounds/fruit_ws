@@ -29,7 +29,7 @@ PCL_PRELOAD = "/lib/x86_64-linux-gnu/libusb-1.0.so.0"
 
 def generate_launch_description():
     params_file = LaunchConfiguration("params_file")
-    mid360_config = LaunchConfiguration("mid360_config")
+    lidar_config = LaunchConfiguration("lidar_config")
     use_sim_time = LaunchConfiguration("use_sim_time")
 
     return LaunchDescription(
@@ -42,9 +42,9 @@ def generate_launch_description():
                 description="Absolute path to the source Point-LIO parameters",
             ),
             DeclareLaunchArgument(
-                "mid360_config",
+                "lidar_config",
                 default_value=os.path.join(
-                    SOURCE_SHARE, "config", "reality", "mid360_user_config.json"
+                    SOURCE_SHARE, "config", "reality", "lidar_user_config.json"
                 ),
                 description="Absolute path to the MID-360 driver configuration",
             ),
@@ -66,7 +66,7 @@ def generate_launch_description():
                 parameters=[
                     params_file,
                     {"use_sim_time": use_sim_time},
-                    {"user_config_path": mid360_config},
+                    {"user_config_path": lidar_config},
                     {"xfer_format": 1},
                 ],
                 output="screen",
@@ -101,15 +101,6 @@ def generate_launch_description():
                         "stabilize_initial_odom": True,
                     },
                 ],
-                output="screen",
-                emulate_tty=True,
-                additional_env={"LD_PRELOAD": PCL_PRELOAD},
-            ),
-            Node(
-                package="sensor_scan_generation",
-                executable="sensor_scan_generation_node",
-                name="sensor_scan_generation",
-                parameters=[params_file, {"use_sim_time": use_sim_time}],
                 output="screen",
                 emulate_tty=True,
                 additional_env={"LD_PRELOAD": PCL_PRELOAD},

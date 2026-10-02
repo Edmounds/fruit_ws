@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping, Optional
+from typing import Iterable, List, Mapping, Optional
 
 
 PRODUCE_TYPE_PREFIXES = {
@@ -24,27 +24,8 @@ SIDE_NAMES = ("left", "right")
 
 
 @dataclass(frozen=True)
-class SideObservation:
-    """Latest model labels seen by left and right side cameras."""
-
-    left: List[str]
-    right: List[str]
-
-
-@dataclass(frozen=True)
-class PickDecision:
-    """One side-pick decision from an observation."""
-
-    should_pick: bool
-    side: Optional[str]
-    reason: str
-    matched_type: Optional[str] = None
-    reason_code: str = ""
-
-
-@dataclass(frozen=True)
 class PickExecutionResult:
-    """Result of the side-turn, D435i depth, and arm-target pick flow."""
+    """Result of the side-turn, Camera depth, and arm-target pick flow."""
 
     success: bool
     reason_code: str
@@ -142,85 +123,6 @@ def format_position_name(position_id: int) -> str:
     return f"{_chinese_index(position_id)}号位置"
 
 
-def choose_maturity_side(
-    observation: SideObservation,
-    preferred_side: str = "left",
-) -> PickDecision:
-    """Choose a side from A-zone ripe/unripe labels."""
-    if preferred_side not in SIDE_NAMES:
-        raise ValueError("preferred_side must be left or right")
-
-    candidates = {"left": observation.left, "right": observation.right}
-    for side in (preferred_side, _other_side(preferred_side)):
-        if "ripe" in candidates[side]:
-            return PickDecision(True, side, "matched ripe target", "ripe", "matched")
-
-    if not observation.left and not observation.right:
-        return PickDecision(
-            False,
-            None,
-            "no target detected",
-            reason_code="no_detection",
-        )
-    return PickDecision(
-        False,
-        None,
-        "only unripe targets",
-        reason_code="target_unripe",
-    )
-
-
-def choose_side(
-    observation: SideObservation,
-    expected_type: Optional[str] = None,
-    preferred_side: str = "left",
-) -> PickDecision:
-    """Choose at most one side to pick from the latest side-camera output."""
-    if preferred_side not in SIDE_NAMES:
-        raise ValueError("preferred_side must be left or right")
-
-    candidates: Dict[str, List[str]] = {
-        "left": list(observation.left),
-        "right": list(observation.right),
-    }
-    for side in (preferred_side, _other_side(preferred_side)):
-        types = candidates[side]
-        matched = _first_pickable_type(types, expected_type)
-        if matched:
-            return PickDecision(True, side, "matched ripe target", matched, "matched")
-
-    reason_code = _skip_reason(candidates.values(), expected_type)
-    if expected_type:
-        return PickDecision(
-            False,
-            None,
-            f"no {expected_type} detected",
-            reason_code=reason_code,
-        )
-    return PickDecision(
-        False,
-        None,
-        "no ripe target detected",
-        reason_code=reason_code,
-    )
-
-
-def without_tree_fruits(observation: SideObservation) -> SideObservation:
-    """Return A/C candidates with apple and pear removed."""
-    return SideObservation(
-        left=[item for item in observation.left if not is_tree_fruit_type(item)],
-        right=[item for item in observation.right if not is_tree_fruit_type(item)],
-    )
-
-
-def only_tree_fruits(observation: SideObservation) -> SideObservation:
-    """Return B-zone candidates, keeping only apple and pear."""
-    return SideObservation(
-        left=[item for item in observation.left if is_tree_fruit_type(item)],
-        right=[item for item in observation.right if is_tree_fruit_type(item)],
-    )
-
-
 def is_tree_fruit_type(model_type: str) -> bool:
     """Return whether a model class is apple or pear."""
     prefix = model_type.rsplit("_", 1)[0]
@@ -260,39 +162,6 @@ def format_c_announcement(c_plan: Mapping[str, object]) -> str:
         for task in c_plan.get("tasks", [])
     ]
     return "，".join(parts)
-
-
-def _first_pickable_type(
-    types: Iterable[str],
-    expected_type: Optional[str],
-) -> Optional[str]:
-    for item in types:
-        if expected_type:
-            if item == expected_type:
-                return item
-            continue
-        if item.endswith("_ripe"):
-            return item
-    return None
-
-
-def _skip_reason(
-    side_types: Iterable[Iterable[str]],
-    expected_type: Optional[str],
-) -> str:
-    types = [item for group in side_types for item in group]
-    if not types:
-        return "no_detection"
-
-    if expected_type:
-        prefix = expected_type.rsplit("_", 1)[0]
-        if f"{prefix}_unripe" in types:
-            return "target_unripe"
-        return "type_mismatch"
-
-    if any(item.endswith("_unripe") for item in types):
-        return "only_unripe_targets"
-    return "no_ripe_target"
 
 
 def _other_side(side: str) -> str:

@@ -4,14 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional
 
-from fruit_mission.logic import choose_maturity_side
 from fruit_mission.logic import decide_b_tree_targets
 from fruit_mission.logic import expected_ripe_type
 from fruit_mission.logic import format_b_announcement
 from fruit_mission.logic import format_c_announcement
 from fruit_mission.logic import format_position_name
-from fruit_mission.logic import PickDecision
-from fruit_mission.logic import SideObservation
 from fruit_mission.logic import spoken_model_type
 from fruit_qr_planner.planner import build_b_plan
 from fruit_qr_planner.planner import build_c_plan
@@ -34,7 +31,6 @@ def run_mission(ctx) -> None:
             if not run_a_area(ctx) or not _send_arm_retract(
                 ctx,
                 "A区结束机械臂收缩姿态动作失败，任务停止。",
-                continue_on_timeout=True,
             ):
                 return
             if flow == "a":
@@ -85,56 +81,30 @@ def run_mission(ctx) -> None:
 
 
 def run_a_area(ctx) -> bool:
-    """Run A-zone stop-and-pick points with side cameras."""
+    """Run A-zone stop-and-pick points with single camera."""
     if not ctx.report_current_area("A"):
         return False
-    if not ctx.set_perception_mode("SIDES"):
-        return False
+    observation_order = ctx.config.get("a_observation_order", ["left", "right"])
     for waypoint in ctx.route.a_goal_names():
         if not ctx.navigate_named([waypoint]):
             continue
         ctx.stable_stop()
-        observation = ctx.observe_sides(float(ctx.config["side_observation_timeout_sec"]))
-        decisions = _a_pick_decisions(
-            observation,
-            preferred_side=str(ctx.config.get("preferred_side", "left")),
-        )
-        if not decisions:
-            continue
-        for decision in decisions:
-            result = ctx.execute_closed_loop_pick(decision.side)
+        for side in observation_order:
+            result = ctx.execute_closed_loop_pick(side, "ripe")
             if not result.success and not result.safe_to_continue:
                 return False
-        if not ctx.set_perception_mode("SIDES"):
+        if not _send_arm_retract(
+            ctx, f"A区{waypoint}机械臂收缩姿态动作失败，任务停止。"
+        ):
             return False
     return ctx.set_perception_mode("OFF")
-
-
-def _a_pick_decisions(
-    observation: SideObservation,
-    preferred_side: str,
-) -> list[PickDecision]:
-    first = choose_maturity_side(observation, preferred_side)
-    if not first.should_pick or first.side is None:
-        return []
-
-    remaining = SideObservation(
-        left=[] if first.side == "left" else observation.left,
-        right=[] if first.side == "right" else observation.right,
-    )
-    second = choose_maturity_side(remaining, preferred_side)
-    if second.should_pick and second.side is not None:
-        return [first, second]
-    return [first]
 
 
 def _send_arm_retract(
     ctx,
     failure_text: str,
-    *,
-    continue_on_timeout: bool = False,
 ) -> bool:
-    if ctx.send_arm_retract_pose(continue_on_timeout=continue_on_timeout):
+    if ctx.send_arm_retract_pose():
         return True
     ctx.announce(failure_text)
     return False
@@ -308,6 +278,9 @@ def run_b_area(ctx, b_plan: Mapping[str, Any]) -> bool:
         if not observation.get("success"):
             reason_code = str(observation.get("reason_code"))
             reason = _b_observation_failure_text(reason_code)
+            if not observation.get("safe_to_continue", True):
+                ctx.announce(f"B区{goal_name}，{reason}，任务停止。")
+                return False
             ctx.announce(f"B区{goal_name}，{reason}，跳过。")
         else:
             targets = list(observation.get("targets", []))
@@ -323,6 +296,9 @@ def run_b_area(ctx, b_plan: Mapping[str, Any]) -> bool:
                 if not pick_result.get("success"):
                     reason_code = str(pick_result.get("reason_code"))
                     reason = _b_arm_failure_text(reason_code)
+                    if not pick_result.get("safe_to_continue", True):
+                        ctx.announce(f"B区{goal_name}，{reason}，任务停止。")
+                        return False
                     ctx.announce(f"B区{goal_name}，{reason}，执行收臂。")
         if not _send_arm_retract(
             ctx, f"B区{goal_name}机械臂收缩姿态动作超时，任务停止。"
@@ -381,8 +357,8 @@ def _announce_b_tree_decision(
 def _b_observation_failure_text(reason_code: str) -> str:
     messages = {
         "side_pose_timeout": "机械臂转向采摘位置超时",
-        "tree_mode_timeout": "深度相机识别模式切换失败",
-        "d435i_target_timeout": "识别超时",
+        "detect_mode_timeout": "深度相机识别模式切换失败",
+        "camera_target_timeout": "识别超时",
     }
     return messages.get(reason_code, "识别失败")
 
@@ -453,16 +429,16 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
         camera_side = str(navigation["camera_side"])
         ctx.stable_stop()
         task["last_observation"] = {
-            "source": "d435i",
+            "source": "camera",
             "expected_type": expected_type,
         }
         result = ctx.execute_closed_loop_pick(camera_side, expected_type)
         if result.success:
-            task["result"] = "picked"
+            task["result"] = result.reason_code
             observed = spoken_model_type(result.matched_type)
             ctx.announce(
                 f"C区{format_position_name(position_id)}，应该采{target_name}。"
-                f"识别到{observed}，抓取完成。"
+                f"识别到{observed}，机械臂已到目标点。"
             )
         else:
             task["result"] = result.reason_code
@@ -485,6 +461,9 @@ def run_c_area(ctx, c_distribution: Mapping[str, Any]) -> bool:
                     f"C区{format_position_name(position_id)}，应该采{target_name}。"
                     f"识别到{observed}，{_pick_failure_text(result.reason_code)}。"
                 )
+            if not result.safe_to_continue:
+                ctx.save_c_distribution(c_distribution)
+                return False
         if not _send_arm_retract(
             ctx,
             f"C区{format_position_name(position_id)}，机械臂收缩姿态动作超时，任务停止。",
@@ -549,8 +528,8 @@ def _c_skip_text(
 def _pick_failure_text(reason_code: str) -> str:
     messages = {
         "side_pose_timeout": "机械臂转向采摘位置超时",
-        "tree_mode_timeout": "深度相机识别模式切换失败",
-        "d435i_target_timeout": "深度相机没有识别到可抓取目标",
+        "detect_mode_timeout": "深度相机识别模式切换失败",
+        "camera_target_timeout": "深度相机没有识别到可抓取目标",
         "arm_callback_failed": "机械臂执行报错",
         "arm_callback_timeout": "机械臂执行通信超时",
         "arm_endpoints_not_ready": "机械臂通信端点未就绪",

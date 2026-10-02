@@ -6,7 +6,6 @@ import json
 import math
 from pathlib import Path
 from dataclasses import dataclass
-from threading import Event
 import time
 from typing import Any, Dict, Mapping, Optional, Sequence, Union
 
@@ -24,70 +23,34 @@ from rclpy.time import Time
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
-try:
-    from fruit_hardware_interfaces.msg import (
-        ArmTarget,
-        ExecutionCallback,
-        StateMachineCommand,
-    )
-except ImportError:
-    class StateMachineCommand:  # type: ignore[no-redef]
-        AREA_A = 0
-        AREA_B = 1
-        AREA_C = 2
-        AREA_D = 3
-        TASK_GRIPPER = 0
-        TASK_CAMERA_GIMBAL = 1
-        TASK_PICK_DIRECTION = 2
-        TASK_QR_RECOGNITION_POSE = 4
-        TASK_CURRENT_AREA = 5
-        TASK_RETURN_INITIAL_POSE = 6
-        TASK_ARM_RETRACT_POSE = 7
-        GRIPPER_GRIP = 0
-        GRIPPER_OPEN = 1
-        GIMBAL_LOOK_DOWN = 0
-        GIMBAL_LOOK_UP = 1
-        PICK_DIRECTION_LEFT = 0
-        PICK_DIRECTION_RIGHT = 1
-        QR_RECOGNITION_POSE = 0
-        RETURN_INITIAL_POSE = 0
-        ARM_RETRACT_POSE = 0
-    ArmTarget = None  # type: ignore[assignment,misc]
-    ExecutionCallback = None  # type: ignore[assignment,misc]
-
 from fruit_perception.msg import FruitDecision
 
+from fruit_mission.camera_target_planner_client import CameraTargetPlannerClient
+from fruit_mission.camera_target_planner_client import DEFAULT_EXTRINSIC_CONFIG
 from fruit_mission.logic import PickExecutionResult
-from fruit_mission.logic import SideObservation
 from fruit_mission.logic import merge_seen_types
 from fruit_mission.tts import PiperSpeaker
 from fruit_mission.waypoint_route import MissionWaypointRoute
 from fruit_mission.waypoint_route import WaypointPose
 
 
-AREA_STATUS = {
-    "A": StateMachineCommand.AREA_A,
-    "B": StateMachineCommand.AREA_B,
-    "C": StateMachineCommand.AREA_C,
-    "D": StateMachineCommand.AREA_D,
-}
 NAV_GOAL_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
-class _D435iTarget:
+class _CameraTarget:
     point: PointStamped
 
 
 @dataclass(frozen=True)
-class _D435iSelection:
+class _CameraSelection:
     reason_code: str
-    target: Optional[_D435iTarget] = None
+    target: Optional[_CameraTarget] = None
     matched_type: Optional[str] = None
 
 
 @dataclass(frozen=True)
-class _CallbackWaitResult:
+class _ArmMotionResult:
     completed: bool
     reason_code: str
     safe_to_continue: bool
@@ -122,18 +85,14 @@ class MissionContext:
         self._current_area: Optional[str] = None
         self._latest_active_mode: Optional[str] = None
         self._active_mode_generation = 0
-        self._latest_left: Optional[list[str]] = None
-        self._latest_right: Optional[list[str]] = None
-        self._latest_d435i_types: Optional[list[str]] = None
-        self._latest_d435i_types_stamp_ns = 0
-        self._latest_d435i_target: Optional[PointStamped] = None
+        self._latest_camera_types: Optional[list[str]] = None
+        self._latest_camera_types_stamp_ns = 0
+        self._latest_camera_target: Optional[PointStamped] = None
         self._latest_b_targets: Optional[list[Any]] = None
+        self._latest_b_targets_header = None
         self._latest_b_targets_stamp_ns = 0
         self._latest_b_plan: Optional[Dict[str, Any]] = None
         self._latest_c_plan: Optional[Dict[str, Any]] = None
-        self._pending_callback_id: Optional[int] = None
-        self._matched_callback_status: Optional[int] = None
-        self._callback_event = Event()
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(
             self._tf_buffer,
@@ -156,15 +115,8 @@ class MissionContext:
             config["current_area_topic"],
             _latched_qos(),
         )
-        self._command_publisher = node.create_publisher(
-            StateMachineCommand,
-            config["state_command_topic"],
-            QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE),
-        )
-        self._arm_target_publisher = node.create_publisher(
-            ArmTarget,
-            config["arm_target_topic"],
-            QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE),
+        self._camera_planner = CameraTargetPlannerClient(
+            node, config.get("camera_extrinsic_config", DEFAULT_EXTRINSIC_CONFIG)
         )
         self._follow_waypoints_client = ActionClient(
             node,
@@ -194,12 +146,6 @@ class MissionContext:
             config["c_plan_topic"],
             self._on_c_plan,
             _latched_qos(),
-        )
-        node.create_subscription(
-            ExecutionCallback,
-            config["callback_topic"],
-            self._on_callback,
-            QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE),
         )
 
     def go_to(self, waypoint_names: Union[str, Sequence[str]]) -> bool:
@@ -551,24 +497,6 @@ class MissionContext:
             and self._latest_active_mode == mode
         )
 
-    def observe_sides(self, timeout_sec: float) -> SideObservation:
-        """Collect recent side camera detections for a short window."""
-        if not self.set_perception_mode("SIDES"):
-            self.node.get_logger().error(
-                "Could not reset side target selection before observation"
-            )
-            return SideObservation(left=[], right=[])
-        self._latest_left = None
-        self._latest_right = None
-        left_seen: list[str] = []
-        right_seen: list[str] = []
-        deadline = time.monotonic() + timeout_sec
-        while rclpy.ok() and time.monotonic() < deadline:
-            rclpy.spin_once(self.node, timeout_sec=0.1)
-            left_seen = merge_seen_types(left_seen, self._latest_left or [])
-            right_seen = merge_seen_types(right_seen, self._latest_right or [])
-        return SideObservation(left=left_seen, right=right_seen)
-
     def wait_b_plan(self) -> Optional[Dict[str, Any]]:
         """Wait for the latched B QR plan."""
         self._wait_until(
@@ -586,11 +514,21 @@ class MissionContext:
         return self._latest_c_plan
 
     def send_pick_direction(self, side: str) -> bool:
-        """Send one A/B/C pick-direction command and wait for completion."""
+        """Execute the named observation preset and wait for completion."""
         return self._send_pick_direction_and_wait(side).completed
 
-    def execute_a_open_loop_pick(self, side: str) -> PickExecutionResult:
-        """Run the A-zone open-loop pick selected by the side cameras."""
+    def _send_pick_direction_and_wait(self, side: str) -> _ArmMotionResult:
+        if side not in ("left", "right"):
+            raise ValueError("side must be left or right")
+        return self._execute_arm_preset(f"observation_{side}")
+
+    def execute_closed_loop_pick(
+        self,
+        side: str,
+        expected_type: Optional[str] = None,
+    ) -> PickExecutionResult:
+        """Observe at a stationary pose, convert the target and call the planner."""
+        self.set_expected_fruit_type(expected_type)
         direction_result = self._send_pick_direction_and_wait(side)
         if not direction_result.completed:
             return PickExecutionResult(
@@ -598,45 +536,14 @@ class MissionContext:
                 direction_result.reason_code,
                 safe_to_continue=direction_result.safe_to_continue,
             )
-        return PickExecutionResult(True, "picked")
-
-    def _send_pick_direction_and_wait(self, side: str) -> _CallbackWaitResult:
-        if side not in ("left", "right"):
-            raise ValueError("side must be left or right")
-        status = (
-            StateMachineCommand.PICK_DIRECTION_LEFT
-            if side == "left"
-            else StateMachineCommand.PICK_DIRECTION_RIGHT
-        )
-        return self._send_command_and_wait_result(
-            StateMachineCommand.TASK_PICK_DIRECTION,
-            status,
-            ExecutionCallback.CALLBACK_PICK_DIRECTION,
-            recover_on_error=self._current_area not in {"B", "C"},
-        )
-
-    def execute_closed_loop_pick(
-        self,
-        side: str,
-        expected_type: Optional[str] = None,
-    ) -> PickExecutionResult:
-        """Use D435i for the expected type, then send direction and ArmTarget."""
-        self.set_expected_fruit_type(expected_type)
-        direction_result = self._send_pick_direction_and_wait(side)
-        if not direction_result.completed:
-            return PickExecutionResult(
-                False,
-                "side_pose_timeout",
-                safe_to_continue=direction_result.safe_to_continue,
-            )
         fresh_after_ns = self.node.get_clock().now().nanoseconds
-        if not self.set_perception_mode("TREE"):
+        if not self.set_perception_mode("DETECT"):
             return PickExecutionResult(
                 False,
-                "tree_mode_timeout",
+                "detect_mode_timeout",
                 safe_to_continue=self._recover_after_perception_failure(),
             )
-        selection = self._wait_d435i_target(fresh_after_ns, expected_type)
+        selection = self._wait_camera_target(fresh_after_ns, expected_type)
         if selection.target is None:
             return PickExecutionResult(
                 False,
@@ -652,7 +559,7 @@ class MissionContext:
                 selection.matched_type,
                 arm_result.safe_to_continue,
             )
-        return PickExecutionResult(True, "picked", selection.matched_type)
+        return PickExecutionResult(True, "target_reached", selection.matched_type)
 
     def observe_b_tree(
         self,
@@ -663,14 +570,14 @@ class MissionContext:
         if not direction_result.completed:
             return {
                 "success": False,
-                "reason_code": "side_pose_timeout",
+                "reason_code": direction_result.reason_code,
                 "safe_to_continue": direction_result.safe_to_continue,
                 "targets": [],
             }
-        if not self.set_perception_mode("TREE"):
+        if not self.set_perception_mode("DETECT"):
             return {
                 "success": False,
-                "reason_code": "tree_mode_timeout",
+                "reason_code": "detect_mode_timeout",
                 "targets": [],
             }
         targets = self._wait_b_targets(
@@ -679,7 +586,7 @@ class MissionContext:
         if targets is None:
             return {
                 "success": False,
-                "reason_code": "d435i_target_timeout",
+                "reason_code": "camera_target_timeout",
                 "targets": [],
             }
         return {"success": True, "reason_code": "observed", "targets": targets}
@@ -694,48 +601,25 @@ class MissionContext:
                 "safe_to_continue": arm_result.safe_to_continue,
                 "picked": 0,
             }
-        return {"success": True, "reason_code": "picked", "picked": 1}
+        return {"success": True, "reason_code": "target_reached", "picked": 0}
 
     def set_expected_fruit_type(self, expected_type: Optional[str]) -> None:
-        """Set the D435i target class; an empty value disables filtering."""
+        """Set the Camera target class; an empty value disables filtering."""
         message = String()
         message.data = str(expected_type or "")
         self._expected_fruit_type_publisher.publish(message)
 
     def send_qr_pose(self) -> bool:
-        """Ask the lower controller to enter QR recognition pose."""
-        return self._send_command_and_wait(
-            StateMachineCommand.TASK_QR_RECOGNITION_POSE,
-            StateMachineCommand.QR_RECOGNITION_POSE,
-            ExecutionCallback.CALLBACK_QR_RECOGNITION_POSE,
-        )
+        """Execute the configured QR observation preset."""
+        return self._execute_arm_preset("qr").completed
 
-    def send_arm_retract_pose(self, continue_on_timeout: bool = False) -> bool:
-        """Ask the lower controller to retract the arm.
-
-        The A-zone to B-zone transition may continue when the lower
-        controller sends no terminal callback, but explicit action failures
-        and unavailable communication endpoints remain fatal.
-        """
-        result = self._send_command_and_wait_result(
-            StateMachineCommand.TASK_ARM_RETRACT_POSE,
-            StateMachineCommand.ARM_RETRACT_POSE,
-            ExecutionCallback.CALLBACK_ARM_RETRACT_POSE,
-            recover_on_error=False,
-        )
-        if continue_on_timeout and result.reason_code == "arm_callback_timeout":
-            self.node.get_logger().warning("A区结束收臂通信超时，继续下一个任务")
-            return True
-        return result.completed
+    def send_arm_retract_pose(self) -> bool:
+        """Require completed retract; missing/failed/timed-out presets are fatal."""
+        return self._execute_arm_preset("retract").completed
 
     def send_return_initial_pose(self) -> bool:
-        """Ask the lower controller to return to the initial pose."""
-        return self._send_command_and_wait(
-            StateMachineCommand.TASK_RETURN_INITIAL_POSE,
-            StateMachineCommand.RETURN_INITIAL_POSE,
-            ExecutionCallback.CALLBACK_RETURN_INITIAL_POSE,
-            recover_on_error=False,
-        )
+        """Execute the configured initial-pose recovery preset."""
+        return self._execute_arm_preset("home").completed
 
     def _recover_after_perception_failure(self) -> bool:
         """Return A-zone hardware to a safe pose before navigation resumes."""
@@ -749,18 +633,14 @@ class MissionContext:
         return recovered
 
     def report_current_area(self, area: str) -> bool:
-        """Report current competition area to the lower controller."""
+        """Publish mission area for perception/QR; no lower-controller policy."""
+        if area not in {"A", "B", "C"}:
+            raise ValueError("area must be A, B or C")
         self._current_area = area
-        reported = self._send_command_and_wait(
-            StateMachineCommand.TASK_CURRENT_AREA,
-            AREA_STATUS[area],
-            ExecutionCallback.CALLBACK_CURRENT_AREA,
-        )
-        if reported:
-            message = String()
-            message.data = area
-            self._current_area_publisher.publish(message)
-        return reported
+        message = String()
+        message.data = area
+        self._current_area_publisher.publish(message)
+        return True
 
     def announce(self, text: str, length_scale: Optional[float] = None) -> bool:
         """Speak text through the configured TTS backend."""
@@ -829,204 +709,40 @@ class MissionContext:
             encoded + "\n", encoding="utf-8"
         )
 
-    def _send_command_and_wait(
-        self,
-        task_id: int,
-        task_status: int,
-        callback_id: int,
-        recover_on_error: bool = True,
-    ) -> bool:
-        return self._send_command_and_wait_result(
-            task_id,
-            task_status,
-            callback_id,
-            recover_on_error,
-        ).completed
+    def _execute_arm_preset(self, action: str) -> _ArmMotionResult:
+        name = self.config["arm_presets"][action]
+        completed, reason = self._camera_planner.execute_preset(name, self._wait_until)
+        # Do not run a second motion as recovery after an unknown hardware result.
+        return _ArmMotionResult(completed, reason, completed)
 
-    def _send_command_and_wait_result(
-        self,
-        task_id: int,
-        task_status: int,
-        callback_id: int,
-        recover_on_error: bool = True,
-    ) -> _CallbackWaitResult:
-        if not self._wait_for_hardware_bridge_endpoints(
-            str(self.config["state_command_topic"])
-        ):
-            return _CallbackWaitResult(False, "endpoints_not_ready", False)
-        self._begin_callback_wait(callback_id)
-        command = StateMachineCommand()
-        command.task_id = task_id
-        command.task_status = task_status
-        self.node.get_logger().info(
-            f"发送下位机状态命令 task_id={task_id}, task_status={task_status}, "
-            f"等待 callback_id={callback_id}"
-        )
-        self._command_publisher.publish(command)
-        return self._finish_callback_wait(
-            callback_id,
-            f"callback_id={callback_id}",
-            recover_on_error,
-        )
+    def _send_arm_target_and_wait(self, point: PointStamped) -> _ArmMotionResult:
+        completed, reason = self._camera_planner.move_to_target(point, self._wait_until)
+        # Failure/timeout does not establish that the hardware is safe to navigate.
+        return _ArmMotionResult(completed, reason, completed)
 
-    def _send_arm_target_and_wait(self, point: PointStamped) -> _CallbackWaitResult:
-        callback_id = ExecutionCallback.CALLBACK_ARM_TARGET
-        if not self._wait_for_hardware_bridge_endpoints(
-            str(self.config["arm_target_topic"])
-        ):
-            return _CallbackWaitResult(False, "arm_endpoints_not_ready", False)
-        self._begin_callback_wait(callback_id)
-        target = ArmTarget()
-        target.target_x = float(point.point.x)
-        target.target_y = float(point.point.y)
-        target.target_z = float(point.point.z)
-        target.z_type = ArmTarget.Z_GROUND
-        self.node.get_logger().info(
-            "发送下位机抓取目标 "
-            f"x={target.target_x:.3f}, y={target.target_y:.3f}, "
-            f"z={target.target_z:.3f}, z_type={target.z_type}, "
-            f"等待 callback_id={callback_id}"
-        )
-        self._arm_target_publisher.publish(target)
-        return self._finish_callback_wait(
-            callback_id,
-            "ArmTarget callback",
-            self._current_area not in {"B", "C"},
-        )
-
-    def _wait_for_hardware_bridge_endpoints(self, outbound_topic: str) -> bool:
-        timeout_sec = float(self.config["hardware_endpoint_timeout_sec"])
-        callback_topic = str(self.config["callback_topic"])
-        deadline = time.monotonic() + timeout_sec
-        while rclpy.ok() and time.monotonic() < deadline:
-            outbound_subscribers = self.node.count_subscribers(outbound_topic)
-            callback_publishers = self.node.count_publishers(callback_topic)
-            if outbound_subscribers > 0 and callback_publishers > 0:
-                return True
-            rclpy.spin_once(self.node, timeout_sec=0.1)
-
-        self.node.get_logger().error(
-            "下位机串口桥 ROS 端点未就绪："
-            f"{outbound_topic} subscribers={self.node.count_subscribers(outbound_topic)}, "
-            f"{callback_topic} publishers={self.node.count_publishers(callback_topic)}"
-        )
-        return False
-
-    def _begin_callback_wait(self, callback_id: int) -> None:
-        self._pending_callback_id = callback_id
-        self._matched_callback_status = None
-        self._callback_event.clear()
-
-    def _finish_callback_wait(
-        self,
-        callback_id: int,
-        timeout_label: str,
-        recover_on_error: bool,
-    ) -> _CallbackWaitResult:
-        success = self._wait_until(
-            self._callback_event.is_set,
-            float(self.config["callback_timeout_sec"]),
-        )
-        self._pending_callback_id = None
-        if not success:
-            self.node.get_logger().error(
-                f"通信超时：{timeout_label} 在 "
-                f"{float(self.config['callback_timeout_sec']):.1f}s 内没有终态回调"
-            )
-            recovered = (
-                self._recover_safe_pose_after_error(callback_id)
-                if recover_on_error
-                else False
-            )
-            return _CallbackWaitResult(False, "arm_callback_timeout", recovered)
-
-        status = self._matched_callback_status
-        self._matched_callback_status = None
-        if status == ExecutionCallback.STATUS_COMPLETED:
-            return _CallbackWaitResult(True, "completed", True)
-        if status == ExecutionCallback.STATUS_FAILED:
-            self.node.get_logger().error(
-                f"下位机执行失败：{timeout_label} 返回 callback_status=2"
-            )
-            recovered = (
-                self._recover_safe_pose_after_error(callback_id)
-                if recover_on_error
-                else False
-            )
-            return _CallbackWaitResult(False, "arm_callback_failed", recovered)
-
-        self.node.get_logger().warning(
-            f"Ignoring unexpected callback_status={status} for {timeout_label}"
-        )
-        return _CallbackWaitResult(False, "unexpected_callback_status", False)
-
-    def _recover_safe_pose_after_error(self, failed_callback_id: int) -> bool:
-        use_retract_pose = self._current_area in {"B", "C"}
-        task_id = (
-            StateMachineCommand.TASK_ARM_RETRACT_POSE
-            if use_retract_pose
-            else StateMachineCommand.TASK_RETURN_INITIAL_POSE
-        )
-        task_status = (
-            StateMachineCommand.ARM_RETRACT_POSE
-            if use_retract_pose
-            else StateMachineCommand.RETURN_INITIAL_POSE
-        )
-        callback_id = (
-            ExecutionCallback.CALLBACK_ARM_RETRACT_POSE
-            if use_retract_pose
-            else ExecutionCallback.CALLBACK_RETURN_INITIAL_POSE
-        )
-        self.node.get_logger().info(
-            f"callback_id={failed_callback_id} 异常，发送安全姿态 task_id={task_id}"
-        )
-        recovered = self._send_command_and_wait(
-            task_id,
-            task_status,
-            callback_id,
-            recover_on_error=False,
-        )
-        if not recovered:
-            self.node.get_logger().error(
-                f"安全姿态 task_id={task_id} 未完成，不能继续后续任务"
-            )
-        return recovered
-
-    def _wait_d435i_target(
+    def _wait_camera_target(
         self,
         fresh_after_ns: int,
         expected_type: Optional[str],
-    ) -> _D435iSelection:
-        self._latest_d435i_target = None
-        self._latest_d435i_types = None
-        self._latest_d435i_types_stamp_ns = 0
+    ) -> _CameraSelection:
+        self._latest_camera_target = None
+        self._latest_camera_types = None
+        self._latest_camera_types_stamp_ns = 0
         seen_types: list[str] = []
         latest_stamp_ns = fresh_after_ns
-        deadline = time.monotonic() + float(self.config["d435i_detection_timeout_sec"])
+        deadline = time.monotonic() + float(self.config["camera_detection_timeout_sec"])
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self.node, timeout_sec=0.1)
-            if self._latest_d435i_types_stamp_ns > fresh_after_ns:
-                latest_types = self._latest_d435i_types or []
+            if self._latest_camera_types_stamp_ns > fresh_after_ns:
+                latest_types = self._latest_camera_types or []
                 seen_types = merge_seen_types(seen_types, latest_types)
-                if expected_type and latest_types and expected_type not in latest_types:
-                    prefix = expected_type.rsplit("_", 1)[0]
-                    unripe_type = f"{prefix}_unripe"
-                    if unripe_type in latest_types:
-                        return _D435iSelection(
-                            "target_unripe",
-                            matched_type=unripe_type,
-                        )
-                    return _D435iSelection(
-                        "type_mismatch",
-                        matched_type=latest_types[0],
-                    )
-            if self._latest_d435i_target is None:
+            if self._latest_camera_target is None:
                 continue
-            target = self._latest_d435i_target
+            target = self._latest_camera_target
             stamp = target.header.stamp
             stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
             if stamp_ns <= latest_stamp_ns:
-                self._latest_d435i_target = None
+                self._latest_camera_target = None
                 continue
             latest_stamp_ns = stamp_ns
             point = (
@@ -1037,14 +753,14 @@ class MissionContext:
             if not all(math.isfinite(value) for value in point):
                 continue
             self.node.get_logger().info(
-                "D435i target received from the 35-frame perception window: "
+                "Camera target received from perception window: "
                 f"x={point[0]}, y={point[1]}, z={point[2]}"
             )
             if expected_type is None or expected_type in seen_types:
-                self._latest_d435i_target = None
-                return _D435iSelection(
+                self._latest_camera_target = None
+                return _CameraSelection(
                     "matched",
-                    _D435iTarget(target),
+                    _CameraTarget(target),
                     expected_type,
                 )
 
@@ -1055,22 +771,26 @@ class MissionContext:
         if not seen_types:
             reason_code = "no_detection"
         elif expected_type and not expected_seen:
-            prefix = expected_type.rsplit("_", 1)[0]
-            if f"{prefix}_unripe" in seen_types:
+            if expected_type == "ripe":
+                unripe_label = "unripe"
+            else:
+                unripe_label = f"{expected_type.rsplit('_', 1)[0]}_unripe"
+            if unripe_label in seen_types:
                 reason_code = "target_unripe"
             else:
                 reason_code = "type_mismatch"
         else:
-            reason_code = "d435i_target_timeout"
-        return _D435iSelection(reason_code, matched_type=matched_type)
+            reason_code = "camera_target_timeout"
+        return _CameraSelection(reason_code, matched_type=matched_type)
 
     def _wait_b_targets(
         self,
         fresh_after_ns: int,
     ) -> Optional[list[BTreeTarget]]:
         self._latest_b_targets = None
+        self._latest_b_targets_header = None
         self._latest_b_targets_stamp_ns = 0
-        deadline = time.monotonic() + float(self.config["d435i_detection_timeout_sec"])
+        deadline = time.monotonic() + float(self.config["camera_detection_timeout_sec"])
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self.node, timeout_sec=0.1)
             if self._latest_b_targets is None:
@@ -1082,7 +802,7 @@ class MissionContext:
                 if not bool(item.has_point):
                     continue
                 point = PointStamped()
-                point.header.stamp = self.node.get_clock().now().to_msg()
+                point.header = self._latest_b_targets_header
                 point.point.x = float(item.point.x)
                 point.point.y = float(item.point.y)
                 point.point.z = float(item.point.z)
@@ -1158,46 +878,26 @@ class MissionContext:
         self._active_mode_generation += 1
 
     def _on_decision(self, message: FruitDecision) -> None:
-        if message.source == FruitDecision.SOURCE_LEFT:
-            self._latest_left = list(message.types)
-            return
-        if message.source != FruitDecision.SOURCE_D435I:
-            if message.source == FruitDecision.SOURCE_RIGHT:
-                self._latest_right = list(message.types)
-            return
-
-        self._latest_d435i_types = list(message.types)
+        self._latest_camera_types = list(message.types)
         stamp = message.header.stamp
-        self._latest_d435i_types_stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
+        self._latest_camera_types_stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
         if message.targets_ready:
             self._latest_b_targets = list(message.targets)
-            self._latest_b_targets_stamp_ns = self._latest_d435i_types_stamp_ns
+            self._latest_b_targets_header = message.header
+            self._latest_b_targets_stamp_ns = self._latest_camera_types_stamp_ns
         if message.has_target:
             target = PointStamped()
             target.header = message.header
             target.point.x = message.target_point.x
             target.point.y = message.target_point.y
             target.point.z = message.target_point.z
-            self._latest_d435i_target = target
+            self._latest_camera_target = target
 
     def _on_b_plan(self, message: String) -> None:
         self._latest_b_plan = json.loads(message.data)
 
     def _on_c_plan(self, message: String) -> None:
         self._latest_c_plan = json.loads(message.data)
-
-    def _on_callback(self, message: ExecutionCallback) -> None:
-        if message.callback_id != self._pending_callback_id:
-            return
-        if message.callback_status == ExecutionCallback.STATUS_EXECUTING:
-            return
-        if message.callback_status not in (
-            ExecutionCallback.STATUS_COMPLETED,
-            ExecutionCallback.STATUS_FAILED,
-        ):
-            return
-        self._matched_callback_status = message.callback_status
-        self._callback_event.set()
 
 
 def _latched_qos() -> QoSProfile:

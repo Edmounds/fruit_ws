@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -21,6 +22,8 @@ const std::vector<std::string> kTreeFruitTypes = {
 const std::vector<std::string> kSideFruitTypes = {
   "chili_ripe", "chili_unripe", "pumpkin_ripe", "pumpkin_unripe",
   "onion_ripe", "onion_unripe", "tomato_ripe", "tomato_unripe"};
+const std::vector<std::string> kFruitSpecies = {"apple", "pear"};
+const std::vector<std::string> kVegetableSpecies = {"bad", "onion", "pepper", "pumpkin", "tomato"};
 
 const std::vector<std::string> & labels_for_set(DetectionLabelSet label_set)
 {
@@ -31,6 +34,10 @@ const std::vector<std::string> & labels_for_set(DetectionLabelSet label_set)
       return kTreeFruitTypes;
     case DetectionLabelSet::kSideFruit:
       return kSideFruitTypes;
+    case DetectionLabelSet::kFruitSpecies:
+      return kFruitSpecies;
+    case DetectionLabelSet::kVegetableSpecies:
+      return kVegetableSpecies;
   }
   throw std::invalid_argument("Unknown detection label set");
 }
@@ -131,6 +138,14 @@ std::vector<Detection> parse_raw_yolo_detections(
 
     const float x1 = x - width / 2.0F;
     const float y1 = y - height / 2.0F;
+    // Bound before converting to int; malformed tensors must not cause overflow.
+    const double limit = std::numeric_limits<int>::max() / 4.0;
+    if (!std::isfinite(x1) || !std::isfinite(y1) || std::abs(x1) > limit ||
+      std::abs(y1) > limit || width > limit || height > limit || best_score > 1.0F)
+    {
+      continue;
+    }
+
     boxes.emplace_back(
       cv::Rect(
         static_cast<int>(std::round(x1)),
@@ -142,7 +157,23 @@ std::vector<Detection> parse_raw_yolo_detections(
   }
 
   std::vector<int> kept_indices;
-  cv::dnn::NMSBoxes(boxes, scores, confidence_threshold, nms_iou_threshold, kept_indices);
+  for (std::size_t class_id = 0; class_id < labels.size(); ++class_id) {
+    std::vector<cv::Rect> class_boxes;
+    std::vector<float> class_scores;
+    std::vector<int> indices;
+    for (std::size_t i = 0; i < boxes.size(); ++i) {
+      if (class_ids[i] == class_id) {
+        class_boxes.push_back(boxes[i]);
+        class_scores.push_back(scores[i]);
+        indices.push_back(static_cast<int>(i));
+      }
+    }
+    std::vector<int> kept;
+    cv::dnn::NMSBoxes(class_boxes, class_scores, confidence_threshold, nms_iou_threshold, kept);
+    for (const int index : kept) {
+      kept_indices.push_back(indices.at(static_cast<std::size_t>(index)));
+    }
+  }
 
   std::vector<Detection> detections;
   detections.reserve(kept_indices.size());
@@ -176,6 +207,10 @@ const char * detection_label_set_name(DetectionLabelSet label_set)
       return "tree-fruit";
     case DetectionLabelSet::kSideFruit:
       return "side-fruit";
+    case DetectionLabelSet::kFruitSpecies:
+      return "fruit-species";
+    case DetectionLabelSet::kVegetableSpecies:
+      return "vegetable-species";
   }
   return "unknown";
 }
@@ -193,6 +228,9 @@ std::vector<Detection> parse_detections(
   float nms_iou_threshold)
 {
   validate_thresholds(confidence_threshold, nms_iou_threshold);
+  if (output == nullptr) {
+    throw std::invalid_argument("Detection output must not be null");
+  }
   const auto & labels = labels_for_set(label_set);
 
   std::vector<Detection> detections;

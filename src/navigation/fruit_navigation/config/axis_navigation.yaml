@@ -2,7 +2,6 @@ axis_waypoint_action_server:
   ros__parameters:
     map_frame: "odom"
     base_frame: "base_link"
-    require_gicp_localization: false
 
     cmd_vel_topic: "/cmd_vel_nav"
     control_frequency: 20.0
@@ -27,4 +26,3 @@ axis_waypoint_action_server:
     progress_min_delta: 0.01
     waypoint_retry_attempts: 1
     waypoint_pass_tolerance: 0.08
-    diagnostics_topic: "/diagnostics"

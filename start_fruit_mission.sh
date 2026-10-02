@@ -7,15 +7,14 @@ WORKSPACE=/home/rc4/fruit_ws
 NAV_LAUNCH="$WORKSPACE/src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.py"
 PERCEPTION_LAUNCH="$WORKSPACE/src/fruit_perception/launch/fruit_perception.launch.py"
 MISSION_LAUNCH="$WORKSPACE/src/fruit_mission/launch/fruit_mission.launch.py"
+ARM_LAUNCH="$WORKSPACE/src/fruit_arm_planner/launch/fruit_arm_planner.launch.py"
 RECORD_SCRIPT="$WORKSPACE/record_rosbag.sh"
 MONITOR_SCRIPT="$WORKSPACE/scripts/robot_debug_monitor.sh"
 
-PARAMS="$WORKSPACE/src/navigation/fruit_nav_bringup/config/reality/pointlio_params.yaml"
-AXIS_PARAMS="$WORKSPACE/src/navigation/fruit_navigation/config/axis_navigation.yaml"
 MISSION_CONFIG="$WORKSPACE/src/fruit_mission/config/fruit_mission.yaml"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
 WAYPOINT_FILE="$WORKSPACE/src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml"
-MAP_FRAME="odom"
+ODOM_FRAME="odom"
 
 RUN_ROOT="$WORKSPACE/tmp/fruit_mission/runs"
 RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
@@ -29,13 +28,13 @@ usage() {
   cat <<'EOF'
 Usage: ./start_fruit_mission.sh [--reuse-navigation] [--flow full|ac|a|b|c] [--debug]
 
-Start the complete perception, odometry navigation, and mission stack in the
+Start the complete perception, arm planner, odometry navigation, and mission stack in the
 startup-relative odom frame.
 Use --reuse-navigation after start_navigation.sh to keep its navigation
-and serial bridge running while starting perception and mission.
+and serial bridge running while starting perception, arm planner, and mission.
 Use --debug to record ROS diagnostics, LiDAR, point clouds, and the selected
 raw/annotated camera topics under rosbags/. Duplicate high-bandwidth image
-transports and D435i unaligned raw depth are excluded. Recording starts after
+transports and Camera unaligned raw depth are excluded. Recording starts after
 the navigation and perception stack is ready, immediately before the mission.
 EOF
 }
@@ -251,6 +250,21 @@ wait_for_action() {
   die "timeout waiting for $label action=$action_name"
 }
 
+wait_for_arm_planner() {
+  local timeout_sec=$1
+  local status
+
+  log "WAIT arm planner motion/preset/STOP services timeout=${timeout_sec}s"
+  if run_readiness_client planner --timeout "$timeout_sec"; then
+    log "READY arm planner motion/preset/STOP services"
+    return 0
+  else
+    status=$?
+  fi
+  ((status != 2)) || die "arm planner process exited before readiness"
+  die "timeout waiting for arm planner services"
+}
+
 wait_for_tf() {
   local label=$1
   local parent_frame=$2
@@ -444,8 +458,7 @@ required_files=(
   "$NAV_LAUNCH" \
   "$PERCEPTION_LAUNCH" \
   "$MISSION_LAUNCH" \
-  "$PARAMS" \
-  "$AXIS_PARAMS" \
+  "$ARM_LAUNCH" \
   "$MONITOR_SCRIPT" \
   "$MISSION_CONFIG" \
   "$SCRIPT_CLIENT_CONFIG"
@@ -498,7 +511,7 @@ for required_executable in "$PIPER_EXECUTABLE" "$APLAY_EXECUTABLE"; do
   [[ -x "$required_executable" ]] || die "required executable is unavailable: $required_executable"
 done
 
-for required_device in /dev/left_cam /dev/right_cam /dev/stm32; do
+for required_device in /dev/stm32; do
   check_device "$required_device"
 done
 
@@ -509,7 +522,7 @@ log "RUN commit: $(git -C "$WORKSPACE" rev-parse --short HEAD)"
 if [[ "$REUSE_NAVIGATION" == true ]]; then
   log "RUN mode: reuse existing navigation and serial bridge"
 else
-  log "RUN mode: pure odometry; Point-LIO navigation owns odom and no GICP/map localization is started"
+  log "RUN navigation: Point-LIO in odom"
 fi
 if ((DEBUG_RECORD_ENABLED)); then
   log "RUN debug rosbag: enabled with visual-topic exclusions; output is under $WORKSPACE/rosbags"
@@ -517,7 +530,7 @@ fi
 
 if ! python3 -c \
   'from pathlib import Path; import sys; from fruit_mission.waypoint_route import MissionWaypointRoute; MissionWaypointRoute.from_file(Path(sys.argv[1]), sys.argv[2], sys.argv[3])' \
-  "$WAYPOINT_FILE" "$MISSION_FLOW" "$MAP_FRAME" >> "$ORCHESTRATOR_LOG" 2>&1; then
+  "$WAYPOINT_FILE" "$MISSION_FLOW" "$ODOM_FRAME" >> "$ORCHESTRATOR_LOG" 2>&1; then
   die "mission waypoint validation failed; see $ORCHESTRATOR_LOG"
 fi
 log "READY mission waypoint schema and required A/C points"
@@ -525,39 +538,32 @@ log "READY mission waypoint schema and required A/C points"
 if [[ "$REUSE_NAVIGATION" == true ]]; then
   check_no_existing_nodes \
     /fruit_perception_container \
-    /left_camera \
-    /right_camera \
-    /camera/camera \
+    /camera \
     /fruit_perception_node \
     /camera_mode_manager \
     /fruit_qr_planner \
+    /arm_planner_node \
     /fruit_mission
 else
   check_no_existing_nodes \
     /livox_ros_driver2 \
     /laserMapping \
     /loam_interface \
-    /sensor_scan_generation \
     /serial_controller \
     /axis_waypoint_action_server \
     /twist_mux \
     /fruit_perception_container \
-    /left_camera \
-    /right_camera \
-    /camera/camera \
+    /camera \
     /fruit_perception_node \
     /camera_mode_manager \
     /fruit_qr_planner \
+    /arm_planner_node \
     /fruit_mission
 fi
 
 if [[ "$REUSE_NAVIGATION" != true ]]; then
   start_process "navigation" \
-    ros2 launch "$NAV_LAUNCH" \
-      "params_file:=$PARAMS" \
-      "axis_params_file:=$AXIS_PARAMS" \
-      "use_teleop:=false" \
-      "use_rviz:=false"
+    ros2 launch "$NAV_LAUNCH"
 
   start_debug_process "robot_debug" \
     "$MONITOR_SCRIPT" fruit-mission
@@ -572,8 +578,7 @@ fi
 wait_for_nodes "odometry navigation readiness" 60 \
   /axis_waypoint_action_server \
   /laserMapping \
-  /loam_interface \
-  /sensor_scan_generation
+  /loam_interface
 wait_for_action "waypoint navigation" "/follow_waypoints" 60
 wait_for_odometry "Point-LIO odometry" /aft_mapped_to_init 60
 wait_for_tf "stable odometry origin" odom base_link 5
@@ -591,15 +596,31 @@ wait_for_nodes "perception readiness" 120 \
   /camera_mode_manager \
   /fruit_qr_planner
 wait_for_serial_bridge_running 30
+start_process "arm_planner" \
+  ros2 launch "$ARM_LAUNCH" "use_sim_time:=false"
+wait_for_nodes "arm planner readiness" 30 /arm_planner_node
+wait_for_arm_planner 30
 wait_for_topic_endpoint_count \
-  "state command bridge subscription" \
-  "/fruit_hardware_bridge/state_machine/command" \
+  "trajectory header bridge subscription" \
+  "/fruit_hardware_bridge/arm/trajectory_header" \
   subscribers \
   1 \
   30
 wait_for_topic_endpoint_count \
-  "execution callback bridge publisher" \
-  "/fruit_hardware_bridge/execution/callback" \
+  "trajectory point bridge subscription" \
+  "/fruit_hardware_bridge/arm/trajectory_point" \
+  subscribers \
+  1 \
+  30
+wait_for_topic_endpoint_count \
+  "arm mode bridge subscription" \
+  "/fruit_hardware_bridge/arm/control_mode" \
+  subscribers \
+  1 \
+  30
+wait_for_topic_endpoint_count \
+  "arm status bridge publisher" \
+  "/fruit_hardware_bridge/arm/status" \
   publishers \
   1 \
   30
@@ -612,16 +633,15 @@ if ((DEBUG_RECORD_ENABLED)); then
   wait_for_node "debug rosbag recorder" /rosbag2_recorder 30
 fi
 
-log "READY navigation and perception stack; starting mission"
+log "READY navigation, perception, and arm planner stack; starting mission"
 start_process "mission" \
   ros2 launch "$MISSION_LAUNCH" \
     "use_sim_time:=false" \
     "waypoint_file:=$WAYPOINT_FILE" \
-    "mission_flow:=$MISSION_FLOW" \
-    "map_frame:=$MAP_FRAME"
+    "mission_flow:=$MISSION_FLOW"
 
 if [[ "$REUSE_NAVIGATION" == true ]]; then
-  log "RUN mission started; Ctrl-C stops mission and perception but keeps the reused navigation stack running"
+  log "RUN mission started; Ctrl-C stops mission, arm planner, and perception but keeps the reused navigation stack running"
 else
   log "RUN mission started; press Ctrl-C to stop the complete stack"
 fi

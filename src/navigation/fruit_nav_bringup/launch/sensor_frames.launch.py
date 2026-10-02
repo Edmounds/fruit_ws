@@ -56,15 +56,15 @@ def _launch_nodes(context):
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
-            name="base_to_front_mid360",
-            arguments=_transform_arguments(transforms["base_to_front_mid360"]),
+            name="base_to_lidar",
+            arguments=_transform_arguments(transforms["base_to_lidar"]),
             output="screen",
         ),
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
-            name="front_mid360_to_livox_imu",
-            arguments=_transform_arguments(transforms["front_mid360_to_livox_imu"]),
+            name="lidar_to_imu",
+            arguments=_transform_arguments(transforms["lidar_to_imu"]),
             output="screen",
         ),
     ]

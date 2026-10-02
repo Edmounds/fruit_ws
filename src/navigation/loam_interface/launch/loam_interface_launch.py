@@ -47,8 +47,8 @@ def generate_launch_description():
                 "registered_scan_topic": "cloud_registered",
                 "odom_frame": "odom",
                 "base_frame": "base_link",
-                "lidar_frame": "front_mid360",
-                "imu_frame": "livox_frame",
+                "lidar_frame": "lidar_link",
+                "imu_frame": "lidar_imu_link",
             }
         ],
     )

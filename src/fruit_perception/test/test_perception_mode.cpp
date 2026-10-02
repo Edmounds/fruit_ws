@@ -10,57 +10,54 @@ namespace
 using fruit_perception::CameraAction;
 using fruit_perception::PerceptionMode;
 
-TEST(PerceptionMode, AcceptsOnlyFourUppercaseValues)
+TEST(PerceptionMode, AcceptsOnlyThreeUppercaseValues)
 {
   EXPECT_EQ(fruit_perception::parse_perception_mode("OFF"), PerceptionMode::kOff);
-  EXPECT_EQ(fruit_perception::parse_perception_mode("SIDES"), PerceptionMode::kSides);
   EXPECT_EQ(fruit_perception::parse_perception_mode("QR"), PerceptionMode::kQr);
-  EXPECT_EQ(fruit_perception::parse_perception_mode("TREE"), PerceptionMode::kTree);
+  EXPECT_EQ(fruit_perception::parse_perception_mode("DETECT"), PerceptionMode::kDetect);
+  EXPECT_FALSE(fruit_perception::parse_perception_mode("SIDES"));
+  EXPECT_FALSE(fruit_perception::parse_perception_mode("TREE"));
   EXPECT_FALSE(fruit_perception::parse_perception_mode("tree"));
   EXPECT_FALSE(fruit_perception::parse_perception_mode("D"));
 }
 
 TEST(PerceptionMode, MapsConsumersAndCameraGroups)
 {
-  EXPECT_FALSE(fruit_perception::runs_side_inference(PerceptionMode::kOff));
-  EXPECT_TRUE(fruit_perception::runs_side_inference(PerceptionMode::kSides));
-  EXPECT_FALSE(fruit_perception::runs_side_inference(PerceptionMode::kQr));
-  EXPECT_FALSE(fruit_perception::runs_side_inference(PerceptionMode::kTree));
-
-  EXPECT_FALSE(fruit_perception::runs_d435i_inference(PerceptionMode::kQr));
-  EXPECT_TRUE(fruit_perception::runs_d435i_inference(PerceptionMode::kTree));
+  EXPECT_FALSE(fruit_perception::runs_camera_inference(PerceptionMode::kOff));
+  EXPECT_FALSE(fruit_perception::runs_camera_inference(PerceptionMode::kQr));
+  EXPECT_TRUE(fruit_perception::runs_camera_inference(PerceptionMode::kDetect));
 }
 
-TEST(PerceptionMode, StopsOutgoingCameraBeforeStartingIncomingCamera)
+TEST(PerceptionMode, TransitionStartsAndStopsCamera)
 {
   EXPECT_EQ(
     fruit_perception::plan_camera_transition(
-      PerceptionMode::kSides, PerceptionMode::kQr),
-    (std::vector<CameraAction>{CameraAction::kStopSides, CameraAction::kStartD435i}));
+      PerceptionMode::kOff, PerceptionMode::kDetect),
+    (std::vector<CameraAction>{CameraAction::kStartCamera}));
   EXPECT_EQ(
     fruit_perception::plan_camera_transition(
-      PerceptionMode::kTree, PerceptionMode::kSides),
-    (std::vector<CameraAction>{CameraAction::kStopD435i, CameraAction::kStartSides}));
+      PerceptionMode::kDetect, PerceptionMode::kOff),
+    (std::vector<CameraAction>{CameraAction::kStopCamera}));
 }
 
-TEST(PerceptionMode, QrTreeAndRepeatedModesDoNotRestartCameras)
+TEST(PerceptionMode, QrDetectAndRepeatedModesDoNotRestartCamera)
 {
   EXPECT_TRUE(
     fruit_perception::plan_camera_transition(
-      PerceptionMode::kQr, PerceptionMode::kTree).empty());
+      PerceptionMode::kQr, PerceptionMode::kDetect).empty());
   EXPECT_TRUE(
     fruit_perception::plan_camera_transition(
-      PerceptionMode::kTree, PerceptionMode::kQr).empty());
+      PerceptionMode::kDetect, PerceptionMode::kQr).empty());
   EXPECT_TRUE(
     fruit_perception::plan_camera_transition(
-      PerceptionMode::kSides, PerceptionMode::kSides).empty());
+      PerceptionMode::kDetect, PerceptionMode::kDetect).empty());
 }
 
-TEST(PerceptionMode, StartupResetStopsEveryCamera)
+TEST(PerceptionMode, StartupResetStopsCamera)
 {
   EXPECT_EQ(
     fruit_perception::plan_startup_reset(),
-    (std::vector<CameraAction>{CameraAction::kStopSides, CameraAction::kStopD435i}));
+    (std::vector<CameraAction>{CameraAction::kStopCamera}));
 }
 
 TEST(PerceptionMode, FailedTransitionDoesNotUpdateActiveMode)
@@ -68,24 +65,13 @@ TEST(PerceptionMode, FailedTransitionDoesNotUpdateActiveMode)
   fruit_perception::CameraModeState state;
   ASSERT_TRUE(state.begin_startup_reset());
   state.complete_action();
-  state.complete_action();
   ASSERT_EQ(state.active_mode(), PerceptionMode::kOff);
 
-  ASSERT_TRUE(state.begin(PerceptionMode::kSides));
+  ASSERT_TRUE(state.begin(PerceptionMode::kDetect));
   ASSERT_TRUE(state.transitioning());
   state.fail();
 
   EXPECT_FALSE(state.transitioning());
   EXPECT_EQ(state.active_mode(), PerceptionMode::kOff);
-}
-
-TEST(PerceptionMode, AcceptsUsbCamCaptureResponsesFromInstalledDriver)
-{
-  EXPECT_TRUE(fruit_perception::usb_capture_response_succeeded(true, ""));
-  EXPECT_TRUE(
-    fruit_perception::usb_capture_response_succeeded(false, "Start Capturing"));
-  EXPECT_TRUE(
-    fruit_perception::usb_capture_response_succeeded(false, "Stop Capturing"));
-  EXPECT_FALSE(fruit_perception::usb_capture_response_succeeded(false, "device error"));
 }
 }  // namespace

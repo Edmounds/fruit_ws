@@ -39,10 +39,10 @@ RESET = "\033[0m"
 
 CAM_TYPES_MIN_INTERVAL_SEC = 2.0
 
-D435I_DETECTIONS_MIN_INTERVAL_SEC = 1.5
-D435I_TARGET_MIN_INTERVAL_SEC = 1.5
-D435I_TARGET_MIN_DELTA_M = 0.04
-D435I_STREAM_STALE_SEC = 1.0
+CAMERA_DETECTIONS_MIN_INTERVAL_SEC = 1.5
+CAMERA_TARGET_MIN_INTERVAL_SEC = 1.5
+CAMERA_TARGET_MIN_DELTA_M = 0.04
+CAMERA_STREAM_STALE_SEC = 1.0
 
 
 def log(message):
@@ -124,7 +124,7 @@ class RobotDebugMonitor:
         self.last_target_signature = None
         self.last_target_log_time = 0.0
         now = time.monotonic()
-        self.d435i_streams = {
+        self.camera_streams = {
             name: {
                 "count": 0,
                 "window_started": now,
@@ -150,20 +150,20 @@ class RobotDebugMonitor:
         self.node.create_subscription(FruitDecision, "/fruit_perception/decision", self.on_decision, 100)
         self.node.create_subscription(
             Metadata,
-            "/camera/camera/color/metadata",
-            lambda msg: self.on_d435i_frame("color", msg.header),
+            "/camera/color/metadata",
+            lambda msg: self.on_camera_frame("color", msg.header),
             sensor_qos,
         )
         self.node.create_subscription(
             Metadata,
-            "/camera/camera/depth/metadata",
-            lambda msg: self.on_d435i_frame("depth", msg.header),
+            "/camera/depth/metadata",
+            lambda msg: self.on_camera_frame("depth", msg.header),
             sensor_qos,
         )
         self.node.create_subscription(
             Header,
-            "/fruit_perception/d435i/rgbd_heartbeat",
-            lambda msg: self.on_d435i_frame("rgbd", msg),
+            "/fruit_perception/camera/rgbd_heartbeat",
+            lambda msg: self.on_camera_frame("rgbd", msg),
             sensor_qos,
         )
 
@@ -196,8 +196,6 @@ class RobotDebugMonitor:
             "fruit_perception_node",
             "camera_mode_manager",
             "camera.camera",
-            "left_camera",
-            "right_camera",
         ):
             return
 
@@ -211,15 +209,8 @@ class RobotDebugMonitor:
         log(highlight(MAGENTA, "PERCEPTION mode") + f" {source}={message.data}")
 
     def on_decision(self, message):
-        camera = {
-            FruitDecision.SOURCE_LEFT: "left",
-            FruitDecision.SOURCE_RIGHT: "right",
-            FruitDecision.SOURCE_D435I: "d435i",
-        }.get(message.source, "unknown")
-        self.on_types(camera, message)
-        if message.source != FruitDecision.SOURCE_D435I:
-            return
-        self.on_d435i_detections(message)
+        self.on_types("camera", message)
+        self.on_camera_detections(message)
         if message.has_target:
             self.on_target_point(message)
 
@@ -241,7 +232,7 @@ class RobotDebugMonitor:
         color = GREEN if types else YELLOW
         log(highlight(color, f"CAM {camera}") + f" types={format_types(types)} count={len(types)}")
 
-    def on_d435i_detections(self, message):
+    def on_camera_detections(self, message):
         now = time.monotonic()
         detections = []
         for item in message.detections:
@@ -255,23 +246,23 @@ class RobotDebugMonitor:
                 f"{point}"
             )
         signature = tuple(detections)
-        if self.last_perception_signature.get("d435i_detections") == signature:
+        if self.last_perception_signature.get("camera_detections") == signature:
             return
-        previous = self.last_perception_signature.get("d435i_detections", ())
+        previous = self.last_perception_signature.get("camera_detections", ())
         previous_types = tuple(item.split("@", 1)[0] for item in previous)
         current_types = tuple(item.split("@", 1)[0] for item in signature)
         types_changed = current_types != previous_types
         if not types_changed and previous:
-            self.last_perception_signature["d435i_detections"] = signature
+            self.last_perception_signature["camera_detections"] = signature
             return
-        last_time = self.last_perception_log_time.get("d435i_detections", 0.0)
-        if now - last_time < D435I_DETECTIONS_MIN_INTERVAL_SEC:
-            self.last_perception_signature["d435i_detections"] = signature
+        last_time = self.last_perception_log_time.get("camera_detections", 0.0)
+        if now - last_time < CAMERA_DETECTIONS_MIN_INTERVAL_SEC:
+            self.last_perception_signature["camera_detections"] = signature
             return
-        self.last_perception_signature["d435i_detections"] = signature
-        self.last_perception_log_time["d435i_detections"] = now
+        self.last_perception_signature["camera_detections"] = signature
+        self.last_perception_log_time["camera_detections"] = now
         color = GREEN if detections else YELLOW
-        log(highlight(color, "CAM d435i detections") + f" count={len(detections)} " + " | ".join(detections))
+        log(highlight(color, "CAM camera detections") + f" count={len(detections)} " + " | ".join(detections))
 
     def on_target_point(self, message):
         now = time.monotonic()
@@ -290,25 +281,25 @@ class RobotDebugMonitor:
             delta = float("inf")
         if (
             signature == self.last_target_signature or
-            delta < D435I_TARGET_MIN_DELTA_M or
-            now - self.last_target_log_time < D435I_TARGET_MIN_INTERVAL_SEC
+            delta < CAMERA_TARGET_MIN_DELTA_M or
+            now - self.last_target_log_time < CAMERA_TARGET_MIN_INTERVAL_SEC
         ):
             return
         self.last_target_signature = signature
         self.last_target_log_time = now
         log(
-            highlight(GREEN, "CAM d435i target") +
+            highlight(GREEN, "CAM camera target") +
             f" point=({signature[0]:.3f},{signature[1]:.3f},{signature[2]:.3f}) frame={message.header.frame_id}"
         )
 
-    def on_d435i_frame(self, stream_name, header):
-        state = self.d435i_streams[stream_name]
+    def on_camera_frame(self, stream_name, header):
+        state = self.camera_streams[stream_name]
         state["count"] += 1
         state["last_received"] = time.monotonic()
         state["last_stamp_ns"] = header.stamp.sec * 1_000_000_000 + header.stamp.nanosec
 
     @staticmethod
-    def format_d435i_stream(state, now):
+    def format_camera_stream(state, now):
         elapsed = max(now - state["window_started"], 1e-6)
         hz = state["count"] / elapsed
         state["count"] = 0
@@ -325,17 +316,17 @@ class RobotDebugMonitor:
             stamp = "ZERO"
         return f"hz={hz:.1f} last={stamp} age={age:.2f}s", age
 
-    def log_d435i_streams(self, now, active_mode):
+    def log_camera_streams(self, now, active_mode):
         values = {}
         ages = {}
-        for name, state in self.d435i_streams.items():
-            values[name], ages[name] = self.format_d435i_stream(state, now)
-        expected = active_mode in ("QR", "TREE")
-        stale = expected and any(age > D435I_STREAM_STALE_SEC for age in ages.values())
+        for name, state in self.camera_streams.items():
+            values[name], ages[name] = self.format_camera_stream(state, now)
+        expected = active_mode in ("QR", "DETECT")
+        stale = expected and any(age > CAMERA_STREAM_STALE_SEC for age in ages.values())
         status = "STALE" if stale else "OK" if expected else "IDLE"
         color = RED if stale else GREEN if expected else CYAN
         log(
-            highlight(color, "D435I streams") + " "
+            highlight(color, "CAMERA streams") + " "
             f"status={status} mode={active_mode} "
             f"color[{values['color']}] depth[{values['depth']}] rgbd[{values['rgbd']}]"
         )
@@ -350,7 +341,7 @@ class RobotDebugMonitor:
         fruit_perception_present = "fruit_perception_node" in nodes
         active_mode = self.last_mode.get("active", "-")
         requested_mode = self.last_mode.get("requested", "-")
-        self.log_d435i_streams(now, active_mode)
+        self.log_camera_streams(now, active_mode)
         health_signature = (
             int(fruit_perception_present),
             self.node.count_publishers('/diagnostics'),
@@ -378,7 +369,7 @@ def main():
     node = rclpy.create_node(f"{safe_label}_robot_debug_monitor")
     log(
         "started; watching navigation, rosout warnings/errors, "
-        "camera modes, D435i stream rates and unified fruit decisions"
+        "camera modes, Camera stream rates and unified fruit decisions"
     )
     RobotDebugMonitor(node)
     try:

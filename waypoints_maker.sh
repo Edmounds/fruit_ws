@@ -6,8 +6,6 @@ WORKSPACE=/home/rc4/fruit_ws
 NAV_LAUNCH="$WORKSPACE/src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.py"
 HARDWARE_LAUNCH="$WORKSPACE/src/fruit_hardware_bridge/launch/fruit_hardware_bridge.launch.py"
 RECORDER_LAUNCH="$WORKSPACE/src/fruit_waypoint_recorder/launch/waypoint_recorder.launch.py"
-PARAMS="$WORKSPACE/src/navigation/fruit_nav_bringup/config/reality/pointlio_params.yaml"
-AXIS_PARAMS="$WORKSPACE/src/navigation/fruit_navigation/config/axis_navigation.yaml"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
 WAYPOINT_FILE="$WORKSPACE/src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml"
 WAYPOINT_TEMPLATE_FILE="$WORKSPACE/src/fruit_waypoint_recorder/waypoints/template.yaml"
@@ -77,7 +75,7 @@ wait_for_odom_tf() {
   printf '[waypoints-maker] waiting for odometry nodes\n'
   ros2 run fruit_mission stack_readiness_client \
     nodes --node /laserMapping --node /loam_interface \
-    --node /sensor_scan_generation --timeout 60 \
+    --timeout 60 \
     --ros-args --params-file "$SCRIPT_CLIENT_CONFIG"
   printf '[waypoints-maker] waiting for the first valid Point-LIO odometry sample\n'
   ros2 run fruit_mission stack_readiness_client \
@@ -120,8 +118,6 @@ required_files=(
   "$NAV_LAUNCH" \
   "$HARDWARE_LAUNCH" \
   "$RECORDER_LAUNCH" \
-  "$PARAMS" \
-  "$AXIS_PARAMS" \
   "$WAYPOINT_FILE" \
   "$WAYPOINT_TEMPLATE_FILE" \
   "$SCRIPT_CLIENT_CONFIG" \
@@ -136,7 +132,7 @@ for required_file in "${required_files[@]}"; do
 done
 
 if ros2 node list 2>/dev/null | grep -Eq \
-  '^/(livox_ros_driver2|laserMapping|loam_interface|sensor_scan_generation|axis_waypoint_action_server|fruit_waypoint_recorder)$'; then
+  '^/(livox_ros_driver2|laserMapping|loam_interface|axis_waypoint_action_server|fruit_waypoint_recorder)$'; then
   printf '[waypoints-maker] an odometry or waypoint node is already running.\n' >&2
   printf '[waypoints-maker] stop the existing stack before starting this script.\n' >&2
   exit 1
@@ -159,10 +155,7 @@ fi
 
 start_process "$nav_process_name" \
   ros2 launch "$NAV_LAUNCH" \
-    "params_file:=$PARAMS" \
-    "axis_params_file:=$AXIS_PARAMS" \
-    "use_teleop:=$USE_TELEOP" \
-    "use_rviz:=false"
+    "use_teleop:=$USE_TELEOP"
 
 start_debug_monitor
 
@@ -177,10 +170,7 @@ start_process "rviz2 waypoint maker" \
 wait_for_odom_tf
 
 start_process "waypoint recorder" \
-  ros2 launch "$RECORDER_LAUNCH" \
-    "waypoint_file:=$WAYPOINT_FILE" \
-    "frame_id:=$WAYPOINT_FRAME" \
-    "auto_name_file:=$WAYPOINT_TEMPLATE_FILE"
+  ros2 launch "$RECORDER_LAUNCH"
 
 if [[ "$USE_TELEOP" == true ]]; then
   printf '[waypoints-maker] odometry, teleop, RViz, and waypoint recorder started.\n'

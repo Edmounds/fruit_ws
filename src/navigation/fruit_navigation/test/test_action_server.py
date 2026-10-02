@@ -1,7 +1,6 @@
 import threading
 from types import SimpleNamespace
 
-from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from rclpy.action import GoalResponse
 from rclpy.clock import ClockType
@@ -66,13 +65,11 @@ class FakePublisher:
         self.messages.append(message)
 
 
-def bare_server(localization_ready=True):
+def bare_server():
     server = AxisWaypointActionServer.__new__(AxisWaypointActionServer)
     server._map_frame = "map"
     server._active_goal = False
     server._goal_lock = threading.Lock()
-    server._localization_ready = localization_ready
-    server._localization_error = False
     server.get_logger = lambda: FakeLogger()
     server._publish_stop = lambda: None
     server._publish_stop_burst = lambda: None
@@ -84,29 +81,6 @@ def valid_goal():
     pose.header.frame_id = "map"
     pose.pose.orientation.w = 1.0
     return SimpleNamespace(poses=[pose])
-
-
-def diagnostic(level, accepted, has_accepted_once):
-    status = DiagnosticStatus()
-    status.name = "pb_gicp_localization/registration"
-    status.level = level
-    status.values = [
-        KeyValue(key="accepted", value=accepted),
-        KeyValue(key="has_accepted_once", value=has_accepted_once),
-    ]
-    return DiagnosticArray(status=[status])
-
-
-def test_goal_is_rejected_until_gicp_has_accepted_once():
-    server = bare_server(localization_ready=False)
-
-    assert server._on_goal(valid_goal()) == GoalResponse.REJECT
-
-    server._on_diagnostics(diagnostic(DiagnosticStatus.WARN, "0", "0"))
-    assert server._on_goal(valid_goal()) == GoalResponse.REJECT
-
-    server._on_diagnostics(diagnostic(DiagnosticStatus.OK, "1", "1"))
-    assert server._on_goal(valid_goal()) == GoalResponse.ACCEPT
 
 
 def test_second_goal_is_rejected_as_soon_as_first_goal_is_accepted():
@@ -156,19 +130,6 @@ def test_lookup_pose_rejects_a_transform_older_than_tf_timeout():
 
     assert server._lookup_pose() is None
     assert stop_bursts == [True]
-
-
-def test_localization_error_blocks_goals_until_a_new_accepted_registration():
-    server = bare_server()
-
-    server._on_diagnostics(diagnostic(DiagnosticStatus.ERROR, "0", "1"))
-    assert server._on_goal(valid_goal()) == GoalResponse.REJECT
-
-    server._on_diagnostics(diagnostic(DiagnosticStatus.WARN, "0", "1"))
-    assert server._on_goal(valid_goal()) == GoalResponse.REJECT
-
-    server._on_diagnostics(diagnostic(DiagnosticStatus.OK, "1", "1"))
-    assert server._on_goal(valid_goal()) == GoalResponse.ACCEPT
 
 
 def test_cancel_request_marks_goal_canceled_and_publishes_stop():

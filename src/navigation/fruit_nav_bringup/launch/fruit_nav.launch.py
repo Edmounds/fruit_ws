@@ -33,7 +33,7 @@ POINTLIO_ODOMETRY_LAUNCH = os.path.join(
 def generate_launch_description():
     params_file = LaunchConfiguration("params_file")
     axis_params_file = LaunchConfiguration("axis_params_file")
-    mid360_config = LaunchConfiguration("mid360_config")
+    lidar_config = LaunchConfiguration("lidar_config")
     use_sim_time = LaunchConfiguration("use_sim_time")
     use_teleop = LaunchConfiguration("use_teleop")
     use_rviz = LaunchConfiguration("use_rviz")
@@ -59,9 +59,9 @@ def generate_launch_description():
             ),
 
             DeclareLaunchArgument(
-                "mid360_config",
+                "lidar_config",
                 default_value=os.path.join(
-                    SOURCE_SHARE, "config", "reality", "mid360_user_config.json"
+                    SOURCE_SHARE, "config", "reality", "lidar_user_config.json"
                 ),
                 description="Absolute path to the MID-360 driver configuration",
             ),
@@ -76,7 +76,7 @@ def generate_launch_description():
                 PythonLaunchDescriptionSource(POINTLIO_ODOMETRY_LAUNCH),
                 launch_arguments={
                     "params_file": params_file,
-                    "mid360_config": mid360_config,
+                    "lidar_config": lidar_config,
                     "use_sim_time": use_sim_time,
                 }.items(),
             ),
@@ -87,8 +87,6 @@ def generate_launch_description():
                 parameters=[
                     axis_params_file,
                     {
-                        "map_frame": "odom",
-                        "require_gicp_localization": False,
                         "use_sim_time": use_sim_time,
                     },
                 ],

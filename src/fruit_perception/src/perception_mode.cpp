@@ -6,14 +6,9 @@ namespace fruit_perception
 {
 namespace
 {
-bool uses_sides(PerceptionMode mode)
+bool uses_camera(PerceptionMode mode)
 {
-  return mode == PerceptionMode::kSides;
-}
-
-bool uses_d435i(PerceptionMode mode)
-{
-  return mode == PerceptionMode::kQr || mode == PerceptionMode::kTree;
+  return mode == PerceptionMode::kQr || mode == PerceptionMode::kDetect;
 }
 }  // namespace
 
@@ -22,14 +17,11 @@ std::optional<PerceptionMode> parse_perception_mode(const std::string & value)
   if (value == "OFF") {
     return PerceptionMode::kOff;
   }
-  if (value == "SIDES") {
-    return PerceptionMode::kSides;
-  }
   if (value == "QR") {
     return PerceptionMode::kQr;
   }
-  if (value == "TREE") {
-    return PerceptionMode::kTree;
+  if (value == "DETECT") {
+    return PerceptionMode::kDetect;
   }
   return std::nullopt;
 }
@@ -39,53 +31,35 @@ const char * to_string(PerceptionMode mode)
   switch (mode) {
     case PerceptionMode::kOff:
       return "OFF";
-    case PerceptionMode::kSides:
-      return "SIDES";
     case PerceptionMode::kQr:
       return "QR";
-    case PerceptionMode::kTree:
-      return "TREE";
+    case PerceptionMode::kDetect:
+      return "DETECT";
   }
   return "OFF";
 }
 
-bool runs_side_inference(PerceptionMode mode)
+bool runs_camera_inference(PerceptionMode mode)
 {
-  return mode == PerceptionMode::kSides;
-}
-
-bool runs_d435i_inference(PerceptionMode mode)
-{
-  return mode == PerceptionMode::kTree;
-}
-
-bool usb_capture_response_succeeded(bool success, const std::string & message)
-{
-  return success || message == "Start Capturing" || message == "Stop Capturing";
+  return mode == PerceptionMode::kDetect;
 }
 
 std::vector<CameraAction> plan_camera_transition(
   PerceptionMode current, PerceptionMode target)
 {
   std::vector<CameraAction> actions;
-  if (uses_sides(current) && !uses_sides(target)) {
-    actions.push_back(CameraAction::kStopSides);
+  if (uses_camera(current) && !uses_camera(target)) {
+    actions.push_back(CameraAction::kStopCamera);
   }
-  if (uses_d435i(current) && !uses_d435i(target)) {
-    actions.push_back(CameraAction::kStopD435i);
-  }
-  if (!uses_sides(current) && uses_sides(target)) {
-    actions.push_back(CameraAction::kStartSides);
-  }
-  if (!uses_d435i(current) && uses_d435i(target)) {
-    actions.push_back(CameraAction::kStartD435i);
+  if (!uses_camera(current) && uses_camera(target)) {
+    actions.push_back(CameraAction::kStartCamera);
   }
   return actions;
 }
 
 std::vector<CameraAction> plan_startup_reset()
 {
-  return {CameraAction::kStopSides, CameraAction::kStopD435i};
+  return {CameraAction::kStopCamera};
 }
 
 bool CameraModeState::begin_startup_reset()

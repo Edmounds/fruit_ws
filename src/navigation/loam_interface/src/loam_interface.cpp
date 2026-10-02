@@ -17,6 +17,7 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "geometry_msgs/msg/transform_stamped.hpp"
 #include "loam_interface/extrinsic_math.hpp"
 
 #include "pcl_ros/transforms.hpp"
@@ -34,7 +35,7 @@ LoamInterfaceNode::LoamInterfaceNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<std::string>("odom_frame", "odom");
   this->declare_parameter<std::string>("base_frame", "");
   this->declare_parameter<std::string>("lidar_frame", "");
-  this->declare_parameter<std::string>("imu_frame", "livox_frame");
+  this->declare_parameter<std::string>("imu_frame", "lidar_imu_link");
   this->declare_parameter<bool>("stabilize_initial_odom", false);
   this->declare_parameter<double>("initial_stability_timeout_sec", 5.0);
   this->declare_parameter<double>("initial_stability_window_sec", 1.5);
@@ -73,9 +74,11 @@ LoamInterfaceNode::LoamInterfaceNode(const rclcpp::NodeOptions & options)
 
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
+  tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
   pcd_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("registered_scan", 5);
   odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("lidar_odometry", 5);
+  base_odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("odometry", 5);
 
   pcd_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
     registered_scan_topic_, 5,
@@ -160,6 +163,40 @@ void LoamInterfaceNode::odometryCallback(const nav_msgs::msg::Odometry::ConstSha
   out.pose.pose.orientation = tf2::toMsg(tf_odom_to_lidar.getRotation());
 
   odom_pub_->publish(out);
+
+  const tf2::Transform tf_odom_to_base = odomToBase(tf_odom_to_lidar, base_to_lidar_);
+
+  geometry_msgs::msg::TransformStamped tf_msg;
+  tf_msg.header.stamp = msg->header.stamp;
+  tf_msg.header.frame_id = odom_frame_;
+  tf_msg.child_frame_id = base_frame_;
+  tf_msg.transform = tf2::toMsg(tf_odom_to_base);
+  tf_broadcaster_->sendTransform(tf_msg);
+
+  nav_msgs::msg::Odometry base_odom;
+  base_odom.header.stamp = msg->header.stamp;
+  base_odom.header.frame_id = odom_frame_;
+  base_odom.child_frame_id = base_frame_;
+
+  const auto & base_origin = tf_odom_to_base.getOrigin();
+  base_odom.pose.pose.position.x = base_origin.x();
+  base_odom.pose.pose.position.y = base_origin.y();
+  base_odom.pose.pose.position.z = base_origin.z();
+  base_odom.pose.pose.orientation = tf2::toMsg(tf_odom_to_base.getRotation());
+
+  const rclcpp::Time current_stamp(msg->header.stamp);
+  const double dt = previous_base_odom_initialized_ ?
+    (current_stamp - previous_base_odom_time_).seconds() : 0.0;
+  if (dt > 0.0) {
+    base_odom.twist.twist =
+      calculateBodyTwist(tf_odom_to_base, previous_base_odom_transform_, dt);
+  }
+  previous_base_odom_transform_ = tf_odom_to_base;
+  previous_base_odom_time_ = current_stamp;
+  previous_base_odom_initialized_ = true;
+
+  base_odom_pub_->publish(base_odom);
+
   odometry_initialized_ = true;
 }
 

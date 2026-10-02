@@ -43,6 +43,32 @@ from fruit_arm_planner.trajectory_planner import (
 )
 
 
+def validate_presets(presets: dict) -> None:
+    """Validate a complete preset replacement before installing or saving it."""
+    if not isinstance(presets, dict):
+        raise ValueError('presets must be a mapping')
+    for name, preset in presets.items():
+        if (not isinstance(name, str) or not name.strip() or not isinstance(preset, dict)
+                or preset.get('coordinate_frame') not in ('joints', 'cartesian', 'link_angles')
+                or not isinstance(preset.get('waypoints'), list) or not preset['waypoints']):
+            raise ValueError(f'Invalid preset {name}')
+        for wp in preset['waypoints']:
+            if not isinstance(wp, dict):
+                raise ValueError(f'Invalid waypoint in preset {name}')
+            target = wp.get('target')
+            if (not isinstance(target, list) or len(target) < 4
+                    or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                               and math.isfinite(v) for v in target)
+                    or not isinstance(wp.get('duration_ms'), int)
+                    or isinstance(wp['duration_ms'], bool)
+                    or not 0 < wp['duration_ms'] <= 0xFFFFFFFF
+                    or not isinstance(wp.get('dwell_ms', 0), int)
+                    or wp.get('dwell_ms', 0) < 0
+                    or wp.get('gripper', 0) not in (0, 1, 2)
+                    or not isinstance(wp.get('linear', False), bool)):
+                raise ValueError(f'Invalid waypoint in preset {name}')
+
+
 class ArmPlannerNode(Node):
     """ROS 2 Node for 4-DOF manipulator trajectory planning and hardware interfacing."""
 
@@ -128,6 +154,10 @@ class ArmPlannerNode(Node):
             ExecuteArmPreset,
             '~/execute_preset',
             self._srv_execute_preset_cb,
+            callback_group=self.cb_group,
+        )
+        self._srv_reload_presets = self.create_service(
+            Trigger, '~/reload_presets', self._srv_reload_presets_cb,
             callback_group=self.cb_group,
         )
 
@@ -217,6 +247,12 @@ class ArmPlannerNode(Node):
             self.status_max_age_sec = float(planning_cfg['status_max_age_sec'])
             self.execution_timeout_buffer_sec = float(planning_cfg['execution_timeout_buffer_sec'])
             self.mode_start_delay_ms = int(planning_cfg['mode_start_delay_ms'])
+            offset = planning_cfg['cartesian_offset_m']
+            if (not isinstance(offset, (list, tuple)) or len(offset) != 3
+                    or not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                               and math.isfinite(value) for value in offset)):
+                raise ValueError('cartesian_offset_m must contain three finite numbers (metres)')
+            self.cartesian_offset_m = tuple(float(value) for value in offset)
             if (self.default_duration_ms <= 0 or self.interpolation_step_ms <= 0
                     or self.default_dwell_ms < 0
                     or not 0 < self.status_max_age_sec < 10
@@ -227,21 +263,33 @@ class ArmPlannerNode(Node):
 
             # 4. 预设工序与固定轨迹
             presets_data = params['presets']
-            for name, preset in presets_data.items():
-                if preset['coordinate_frame'] not in ('joints', 'cartesian', 'link_angles') or not preset.get('waypoints'):
-                    raise ValueError(f'Invalid preset {name}')
-                for wp in preset['waypoints']:
-                    target = wp['target']
-                    if (len(target) < 4 or not all(math.isfinite(float(v)) for v in target)
-                            or int(wp['duration_ms']) <= 0 or int(wp['duration_ms']) > 0xFFFFFFFF
-                            or int(wp.get('dwell_ms', 0)) < 0
-                            or int(wp.get('gripper', 0)) not in (0, 1, 2)):
-                        raise ValueError(f'Invalid waypoint in preset {name}')
+            validate_presets(presets_data)
             self.presets = presets_data
             self.get_logger().info(f"Loaded {len(self.presets)} arm presets: {list(self.presets.keys())}")
 
         except Exception as e:
             raise RuntimeError(f'Failed to load configuration from {config_path}: {e}') from e
+
+    def _srv_reload_presets_cb(self, req: Trigger.Request, res: Trigger.Response) -> Trigger.Response:
+        """Reload only presets; a failed or busy reload leaves the old mapping intact."""
+        try:
+            import yaml
+            with self._state_lock:
+                if self._motion_active:
+                    raise ValueError('Arm planner is busy; reload after motion completes')
+            with open(self.get_parameter('config_path').value, encoding='utf-8') as stream:
+                presets = yaml.safe_load(stream)['arm_planner_node']['ros__parameters']['presets']
+            validate_presets(presets)
+            with self._state_lock:
+                if self._motion_active:
+                    raise ValueError('Arm planner is busy; reload after motion completes')
+                self.presets = presets
+            res.success = True
+            res.message = f'Reloaded {len(presets)} presets: {list(presets)}'
+        except Exception as exc:
+            res.success = False
+            res.message = f'Presets unchanged: {exc}'
+        return res
 
     # ========================================================================
     # 状态回调
@@ -446,12 +494,15 @@ class ArmPlannerNode(Node):
         def build(start):
             duration_ms = int(req.duration_ms) if req.duration_ms > 0 else self.default_duration_ms
             pitch_rad = math.radians(float(req.pitch_deg))
-            target_xyz = (float(req.x), float(req.y), float(req.z))
+            request_xyz = (float(req.x), float(req.y), float(req.z))
             gripper = int(req.gripper_action)
             if (duration_ms <= 0 or duration_ms > 0xFFFFFFFF
-                    or not all(math.isfinite(v) for v in (*target_xyz, pitch_rad))
+                    or not all(math.isfinite(v) for v in (*request_xyz, pitch_rad))
                     or gripper not in (0, 1, 2)):
                 return False, [], 'Invalid Cartesian target, duration or gripper action'
+            target_xyz = tuple(value + delta for value, delta in zip(request_xyz, self.cartesian_offset_m))
+            if not all(math.isfinite(value) for value in target_xyz):
+                return False, [], 'Cartesian target plus offset is not finite'
             if req.linear_path:
                 fk_current = self.kinematics.forward_kinematics(
                     *self.transformer.hardware_to_algo(start)

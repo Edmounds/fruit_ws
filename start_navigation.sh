@@ -5,8 +5,6 @@ set -eo pipefail
 WORKSPACE=/home/rc4/fruit_ws
 NAV_LAUNCH="$WORKSPACE/src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.py"
 HARDWARE_LAUNCH="$WORKSPACE/src/fruit_hardware_bridge/launch/fruit_hardware_bridge.launch.py"
-PARAMS="$WORKSPACE/src/navigation/fruit_nav_bringup/config/reality/pointlio_params.yaml"
-AXIS_PARAMS="$WORKSPACE/src/navigation/fruit_navigation/config/axis_navigation.yaml"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
 RVIZ_CONFIG="$WORKSPACE/src/navigation/fruit_nav_bringup/rviz/navigation.rviz"
 MONITOR_SCRIPT="$WORKSPACE/scripts/robot_debug_monitor.sh"
@@ -22,8 +20,8 @@ usage() {
   cat <<'EOF'
 Usage: ./start_navigation.sh
 
-Start Point-LIO odometry navigation, serial bridge, and RViz in the
-startup-relative odom frame without loading a map or GICP.
+Start Point-LIO navigation, serial bridge, and RViz in the startup-relative
+odom frame.
 EOF
 }
 
@@ -84,7 +82,7 @@ wait_for_odom_tf() {
   printf '[navigation] waiting for odometry nodes\n'
   ros2 run fruit_mission stack_readiness_client \
     nodes --node /laserMapping --node /loam_interface \
-    --node /sensor_scan_generation --timeout 60 \
+    --timeout 60 \
     --ros-args --params-file "$SCRIPT_CLIENT_CONFIG"
   printf '[navigation] waiting for the first valid Point-LIO odometry sample\n'
   ros2 run fruit_mission stack_readiness_client \
@@ -109,8 +107,6 @@ set -u
 required_files=(
   "$NAV_LAUNCH" \
   "$HARDWARE_LAUNCH" \
-  "$PARAMS" \
-  "$AXIS_PARAMS" \
   "$SCRIPT_CLIENT_CONFIG" \
   "$MONITOR_SCRIPT" \
   "$RVIZ_CONFIG"
@@ -132,11 +128,7 @@ start_process "serial bridge" \
   ros2 launch "$HARDWARE_LAUNCH"
 
 start_process "axis navigation and odometry" \
-  ros2 launch "$NAV_LAUNCH" \
-    "params_file:=$PARAMS" \
-    "axis_params_file:=$AXIS_PARAMS" \
-    "use_teleop:=false" \
-    "use_rviz:=false"
+  ros2 launch "$NAV_LAUNCH"
 
 start_debug_monitor
 

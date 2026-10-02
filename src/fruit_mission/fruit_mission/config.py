@@ -38,9 +38,7 @@ def validate_config(params: Mapping[str, Any]) -> None:
         raise ValueError("follow_waypoints_action must not be empty")
     for timeout_name in (
         "qr_plan_timeout_sec",
-        "callback_timeout_sec",
-        "hardware_endpoint_timeout_sec",
-        "d435i_detection_timeout_sec",
+        "camera_detection_timeout_sec",
         "navigation_action_server_timeout_sec",
     ):
         if float(params.get(timeout_name, 0.0)) <= 0.0:
@@ -59,8 +57,24 @@ def validate_config(params: Mapping[str, Any]) -> None:
         raise ValueError("expected_fruit_type_topic must not be empty")
     if not str(params.get("decision_topic", "")).strip():
         raise ValueError("decision_topic must not be empty")
-    if params.get("preferred_side") not in ("left", "right"):
-        raise ValueError("preferred_side must be left or right")
+    if not str(params.get("camera_extrinsic_config", "")).strip():
+        raise ValueError("camera_extrinsic_config must not be empty")
+    presets = params.get("arm_presets")
+    if not isinstance(presets, dict):
+        raise ValueError("arm_presets must be a mapping")
+    for action in ("observation_left", "observation_right", "qr", "retract", "home"):
+        name = presets.get(action)
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"arm_presets.{action} must be a nonempty string")
+    a_order = params.get("a_observation_order")
+    if (
+        not isinstance(a_order, list)
+        or len(a_order) != 2
+        or set(a_order) != {"left", "right"}
+    ):
+        raise ValueError(
+            "a_observation_order must be a list containing exactly 'left' and 'right'"
+        )
     _validate_qr_fallbacks(params)
     tts = params.get("tts", {})
     if "qr_length_scale" in tts and float(tts["qr_length_scale"]) <= 0.0:

@@ -9,14 +9,12 @@
 namespace fruit_perception
 {
 
-enum class PerceptionMode {kOff, kSides, kQr, kTree};
-enum class CameraAction {kStopSides, kStopD435i, kStartSides, kStartD435i};
+enum class PerceptionMode {kOff, kQr, kDetect};
+enum class CameraAction {kStopCamera, kStartCamera};
 
 std::optional<PerceptionMode> parse_perception_mode(const std::string & value);
 const char * to_string(PerceptionMode mode);
-bool runs_side_inference(PerceptionMode mode);
-bool runs_d435i_inference(PerceptionMode mode);
-bool usb_capture_response_succeeded(bool success, const std::string & message);
+bool runs_camera_inference(PerceptionMode mode);
 std::vector<CameraAction> plan_camera_transition(
   PerceptionMode current, PerceptionMode target);
 std::vector<CameraAction> plan_startup_reset();

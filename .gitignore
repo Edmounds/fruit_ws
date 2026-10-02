@@ -32,6 +32,7 @@ venv/
 
 # Local caches
 .cache/
+*.errors.txt
 
 # Independently cloned ROS packages
 /src/auto_serial_bridge/

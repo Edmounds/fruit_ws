@@ -25,7 +25,6 @@ except ImportError:
         callback_status = 0
 
 
-
 class CommandResult(IntEnum):
     """Result of one lower-controller business command."""
 

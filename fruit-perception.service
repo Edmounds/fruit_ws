@@ -1,5 +1,5 @@
 [Unit]
-Description=D435i fruit perception and lower-controller serial bridge
+Description=Camera fruit perception and lower-controller serial bridge
 After=local-fs.target
 
 [Service]

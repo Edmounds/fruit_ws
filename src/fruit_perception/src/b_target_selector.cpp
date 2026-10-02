@@ -37,18 +37,18 @@ std::string fruit_species(const std::string & type)
 void validate_config(const BTargetSelectorConfig & config)
 {
   if (config.acquisition_frames == 0U) {
-    throw std::invalid_argument("d435i_b_target_acquisition_frames must be positive");
+    throw std::invalid_argument("camera_b_target_acquisition_frames must be positive");
   }
   if (config.max_targets == 0U || config.max_targets > 2U) {
-    throw std::invalid_argument("d435i_b_target_max_count must be between 1 and 2");
+    throw std::invalid_argument("camera_b_target_max_count must be between 1 and 2");
   }
   if (!std::isfinite(config.association_radius_m) || config.association_radius_m <= 0.0) {
     throw std::invalid_argument(
-            "d435i_b_target_association_radius_m must be positive and finite");
+            "camera_b_target_association_radius_m must be positive and finite");
   }
   if (!std::isfinite(config.outlier_sigma) || config.outlier_sigma <= 0.0) {
     throw std::invalid_argument(
-            "d435i_b_target_outlier_sigma must be positive and finite");
+            "camera_b_target_outlier_sigma must be positive and finite");
   }
 }
 

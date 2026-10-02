@@ -12,14 +12,12 @@ from typing import Optional
 
 import rclpy
 from rclpy._rclpy_pybind11 import RCLError
-from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
 from geometry_msgs.msg import Twist
 from nav2_msgs.action import FollowWaypoints
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -32,13 +30,12 @@ from fruit_navigation.axis_planner import (
 
 
 class AxisWaypointActionServer(Node):
-    """Follow map-frame waypoints using rotate-in-place and line tracking."""
+    """Follow odom-frame waypoints using rotate-in-place and line tracking."""
 
     def __init__(self) -> None:
         super().__init__("axis_waypoint_action_server")
         self.declare_parameter("map_frame", "odom")
         self.declare_parameter("base_frame", "base_link")
-        self.declare_parameter("require_gicp_localization", False)
         self.declare_parameter("cmd_vel_topic", "/cmd_vel_nav")
 
         self.declare_parameter("control_frequency", 20.0)
@@ -63,13 +60,9 @@ class AxisWaypointActionServer(Node):
         self.declare_parameter("progress_min_delta", 0.01)
         self.declare_parameter("waypoint_retry_attempts", 1)
         self.declare_parameter("waypoint_pass_tolerance", 0.08)
-        self.declare_parameter("diagnostics_topic", "/diagnostics")
 
         self._map_frame = self.get_parameter("map_frame").value
         self._base_frame = self.get_parameter("base_frame").value
-        self._require_gicp_localization = bool(
-            self.get_parameter("require_gicp_localization").value
-        )
         self._control_frequency = float(self.get_parameter("control_frequency").value)
         self._max_linear_speed = float(self.get_parameter("max_linear_speed").value)
         self._min_linear_speed = float(self.get_parameter("min_linear_speed").value)
@@ -115,8 +108,6 @@ class AxisWaypointActionServer(Node):
         self._last_linear_command = 0.0
         self._last_angular_command = 0.0
         self._active_goal = False
-        self._localization_ready = not self._require_gicp_localization
-        self._localization_error = False
 
         self._validate_parameters()
         self._tf_buffer = Buffer()
@@ -126,17 +117,6 @@ class AxisWaypointActionServer(Node):
             self.get_parameter("cmd_vel_topic").value,
             10,
         )
-        diagnostics_qos = QoSProfile(depth=1)
-        diagnostics_qos.reliability = ReliabilityPolicy.RELIABLE
-        diagnostics_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
-        self._diagnostics_subscription = None
-        if self._require_gicp_localization:
-            self._diagnostics_subscription = self.create_subscription(
-                DiagnosticArray,
-                self.get_parameter("diagnostics_topic").value,
-                self._on_diagnostics,
-                diagnostics_qos,
-            )
         self._action_server = ActionServer(
             self,
             FollowWaypoints,
@@ -190,13 +170,6 @@ class AxisWaypointActionServer(Node):
             return GoalResponse.REJECT
         with self._goal_lock:
             if self._active_goal:
-                return GoalResponse.REJECT
-            if self._require_gicp_localization and (
-                not self._localization_ready or self._localization_error
-            ):
-                self.get_logger().error(
-                    "Rejected waypoint goal: GICP localization is not ready"
-                )
                 return GoalResponse.REJECT
             self._active_goal = True
         return GoalResponse.ACCEPT
@@ -264,7 +237,7 @@ class AxisWaypointActionServer(Node):
         for attempt in range(attempts):
             if self._follow_one(goal_handle, target, is_final_goal):
                 return True
-            if self._hard_stop_requested(goal_handle):
+            if goal_handle.is_cancel_requested:
                 return False
             if attempt + 1 < attempts:
                 self.get_logger().warning(
@@ -276,7 +249,7 @@ class AxisWaypointActionServer(Node):
         if is_final_goal:
             return False
         current = self._lookup_pose()
-        if current is None or self._hard_stop_requested(goal_handle):
+        if current is None or goal_handle.is_cancel_requested:
             return False
         distance = math.hypot(target.x - current.x, target.y - current.y)
         if distance <= self._waypoint_pass_tolerance:
@@ -290,15 +263,6 @@ class AxisWaypointActionServer(Node):
             self._publish_stop_burst()
             return True
         return False
-
-    def _hard_stop_requested(self, goal_handle) -> bool:
-        return bool(
-            goal_handle.is_cancel_requested
-            or (
-                self._require_gicp_localization
-                and (not self._localization_ready or self._localization_error)
-            )
-        )
 
     def _follow_one(
         self,
@@ -526,12 +490,6 @@ class AxisWaypointActionServer(Node):
             goal_handle.canceled()
             self._publish_stop_burst()
             return True
-        if self._require_gicp_localization and (
-            not self._localization_ready or self._localization_error
-        ):
-            self.get_logger().error("Aborting waypoint goal: GICP localization ERROR")
-            self._publish_stop_burst()
-            return True
         return False
 
     def _lookup_pose(self) -> Optional[AxisPose]:
@@ -592,21 +550,6 @@ class AxisWaypointActionServer(Node):
                 1.0 - 2.0 * (rotation.y * rotation.y + rotation.z * rotation.z),
             ),
         )
-
-    def _on_diagnostics(self, message: DiagnosticArray) -> None:
-        for status in message.status:
-            if status.name != "pb_gicp_localization/registration":
-                continue
-            values = {item.key: item.value for item in status.values}
-            if status.level == DiagnosticStatus.ERROR:
-                self._localization_error = True
-            elif (
-                status.level == DiagnosticStatus.OK
-                and values.get("accepted") == "1"
-                and values.get("has_accepted_once") == "1"
-            ):
-                self._localization_ready = True
-                self._localization_error = False
 
     def _publish_stop(self) -> bool:
         if not rclpy.ok(context=self.context):

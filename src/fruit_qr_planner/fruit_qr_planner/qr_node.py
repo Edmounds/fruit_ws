@@ -61,7 +61,7 @@ def image_to_bgr(message: Image, cv2_module: Any) -> Any:
 class FruitQrPlannerNode(Node):
     def __init__(self) -> None:
         super().__init__("fruit_qr_planner")
-        self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
+        self.declare_parameter("image_topic", "/camera/color/image_raw")
         self.declare_parameter(
             "current_area_topic",
             "/fruit_mission/current_area",

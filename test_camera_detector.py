@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import math
 import os
 import signal
@@ -56,34 +57,16 @@ from sensor_msgs.msg import Image  # noqa: E402
 
 from camera_control_gui import (  # noqa: E402
     CameraControlPanel,
-    D435iControlService,
-    discover_usb_controls,
-    run_v4l2_control,
+    CameraControlService,
     save_camera_controls,
-    set_usb_control,
 )
 
 
 WORKSPACE = Path('/home/rc4/fruit_ws')
 CONFIG_PATH = WORKSPACE / 'src/fruit_perception/config/fruit_perception.yaml'
-MODEL_DIR = WORKSPACE / 'src/fruit_perception/model'
 TMP_DIR = WORKSPACE / 'tmp'
 MODEL_INPUT_SIZE = 640
 PAD_COLOR = 114
-
-FRUIT_TYPES = [
-    'apple_ripe', 'apple_unripe', 'chili_ripe', 'chili_unripe',
-    'pumpkin_ripe', 'pumpkin_unripe', 'onion_ripe', 'onion_unripe',
-    'pear_ripe', 'pear_unripe', 'tomato_ripe', 'tomato_unripe',
-]
-MATURITY_TYPES = ['ripe', 'unripe']
-TREE_FRUIT_TYPES = [
-    'apple_ripe', 'apple_unripe', 'pear_ripe', 'pear_unripe',
-]
-SIDE_FRUIT_TYPES = [
-    'chili_ripe', 'chili_unripe', 'pumpkin_ripe', 'pumpkin_unripe',
-    'onion_ripe', 'onion_unripe', 'tomato_ripe', 'tomato_unripe',
-]
 
 
 @dataclass(frozen=True)
@@ -111,8 +94,6 @@ class CameraSelection:
     kind: str
     topic: str
     parameters: dict[str, Any]
-    controls: dict[str, int] | None = None
-    calibration: dict[str, Any] | None = None
 
 
 class FrameSubscriber(Node):
@@ -156,29 +137,13 @@ class FrameSubscriber(Node):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='Open a configured camera and show OpenVINO detections.',
-    )
-    camera_group = parser.add_mutually_exclusive_group(required=True)
-    camera_group.add_argument(
-        '--cam1',
-        action='store_true',
-        help='open the configured left USB camera',
-    )
-    camera_group.add_argument(
-        '--cam2',
-        action='store_true',
-        help='open the configured right USB camera',
-    )
-    camera_group.add_argument(
-        '--cam3',
-        action='store_true',
-        help='open the configured D435i color camera',
+        description='Open the camera and show OpenVINO detections.',
     )
     parser.add_argument(
         '--model',
         required=True,
-        choices=('A', 'B', 'C'),
-        help='model letter to load from src/fruit_perception/model',
+        choices=('A', 'B', 'C', 'D'),
+        help='area detector: A/C vegetables, B/D fruits (species only)',
     )
     parser.add_argument(
         '--conf',
@@ -207,138 +172,30 @@ def load_config() -> dict[str, Any]:
         return yaml.safe_load(config_file)
 
 
-def load_calibration(camera_parameters: dict[str, Any]) -> dict[str, Any]:
-    url = str(camera_parameters.get('camera_info_url', ''))
-    parsed = urlparse(url)
-    if parsed.scheme != 'file':
-        raise RuntimeError(f'Expected file:// camera_info_url, got {url!r}')
-
-    calibration_path = Path(unquote(parsed.path))
-    with calibration_path.open(encoding='utf-8') as calibration_file:
-        calibration = yaml.safe_load(calibration_file)
-
-    expected_width = int(camera_parameters['image_width'])
-    expected_height = int(camera_parameters['image_height'])
-    actual_width = int(calibration['image_width'])
-    actual_height = int(calibration['image_height'])
-    if (actual_width, actual_height) != (expected_width, expected_height):
-        raise RuntimeError(
-            f'Calibration {calibration_path} is {actual_width}x'
-            f'{actual_height}, expected {expected_width}x{expected_height}',
-        )
-
-    for key in (
-        'camera_matrix',
-        'distortion_coefficients',
-        'rectification_matrix',
-        'projection_matrix',
-    ):
-        if key not in calibration or 'data' not in calibration[key]:
-            raise RuntimeError(f'Calibration {calibration_path} missing {key}')
-
-    return calibration
-
-
-def select_camera(
-    args: argparse.Namespace,
-    config: dict[str, Any],
-) -> CameraSelection:
-    perception = config['fruit_perception_node']['ros__parameters']
-    controls = config['usb_camera_controls']['ros__parameters']
-
-    if args.cam1:
-        parameters = dict(config['left_camera']['ros__parameters'])
-        return CameraSelection(
-            name='left_camera',
-            kind='usb',
-            topic=perception['left_input_topic'],
-            parameters=parameters,
-            controls={
-                'backlight_compensation': int(
-                    controls['left_backlight_compensation'],
-                ),
-                'gamma': int(controls['left_gamma']),
-                'power_line_frequency': int(
-                    controls['left_power_line_frequency'],
-                ),
-            },
-            calibration=load_calibration(parameters),
-        )
-    if args.cam2:
-        parameters = dict(config['right_camera']['ros__parameters'])
-        return CameraSelection(
-            name='right_camera',
-            kind='usb',
-            topic=perception['right_input_topic'],
-            parameters=parameters,
-            controls={
-                'backlight_compensation': int(
-                    controls['right_backlight_compensation'],
-                ),
-                'gamma': int(controls['right_gamma']),
-                'power_line_frequency': int(
-                    controls['right_power_line_frequency'],
-                ),
-            },
-            calibration=load_calibration(parameters),
-        )
-
-    parameters = dict(config['d435i_camera']['ros__parameters'])
+def select_camera(config: dict[str, Any]) -> CameraSelection:
+    parameters = dict(config['camera']['ros__parameters'])
     return CameraSelection(
-        name='d435i',
-        kind='d435i',
-        topic='/camera/camera/color/image_raw',
+        name='camera',
+        kind='camera',
+        topic='/camera/color/image_raw',
         parameters=parameters,
     )
 
 
 def model_path_for(letter: str, config: dict[str, Any]) -> Path:
     perception = config['fruit_perception_node']['ros__parameters']
-    if letter == 'B':
-        return Path(perception['b_model_path'])
-    if letter == 'C':
-        return Path(perception['c_model_path'])
-    return MODEL_DIR / 'A.onnx'
-
-
-def apply_usb_controls(selection: CameraSelection) -> None:
-    parameters = selection.parameters
-    controls = selection.controls or {}
-    device = str(parameters['video_device'])
-
-    for name, value in controls.items():
-        run_v4l2_control(device, name, int(value))
-    run_v4l2_control(
-        device,
-        'white_balance_automatic',
-        int(bool(parameters['auto_white_balance'])),
-    )
-    if not bool(parameters['auto_white_balance']):
-        run_v4l2_control(
-            device,
-            'white_balance_temperature',
-            int(parameters['white_balance']),
-        )
-
-    auto_exposure = bool(parameters['autoexposure'])
-    run_v4l2_control(device, 'auto_exposure', 3 if auto_exposure else 1)
-    if not auto_exposure:
-        run_v4l2_control(
-            device,
-            'exposure_time_absolute',
-            int(parameters['exposure']),
-        )
+    model_root = Path(perception['model_root'])
+    if not model_root.is_absolute():
+        raise ValueError('model_root must be an absolute source-directory path')
+    detector = 'fruit_type' if letter in ('B', 'D') else 'vegetable_type'
+    return model_root / detector / 'best.onnx'
 
 
 def write_ros_params_file(selection: CameraSelection) -> Path:
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     params_path = TMP_DIR / f'test_camera_detector_{selection.name}_params.yaml'
-    if selection.kind == 'd435i':
-        node_key = '/camera/camera'
-    else:
-        node_key = '/**'
     document = {
-        node_key: {
+        '/camera': {
             'ros__parameters': selection.parameters,
         },
     }
@@ -365,41 +222,19 @@ def start_camera(selection: CameraSelection) -> tuple[subprocess.Popen, Path]:
     log_file = log_path.open('w', encoding='utf-8')
     params_path = write_ros_params_file(selection)
 
-    if selection.kind == 'usb':
-        apply_usb_controls(selection)
-        command = [
-            'ros2',
-            'component',
-            'standalone',
-            'usb_cam',
-            'usb_cam::UsbCamNode',
-            '-n',
-            selection.name,
-            '-c',
-            f'test_camera_detector_{selection.name}_container',
-            '-r',
-            f'__node:={selection.name}',
-            '-r',
-            f'image_raw:={selection.topic}',
-            '-r',
-            f'camera_info:=/{selection.name}/camera_info',
-            '-r',
-            f'/set_capture:=/{selection.name}/set_capture',
-        ]
-    else:
-        command = [
-            'ros2',
-            'component',
-            'standalone',
-            'realsense2_camera',
-            'realsense2_camera::RealSenseNodeFactory',
-            '-n',
-            'camera',
-            '--node-namespace',
-            '/camera',
-            '-c',
-            'test_camera_detector_d435i_container',
-        ]
+    command = [
+        'ros2',
+        'component',
+        'standalone',
+        'realsense2_camera',
+        'realsense2_camera::RealSenseNodeFactory',
+        '-n',
+        'camera',
+        '--node-namespace',
+        '/',
+        '-c',
+        'test_camera_detector_camera_container',
+    ]
 
     append_component_params(command, selection.parameters)
     log_file.write('$ ' + ' '.join(command) + '\n')
@@ -433,21 +268,10 @@ def stop_process(process: subprocess.Popen | None) -> None:
             process.wait(timeout=1.0)
 
 
-def labels_for_class_count(class_count: int) -> list[str]:
-    if class_count == len(MATURITY_TYPES):
-        return MATURITY_TYPES
-    if class_count == len(TREE_FRUIT_TYPES):
-        return TREE_FRUIT_TYPES
-    if class_count == len(SIDE_FRUIT_TYPES):
-        return SIDE_FRUIT_TYPES
-    if class_count == len(FRUIT_TYPES):
-        return FRUIT_TYPES
-    return []
-
-
 def parse_nms_output(
     output: np.ndarray,
     confidence_threshold: float,
+    labels: list[str],
 ) -> list[Detection]:
     rows = output.reshape(300, 6)
     detections: list[Detection] = []
@@ -459,7 +283,7 @@ def parse_nms_output(
         if not math.isfinite(class_value):
             continue
         class_id = int(round(class_value))
-        if class_id < 0 or class_id >= len(FRUIT_TYPES):
+        if class_id < 0 or class_id >= len(labels):
             continue
         if not all(math.isfinite(float(value)) for value in row[:4]):
             continue
@@ -470,7 +294,7 @@ def parse_nms_output(
                 float(row[2]),
                 float(row[3]),
                 score,
-                FRUIT_TYPES[class_id],
+                labels[class_id],
             ),
         )
     return detections
@@ -480,15 +304,15 @@ def parse_raw_yolo_output(
     output: np.ndarray,
     confidence_threshold: float,
     nms_iou_threshold: float,
+    labels: list[str],
 ) -> list[Detection]:
     if output.ndim != 3 or output.shape[0] != 1 or output.shape[1] < 5:
         raise RuntimeError(f'Unsupported model output shape {output.shape}')
 
     class_count = int(output.shape[1] - 4)
     candidate_count = int(output.shape[2])
-    labels = labels_for_class_count(class_count)
-    if not labels:
-        raise RuntimeError(f'Unsupported raw YOLO class count {class_count}')
+    if class_count != len(labels):
+        raise RuntimeError('Raw YOLO class count does not match model labels')
 
     data = output[0]
     boxes: list[list[int]] = []
@@ -562,14 +386,16 @@ def parse_detections(
     output: np.ndarray,
     confidence_threshold: float,
     nms_iou_threshold: float,
+    labels: list[str],
 ) -> list[Detection]:
     if output.shape == (1, 300, 6):
-        detections = parse_nms_output(output, confidence_threshold)
+        detections = parse_nms_output(output, confidence_threshold, labels)
     else:
         detections = parse_raw_yolo_output(
             output,
             confidence_threshold,
             nms_iou_threshold,
+            labels,
         )
     detections.sort(key=lambda detection: detection.score, reverse=True)
     return detections
@@ -707,6 +533,18 @@ class Detector:
             )
 
         model = self._core.read_model(str(model_path))
+        if not model.has_rt_info(['framework', 'names']):
+            raise RuntimeError('Detector is missing class-name metadata')
+        names = ast.literal_eval(model.get_rt_info(['framework', 'names']).value)
+        if (
+            not isinstance(names, dict)
+            or not names
+            or any(type(key) is not int for key in names)
+            or set(names) != set(range(len(names)))
+            or any(not isinstance(name, str) or not name for name in names.values())
+        ):
+            raise RuntimeError('Invalid detector class-name metadata')
+        self.labels = [names[index] for index in range(len(names))]
         input_port = model.input()
         if (
             input_port.get_element_type() != ov.Type.f32
@@ -751,7 +589,7 @@ class Detector:
             or (
                 len(output_shape) == 3
                 and output_shape[0] == 1
-                and output_shape[1] >= 5
+                and output_shape[1] == 4 + len(self.labels)
                 and output_shape[2] > 0
             )
         ):
@@ -797,7 +635,7 @@ def wait_for_publisher(node: Node, topic: str, timeout_seconds: float) -> bool:
 def run() -> int:
     args = parse_args()
     config = load_config()
-    selection = select_camera(args, config)
+    selection = select_camera(config)
     model_path = model_path_for(args.model, config)
     perception = config['fruit_perception_node']['ros__parameters']
     confidence_threshold = float(
@@ -837,42 +675,27 @@ def run() -> int:
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.moveWindow(window_name, 20, 60)
     try:
-        if selection.kind == 'd435i' and not wait_for_publisher(
+        if not wait_for_publisher(
             node,
             selection.topic,
             10.0,
         ):
             check_camera_process(camera_process, log_path)
             raise RuntimeError(
-                f'Timed out waiting for D435i frames on {selection.topic}',
+                f'Timed out waiting for Camera frames on {selection.topic}',
             )
-        if selection.kind == 'usb':
-            device = str(selection.parameters['video_device'])
-            controls = discover_usb_controls(device)
-            control_panel = CameraControlPanel(
+        control_service = CameraControlService(node)
+        control_panel = CameraControlPanel(
+            selection.name,
+            control_service.discover(),
+            control_service.set,
+            lambda values: save_camera_controls(
                 selection.name,
-                controls,
-                lambda name, value: set_usb_control(device, name, value),
-                lambda values: save_camera_controls(
-                    selection.name,
-                    values,
-                    CONFIG_PATH,
-                    TMP_DIR,
-                ),
-            )
-        else:
-            control_service = D435iControlService(node)
-            control_panel = CameraControlPanel(
-                selection.name,
-                control_service.discover(),
-                control_service.set,
-                lambda values: save_camera_controls(
-                    selection.name,
-                    values,
-                    CONFIG_PATH,
-                    TMP_DIR,
-                ),
-            )
+                values,
+                CONFIG_PATH,
+                TMP_DIR,
+            ),
+        )
     except BaseException:
         node.destroy_node()
         if rclpy.ok():
@@ -916,6 +739,7 @@ def run() -> int:
                 output,
                 confidence_threshold,
                 nms_iou_threshold,
+                detector.labels,
             )
 
             now = time.monotonic()

@@ -29,10 +29,10 @@ class PackageMetadataTest(unittest.TestCase):
 
         ast.parse(launch_source)
 
-    def test_d435i_color_is_the_default_scan_topic(self):
+    def test_camera_color_is_the_default_scan_topic(self):
         config_source = (PACKAGE_ROOT / "config" / "fruit_qr_planner.yaml").read_text()
 
-        self.assertIn('/camera/camera/color/image_raw', config_source)
+        self.assertIn('/camera/color/image_raw', config_source)
 
     def test_launch_loads_configuration_from_source_workspace(self):
         launch_source = (PACKAGE_ROOT / "launch" / "fruit_qr_planner.launch.py").read_text()

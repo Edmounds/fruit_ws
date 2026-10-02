@@ -23,7 +23,9 @@ source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 
 # 2. 编译本功能包
 cd /home/rc4/fruit_ws
-colcon build --packages-select fruit_arm_planner
+colcon build --base-paths src --packages-up-to fruit_arm_planner \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 ```
 
 ---
@@ -69,10 +71,48 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 | `move X Y Z PITCH_DEG [DURATION_MS] [ptp|lin] [hold|open|close]` | 笛卡尔目标（m、绝对俯仰角度）；例如 `move 0.20 0 0.25 0 2500 ptp hold` |
 | `joints Q1 Q2 Q3 Q4 [DURATION_MS] [hold|open|close]` | 连杆目标角度（度）：Q2 相对竖直（后仰为正），Q3 为小臂相对水平面的绝对角，Q4 为末端相对水平面的绝对俯仰角。控制台按 YAML 偏置换算后下发；例如 `joints 0 20 -40 0 2500 hold` |
 | `motors Q1 Q2 Q3 Q4 [DURATION_MS] [hold|open|close]` | 直接输入四个原始电机硬件角（度），不再叠加偏置；沿用旧版 `joints` 的语义 |
-| `preset NAME` | 直接执行 YAML 中的预设，例如 `preset home`；现有名称为 `zero`、`home`、`retract`、`pick_sequence` |
+| `preset NAME` | 执行源码 YAML 中存在的预设，例如 `preset zero`；当前名称为 `zero`、`left_look`、`right_look`、`pick_sequence`，现场可调 |
+| `jog` | 进入终端内键盘微调和示教打点界面，按键直接执行运动 |
+| `reload` | 调用 `/arm_planner_node/reload_presets`，重新加载源码 YAML 的全部 presets |
+
+#### 键盘微调和示教打点
+
+先确认周围安全且实测反馈有效，在 `arm>` 输入 `jog`。它使用 PTP 服务运动，不保证末端走直线或路径无碰撞。
+
+| 按键 | 行为 |
+| --- | --- |
+| ↑ / ↓ | 累计 X 增加 / 减少 1 cm |
+| ← / → | 累计 Y 增加 / 减少 1 cm（向左 / 向右） |
+| `a` / `z` | 累计 Z 增加 / 减少 1 cm |
+| `s` / `x` | 末端绝对俯仰角增加 / 减少 5°，XYZ 目标不变，由 IK 联动关节 |
+| `c` / `o` | 原地闭合 / 张开夹爪，当前点记录动作分别为 `gripper: 2` / `gripper: 1` |
+| `h` | 当前点记录 HOLD (`gripper: 0`)，取消尚未下发的夹爪动作；不撤销已下发动作，也不张开夹爪 |
+| 空格 | 到位后弹出终端输入框，输入 preset 名称；Enter 保存，Esc 取消 |
+| `r` | 无运动时热重载全部 presets |
+| `t` / `e` | STOP / ESTOP，清除待执行目标；恢复后退出并重新进入 jog |
+| Esc | 清除待执行目标并退出；若仍有运动则请求 STOP |
+| Ctrl+C | 请求急停并退出控制台 |
+
+进入时以最新四轴实测角的 FK 作为初始 XYZ 和俯仰角。空闲时按键自动提交运动；运动期间继续累加目标，完成后自动执行最新目标，**不逐键排队、不打断当前轨迹**。每次提交使用运行中 Planner 的 `default_duration_ms`，位置/俯仰运动的夹爪动作为保持。界面区分实测位置、累计目标、执行目标、待执行夹爪动作及当前点记录动作；不可达、越限、执行失败或停止后清除所有待执行动作、不自动续发，须检查原因并重新进入模式。
+
+`c/o` 复用 `move_joints` 服务，以最新有效四轴实测硬件角（转为度）作为目标，只改变夹爪动作，不再 IK 或叠加 Cartesian offset。服务起点仍由 Planner 获取实测角，反馈与执行有时间差，不应视为硬件锁轴。夹爪动作在默认时长轨迹的末点触发，并非按键瞬间完成。运动中按 `c/o` 会合并为最新待执行夹爪动作；当前动作结束后先原地执行夹爪动作，再继续累计移动。`h` 取消尚未下发的夹爪动作，已提交的请求不受它撤销。
+
+初始记录标签为 HOLD。`c/o` 成功执行后标签保留，供空格记录；按 `h` 或开始下一次位置/俯仰点动后标签恢复 HOLD，后续移动不会反复发送闭合/张开。不按键不持续发送命令，也不会自动重置刚完成的 `c/o` 标签。该标签是动作意图，不证明夹爪已抓住果实，实测 `gripper_state` 单独显示。
+
+移动键和夹爪键不会写文件。空格只在全部累计运动和夹爪请求完成后可用，冻结当前有效实测位置和姿态，再输入 preset 名称：已有 preset 按其 `cartesian` / `joints` / `link_angles` 类型转换后追加，不存在则新建 Cartesian preset。航点时间读取源码 YAML 的 `planning.default_duration_ms`，`gripper` 保存当前点的动作标签；不额外写入 `dwell_ms`，闭合/张开航点回放沿用 `planning.default_dwell_ms`。原有配置和注释不整体重写，文件写入失败不覆盖原文件。保存后自动请求热重载；若重载失败，文件仍已保存，处理错误后执行 `reload`。
+
+点动显示及记录的是实际模型坐标。提交笛卡尔服务前先减去 `cartesian_offset_m`，抵消 Planner 的偏置叠加；Cartesian preset 直接保存 FK 坐标，不再加偏置。终端弹窗期间不执行运动键；Esc 取消和保存均不会执行该 preset。
+
+`reload` 只刷新全部 presets，运动期间或校验失败时保留旧内存内容，不修改几何、关节映射及 planning。调整默认时长、偏置或机械参数后重启 Planner 和控制台，保证双方使用同一份配置；升级本次 Python 代码也需构建并重启 Planner。点动时长是计划运动时间，不含通信及启动等待，不代表固定按键执行频率。
+
+可直接用 ROS CLI 重载预设（不会驱动机械臂）：
+
+```bash
+ros2 service call /arm_planner_node/reload_presets std_srvs/srv/Trigger '{}'
+```
 
 `DURATION_MS=0` 或省略时使用规划器默认时间；两种关节命令默认夹爪保持。当前标定下，`joints 0 0 0 0` 会换算成约 `[0, 1, -6, -5]°` 的硬件目标；`motors 0 0 0 0` 则原样下发全零硬件角。`status` 显示原始电机角以及按 YAML 反算的连杆角。还支持 `stop`、`estop`、`level`、`help`、`quit`。
-预设的 `coordinate_frame: link_angles` 使用与 `joints` 相同的四项定义，末端目标为 `0°` 时腕部会自动抵消小臂倾角；`coordinate_frame: joints` 则保留原始电机角定义。`retract` 当前设为小臂 `-100°`、末端 `-100°` 以维持折叠，若将末端改为 `0°`，所需腕电机目标为 `95°`，超过配置上限 `92.4°`，规划器会拒绝。
+预设的 `coordinate_frame: link_angles` 使用与 `joints` 相同的四项定义，末端目标为 `0°` 时腕部自动抵消小臂倾角；`coordinate_frame: joints` 保留原始电机角定义。折叠姿态也须校验腕部映射后是否超限，不能复制旧限位数值；当前配置没有 `home/retract`，对应快捷服务会返回未知预设失败。
 运行中输入 `level info`、`level debug` 或 `level trace` 可立即切换，不需要重启：
 
 | 等级 | 输出 |
@@ -96,16 +136,9 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 笛卡尔 `pitch_deg=0` 时，不能直接用硬件角 `joint_3 + joint_4` 判断末端是否水平：先按配置将 Q3/Q4 分别换回理论角，俯仰角应为 `(joint_3 - q3.offset_deg) / q3.direction + (joint_4 - q4.offset_deg) / q4.direction`（各项单位一致）。当前 YAML 两轴方向均为 `+1`、偏置为 `-6°` 和 `-5°`，所以 `joint_3 + joint_4` 应为 `-11°`。修改 YAML 后需要重启规划节点；修改 Python 后还需重构建。
 
 ### 3. 正常启动控制台输出核对
-当节点启动成功时，终端将打印加载的参数信息：
-```text
-[arm_planner_node-1] [INFO] [arm_planner_node]: Loaded arm geometry: d1=0.14m, a2=0.26m, a3=0.26m, a4=0.08m
-[arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q1] mapping: offset=0.0°, dir=+1.0, limits=[-180.0°, 180.0°]
-[arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q2] mapping: offset=-89.0°, dir=+1.0, limits=[-87.0°, 45.0°]
-[arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q3] mapping: offset=-6.0°, dir=+1.0, limits=[-135.0°, 90.0°]
-[arm_planner_node-1] [INFO] [arm_planner_node]: Joint [q4] mapping: offset=-5.0°, dir=+1.0, limits=[-90.0°, 92.4°]
-[arm_planner_node-1] [INFO] [arm_planner_node]: Loaded 4 arm presets: ['zero', 'home', 'retract', 'pick_sequence']
-[arm_planner_node-1] [INFO] [arm_planner_node]: Fruit Arm Planner Node fully ready with Service API.
-```
+启动日志应列出 geometry、各轴 offset/direction/limits、已加载 preset 名称和 Service API ready。
+逐项与当前源码 YAML 对照，不拿历史日志的几何、限位或 preset 名称作固定验收值。
+节点 ready 只证明构造完成；实际运动仍要求新鲜有效的四轴反馈。
 
 ---
 
@@ -114,13 +147,13 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 现场更换机械件或出现动作偏差时，按以下步骤定位修改 `src/fruit_arm_planner/config/arm_presets.yaml`：
 
 ### 1. 机械连杆尺寸微调 (`geometry`)
-若机械加工装配后尺寸发生变动，直接修改对应字段（单位: 米）：
+若机械尺寸发生变动，修改对应字段（单位: 米）。以下为本次核对的配置示例，现场测量与源码 YAML 优先：
 ```yaml
 geometry:
-  d1: 0.14       # 底座安装面至肩轴中心距
+  d1: 0.062      # 底座安装面至肩轴中心距
   a2: 0.26       # 肩轴至肘轴距
   a3: 0.26       # 肘轴至腕轴距
-  a4: 0.08       # 腕轴至夹爪采摘作用点中心距
+  a4: 0.12       # 腕轴至夹爪采摘作用点中心距
 ```
 
 ### 2. 实机零位偏置与方向校准 (`joint_mapping`)
@@ -141,6 +174,7 @@ geometry:
 - `interpolation_step_ms`：路点时间间隔目标值。每条轨迹均从最新实测角的 0 ms 路点开始；预设 `duration_ms` 为逐段时长。
 - `default_dwell_ms`：预设夹爪动作路点未指定 `dwell_ms` 时的默认驻留时间。
 - `mode_start_delay_ms`：发布全部路点后、发布 `Mode=TRAJECTORY` 前的调试等待时间，默认 100 ms。它只是时间缓冲，不能证明通信桥已经完成逐点发送或下位机已经装载全部路点；正式修复仍应由通信桥提供跨消息发送屏障。
+- `cartesian_offset_m`：笛卡尔服务目标的 `[x, y, z]` 平移量（米）。例如 `[0.0, 0.0, -0.03]` 会让服务目标的 Z 减少 3 cm，然后再做 PTP/LIN 解算和限位校验；`cmd_cartesian` 也生效，YAML 笛卡尔预设、关节服务及关节预设不受影响。修改后重启规划节点才生效。
 
 节点启动时从源码目录的 `arm_presets.yaml` 读取几何、四轴偏置/方向/限位、规划时间参数与预设；缺少必需项或基本结构无效时启动失败，不回退到 Python 中的机械参数。修改限位前应核实四轴实测角仍在新范围内，否则规划器会拒绝运动。
 
@@ -160,11 +194,9 @@ source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 # ========================================================
 # 1. 基础服务调用（预设姿态触发）
 # ========================================================
-# 触发初始 Home 姿态复位 (大臂微后仰稳固重心)
-ros2 service call /arm_planner_node/home std_srvs/srv/Trigger
-
-# 触发底盘导航避障折叠姿态
-ros2 service call /arm_planner_node/retract std_srvs/srv/Trigger
+# 执行现有基准预设；home/retract 快捷服务仅在配置了同名预设后可用
+ros2 service call /arm_planner_node/execute_preset fruit_arm_interfaces/srv/ExecuteArmPreset \
+  "{preset_name: 'zero'}"
 
 # 触发平滑减速停止 (mode=1)
 ros2 service call /arm_planner_node/stop std_srvs/srv/Trigger
@@ -240,7 +272,8 @@ ros2 topic echo /fruit_hardware_bridge/arm/status
   ```bash
   ls -l /dev/stm32
   ```
-  若权限不足，需确认 udev 规则或临时执行 `sudo chmod 666 /dev/stm32`。
+  `/dev/stm32` 是部分项目脚本要求的设备别名，当前 protocol YAML 的 port 为 `/dev/ttyACM0`；
+  检查实际 launch 使用的设备，不要只查别名。权限不足时核对 udev 和用户所属组，不默认开放全员写权限。
 
 ---
 
@@ -251,7 +284,7 @@ ros2 topic echo /fruit_hardware_bridge/arm/status
 ---
 
 ### 故障 3：发布空间坐标报错 `IK failed: 目标超出工作空间可达范围`
-- **产生原因**：目标点 $(X, Y, Z)$ 离机械臂过远（大于 $a_2 + a_3 = 0.32\text{m}$）或过近（小于 $|a_2 - a_3| = 0.0\text{m}$），三角形无法闭合。
+- **产生原因**：先按末端 pitch、`a4` 和 `d1` 换算腕部中心到肩轴的距离；其须在 $|a_2-a_3|$ 到 $a_2+a_3$ 之间，不能把末端到基座的距离直接和旧 `0.32 m` 常量比较。当前 a2/a3 均为 0.26 m，其和为 0.52 m，实际可运动范围还受关节限位影响。
 - **解决方案**：检查视觉相机测深坐标系转换是否正确，确认目标点处于机械臂有效工作半球包络面内。
 
 ---
@@ -259,5 +292,5 @@ ros2 topic echo /fruit_hardware_bridge/arm/status
 ### 故障 4：下位机上报 `error_code: 1002 (LIMIT_EXCEEDED)`
 - **产生原因**：下位机单片机内部固件所烧录的限位阈值与上位机 YAML 不一致。
 - **解决方案**：
-  1. 打开 `docs/LOWER_CONTROLLER_COMMANDS.md` 核对下位机当前固件认可的物理限位；
+  1. 核对实际固件认可的物理限位；[协议参考](../../../docs/LOWER_CONTROLLER_COMMANDS.md) 只定义错误码，不提供已实测固件限位；
   2. 保证 `arm_presets.yaml` 中的 `limits_deg` 严格处于下位机固件范围以内。

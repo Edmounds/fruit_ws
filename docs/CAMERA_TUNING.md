@@ -12,26 +12,37 @@ source scripts/setup_fruit_runtime.bash
 
 ```
 
-按要调整的摄像头选择一条命令：
+启动测试与调参（默认使用深度相机 camera）：
 
 ```bash
-# 左侧 USB 摄像头：/dev/left_cam
-python3 test_camera_detector.py --cam1 --model B
+# A 区模型
+python3 test_camera_detector.py --model A
 
-# 右侧 USB 摄像头：/dev/right_cam
-python3 test_camera_detector.py --cam2 --model C
+# B 区模型（整树果实）
+python3 test_camera_detector.py --model B
 
-# D435i 彩色摄像头
-python3 test_camera_detector.py --cam3 --model A
+# C 区模型（蔬菜果实）
+python3 test_camera_detector.py --model C
+
+# D 区模型（复用 B 模型）
+python3 test_camera_detector.py --model D
 ```
 
-`--model` 必须是 `A`、`B` 或 `C`，需要测试其他模型时替换示例中的字母。
+`--model` 必须是 `A`、`B`、`C` 或 `D`。脚本从当前 YAML 的 `model_root`
+读取物种检测器：A/C 使用 `vegetable_type/best.onnx`，B/D 使用
+`fruit_type/best.onnx`，类别名称读取模型自身元数据，不再依赖旧的
+`a_model_path/b_model_path/c_model_path` 或按类别数量猜标签。
+
+此 GUI 用于**物种检测与相机调参**，显示模型内部标签（如 `pepper`），不执行
+成熟度分类、深度锁定或采摘。完整两阶段结果请查看正式感知节点的
+`/fruit_perception/camera/annotated_image` 与 `/fruit_perception/decision`；
+正式输出 A 区为 `ripe/unripe`，C 区辣椒为 `chili_ripe/chili_unripe`。
 
 检测阈值默认读取
 `/home/rc4/fruit_ws/src/fruit_perception/config/fruit_perception.yaml`，也可以只在本次运行中通过命令行覆盖：
 
 ```bash
-python3 test_camera_detector.py --cam1 --model B --conf 0.60 --iou 0.45
+python3 test_camera_detector.py --model B --conf 0.60 --iou 0.45
 ```
 
 `--conf` 是最低置信度阈值。低于这个值的候选框不会进入 GUI；值越高，通常误检越少，但低置信度的真实目标也更容易漏掉。

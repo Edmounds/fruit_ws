@@ -1,16 +1,13 @@
 fruit_mission:
   ros__parameters:
     stable_stop_sec: 1.0
-    side_observation_timeout_sec: 4.0
+    a_observation_order: ["left", "right"]
     qr_plan_timeout_sec: 20.0
     b_qr_fallback_targets: ["梨子", "苹果", "梨子", "苹果", "苹果", "苹果", "梨子", "梨子"]
     c_qr_fallback_targets: ["南瓜", "西红柿", "辣椒", "洋葱", "辣椒", "南瓜", "西红柿", "洋葱"]
     c_qr_fallback_positions: [4, 3, 1, 10, 8, 9, 2, 11]
-    callback_timeout_sec: 30.0
-    hardware_endpoint_timeout_sec: 10.0
     active_mode_timeout_sec: 30.0
-    d435i_detection_timeout_sec: 20.0
-    preferred_side: "left"
+    camera_detection_timeout_sec: 20.0
     c_distribution_output_dir: "/home/rc4/fruit_ws/tmp/fruit_mission"
     waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml"
     mission_flow: "full"
@@ -30,9 +27,15 @@ fruit_mission:
     decision_topic: "/fruit_perception/decision"
     b_plan_topic: "/fruit/b_pick_plan"
     c_plan_topic: "/fruit/c_pick_plan"
-    state_command_topic: "/fruit_hardware_bridge/state_machine/command"
-    arm_target_topic: "/fruit_hardware_bridge/arm/target"
-    callback_topic: "/fruit_hardware_bridge/execution/callback"
+    camera_extrinsic_config: "/home/rc4/fruit_ws/src/fruit_mission/config/camera_extrinsic.yaml"
+    # Names only: define the actual joint trajectories in arm_presets.yaml.
+    # Missing or failed presets stop the task; never substitute a placeholder pose.
+    arm_presets:
+      observation_left: "left_look"
+      observation_right: "right_look"
+      qr: "qr_look"
+      retract: "retract"
+      home: "home"
 
     tts:
       piper_executable: "/home/rc4/fruit_ws/.venv/piper-tts/bin/piper"

@@ -13,6 +13,8 @@ enum class DetectionLabelSet
   kMaturity,
   kTreeFruit,
   kSideFruit,
+  kFruitSpecies,
+  kVegetableSpecies,
 };
 
 struct Detection

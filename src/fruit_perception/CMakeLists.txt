@@ -23,7 +23,6 @@ find_package(realsense2_camera_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(std_srvs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FruitDetection.msg"
@@ -57,7 +56,6 @@ ament_target_dependencies(
   rcl_interfaces
   rclcpp
   std_msgs
-  std_srvs
 )
 target_include_directories(detection_parser PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -69,10 +67,10 @@ ament_target_dependencies(detection_parser sensor_msgs)
 
 add_library(
   fruit_perception_component SHARED
-  src/d435i_target_selector.cpp
+  src/camera_target_selector.cpp
   src/b_target_selector.cpp
   src/fruit_perception_node.cpp
-  src/side_target_selector.cpp
+  src/ripeness_classifier.cpp
 )
 target_include_directories(fruit_perception_component PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

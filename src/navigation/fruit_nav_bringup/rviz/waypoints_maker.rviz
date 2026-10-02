@@ -105,9 +105,9 @@ Visualization Manager:
         All Enabled: true
         base_link:
           Value: true
-        front_mid360:
+        lidar_link:
           Value: true
-        livox_frame:
+        lidar_imu_link:
           Value: true
         odom:
           Value: true
@@ -119,8 +119,8 @@ Visualization Manager:
       Tree:
         odom:
           base_link:
-            front_mid360:
-              livox_frame: {}
+            lidar_link:
+              lidar_imu_link: {}
       Update Interval: 0
       Value: true
   Enabled: true

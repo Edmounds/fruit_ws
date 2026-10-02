@@ -15,30 +15,14 @@ from tkinter import ttk
 from typing import Any, Callable
 
 import rclpy
+import yaml
 from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.srv import DescribeParameters, GetParameters, SetParameters
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 
-from auto_tune_usb_cameras import update_yaml_values
 
-
-USB_CONTROL_LABELS = {
-    'auto_exposure': 'Auto exposure',
-    'exposure_time_absolute': 'Exposure',
-    'gain': 'Gain',
-    'white_balance_automatic': 'Auto white balance',
-    'white_balance_temperature': 'White balance',
-    'brightness': 'Brightness',
-    'contrast': 'Contrast',
-    'saturation': 'Saturation',
-    'sharpness': 'Sharpness',
-    'gamma': 'Gamma',
-    'backlight_compensation': 'Backlight compensation',
-    'power_line_frequency': 'Power line frequency',
-}
-
-D435I_CONTROL_LABELS = {
+CAMERA_CONTROL_LABELS = {
     'rgb_camera.enable_auto_exposure': 'Auto exposure',
     'rgb_camera.exposure': 'Exposure',
     'rgb_camera.gain': 'Gain',
@@ -53,21 +37,7 @@ D435I_CONTROL_LABELS = {
     'rgb_camera.power_line_frequency': 'Power line frequency',
 }
 
-USB_CAMERA_PARAMETER_KEYS = {
-    'auto_exposure': 'autoexposure',
-    'exposure_time_absolute': 'exposure',
-    'gain': 'gain',
-    'white_balance_automatic': 'auto_white_balance',
-    'white_balance_temperature': 'white_balance',
-    'brightness': 'brightness',
-    'contrast': 'contrast',
-    'saturation': 'saturation',
-    'sharpness': 'sharpness',
-}
-
 AUTO_CONTROL_FOR = {
-    'exposure_time_absolute': 'auto_exposure',
-    'white_balance_temperature': 'white_balance_automatic',
     'rgb_camera.exposure': 'rgb_camera.enable_auto_exposure',
     'rgb_camera.white_balance': 'rgb_camera.enable_auto_white_balance',
 }
@@ -270,8 +240,8 @@ class CameraControlPanel:
             pass
 
 
-class D435iControlService:
-    NODE_NAME = '/camera/camera'
+class CameraControlService:
+    NODE_NAME = '/camera'
 
     def __init__(self, node: Node) -> None:
         self._node = node
@@ -299,7 +269,7 @@ class D435iControlService:
                     f'Parameter service is unavailable for {self.NODE_NAME}',
                 )
 
-        names = list(D435I_CONTROL_LABELS)
+        names = list(CAMERA_CONTROL_LABELS)
         get_response = self._call(
             self._get_client,
             GetParameters.Request(names=names),
@@ -347,7 +317,7 @@ class D435iControlService:
         if value.type == ParameterType.PARAMETER_BOOL:
             return CameraControl(
                 name,
-                D435I_CONTROL_LABELS[name],
+                CAMERA_CONTROL_LABELS[name],
                 0.0,
                 1.0,
                 1.0,
@@ -361,7 +331,7 @@ class D435iControlService:
             value_range = descriptor.integer_range[0]
             return CameraControl(
                 name,
-                D435I_CONTROL_LABELS[name],
+                CAMERA_CONTROL_LABELS[name],
                 float(value_range.from_value),
                 float(value_range.to_value),
                 float(max(1, value_range.step)),
@@ -377,7 +347,7 @@ class D435iControlService:
                 return None
             return CameraControl(
                 name,
-                D435I_CONTROL_LABELS[name],
+                CAMERA_CONTROL_LABELS[name],
                 value_range.from_value,
                 value_range.to_value,
                 value_range.step,
@@ -385,107 +355,6 @@ class D435iControlService:
                 float,
             )
         return None
-
-
-def run_v4l2_control(device: str, control: str, value: int) -> None:
-    result = subprocess.run(
-        [
-            'v4l2-ctl',
-            '--device',
-            device,
-            '--set-ctrl',
-            f'{control}={value}',
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        details = (result.stderr or result.stdout).strip()
-        raise RuntimeError(
-            f'Failed to set {control}={value} on {device}: {details}',
-        )
-
-
-def discover_usb_controls(device: str) -> list[CameraControl]:
-    result = subprocess.run(
-        ['v4l2-ctl', '--device', device, '--list-ctrls'],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        details = (result.stderr or result.stdout).strip()
-        raise RuntimeError(f'Failed to query controls on {device}: {details}')
-
-    discovered: dict[str, tuple[str, dict[str, int]]] = {}
-    pattern = re.compile(r'^\s*(\w+)\s+0x[0-9a-f]+ \(([^)]+)\)\s*:\s*(.*)$')
-    for line in result.stdout.splitlines():
-        match = pattern.match(line)
-        if match is None:
-            continue
-        name, control_type, details = match.groups()
-        fields = {
-            key: int(value)
-            for key, value in re.findall(r'(\w+)=(-?\d+)', details)
-        }
-        if {'default', 'value'} <= fields.keys():
-            discovered[name] = (control_type, fields)
-
-    controls: list[CameraControl] = []
-    for name, label in USB_CONTROL_LABELS.items():
-        if name not in discovered:
-            continue
-        control_type, fields = discovered[name]
-        if name == 'auto_exposure':
-            controls.append(
-                CameraControl(
-                    name,
-                    label,
-                    0.0,
-                    1.0,
-                    1.0,
-                    fields['value'] == 3,
-                    bool,
-                ),
-            )
-            continue
-        if control_type == 'bool':
-            controls.append(
-                CameraControl(
-                    name,
-                    label,
-                    0.0,
-                    1.0,
-                    1.0,
-                    bool(fields['value']),
-                    bool,
-                ),
-            )
-            continue
-        controls.append(
-            CameraControl(
-                name,
-                label,
-                float(fields['min']),
-                float(fields['max']),
-                float(max(1, fields.get('step', 1))),
-                fields['value'],
-                int,
-            ),
-        )
-    return controls
-
-
-def set_usb_control(
-    device: str,
-    name: str,
-    value: bool | int | float,
-) -> None:
-    hardware_value = int(value)
-    if name == 'auto_exposure':
-        hardware_value = 3 if bool(value) else 1
-    run_v4l2_control(device, name, hardware_value)
 
 
 def save_camera_controls(
@@ -499,28 +368,12 @@ def save_camera_controls(
     backup_path = tmp_dir / f'fruit_perception_{timestamp}.yaml.bak'
     shutil.copy2(config_path, backup_path)
 
-    if camera_name == 'd435i':
-        updates = {'d435i_camera': {'ros__parameters': values}}
-    else:
-        camera_parameters = {
-            USB_CAMERA_PARAMETER_KEYS[name]: value
-            for name, value in values.items()
-            if name in USB_CAMERA_PARAMETER_KEYS
-        }
-        side = 'left' if camera_name == 'left_camera' else 'right'
-        v4l2_controls = {
-            f'{side}_backlight_compensation': values[
-                'backlight_compensation'
-            ],
-            f'{side}_gamma': values['gamma'],
-            f'{side}_power_line_frequency': values[
-                'power_line_frequency'
-            ],
-        }
-        updates = {
-            camera_name: {'ros__parameters': camera_parameters},
-            'usb_camera_controls': {'ros__parameters': v4l2_controls},
-        }
+    with config_path.open('r', encoding='utf-8') as f:
+        doc = yaml.safe_load(f)
+    if 'camera' not in doc or 'ros__parameters' not in doc['camera']:
+        raise KeyError('Invalid config: missing camera.ros__parameters')
+    doc['camera']['ros__parameters'].update(values)
+    with config_path.open('w', encoding='utf-8') as f:
+        yaml.safe_dump(doc, f, sort_keys=False)
 
-    update_yaml_values(config_path, updates)
     return backup_path

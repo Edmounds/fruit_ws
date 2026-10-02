@@ -24,6 +24,7 @@
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "tf2/LinearMath/Transform.h"
 #include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_broadcaster.h"
 #include "tf2_ros/transform_listener.h"
 
 namespace loam_interface
@@ -57,9 +58,11 @@ private:
 
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pcd_pub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr base_odom_pub_;
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
+  std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
   std::string state_estimation_topic_;
   std::string registered_scan_topic_;
@@ -87,6 +90,10 @@ private:
   bool odometry_initialized_{false};
   // Constant after initialization: aligns the selected Point-LIO origin pose with base_link.
   tf2::Transform tf_odom_to_camera_init_;
+
+  bool previous_base_odom_initialized_{false};
+  rclcpp::Time previous_base_odom_time_{0, 0, RCL_ROS_TIME};
+  tf2::Transform previous_base_odom_transform_;
 };
 
 }  // namespace loam_interface

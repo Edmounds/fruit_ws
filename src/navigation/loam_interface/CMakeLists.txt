@@ -42,7 +42,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_extrinsic_math test/test_extrinsic_math.cpp)
   target_include_directories(test_extrinsic_math PRIVATE include)
-  ament_target_dependencies(test_extrinsic_math tf2)
+  ament_target_dependencies(test_extrinsic_math tf2 geometry_msgs)
 endif()
 
 #############

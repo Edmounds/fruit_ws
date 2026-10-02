@@ -27,7 +27,6 @@ def test_axis_navigation_config_has_valid_runtime_parameters():
         assert isinstance(controller[key], (int, float))
         assert controller[key] > 0.0
     assert controller["min_linear_speed"] >= 0.0
-    assert controller["diagnostics_topic"] == "/diagnostics"
 
 
 def test_package_installs_nodes_config_and_launch():

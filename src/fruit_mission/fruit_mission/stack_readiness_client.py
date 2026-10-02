@@ -8,12 +8,14 @@ import time
 
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import FollowWaypoints
+from fruit_arm_interfaces.srv import ExecuteArmPreset, MoveArmCartesian
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.time import Time
 from std_msgs.msg import Bool
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 from tf2_ros import Buffer
 from tf2_ros import TransformException
 from tf2_ros import TransformListener
@@ -104,6 +106,26 @@ class StackReadinessClient(Node):
                 f"Timed out waiting for action: {action_name}"
             )
         return ready
+
+    def wait_for_planner(self, timeout_sec: float) -> bool:
+        """Check typed motion/preset/STOP services without commanding the arm."""
+        deadline = time.monotonic() + timeout_sec
+        for service_type, name in (
+            (MoveArmCartesian, "/arm_planner_node/move_cartesian"),
+            (ExecuteArmPreset, "/arm_planner_node/execute_preset"),
+            (Trigger, "/arm_planner_node/stop"),
+        ):
+            client = self.create_client(service_type, name)
+            try:
+                ready = client.wait_for_service(
+                    timeout_sec=max(0.0, deadline - time.monotonic())
+                )
+            finally:
+                self.destroy_client(client)
+            if not ready:
+                self.get_logger().error(f"Timed out waiting for planner service: {name}")
+                return False
+        return True
 
     def wait_for_transform(
         self,
@@ -285,6 +307,9 @@ def _parser() -> argparse.ArgumentParser:
     bridge = commands.add_parser("bridge")
     bridge.add_argument("--timeout", type=float, required=True)
 
+    planner = commands.add_parser("planner")
+    planner.add_argument("--timeout", type=float, required=True)
+
     endpoint = commands.add_parser("endpoint")
     endpoint.add_argument("--topic", required=True)
     endpoint.add_argument(
@@ -325,6 +350,8 @@ def main(args=None) -> None:
             ready = node.wait_for_action(action_name, options.timeout)
         elif options.command == "bridge":
             ready = node.wait_for_bridge(options.timeout)
+        elif options.command == "planner":
+            ready = node.wait_for_planner(options.timeout)
         elif options.command == "endpoint":
             ready = node.wait_for_endpoint(
                 options.topic,

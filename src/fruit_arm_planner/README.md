@@ -6,7 +6,12 @@ mission 可调用关节单目标、机械臂根部坐标系下的笛卡尔单目
 
 ## 当前集成状态
 
-规划器和服务接口可编译并可启动，但尚未接入 `fruit_mission` 的采摘流程。任务层目前仍发布旧的 `ArmTarget` / `StateMachineCommand` 并等待 `ExecutionCallback`；这些消息已从 `fruit_hardware_interfaces` 的生成列表移除。串口桥的可靠发送按消息 ID 分别排队，现有 Header、Point、Mode 连续发布尚不能保证下位机按完整轨迹顺序接收。因此，在完成任务层迁移和轨迹传输时序验证前，本包不能用于实机采摘闭环。
+mission 和单 camera 调试客户端已共用 `CameraTargetPlannerClient`，通过外参与新鲜实测关节 FK 将
+camera 光学点换为机械臂基座坐标，调用 `move_cartesian` 并等待结果；不再发送视觉 `ArmTarget`。
+当前夹爪 HOLD，仅到目标点，不是完整夹取工序。观察方向、区域、扫码姿态及收臂仍依赖旧
+`StateMachineCommand` / `ExecutionCallback`，已从接口生成列表移除；任务启动脚本尚未启动 planner。
+桥可靠发送按消息 ID 排队，Header/Point/Mode 尚无跨类型装载顺序保证。因此完整实机采摘闭环尚未验收。
+坐标边界见[mission 换算说明](../fruit_mission/docs/CAMERA_TARGET_TRANSFORM.md)，控制必须按[接口 API](docs/03_INTERFACES_AND_API.md)。
 
 ---
 
@@ -33,7 +38,10 @@ mission 可调用关节单目标、机械臂根部坐标系下的笛卡尔单目
 source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 
 # 编译
-colcon build --packages-select fruit_arm_planner
+cd /home/rc4/fruit_ws
+colcon build --base-paths src --packages-up-to fruit_arm_planner \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 ```
 
 ### 2. 启动规划节点
@@ -50,16 +58,18 @@ ros2 launch fruit_arm_planner fruit_arm_planner.launch.py
 `debug` 显示每帧状态，`trace` 还显示每个 ROS 轨迹路点。
 
 ### 3. 常用调试指令
+
+下列运动调用会实际驱动硬件，先确认周围安全且反馈有效。
+预设名以源码 YAML 为准；当前有 `zero/left_look/right_look/pick_sequence`，
+`home/retract` 快捷服务依赖同名预设存在，否则会返回失败。
 ```bash
-# 触发安全 Home 姿态复位
-ros2 service call /arm_planner_node/home std_srvs/srv/Trigger
+# 通过正式服务执行配置中存在的预设
+ros2 service call /arm_planner_node/execute_preset fruit_arm_interfaces/srv/ExecuteArmPreset \
+  "{preset_name: 'zero'}"
 
-# 触发底盘避障折叠姿态
-ros2 service call /arm_planner_node/retract std_srvs/srv/Trigger
-
-# 发布笛卡尔采摘坐标 (X=0.20m, Y=0.0m, Z=0.25m)
-ros2 topic pub --once /arm_planner_node/cmd_cartesian geometry_msgs/msg/PointStamped \
-  "{point: {x: 0.20, y: 0.0, z: 0.25}}"
+# 固定机械臂基座坐标，夹爪保持；success 表示匹配轨迹已报告完成
+ros2 service call /arm_planner_node/move_cartesian fruit_arm_interfaces/srv/MoveArmCartesian \
+  "{x: 0.20, y: 0.0, z: 0.25, pitch_deg: 0.0, duration_ms: 2500, gripper_action: 0, linear_path: false}"
 
 # 监听当前实测物理角度 (20Hz)
 ros2 topic echo /arm_planner_node/joint_states

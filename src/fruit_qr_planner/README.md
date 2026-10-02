@@ -6,7 +6,7 @@ plan, then stops accepting further codes.
 
 ## Interfaces
 
-- Input: `/camera/camera/color/image_raw` (`sensor_msgs/msg/Image`)
+- Input: `/camera/color/image_raw` (`sensor_msgs/msg/Image`)
 - Current area: `/fruit_mission/current_area` (`std_msgs/msg/String`)
 - B plan: `/fruit/b_pick_plan` (`std_msgs/msg/String`, UTF-8 JSON)
 - C plan: `/fruit/c_pick_plan` (`std_msgs/msg/String`, UTF-8 JSON)
@@ -28,7 +28,7 @@ commas, and semicolon-separated position lists are accepted. The B code is inter
 one target per non-empty line. The C code accepts either target lines followed by one
 position list, or one `target + position` task per line.
 
-The fixed D435i `rgb8` image is validated and converted with the system NumPy
+The fixed camera `rgb8` image is validated and converted with the system NumPy
 and OpenCV directly. QR payloads are decoded by the system `python3-pyzbar`
 and `libzbar0` packages, which support UTF-8 Chinese payloads without relying
 on OpenCV's optional QUIRC decoder. Always run nodes and launch commands in an environment initialized by

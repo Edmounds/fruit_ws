@@ -1,82 +1,69 @@
-# 感知区域切换命令
+# 感知模式切换命令
 
-以下命令用于手动切换比赛不同区域的感知模式。每个新终端先加载项目运行环境：
+项目全流程仅使用单一深度相机 `camera`。感知模式简化为三种：`OFF`、`QR`、`DETECT`。
+旧的 `SIDES` 与 `TREE` 模式已完全移除并不再受支持。
+
+每个新终端先加载项目运行环境：
 
 ```bash
 cd /home/rc4/fruit_ws
 source scripts/setup_fruit_runtime.bash
-
 ```
 
-确认 `fruit_perception` 只启动了一套后，再执行对应阶段的一条切换命令。
+## 果蔬目标识别（正式任务 A / B / C）
 
-## A 区作业
-
-使用左右 USB 摄像头：
+在各赛区需要进行果蔬检测与深度测量时切换到 `DETECT` 模式：
 
 ```bash
 ros2 topic pub --once /fruit_mission/perception_mode std_msgs/msg/String \
-  "{data: 'SIDES'}"
+  "{data: 'DETECT'}"
 ```
 
-对应设备：`/dev/left_cam`、`/dev/right_cam`。
+模型根目录由 `src/fruit_perception/config/fruit_perception.yaml` 的 `model_root`
+指定，当前区域 `/fruit_mission/current_area` 决定检测器和候选选择策略：
+- Area `A`: `vegetable_type/best.onnx` + 熟度分类，输出 `ripe/unripe`，仅成熟目标可单目标锁定。
+- Area `B`: `fruit_type/best.onnx` + 熟度分类，输出 `apple_* / pear_*`，整树窗口最多输出 2 个稳定候选。
+- Area `C`: `vegetable_type/best.onnx` + 熟度分类，输出品种与熟度；辣椒使用 `chili_*`，按期望成熟品种锁定。
 
-## B 区
+感知兼容区域 `D` 并复用 B 检测与候选策略，不代表已实现 D 区任务。
+默认熟度分类器为 Edge，启动时可选 YOLO；固定 Intel `GPU.0`，详见
+[两阶段运行文档](../src/fruit_perception/docs/TWO_STAGE_RUNTIME.md)。
 
-### B 区入口扫码
-
-使用 D435i 读取二维码：
+单独检查感知（不启动串口桥或任务）时，可先启动：
 
 ```bash
-ros2 topic pub --once /fruit_mission/perception_mode std_msgs/msg/String \
-  "{data: 'QR'}"
+ros2 launch fruit_perception fruit_perception.launch.py start_serial_bridge:=false
+# 另一个已加载环境的终端，示例选择 B 区：
+ros2 topic pub --once /fruit_mission/current_area std_msgs/msg/String "{data: 'B'}"
 ```
 
-### 返回 B 区进行果树作业
+再发布 `DETECT`。当前区域不是相机模式；正常比赛由 mission 设置，不要在任务运行时手动覆盖。
 
-使用 D435i 检测整树果实：
+## 二维码扫描（B / C 区入口）
 
-```bash
-ros2 topic pub --once /fruit_mission/perception_mode std_msgs/msg/String \
-  "{data: 'TREE'}"
-```
-
-## C 区
-
-### C 区入口扫码
-
-使用 D435i 读取二维码：
+使用 camera 读取二维码：
 
 ```bash
 ros2 topic pub --once /fruit_mission/perception_mode std_msgs/msg/String \
   "{data: 'QR'}"
 ```
 
-### C 区作业
+## 停止采集与推理
 
-使用 D435i 检测二维码对应的成熟水果：
-
-```bash
-ros2 topic pub --once /fruit_mission/perception_mode std_msgs/msg/String \
-  "{data: 'TREE'}"
-```
-
-## 任务结束
-
-关闭全部感知采集和推理：
+关闭相机流和推理：
 
 ```bash
 ros2 topic pub --once /fruit_mission/perception_mode std_msgs/msg/String \
   "{data: 'OFF'}"
 ```
 
-## 查看当前模式
+## 查看当前生效模式
 
-模式切换成功后，可以查看当前生效模式：
+模式切换成功后，可查看当前激活模式（带 Transient Local QoS）：
 
 ```bash
 ros2 topic echo --qos-durability transient_local --once \
   /fruit_perception/active_mode std_msgs/msg/String
 ```
 
-期望输出为 `OFF`、`SIDES`、`QR` 或 `TREE` 之一。当前仓库还没有自动根据定位区域发布这些命令的 `fruit_mission` 节点，因此比赛流程暂时需要由任务节点或人工发布模式。
+期望输出为 `OFF`、`QR` 或 `DETECT` 之一。

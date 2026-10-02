@@ -56,9 +56,9 @@
 | :--- | :--- | :--- |
 | `header.stamp` | `builtin_interfaces/Time` | 时间戳（可选） |
 | `name` | `string[]` | 关节名称列表（可选，如 `['q1', 'q2', 'q3', 'q4']`） |
-| `position` | `float64[]` | **核心必填项**：必须包含 4 个元素，依次为 $[q_1, q_2, q_3, q_4]$ 的物理目标弧度（rad）；Q3 表示小臂相对水平面的绝对角 |
+| `position` | `float64[]` | **核心必填项**：客户端提供 4 个原始硬件目标弧度（rad）；Q3 映射小臂绝对俯仰，仍含硬件方向/偏置，不是未经映射的连杆角 |
 | `velocity` | `float64[]` | 保留未用 |
-| `effort` | `float64[]` | **运动耗时指定**：若包含至少 1 个正数，`effort[0]` 即为期望运行时间（毫秒 ms）；若为空则使用默认的 `3000ms` |
+| `effort` | `float64[]` | **运动耗时指定**：首项为有限正数时作为运动时间（毫秒 ms）；否则使用源码 YAML 的 `planning.default_duration_ms` |
 
 - **命令行测试示例**：
 ```bash
@@ -77,7 +77,7 @@ ros2 topic pub --once /arm_planner_node/cmd_joints sensor_msgs/msg/JointState \
 
 | 字段名称 | 类型 | 说明 |
 | :--- | :--- | :--- |
-| `header.frame_id` | `string` | 目标参考坐标系（默认为基座坐标系 `arm_base_link`） |
+| `header.frame_id` | `string` | 当前回调不读取、不做 TF 转换；XYZ 必须已在固定机械臂根部坐标系中，填写光学 frame 不会转换坐标 |
 | `point.x` | `float64` | 目标点在前进方向的前向距离（单位: 米 m） |
 | `point.y` | `float64` | 目标点在车身左右方向的横向距离（单位: 米 m，左正右负） |
 | `point.z` | `float64` | 目标点在垂直地面的高度（单位: 米 m，以机械臂底座安装面为0） |
@@ -95,14 +95,11 @@ ros2 topic pub --once /arm_planner_node/cmd_cartesian geometry_msgs/msg/PointSta
 - **完整话题名**：`/arm_planner_node/cmd_preset`
 - **消息类型**：`std_msgs/msg/String`
 - **通信语义**：异步非阻塞下发。通过名称索引触发 `arm_presets.yaml` 中配置的固定姿态；当前关节预设使用 `link_angles`（大臂相对竖直、小臂相对水平、末端绝对俯仰），其中末端设为 `0°` 时会按小臂角度和偏置换算腕电机目标。若预设改为 `coordinate_frame: joints`，四项则是原始硬件角。
-- **支持名称**：
-  - `"zero"`：物理基准零位（大臂竖直朝天，小臂水平朝前）；
-  - `"home"`：大臂后仰、小臂下折，末端保持水平；
-  - `"retract"`：底盘导航避障折叠收纳位姿。
+- **支持名称**：以源码 `config/arm_presets.yaml` 的 `presets` 为准。当前为 `zero`、`left_look`、`right_look`、`pick_sequence`；同名预设必须存在，不能假定 home/retract 永远可用。
 
 - **命令行测试示例**：
 ```bash
-ros2 topic pub --once /arm_planner_node/cmd_preset std_msgs/msg/String "{data: 'home'}"
+ros2 topic pub --once /arm_planner_node/cmd_preset std_msgs/msg/String "{data: 'zero'}"
 ```
 
 ---
@@ -116,7 +113,7 @@ ros2 topic pub --once /arm_planner_node/cmd_preset std_msgs/msg/String "{data: '
   - **解算逻辑**：仅对目标点 $(X, Y, Z, \text{pitch})$ 求解 1 次逆运动学，4 关节平滑过渡，末端在空中走平滑自然弧线；
   - **建议使用场景**：果树之间的快速转移、空旷空间的复位与收纳。
 - **高精度笛卡尔空间严格直线模式 (`linear_path: true`, LIN)**：
-  - **解算逻辑**：在 3D 空间以 50ms（20Hz）切分直线路径，沿线逐点逆解并连续校验限位，末端在空中走严格几何直线；
+  - **解算逻辑**：按 YAML 的 `planning.interpolation_step_ms` 离散直线路径，逐点逆解并校验限位；规划点在直线上，不是硬件连续路径误差或无碰撞保证；
   - **建议使用场景**：夹爪精准水平刺入果实簇、夹紧果实后垂直向上拔起 6cm 脱柄、将果实直线放进果篮口。
 
 ### 2. 动态切换在接口中的承载方案
@@ -146,7 +143,7 @@ presets:
 ### 2. 底层插值与时间片无缝拼接机制
 当调用方触发 `ExecuteArmPreset("pick_sequence")` 时：
 1. **自动提取起点**：解算节点实时提取下位机当前物理角度 $Q_{\text{current}}$；
-2. **引导段插值（当前位置 $\to$ 阶段 0）**：根据阶段 0 的 `duration_ms`，以 50ms 时间步长生成连续五次多项式过渡点；
+2. **引导段插值（当前位置 $\to$ 阶段 0）**：根据阶段 0 的 `duration_ms` 和配置的 `interpolation_step_ms` 生成五次多项式过渡点；
 3. **工序段连续缝合（阶段 0 $\to$ 阶段 1 $\to$ ...）**：各阶段依次以五次多项式在各自指定的 `duration_ms` 内离散化，时间戳累加单调递增；
 4. **生成单一连续点流**：将整套工序合成一条 `TrajectoryPoint` 序列下发；配置了 `dwell_ms` 的段会在目标位置驻留。
 
@@ -169,12 +166,13 @@ presets:
   - `message` (`string`): 执行状态描述或报错原因
   - `trajectory_id` (`uint32`): 任务流水号
 - **执行结果**：节点从发布启动 Mode 起，以轨迹末点时间加配置的 `execution_timeout_buffer_sec` 等待本次轨迹 ID 的新状态。收到 `COMPLETED` 才返回成功；`FAILED`、`EMERGENCY`、主动停止或超时返回失败。超时会发布 STOP；发布成功不代表硬件已停稳。
+- **目标偏置**：服务收到的 `(x, y, z)` 在 PTP 求解或 LIN 路径规划前，逐轴加上 `arm_presets.yaml` 的 `planning.cartesian_offset_m`（单位 m）。例如偏置 `[0, 0, -0.03]` 时，输入 `(0, 0, 0)` 会以 `(0, 0, -0.03)` 求解；是否可达仍由 IK 和限位检查决定。LIN 起点使用实测关节角的正解坐标，不加偏置；`pitch_deg` 不变。`cmd_cartesian` 复用本服务回调，因此同样生效；`ExecuteArmPreset` 的笛卡尔航点及关节控制不受影响。
 
 ---
 
 ### 2. 关节角度直发服务 (`~/move_joints`)
 - **服务类型**：`fruit_arm_interfaces/srv/MoveArmJoints`
-- **请求字段**：`joints_deg[4]` (度), `duration_ms`, `gripper_action`
+- **请求字段**：`joints_deg[4]` 为四个原始硬件角（度），不应用连杆零位偏置；另有 `duration_ms`、`gripper_action`。控制台 `joints` 是连杆角，`motors` 才与本服务语义一致。
 - **应答字段**：`success`, `message`, `trajectory_id`
 
 ---
@@ -187,10 +185,19 @@ presets:
 ---
 
 ### 4. 基础停机与急停服务
-- `~/home` (`std_srvs/srv/Trigger`)：复位回安全 Home 姿态
-- `~/retract` (`std_srvs/srv/Trigger`)：折叠收纳
+- `~/home` (`std_srvs/srv/Trigger`)：执行同名 `home` 预设，必须先在 YAML 中配置
+- `~/retract` (`std_srvs/srv/Trigger`)：执行同名 `retract` 预设，必须先在 YAML 中配置
 - `~/stop` (`std_srvs/srv/Trigger`)：平滑受控停止 (mode=1)
 - `~/emergency_stop` (`std_srvs/srv/Trigger`)：硬件最高优先级急停 (mode=2)
+
+---
+
+### 5. 预设热重载 (`~/reload_presets`)
+- **完整服务名 / 类型**：`/arm_planner_node/reload_presets`，`std_srvs/srv/Trigger`，请求为空。
+- 从节点的 `config_path` 重新读取全部 `presets`，校验成功后一次性替换内存中的预设；新增、修改、删除及各航点属性均生效。
+- 运动期间或配置无效时返回 `success=false` 和原因，保留原有内存预设。空的预设映射可用于清空预设。
+- **只重载 presets**，不更新 geometry、joint_mapping 或 planning；修改这些参数仍须重启节点。
+- 控制台 `reload` 命令及打点保存后调用此服务；保存到文件成功不等于热重载成功，需查看服务结果。
 
 ---
 
@@ -215,3 +222,8 @@ presets:
 3. 客户端异步发出 service 请求，由 mission 现有 executor/状态机等待其 future；等待期限需覆盖轨迹发送、全部逐段运动和超时缓冲。不要在正在由同一 executor 调用的回调中再次 `spin_until_future_complete`，避免回调互相等待。
 4. future 完成后先处理 service 异常，再判断 `response.success`。仅 `success=true` 表示对应轨迹已由下位机报告完成；`trajectory_id` 用于诊断关联，`message` 记录失败原因。客户端自身等待超时不能推断机械臂已停止，应使用明确的 STOP 流程。
 5. 若任务中途需中断，调用独立的 STOP 或急停入口。它们当前的 `Trigger.success=true` 只表示规划器已发布控制 Mode；下位机是否停稳应观察后续状态。详细时序和残余风险见[通信架构文档](02_COMMUNICATION_PROTOCOL.md)。
+6. 正式 mission 的观察、二维码、收臂与恢复均调用 `execute_preset`，名称由
+   `fruit_mission/config/fruit_mission.yaml` 的 `arm_presets` 映射配置；当前字符串为
+   `left_look`、`right_look`、`qr_look`、`retract`、`home`，不表示这些轨迹已配置完成。
+   预设缺失/失败/超时不能视为动作完成。A 区每个作业点及区域结束必须确认收臂完成后才导航，
+   不再支持收臂超时继续。区域通知为 ROS 状态，不走下位机旧 task/callback 协议。
