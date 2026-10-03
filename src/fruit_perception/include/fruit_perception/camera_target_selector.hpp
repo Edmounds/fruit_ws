@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace fruit_perception
@@ -15,6 +16,8 @@ struct CameraTargetCandidate
   cv::Point3d point;
   double confidence;
   double horizontal_centrality;
+  std::string type;
+  double maturity_confidence{1.0};
 };
 
 struct CameraTargetSelectorConfig
@@ -25,6 +28,10 @@ struct CameraTargetSelectorConfig
   std::size_t lock_miss_frames;
   double confidence_weight;
   double score_close_threshold;
+  std::size_t min_observations{6U};
+  double type_support_ratio{0.75};
+  std::size_t max_missed_frames{2U};
+  double maturity_confidence_threshold{0.70};
 };
 
 struct CameraTargetUpdate
@@ -46,7 +53,9 @@ class CameraTargetSelector
 public:
   explicit CameraTargetSelector(CameraTargetSelectorConfig config);
 
-  CameraTargetUpdate update(const std::vector<CameraTargetCandidate> & candidates);
+  CameraTargetUpdate update(
+    const std::vector<CameraTargetCandidate> & candidates,
+    const std::string & expected_type = "");
   void reset();
 
 private:
@@ -55,6 +64,9 @@ private:
     cv::Point3d point;
     double confidence;
     double horizontal_centrality;
+    std::string type;
+    double maturity_confidence;
+    std::size_t frame;
   };
 
   struct Track
@@ -73,10 +85,11 @@ private:
     double confidence;
     double horizontal_centrality;
     double score;
+    std::string type;
   };
 
   void add_acquisition_frame(const std::vector<CameraTargetCandidate> & candidates);
-  std::optional<TrackStatistics> select_track() const;
+  std::optional<TrackStatistics> select_track(const std::string & expected_type) const;
   std::optional<CameraTargetCandidate> match_locked_target(
     const std::vector<CameraTargetCandidate> & candidates) const;
   static cv::Point3d mean_point(const Track & track);
@@ -85,6 +98,7 @@ private:
   std::size_t acquisition_frame_count_{0U};
   std::vector<Track> tracks_;
   std::optional<cv::Point3d> locked_point_;
+  std::string locked_type_;
   std::size_t missed_frame_count_{0U};
 };
 

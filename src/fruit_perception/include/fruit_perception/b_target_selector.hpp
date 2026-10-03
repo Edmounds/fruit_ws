@@ -17,6 +17,7 @@ struct BTargetCandidate
   cv::Point2d pixel_center;
   std::size_t image_width;
   double confidence;
+  double maturity_confidence{1.0};
 };
 
 struct BTargetSelectorConfig
@@ -25,6 +26,10 @@ struct BTargetSelectorConfig
   std::size_t max_targets;
   double association_radius_m;
   double outlier_sigma;
+  std::size_t min_observations{6U};
+  double type_support_ratio{0.75};
+  std::size_t max_missed_frames{2U};
+  double maturity_confidence_threshold{0.70};
 };
 
 struct BTargetResult
@@ -60,6 +65,8 @@ private:
     cv::Point2d pixel_center;
     std::size_t image_width;
     double confidence;
+    double maturity_confidence;
+    std::size_t frame;
   };
 
   struct Track
@@ -81,6 +88,7 @@ private:
 
   BTargetSelectorConfig config_;
   std::size_t frame_count_{0U};
+  std::size_t last_candidate_frame_{0U};
   std::vector<Track> tracks_;
   bool ready_{false};
   std::vector<BTargetResult> locked_targets_;

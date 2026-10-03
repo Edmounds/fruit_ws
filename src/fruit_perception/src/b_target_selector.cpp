@@ -50,6 +50,14 @@ void validate_config(const BTargetSelectorConfig & config)
     throw std::invalid_argument(
             "camera_b_target_outlier_sigma must be positive and finite");
   }
+  if (config.min_observations == 0U || config.min_observations > config.acquisition_frames ||
+    !std::isfinite(config.type_support_ratio) || config.type_support_ratio <= 0.5 ||
+    config.type_support_ratio > 1.0 || config.max_missed_frames >= config.acquisition_frames ||
+    !std::isfinite(config.maturity_confidence_threshold) ||
+    config.maturity_confidence_threshold < 0.5 || config.maturity_confidence_threshold > 1.0)
+  {
+    throw std::invalid_argument("Invalid B target confirmation configuration");
+  }
 }
 
 }  // namespace
@@ -70,8 +78,15 @@ BTargetUpdate BTargetSelector::update(const std::vector<BTargetCandidate> & cand
   if (frame_count_ < config_.acquisition_frames) {
     return {};
   }
+  if (tracks_.empty() && frame_count_ - last_candidate_frame_ < config_.acquisition_frames) {
+    return {};
+  }
 
   auto statistics = select_tracks();
+  // Freeze a tree only when every live candidate has enough consistent evidence.
+  if (statistics.size() != tracks_.size()) {
+    return {};
+  }
   std::stable_sort(
     statistics.begin(), statistics.end(),
     [](const auto & left, const auto & right) {
@@ -81,15 +96,15 @@ BTargetUpdate BTargetSelector::update(const std::vector<BTargetCandidate> & cand
       return left.result.observation_count > right.result.observation_count;
     });
   if (!statistics.empty()) {
-    // B-zone trees contain one fruit species; the strongest stable track defines it.
+    // Conflicting stable species are not a confirmed tree observation.
     const auto dominant_species = fruit_species(statistics.front().result.type);
-    statistics.erase(
-      std::remove_if(
-        statistics.begin(), statistics.end(),
-        [&dominant_species](const auto & statistic) {
+    if (std::any_of(
+        statistics.begin(), statistics.end(), [&dominant_species](const auto & statistic) {
           return fruit_species(statistic.result.type) != dominant_species;
-        }),
-      statistics.end());
+        }))
+    {
+      return {};
+    }
   }
   if (statistics.size() > config_.max_targets) {
     statistics.resize(config_.max_targets);
@@ -106,6 +121,7 @@ BTargetUpdate BTargetSelector::update(const std::vector<BTargetCandidate> & cand
 void BTargetSelector::reset()
 {
   frame_count_ = 0U;
+  last_candidate_frame_ = 0U;
   tracks_.clear();
   ready_ = false;
   locked_targets_.clear();
@@ -119,6 +135,27 @@ cv::Point3d BTargetSelector::mean_point(const Track & track)
 void BTargetSelector::add_frame(const std::vector<BTargetCandidate> & candidates)
 {
   ++frame_count_;
+  if (!candidates.empty()) {
+    last_candidate_frame_ = frame_count_;
+  }
+  for (auto & track : tracks_) {
+    auto & observations = track.observations;
+    observations.erase(
+      std::remove_if(
+        observations.begin(), observations.end(), [this](const auto & observation) {
+          return frame_count_ - observation.frame >= config_.acquisition_frames;
+        }), observations.end());
+    track.point_sum = {};
+    for (const auto & observation : observations) {
+      track.point_sum += observation.point;
+    }
+  }
+  tracks_.erase(
+    std::remove_if(
+      tracks_.begin(), tracks_.end(), [this](const auto & track) {
+        return track.observations.empty() ||
+        frame_count_ - track.last_seen_frame > config_.max_missed_frames + 1U;
+      }), tracks_.end());
   const double radius_squared =
     config_.association_radius_m * config_.association_radius_m;
   for (const auto & candidate : candidates) {
@@ -139,7 +176,7 @@ void BTargetSelector::add_frame(const std::vector<BTargetCandidate> & candidates
 
     const Observation observation{
       candidate.type, candidate.point, candidate.pixel_center,
-      candidate.image_width, candidate.confidence};
+      candidate.image_width, candidate.confidence, candidate.maturity_confidence, frame_count_};
     if (closest == nullptr) {
       Track track;
       track.observations.push_back(observation);
@@ -152,6 +189,11 @@ void BTargetSelector::add_frame(const std::vector<BTargetCandidate> & candidates
     closest->point_sum += candidate.point;
     closest->last_seen_frame = frame_count_;
   }
+  tracks_.erase(
+    std::remove_if(
+      tracks_.begin(), tracks_.end(), [this](const auto & track) {
+        return frame_count_ - track.last_seen_frame > config_.max_missed_frames;
+      }), tracks_.end());
 }
 
 std::vector<BTargetSelector::TrackStatistics> BTargetSelector::select_tracks() const
@@ -159,24 +201,52 @@ std::vector<BTargetSelector::TrackStatistics> BTargetSelector::select_tracks() c
   std::vector<TrackStatistics> statistics;
   statistics.reserve(tracks_.size());
   for (const auto & track : tracks_) {
-    if (track.observations.empty()) {
+    if (track.last_seen_frame != frame_count_) {
       continue;
     }
-
-    const cv::Point3d initial_mean = mean_point(track);
+    std::map<std::string, std::size_t> votes;
+    for (const auto & observation : track.observations) {
+      if (observation.maturity_confidence >= config_.maturity_confidence_threshold) {
+        ++votes[observation.type];
+      }
+    }
+    if (votes.empty()) {
+      continue;
+    }
+    const auto best_type = std::max_element(
+      votes.begin(), votes.end(),
+      [](const auto & left, const auto & right) {return left.second < right.second;});
+    if (best_type->second < config_.min_observations ||
+      static_cast<double>(best_type->second) / track.observations.size() <
+      config_.type_support_ratio || track.observations.back().type != best_type->first ||
+      track.observations.back().maturity_confidence < config_.maturity_confidence_threshold)
+    {
+      continue;
+    }
+    std::vector<const Observation *> supporting;
+    cv::Point3d supporting_sum{};
+    for (const auto & observation : track.observations) {
+      if (observation.type == best_type->first &&
+        observation.maturity_confidence >= config_.maturity_confidence_threshold)
+      {
+        supporting.push_back(&observation);
+        supporting_sum += observation.point;
+      }
+    }
+    const cv::Point3d initial_mean =
+      supporting_sum * (1.0 / static_cast<double>(supporting.size()));
     cv::Point3d variance{};
     std::vector<double> confidences;
-    std::map<std::string, std::vector<double>> type_confidences;
     confidences.reserve(track.observations.size());
-    for (const auto & observation : track.observations) {
+    for (const auto * item : supporting) {
+      const auto & observation = *item;
       const cv::Point3d difference = observation.point - initial_mean;
       variance.x += difference.x * difference.x;
       variance.y += difference.y * difference.y;
       variance.z += difference.z * difference.z;
       confidences.push_back(observation.confidence);
-      type_confidences[observation.type].push_back(observation.confidence);
     }
-    const double divisor = 1.0 / static_cast<double>(track.observations.size());
+    const double divisor = 1.0 / static_cast<double>(supporting.size());
     const cv::Point3d initial_stddev{
       std::sqrt(variance.x * divisor),
       std::sqrt(variance.y * divisor),
@@ -185,7 +255,8 @@ std::vector<BTargetSelector::TrackStatistics> BTargetSelector::select_tracks() c
     std::vector<const Observation *> inliers;
     cv::Point3d inlier_sum{};
     cv::Point2d pixel_center_sum{};
-    for (const auto & observation : track.observations) {
+    for (const auto * item : supporting) {
+      const auto & observation = *item;
       const cv::Point3d difference = observation.point - initial_mean;
       const bool within_x = initial_stddev.x == 0.0 ||
         std::abs(difference.x) <= config_.outlier_sigma * initial_stddev.x;
@@ -200,23 +271,13 @@ std::vector<BTargetSelector::TrackStatistics> BTargetSelector::select_tracks() c
       }
     }
     if (inliers.empty()) {
-      for (const auto & observation : track.observations) {
-        inliers.push_back(&observation);
-        inlier_sum += observation.point;
-        pixel_center_sum += observation.pixel_center;
+      for (const auto * observation : supporting) {
+        inliers.push_back(observation);
+        inlier_sum += observation->point;
+        pixel_center_sum += observation->pixel_center;
       }
     }
 
-    const auto best_type = std::max_element(
-      type_confidences.begin(), type_confidences.end(),
-      [](const auto & left, const auto & right) {
-        const double left_confidence = median(left.second);
-        const double right_confidence = median(right.second);
-        if (left_confidence != right_confidence) {
-          return left_confidence < right_confidence;
-        }
-        return left.first > right.first;
-      });
     const double confidence = median(std::move(confidences));
     statistics.push_back(
       TrackStatistics{

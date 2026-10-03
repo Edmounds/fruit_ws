@@ -94,7 +94,8 @@ The decision stream on `/fruit_perception/decision` contains:
 - header matching aligned depth
 - detected fruit `types` in confidence order
 - all detections in confidence order (`detections`), including ROI and optional 3D points
-- `has_target` and `target_point` when single-target lock is acquired (Areas A/C) or when targets are ready (Area B/D)
+- `has_target` and `target_point` when single-target lock is acquired and on subsequent
+  matching frames (Areas A/C), or when targets are ready (Area B/D)
 - B/D zone `targets_ready` and up to two aggregated `targets`
 - annotated RGB8 image on `/fruit_perception/camera/annotated_image`
 
@@ -106,3 +107,54 @@ The annotated image keeps the camera's original aspect ratio. Inference uses a
 centered 640x640 letterbox with value 114, so no source pixels are cropped. Each
 detection is mapped back to the source image and drawn with its model class and
 confidence.
+
+## Short-window target confirmation
+
+Target selection no longer waits for fixed 35/50-frame batches. Source YAML provides
+starting values, **not measured calibration or a one-second latency guarantee**:
+
+| Parameter | Starting value | Meaning |
+| --- | --- | --- |
+| `camera_target_acquisition_frames` | 8 | A/C rolling evidence window in processed frames |
+| `camera_b_target_acquisition_frames` | 8 | B rolling window and minimum tree-observation warmup |
+| `camera_target_min_observations` | 6 | Minimum supporting observations of one species/maturity label |
+| `camera_target_type_support_ratio` | 0.75 | Minimum supporting fraction of that track's observations |
+| `camera_target_max_missed_frames` | 2 | Tolerated consecutive missing frames during confirmation |
+| `camera_target_maturity_confidence_threshold` | 0.70 | Minimum classifier probability for a supporting observation |
+
+The last four parameters apply to both selectors. `min_observations` must fit both
+windows; support ratio must be greater than 0.5 and at most 1, missing-frame count
+must be smaller than both windows, and maturity threshold must be in [0.5, 1].
+
+Association remains spatial using the existing radius. All localized classified
+candidates enter the evidence window, including wrong species, unripe and uncertain
+maturity observations. Species is retained internally even in A, while public A
+labels remain `ripe/unripe`. Low-confidence maturity observations count against
+consistency but do not support any label. Detector confidence stays separate from
+classifier probability; the existing detector threshold remains 0.50.
+
+A/C can confirm as soon as enough evidence exists: the dominant label must be ripe
+and match the expected type when supplied. The current observation must support
+that label, so a stale, absent or currently conflicting candidate cannot trigger
+confirmation. Coordinate aggregation uses only supporting observations, retaining
+the existing outlier math and single-pixel depth algorithm. After locking, matching
+frames repeat the frozen aggregate point; missed/conflicting frames publish no
+single target, and the existing eight-frame lock-loss threshold is unchanged.
+Matching uses the frozen aggregate as its spatial anchor, so successive small
+displacements cannot keep republishing an arbitrarily old location.
+
+B observes once per tree. After the short warmup, all live candidates must be
+confirmed and currently visible; conflicting confirmed species keep observation
+pending rather than selecting a species from a single high score. Both ripe and
+unripe labels need evidence. Up to two confirmed targets are frozen together and
+repeated until the next observation reset. A fully empty window can return ready
+with no targets; uncertain tracks remain pending until confirmation, expiry or
+the client's existing per-operation timeout. No additional observation retries
+are introduced.
+
+At an actual processing rate F, clean A/C needs roughly 6/F seconds and clean B
+roughly 8/F seconds, plus capture/startup/transport costs. Occasional misses or
+label conflicts can extend this. Changes require rebuilding perception and
+restarting its container; source YAML is read at startup. Measure with
+`perception_log_level:=info` before claiming field latency/accuracy. Motion safety,
+standstill confirmation and client timeouts are unchanged.

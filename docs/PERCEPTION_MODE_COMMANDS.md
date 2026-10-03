@@ -29,6 +29,14 @@ ros2 topic pub --once /fruit_mission/perception_mode std_msgs/msg/String \
 默认熟度分类器为 Edge，启动时可选 YOLO；固定 Intel `GPU.0`，详见
 [两阶段运行文档](../src/fruit_perception/docs/TWO_STAGE_RUNTIME.md)。
 
+目标确认已使用短滚动窗口，不再固定等待 A/C 35 帧、B 50 帧。
+品种/熟度一致的证据足够后提前放行，短暂漏检不会立即清空全部证据；
+窗口、最小支持数、支持比例和熟度概率门限在源码 YAML 中配置，参数含义见
+[感知说明](../src/fruit_perception/README.md#short-window-target-confirmation)。
+修改后需重建并重启感知容器；深度定位和运动安全检查不变。
+性能诊断时在以下 launch 命令中添加 `perception_log_level:=info`，查看已有
+`camera performance:` 日志。1 秒内确认是优化目标，不是本轮实测结果。
+
 单独检查感知（不启动串口桥或任务）时，可先启动：
 
 ```bash

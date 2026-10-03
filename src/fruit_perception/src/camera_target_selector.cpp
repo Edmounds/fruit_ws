@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -44,6 +45,14 @@ void validate_config(const CameraTargetSelectorConfig & config)
   if (config.lock_miss_frames == 0U) {
     throw std::invalid_argument("camera_target_lock_miss_frames must be positive");
   }
+  if (config.min_observations == 0U || config.min_observations > config.acquisition_frames ||
+    !std::isfinite(config.type_support_ratio) || config.type_support_ratio <= 0.5 ||
+    config.type_support_ratio > 1.0 || config.max_missed_frames >= config.acquisition_frames ||
+    !std::isfinite(config.maturity_confidence_threshold) ||
+    config.maturity_confidence_threshold < 0.5 || config.maturity_confidence_threshold > 1.0)
+  {
+    throw std::invalid_argument("Invalid camera target confirmation configuration");
+  }
   if (!std::isfinite(config.confidence_weight) ||
     config.confidence_weight < 0.0 || config.confidence_weight > 1.0)
   {
@@ -65,14 +74,15 @@ CameraTargetSelector::CameraTargetSelector(CameraTargetSelectorConfig config)
 }
 
 CameraTargetUpdate CameraTargetSelector::update(
-  const std::vector<CameraTargetCandidate> & candidates)
+  const std::vector<CameraTargetCandidate> & candidates,
+  const std::string & expected_type)
 {
   CameraTargetUpdate result;
   if (locked_point_) {
     const auto matched = match_locked_target(candidates);
     if (matched) {
-      locked_point_ = matched->point;
       missed_frame_count_ = 0U;
+      result.point = locked_point_;
       return result;
     }
 
@@ -85,13 +95,8 @@ CameraTargetUpdate CameraTargetSelector::update(
   }
 
   add_acquisition_frame(candidates);
-  if (acquisition_frame_count_ < config_.acquisition_frames) {
-    return result;
-  }
-
-  const auto selected = select_track();
+  const auto selected = select_track(expected_type);
   if (!selected) {
-    reset();
     return result;
   }
   result.observation_count = selected->track->observations.size();
@@ -101,7 +106,8 @@ CameraTargetUpdate CameraTargetSelector::update(
   result.horizontal_centrality = selected->horizontal_centrality;
   result.reference_point = selected->mean;
   result.stddev = selected->stddev;
-  locked_point_ = selected->track->observations.back().point;
+  locked_point_ = selected->mean;
+  locked_type_ = selected->type;
   missed_frame_count_ = acquisition_frame_count_ - selected->track->last_seen_frame;
   result.lock_acquired = true;
   result.point = selected->mean;
@@ -120,6 +126,7 @@ void CameraTargetSelector::reset()
   acquisition_frame_count_ = 0U;
   tracks_.clear();
   locked_point_.reset();
+  locked_type_.clear();
   missed_frame_count_ = 0U;
 }
 
@@ -127,6 +134,24 @@ void CameraTargetSelector::add_acquisition_frame(
   const std::vector<CameraTargetCandidate> & candidates)
 {
   ++acquisition_frame_count_;
+  for (auto & track : tracks_) {
+    auto & observations = track.observations;
+    observations.erase(
+      std::remove_if(
+        observations.begin(), observations.end(), [this](const auto & observation) {
+          return acquisition_frame_count_ - observation.frame >= config_.acquisition_frames;
+        }), observations.end());
+    track.point_sum = {};
+    for (const auto & observation : observations) {
+      track.point_sum += observation.point;
+    }
+  }
+  tracks_.erase(
+    std::remove_if(
+      tracks_.begin(), tracks_.end(), [this](const auto & track) {
+        return track.observations.empty() ||
+        acquisition_frame_count_ - track.last_seen_frame > config_.max_missed_frames + 1U;
+      }), tracks_.end());
   const double radius_squared = config_.association_radius_m * config_.association_radius_m;
   for (const auto & candidate : candidates) {
     Track * closest = nullptr;
@@ -145,7 +170,8 @@ void CameraTargetSelector::add_acquisition_frame(
     }
 
     const Observation observation{
-      candidate.point, candidate.confidence, candidate.horizontal_centrality};
+      candidate.point, candidate.confidence, candidate.horizontal_centrality,
+      candidate.type, candidate.maturity_confidence, acquisition_frame_count_};
     if (closest == nullptr) {
       Track track;
       track.observations.push_back(observation);
@@ -158,19 +184,67 @@ void CameraTargetSelector::add_acquisition_frame(
     closest->point_sum += candidate.point;
     closest->last_seen_frame = acquisition_frame_count_;
   }
+  tracks_.erase(
+    std::remove_if(
+      tracks_.begin(), tracks_.end(), [this](const auto & track) {
+        return acquisition_frame_count_ - track.last_seen_frame > config_.max_missed_frames;
+      }), tracks_.end());
 }
 
-std::optional<CameraTargetSelector::TrackStatistics> CameraTargetSelector::select_track() const
+std::optional<CameraTargetSelector::TrackStatistics> CameraTargetSelector::select_track(
+  const std::string & expected_type) const
 {
   std::vector<TrackStatistics> eligible;
   for (const auto & track : tracks_) {
-    const cv::Point3d initial_mean = mean_point(track);
+    if (track.last_seen_frame != acquisition_frame_count_) {
+      continue;
+    }
+    std::map<std::string, std::size_t> votes;
+    for (const auto & observation : track.observations) {
+      if (observation.maturity_confidence >= config_.maturity_confidence_threshold) {
+        ++votes[observation.type];
+      }
+    }
+    if (votes.empty()) {
+      continue;
+    }
+    const auto best_type = std::max_element(
+      votes.begin(), votes.end(),
+      [](const auto & left, const auto & right) {return left.second < right.second;});
+    const auto & type = best_type->first;
+    if (best_type->second < config_.min_observations ||
+      static_cast<double>(best_type->second) / track.observations.size() <
+      config_.type_support_ratio || type.size() < 5U ||
+      type.compare(type.size() - 5U, 5U, "_ripe") != 0 ||
+      (!expected_type.empty() && expected_type != "ripe" && type != expected_type))
+    {
+      continue;
+    }
+    const auto & latest = track.observations.back();
+    if (latest.type != type ||
+      latest.maturity_confidence < config_.maturity_confidence_threshold)
+    {
+      continue;
+    }
+    std::vector<const Observation *> supporting;
+    cv::Point3d supporting_sum{};
+    for (const auto & observation : track.observations) {
+      if (observation.type == type &&
+        observation.maturity_confidence >= config_.maturity_confidence_threshold)
+      {
+        supporting.push_back(&observation);
+        supporting_sum += observation.point;
+      }
+    }
+    const cv::Point3d initial_mean =
+      supporting_sum * (1.0 / static_cast<double>(supporting.size()));
     cv::Point3d variance{};
     std::vector<double> confidences;
     std::vector<double> centralities;
     confidences.reserve(track.observations.size());
     centralities.reserve(track.observations.size());
-    for (const auto & observation : track.observations) {
+    for (const auto * item : supporting) {
+      const auto & observation = *item;
       const cv::Point3d difference = observation.point - initial_mean;
       variance.x += difference.x * difference.x;
       variance.y += difference.y * difference.y;
@@ -178,7 +252,7 @@ std::optional<CameraTargetSelector::TrackStatistics> CameraTargetSelector::selec
       confidences.push_back(observation.confidence);
       centralities.push_back(observation.horizontal_centrality);
     }
-    const double divisor = 1.0 / static_cast<double>(track.observations.size());
+    const double divisor = 1.0 / static_cast<double>(supporting.size());
     const cv::Point3d initial_stddev{
       std::sqrt(variance.x * divisor),
       std::sqrt(variance.y * divisor),
@@ -187,7 +261,8 @@ std::optional<CameraTargetSelector::TrackStatistics> CameraTargetSelector::selec
     std::vector<const Observation *> inliers;
     inliers.reserve(track.observations.size());
     cv::Point3d inlier_sum{};
-    for (const auto & observation : track.observations) {
+    for (const auto * item : supporting) {
+      const auto & observation = *item;
       const cv::Point3d difference = observation.point - initial_mean;
       if (std::abs(difference.x) <= config_.outlier_sigma * initial_stddev.x &&
         std::abs(difference.y) <= config_.outlier_sigma * initial_stddev.y &&
@@ -198,9 +273,9 @@ std::optional<CameraTargetSelector::TrackStatistics> CameraTargetSelector::selec
       }
     }
     if (inliers.empty()) {
-      for (const auto & observation : track.observations) {
-        inliers.push_back(&observation);
-        inlier_sum += observation.point;
+      for (const auto * observation : supporting) {
+        inliers.push_back(observation);
+        inlier_sum += observation->point;
       }
     }
 
@@ -225,7 +300,7 @@ std::optional<CameraTargetSelector::TrackStatistics> CameraTargetSelector::selec
       (1.0 - config_.confidence_weight) * centrality;
     eligible.push_back(
       TrackStatistics{
-        &track, mean, stddev, inliers.size(), confidence, centrality, score});
+        &track, mean, stddev, inliers.size(), confidence, centrality, score, type});
   }
   if (eligible.empty()) {
     return std::nullopt;
@@ -253,6 +328,11 @@ std::optional<CameraTargetCandidate> CameraTargetSelector::match_locked_target(
   const CameraTargetCandidate * closest = nullptr;
   double closest_distance = radius_squared;
   for (const auto & candidate : candidates) {
+    if (candidate.type != locked_type_ ||
+      candidate.maturity_confidence < config_.maturity_confidence_threshold)
+    {
+      continue;
+    }
     const double distance = squared_distance(candidate.point, *locked_point_);
     if (distance <= radius_squared &&
       (closest == nullptr || distance < closest_distance))

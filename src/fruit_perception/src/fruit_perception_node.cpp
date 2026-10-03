@@ -63,7 +63,7 @@ public:
     target_score_close_threshold_ =
       static_cast<float>(declare_parameter("camera_target_score_close_threshold", 0.05));
     const auto target_acquisition_frames =
-      declare_parameter<std::int64_t>("camera_target_acquisition_frames", 35);
+      declare_parameter<std::int64_t>("camera_target_acquisition_frames", 8);
     const auto target_association_radius =
       declare_parameter("camera_target_association_radius_m", 0.03);
     const auto target_outlier_sigma =
@@ -83,9 +83,22 @@ public:
       static_cast<std::size_t>(target_lock_miss_frames),
       target_confidence_weight_,
       target_score_close_threshold_};
+    const auto min_observations =
+      declare_parameter<std::int64_t>("camera_target_min_observations", 6);
+    const auto max_missed_frames =
+      declare_parameter<std::int64_t>("camera_target_max_missed_frames", 2);
+    if (min_observations <= 0 || max_missed_frames < 0) {
+      throw std::invalid_argument("Invalid target confirmation observation/miss counts");
+    }
+    target_selector_config_.min_observations = static_cast<std::size_t>(min_observations);
+    target_selector_config_.type_support_ratio =
+      declare_parameter("camera_target_type_support_ratio", 0.75);
+    target_selector_config_.max_missed_frames = static_cast<std::size_t>(max_missed_frames);
+    target_selector_config_.maturity_confidence_threshold =
+      declare_parameter("camera_target_maturity_confidence_threshold", 0.70);
 
     const auto b_target_acquisition_frames =
-      declare_parameter<std::int64_t>("camera_b_target_acquisition_frames", 50);
+      declare_parameter<std::int64_t>("camera_b_target_acquisition_frames", 8);
     const auto b_target_max_count =
       declare_parameter<std::int64_t>("camera_b_target_max_count", 2);
     if (b_target_acquisition_frames <= 0) {
@@ -99,6 +112,11 @@ public:
       static_cast<std::size_t>(b_target_max_count),
       declare_parameter("camera_b_target_association_radius_m", 0.03),
       declare_parameter("camera_b_target_outlier_sigma", 2.0)};
+    b_target_selector_config_.min_observations = target_selector_config_.min_observations;
+    b_target_selector_config_.type_support_ratio = target_selector_config_.type_support_ratio;
+    b_target_selector_config_.max_missed_frames = target_selector_config_.max_missed_frames;
+    b_target_selector_config_.maturity_confidence_threshold =
+      target_selector_config_.maturity_confidence_threshold;
 
     const auto active_mode_topic = declare_parameter(
       "active_mode_topic", "/fruit_perception/active_mode");
@@ -457,6 +475,8 @@ private:
       const char area = current_area_.load();
       std::vector<Detection> classified;
       classified.reserve(detections.size());
+      std::vector<double> maturity_confidences;
+      maturity_confidences.reserve(detections.size());
       std::size_t roi_count = 0U;
       for (auto detection : detections) {
         if (detection.type == "bad") {
@@ -482,15 +502,12 @@ private:
           RCLCPP_DEBUG(
             get_logger(), "%s: %s probability=%.4f", detection.type.c_str(),
             maturity.maturity.c_str(), maturity.confidence);
-          // Keep the mission label contract independent of detector species names.
-          if (area == 'A') {
-            detection.type = maturity.maturity;
-          } else {
-            if (detection.type == "pepper") {
-              detection.type = "chili";
-            }
-            detection.type += "_" + maturity.maturity;
+          // Retain species internally even in A, so species flips count as conflicts.
+          if (detection.type == "pepper") {
+            detection.type = "chili";
           }
+          detection.type += "_" + maturity.maturity;
+          maturity_confidences.push_back(maturity.confidence);
           classified.push_back(std::move(detection));
         } catch (const std::exception & classification_error) {
           RCLCPP_ERROR_THROTTLE(
@@ -502,10 +519,13 @@ private:
       const auto classified_at = std::chrono::steady_clock::now();
 
       msg::FruitDecision result;
+      const auto business_type = [area](const std::string & type) {
+          return area == 'A' ? type.substr(type.rfind('_') + 1U) : type;
+        };
       result.header = stream.aligned_depth->header;
       result.types.reserve(detections.size());
       for (const auto & detection : detections) {
-        result.types.push_back(detection.type);
+        result.types.push_back(business_type(detection.type));
       }
       const auto outputs = make_detection_outputs(
         detections, stream.transform, stream.aligned_depth->image,
@@ -513,7 +533,7 @@ private:
       result.detections.reserve(outputs.size());
       for (const auto & output : outputs) {
         msg::FruitDetection item;
-        item.type = output.type;
+        item.type = business_type(output.type);
         item.confidence = output.confidence;
         item.roi.x_offset = static_cast<std::uint32_t>(output.roi.x);
         item.roi.y_offset = static_cast<std::uint32_t>(output.roi.y);
@@ -538,7 +558,8 @@ private:
       if (area == 'B' || area == 'D') {
         std::vector<BTargetCandidate> candidates;
         candidates.reserve(outputs.size());
-        for (const auto & output : outputs) {
+        for (std::size_t index = 0U; index < outputs.size(); ++index) {
+          const auto & output = outputs[index];
           if (!output.has_point ||
             !std::isfinite(output.point.x) ||
             !std::isfinite(output.point.y) ||
@@ -556,7 +577,7 @@ private:
                 static_cast<double>(output.roi.y) +
                 static_cast<double>(output.roi.height) * 0.5},
               static_cast<std::size_t>(stream.transform.original_width),
-              static_cast<double>(output.confidence)});
+              static_cast<double>(output.confidence), maturity_confidences[index]});
         }
 
         const auto target_update = stream.b_target_selector->update(candidates);
@@ -586,16 +607,8 @@ private:
         candidates.reserve(outputs.size());
         const auto expected_type = expected_fruit_type();
         const double half_width = static_cast<double>(stream.frame->image.cols) * 0.5;
-        for (const auto & output : outputs) {
-          if (area == 'A' ? output.type != "ripe" :
-            (output.type.size() < 5 ||
-            output.type.compare(output.type.size() - 5, 5, "_ripe") != 0))
-          {
-            continue;
-          }
-          if (!expected_type.empty() && output.type != expected_type) {
-            continue;
-          }
+        for (std::size_t index = 0U; index < outputs.size(); ++index) {
+          const auto & output = outputs[index];
           if (!output.has_point ||
             !std::isfinite(output.point.x) ||
             !std::isfinite(output.point.y) ||
@@ -609,10 +622,11 @@ private:
             std::abs(roi_center_x - half_width) / half_width, 0.0, 1.0);
           candidates.push_back(
             CameraTargetCandidate{
-              output.point, static_cast<double>(output.confidence), 1.0 - horizontal_offset});
+              output.point, static_cast<double>(output.confidence), 1.0 - horizontal_offset,
+              output.type, maturity_confidences[index]});
         }
 
-        const auto target_update = stream.target_selector->update(candidates);
+        const auto target_update = stream.target_selector->update(candidates, expected_type);
         if (target_update.lock_lost) {
           RCLCPP_WARN(
             get_logger(),
@@ -622,7 +636,7 @@ private:
         if (target_update.lock_acquired) {
           RCLCPP_INFO(
             get_logger(),
-            "Camera target locked with %zu/%zu inliers from %zu frames: score=%.3f, "
+            "Camera target locked with %zu/%zu inliers in a %zu-frame window: score=%.3f, "
             "confidence=%.3f, horizontal_centrality=%.3f, "
             "mean=(%.3f, %.3f, %.3f), stddev=(%.4f, %.4f, %.4f)",
             target_update.inlier_count, target_update.observation_count,
@@ -686,6 +700,11 @@ private:
       }
 
       if (stream.image_publisher->get_subscription_count() > 0U) {
+        if (area == 'A') {
+          for (auto & detection : detections) {
+            detection.type = business_type(detection.type);
+          }
+        }
         cv::Mat annotated = stream.frame->image.clone();
         draw_annotations(annotated, detections, stream.transform, stream.displayed_fps);
         const auto annotated_message = cv_bridge::CvImage(
@@ -761,8 +780,8 @@ private:
   float nms_iou_threshold_{0.45F};
   float target_confidence_weight_{0.70F};
   float target_score_close_threshold_{0.05F};
-  CameraTargetSelectorConfig target_selector_config_{35U, 0.03, 2.0, 8U, 0.70, 0.05};
-  BTargetSelectorConfig b_target_selector_config_{50U, 2U, 0.03, 2.0};
+  CameraTargetSelectorConfig target_selector_config_{8U, 0.03, 2.0, 8U, 0.70, 0.05};
+  BTargetSelectorConfig b_target_selector_config_{8U, 2U, 0.03, 2.0};
   std::atomic<std::uint64_t> target_selection_generation_{0U};
   std::atomic<bool> stopping_{false};
   std::atomic<PerceptionMode> perception_mode_{PerceptionMode::kOff};
