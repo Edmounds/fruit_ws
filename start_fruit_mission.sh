@@ -32,6 +32,7 @@ Start the complete perception, arm planner, odometry navigation, and mission sta
 startup-relative odom frame.
 Use --reuse-navigation after start_navigation.sh to keep its navigation
 and serial bridge running while starting perception, arm planner, and mission.
+--flow selects a Logic.py entry function; B/C-only entries also scan their QR.
 Use --debug to record ROS diagnostics, LiDAR, point clouds, and the selected
 raw/annotated camera topics under rosbags/. Duplicate high-bandwidth image
 transports and Camera unaligned raw depth are excluded. Recording starts after

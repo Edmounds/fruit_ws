@@ -1,4 +1,4 @@
-"""Pure mission decision helpers for A/B/C perception tasks."""
+"""Perception selection and speech formatting, separate from mission composition."""
 
 from __future__ import annotations
 

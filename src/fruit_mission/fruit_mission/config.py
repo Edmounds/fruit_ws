@@ -71,15 +71,6 @@ def validate_config(params: Mapping[str, Any]) -> None:
         name = presets.get(action)
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"arm_presets.{action} must be a nonempty string")
-    a_order = params.get("a_observation_order")
-    if (
-        not isinstance(a_order, list)
-        or len(a_order) != 2
-        or set(a_order) != {"left", "right"}
-    ):
-        raise ValueError(
-            "a_observation_order must be a list containing exactly 'left' and 'right'"
-        )
     _validate_qr_fallbacks(params['qr_fallback'])
     if not isinstance(params.get('odometry_topic'), str) or not params['odometry_topic'].strip():
         raise ValueError('odometry_topic must be a nonempty string')

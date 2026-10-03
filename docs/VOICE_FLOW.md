@@ -2,6 +2,11 @@
 
 本文描述 mission 的源码时序，不是硬件验收。当前范围为 A/B/C，不增加 D、换筐、收获汇总或返回起点。
 
+比赛编排现在只在 `src/fruit_mission/fruit_mission/Logic.py` 审核：`main` 写分区顺序，
+`run_a/b/c` 写区内路线和动作调用。重复采摘、二维码和播报细节在 `actions.py`；
+ROS 反馈、STOP 和实测停稳留在 `MissionContext`。见[mission 说明](../src/fruit_mission/README.md)。
+单独 B/C 调试也先扫码，再调用同一个分区函数；保留 `--flow full|ac|a|b|c`。
+
 ```text
 起点播报 → A 区 → B 二维码计划播报 → C 二维码计划播报
          → C 区逐项 → 返回 B 区 → B 区逐树 → 任务流程结束

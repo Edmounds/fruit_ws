@@ -168,7 +168,7 @@ x[B] = (x[B] - 0.406) / 0.225
 
 只更新感知包还不足以让现有任务流程直接运行：
 
-- `fruit_mission/fruit_mission/logic.py`：`PRODUCE_TYPE_PREFIXES` 中“辣椒”从 `chili` 改为 `pepper`，连动反向语音映射、`expected_ripe_type()` 及测试。
+- `fruit_mission/fruit_mission/decisions.py`（原 `logic.py`，比赛编排现为 `Logic.py`）：`PRODUCE_TYPE_PREFIXES` 中“辣椒”从 `chili` 改为 `pepper`，连动反向语音映射、`expected_ripe_type()` 及测试。
 - `/fruit_mission/expected_fruit_type` 当前是精确字符串过滤；发送端和接收端同步为新复合标签。A 区不能继续发单独 `ripe`，否则检测出 `onion_ripe` 也会被排除；没有指定品种时按合法熟度后缀筛选，不能用包含 `ripe` 的子串判断（unripe 也包含 ripe）。
 - 现有 `choose_maturity_side()` 只认字符串 `ripe`，现有任务流程仍消费左右相机。camera-only 需要任务端改为消费 `_latest_camera_types` / 深度目标，并在需要推理时进入 TREE，不是 QR 或 SIDES。**不继续扩展侧相机逻辑，也不在本轮删除它。**
 - `mission_context.py::_on_decision()` 已有 camera 结果入口，可复用；核对无目标、异常和模式切换后的缓存失效。

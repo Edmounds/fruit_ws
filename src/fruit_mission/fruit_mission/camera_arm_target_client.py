@@ -9,7 +9,7 @@ from std_msgs.msg import Bool, String
 from fruit_perception.msg import FruitDecision
 
 from fruit_mission.config import load_config
-from fruit_mission.logic import decide_b_tree_targets, spoken_produce_name
+from fruit_mission.decisions import decide_b_tree_targets, spoken_produce_name
 from fruit_mission.mission_context import MissionContext
 from fruit_mission.mission_node import DEFAULT_CONFIG_PATH
 from fruit_mission.script_hardware_client import latched_qos, reliable_qos

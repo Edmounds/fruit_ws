@@ -68,7 +68,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "mission_flow",
                 default_value="full",
-                description="Mission flow: full, ac, a, b, or c",
+                description="Logic.py entry: full, ac, a, b, or c; B/C debug also scans QR",
             ),
             DeclareLaunchArgument(
                 "map_frame",

@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import yaml
 
-from fruit_mission.logic import expected_ripe_type
+from fruit_mission.decisions import expected_ripe_type
 
 
 A_GOAL_PATTERN = re.compile(r"^A(\d+)$")
@@ -200,29 +200,6 @@ class MissionWaypointRoute:
             raise ValueError("waypoint YAML must contain B1 through B8 goals")
         return [name for _number, _order, name in goals]
 
-    def transition_names(self, transition: str) -> List[str]:
-        """Return an explicit named transition without YAML-order expansion."""
-        transitions = {
-            "a_to_b_qr": ["to_B_QR_waypoint", B_QR],
-            "b_to_c_qr": ["to_C_waypoint_1", "to_C_waypoint_2", "to_C_waypoint_3", C_QR],
-            "b_to_first_tree": ["to_C_waypoint_1", "B1"],
-            "b_to_c_qr_end": ["to_C_waypoint_2", "to_C_waypoint_3"],
-            "c_to_b_first_tree": [
-                C_ENTRANCE_2,
-                "to_B_waypoint_1",
-                "to_B_waypoint_2",
-                "toB_waypoint_3",
-                "B1",
-            ],
-        }
-        try:
-            names = transitions[transition]
-        except KeyError as error:
-            raise ValueError(f"unknown waypoint transition: {transition}") from error
-        for name in names:
-            self.pose(name)
-        return list(names)
-
     @property
     def b_qr_name(self) -> str:
         """Return the B QR waypoint name."""
@@ -391,7 +368,8 @@ class MissionWaypointRoute:
         if flow not in {"full", "ac", "a", "b", "c"}:
             raise ValueError(f"unknown mission flow: {flow}")
         if flow in {"full", "ac", "a"}:
-            self.a_goal_names()
+            for name in ("A1", "A2", "A3", "A4"):
+                self._require_type(name, "goal")
             self._require_type("to_B_QR_waypoint", "waypoint")
         if flow in {"full", "ac", "b"}:
             self._require_type(B_QR, "goal")

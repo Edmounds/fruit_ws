@@ -1,6 +1,5 @@
 fruit_mission:
   ros__parameters:
-    a_observation_order: ["left", "right"]
     qr_plan_timeout_sec: 10.0
     qr_fallback_file: "/home/rc4/fruit_ws/src/fruit_mission/config/qr_fallback.yaml"
     active_mode_timeout_sec: 10.0

@@ -29,8 +29,7 @@ from fruit_perception.msg import FruitDecision
 from fruit_mission.camera_target_planner_client import CameraTargetPlannerClient
 from fruit_mission.camera_target_planner_client import DEFAULT_EXTRINSIC_CONFIG
 from fruit_mission.config import _validate_qr_fallbacks
-from fruit_mission.logic import PickExecutionResult
-from fruit_mission.logic import merge_seen_types
+from fruit_mission.decisions import merge_seen_types
 from fruit_mission.tts import PiperSpeaker
 from fruit_mission.waypoint_route import MissionWaypointRoute
 from fruit_mission.waypoint_route import WaypointPose
@@ -604,9 +603,10 @@ class MissionContext:
 
     def send_pick_direction(self, side: str) -> bool:
         """Execute the named observation preset and wait for completion."""
-        return self._send_pick_direction_and_wait(side).completed
+        return self.finish_observation(side).completed
 
-    def _send_pick_direction_and_wait(self, side: str) -> _ArmMotionResult:
+    def finish_observation(self, side: str) -> _ArmMotionResult:
+        """Consume the matching Look request and wait for hardware completion."""
         if side not in ("left", "right"):
             raise ValueError("side must be left or right")
         if self._pending_observation is None:
@@ -650,122 +650,18 @@ class MissionContext:
         except Exception:
             return True
 
-    def execute_closed_loop_pick(
-        self,
-        side: str,
-        expected_type: Optional[str] = None,
-    ) -> PickExecutionResult:
-        """Observe at a stationary pose, convert the target and call the planner."""
-        self.set_expected_fruit_type(expected_type)
-        direction_result = self._send_pick_direction_and_wait(side)
-        if not direction_result.completed:
-            return PickExecutionResult(
-                False,
-                direction_result.reason_code,
-                safe_to_continue=self.recover_home(),
-            )
-        if not self.stable_stop():
-            return PickExecutionResult(
-                False, 'stationary_timeout', safe_to_continue=self.recover_home())
-        fresh_after_ns = self.node.get_clock().now().nanoseconds
-        if not self.set_perception_mode("DETECT"):
-            return PickExecutionResult(
-                False,
-                "detect_mode_timeout",
-                safe_to_continue=self._recover_after_perception_failure(),
-            )
-        selection = self._wait_camera_target(fresh_after_ns, expected_type)
-        if selection.target is None:
-            return PickExecutionResult(
-                False,
-                selection.reason_code,
-                selection.matched_type,
-                safe_to_continue=self._recover_after_perception_failure(),
-            )
-        try:
-            request = self._camera_planner.target_request(selection.target.point)
-        except ValueError as error:
-            self.node.get_logger().warning(str(error))
-            return PickExecutionResult(
-                False, 'camera_target_invalid', selection.matched_type,
-                self.recover_home())
-        result = self.execute_grasp(request, side)
-        return PickExecutionResult(
-            result.completed, result.reason_code, selection.matched_type,
-            result.safe_to_continue)
+    def camera_target_request(self, point: PointStamped):
+        """Freeze a camera point using the shared measured-joint transform."""
+        return self._camera_planner.target_request(point)
 
-    def observe_b_tree(
-        self,
-        side: str,
-    ) -> Dict[str, Any]:
-        """Turn toward one B tree and return its stable perception targets."""
-        direction_result = self._send_pick_direction_and_wait(side)
-        if not direction_result.completed:
-            return {
-                "success": False,
-                "reason_code": direction_result.reason_code,
-                "safe_to_continue": self.recover_home(),
-                "targets": [],
-            }
-        if not self.stable_stop():
-            return {
-                'success': False, 'reason_code': 'stationary_timeout',
-                'safe_to_continue': self.recover_home(), 'targets': [],
-            }
-        if not self.set_perception_mode("DETECT"):
-            return {
-                "success": False,
-                "reason_code": "detect_mode_timeout",
-                "safe_to_continue": self.recover_home(),
-                "targets": [],
-            }
-        targets = self._wait_b_targets(
-            self.node.get_clock().now().nanoseconds,
-        )
-        if targets is None:
-            return {
-                "success": False,
-                "reason_code": "camera_target_timeout",
-                "safe_to_continue": self.recover_home(),
-                "targets": [],
-            }
-        return {"success": True, "reason_code": "observed", "targets": targets}
-
-    def freeze_b_targets(self, targets: Sequence[BTreeTarget]):
-        """Convert the entire single observation before grasp/Harvest/Home."""
-        requests = []
-        for target in targets:
-            try:
-                requests.append(self._camera_planner.target_request(target.point))
-            except ValueError as error:
-                self.node.get_logger().warning(f'Skipping invalid B target: {error}')
-        return requests
-
-    def execute_b_tree_target(self, request, side: str) -> Dict[str, Any]:
-        result = self.execute_grasp(request, side)
-        return {
-            'success': result.completed, 'reason_code': result.reason_code,
-            'safe_to_continue': result.safe_to_continue,
-            'picked': int(result.completed),
-        }
-
-    def execute_grasp(self, request, side: str) -> _ArmMotionResult:
-        """Grasp -> side Harvest (OPEN at end) -> Home; never repeat the grasp."""
-        self.set_perception_mode('OFF')
+    def move_to_base_target(self, request) -> _ArmMotionResult:
+        """One planner CLOSE/dwell request, starting only with stationary feedback."""
         if not self._camera_planner.is_stationary(self.config['stationary']['joint_speed_rps']):
-            return _ArmMotionResult(False, 'arm_pose_unavailable', self.recover_home())
+            return _ArmMotionResult(False, 'arm_pose_unavailable', False)
         self._arm_home_confirmed = False
         completed, reason = self._camera_planner.move_to_base_target(
             request, self._wait_until, self.config['stationary']['joint_speed_rps'])
-        if not completed:
-            return _ArmMotionResult(False, reason, self.recover_home())
-        harvest = self._execute_arm_preset(f'harvest_{side}')
-        if not harvest.completed:
-            return _ArmMotionResult(False, harvest.reason_code, self.recover_home())
-        home = self._execute_arm_preset('home')
-        return _ArmMotionResult(
-            home.completed, 'harvest_completed' if home.completed else home.reason_code,
-            home.completed)
+        return _ArmMotionResult(completed, reason, False)
 
     def set_expected_fruit_type(self, expected_type: Optional[str]) -> None:
         """Set the Camera target class; an empty value disables filtering."""
@@ -775,14 +671,11 @@ class MissionContext:
 
     def send_qr_pose(self) -> bool:
         """Execute the configured QR observation preset."""
-        return self._execute_arm_preset("qr").completed
+        return self.execute_arm_preset("qr").completed
 
     def send_return_initial_pose(self) -> bool:
         """Execute the configured initial-pose recovery preset."""
-        return self._execute_arm_preset("home").completed
-
-    def _recover_after_perception_failure(self) -> bool:
-        return self.recover_home()
+        return self.execute_arm_preset("home").completed
 
     def recover_home(self) -> bool:
         """One recovery, not a retry loop; unsafe physical motion stays inhibited."""
@@ -892,13 +785,14 @@ class MissionContext:
         except OSError as error:
             self.node.get_logger().warning(f'Cannot save B plan record: {error}')
 
-    def _execute_arm_preset(self, action: str) -> _ArmMotionResult:
+    def execute_arm_preset(self, action: str) -> _ArmMotionResult:
+        """Resolve an action's configured preset and wait for actual completion."""
         name = self.config["arm_presets"][action]
         completed, reason = self._camera_planner.execute_preset(name, self._wait_until)
         self._arm_home_confirmed = action == 'home' and completed
         return _ArmMotionResult(completed, reason, completed)
 
-    def _wait_camera_target(
+    def wait_camera_target(
         self,
         fresh_after_ns: int,
         expected_type: Optional[str],
@@ -961,7 +855,7 @@ class MissionContext:
             reason_code = "camera_target_timeout"
         return _CameraSelection(reason_code, matched_type=matched_type)
 
-    def _wait_b_targets(
+    def wait_b_targets(
         self,
         fresh_after_ns: int,
     ) -> Optional[list[BTreeTarget]]:
