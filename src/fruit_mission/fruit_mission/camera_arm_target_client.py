@@ -8,8 +8,9 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, String
 from fruit_perception.msg import FruitDecision
 
+from fruit_mission.actions import observe_and_pick, pick_b_tree
 from fruit_mission.config import load_config
-from fruit_mission.decisions import decide_b_tree_targets, spoken_produce_name
+from fruit_mission.decisions import spoken_produce_name
 from fruit_mission.mission_context import MissionContext
 from fruit_mission.mission_node import DEFAULT_CONFIG_PATH
 from fruit_mission.script_hardware_client import latched_qos, reliable_qos
@@ -84,27 +85,12 @@ class CameraArmTargetClient(Node):
         if not ctx.recover_home():
             return 1
         if area != 'B':
-            result = ctx.execute_closed_loop_pick(direction, 'ripe' if area == 'A' else None)
+            result = observe_and_pick(
+                ctx, side=direction, expected_type='ripe' if area == 'A' else None)
             self.get_logger().info(f'Single-point result: {result.reason_code}')
             return 0 if result.success else 1
-        observation = ctx.observe_b_tree(direction)
-        if not observation['success']:
-            return 1
-        targets = observation['targets']
-        expected = f'{b_fruit}_ripe'
-        decision = decide_b_tree_targets(
-            spoken_produce_name(expected), expected,
-            ((target.model_type, target.pixel_x, target.pixel_y, target.image_width)
-             for target in targets))
-        requests = ctx.freeze_b_targets([targets[index] for index in decision.target_indices])
-        if not requests:
-            ctx.recover_home()
-        success = True
-        for request in requests:
-            result = ctx.execute_b_tree_target(request, direction)
-            success = success and result['success']
-            if not result['safe_to_continue']:
-                break
+        success = pick_b_tree(
+            ctx, waypoint='单点', target=spoken_produce_name(f'{b_fruit}_ripe'), side=direction)
         return 0 if success else 1
 
     def _debug_decision(self, message):

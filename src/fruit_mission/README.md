@@ -37,6 +37,8 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 
 `MissionContext` 只保留 ROS 反馈、导航发送、感知窗口、planner 原语及安全交接；
 品种判断和语音格式在 `decisions.py`，C 路线数学继续在 `waypoint_route.py`。
+原单点调试入口也调用相同的 `observe_and_pick` / `pick_b_tree` 积木；B 无可采目标
+或任一选中目标工序失败时不返回假成功。它是人工硬件工具，不能作为自动测试运行。
 原 `mission_flow.py` 和作为判断帮助文件的 `logic.py` 已移除，避免两个主流程来源。
 
 调用处只显示比赛参数。真实 Look/QR/Harvest/Home 预设名称、超时和停稳阈值仍在

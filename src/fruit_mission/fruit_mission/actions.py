@@ -61,13 +61,13 @@ def scan_c_qr(ctx, *, arrived):
 
 def pick_a(ctx, *, side):
     """One side at the current A point, with no navigation or grasp retries."""
-    result = _observe_and_pick(ctx, side=side, expected_type="ripe")
+    result = observe_and_pick(ctx, side=side, expected_type="ripe")
     if not result.success and not result.safe_to_continue:
         ctx.node.get_logger().warning(f"A区当前动作跳过: {result.reason_code}")
     return result
 
 
-def _observe_and_pick(ctx, *, side, expected_type):
+def observe_and_pick(ctx, *, side, expected_type):
     """Look -> measured standstill -> fresh target -> CLOSE/Harvest/Home."""
     ctx.set_expected_fruit_type(expected_type)
     look = ctx.finish_observation(side)
@@ -119,20 +119,20 @@ def pick_b_tree(ctx, *, waypoint, target, side):
         reason = _b_observation_failure_text(look.reason_code)
         ctx.recover_home()
         ctx.announce(f"B区{waypoint}，{reason}，跳过。")
-        return
+        return False
     if not ctx.stable_stop():
         ctx.recover_home()
         ctx.announce(f"B区{waypoint}，识别失败，跳过。")
-        return
+        return False
     if not ctx.set_perception_mode("DETECT"):
         ctx.recover_home()
         ctx.announce(f"B区{waypoint}，深度相机识别模式切换失败，跳过。")
-        return
+        return False
     targets = ctx.wait_b_targets(ctx.node.get_clock().now().nanoseconds)
     if targets is None:
         ctx.recover_home()
         ctx.announce(f"B区{waypoint}，识别超时，跳过。")
-        return
+        return False
     selected = _select_b_targets(ctx, waypoint, target, targets)
     requests = []
     for item in selected:
@@ -142,15 +142,18 @@ def pick_b_tree(ctx, *, waypoint, target, side):
             ctx.node.get_logger().warning(f"Skipping invalid B target: {error}")
     if not requests:
         ctx.recover_home()
-        return
+        return False
+    success = True
     for request in requests:
         result = _grasp_and_collect(ctx, request, side=side)
+        success = result.success and success
         if not result.success:
             reason = _b_arm_failure_text(result.reason_code)
             if not result.safe_to_continue:
                 ctx.announce(f"B区{waypoint}，{reason}，跳过剩余目标。")
                 break
             ctx.announce(f"B区{waypoint}，{reason}，继续下一个目标。")
+    return success
 
 
 def _select_b_targets(ctx, waypoint, target, targets):
@@ -206,7 +209,7 @@ def pick_c(ctx, task, *, side):
     target = str(task["target_name"])
     expected_type = str(task.get("expected_ripe_type") or expected_ripe_type(target))
     task["last_observation"] = {"source": "camera", "expected_type": expected_type}
-    result = _observe_and_pick(ctx, side=side, expected_type=expected_type)
+    result = observe_and_pick(ctx, side=side, expected_type=expected_type)
     task["result"] = result.reason_code
     prefix = f"C区{format_position_name(position)}，应该采{target}。"
     observed = spoken_model_type(result.matched_type)
