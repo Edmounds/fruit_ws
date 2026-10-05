@@ -36,10 +36,14 @@ class CameraTargetPlannerClient:
         self,
         node,
         config_path=DEFAULT_EXTRINSIC_CONFIG,
-        target_offset_m=(0.0, 0.0, 0.0),
+        target_offset_ac_m=(0.0, 0.0, 0.0),
+        target_offset_b_m=(0.0, 0.0, 0.0),
     ):
         self.node = node
-        self.target_offset_m = validate_target_offset(target_offset_m, 'target_offset_m')
+        self.target_offset_ac_m = validate_target_offset(
+            target_offset_ac_m, 'target_offset_ac_m')
+        self.target_offset_b_m = validate_target_offset(
+            target_offset_b_m, 'target_offset_b_m')
         with Path(config_path).open(encoding='utf-8') as stream:
             self.config = yaml.safe_load(stream)
         self.rotation, self.translation_mm = load_camera_extrinsic(config_path)
@@ -144,8 +148,13 @@ class CameraTargetPlannerClient:
                 and self.transformer.check_hardware_limits(joints)[0]
                 and all(math.isfinite(v) and abs(v) <= max_joint_speed for v in speeds))
 
-    def target_request(self, target):
+    def target_request(self, target, area):
         """Freeze an optical target into base coordinates before any arm motion."""
+        if area not in ('A', 'B', 'C'):
+            raise ValueError("area must be 'A', 'B', or 'C'")
+        offset_m = self.target_offset_b_m if area == 'B' else self.target_offset_ac_m
+        config_key = 'target_offset_b_m' if area == 'B' else 'target_offset_ac_m'
+
         stamp_ns = self._stamp_ns(target)
         point_m = (target.point.x, target.point.y, target.point.z)
         if (target.header.frame_id != self.config['camera_frame'] or stamp_ns <= 0
@@ -161,21 +170,28 @@ class CameraTargetPlannerClient:
                 tuple(v * 1000.0 for v in point_m), self.rotation, self.translation_mm)
             base_mm = transform_end_to_base_mm(
                 end_mm, (end_x * 1000.0, end_y * 1000.0, end_z * 1000.0), yaw, pitch)
-            adjusted_base_mm = apply_target_offset_mm(base_mm, self.target_offset_m)
+
+            desired_pitch = self.config['motion']['pitch_deg']
+            request_pitch_deg = float(
+                pitch_deg if desired_pitch is None else desired_pitch)
+            request_pitch_rad = math.radians(request_pitch_deg)
+
+            adjusted_base_mm = apply_target_offset_mm(base_mm, offset_m, request_pitch_rad)
             request = MoveArmCartesian.Request()
             request.x, request.y, request.z = (v / 1000.0 for v in adjusted_base_mm)
-            desired_pitch = self.config['motion']['pitch_deg']
-            request.pitch_deg = float(
-                pitch_deg if desired_pitch is None else desired_pitch)
+            request.pitch_deg = request_pitch_deg
             request.duration_ms = self.config['motion']['duration_ms']
             request.gripper_action = 2  # CLOSE at the endpoint.
             request.linear_path = self.config['motion']['linear_path']
         except (ValueError, OverflowError, AssertionError) as error:
             raise ValueError(f'Invalid transformed target: {error}') from error
+        yaw_offset_deg = math.degrees(math.atan2(base_mm[1], base_mm[0]))
         req_xyz = [round(request.x, 4), round(request.y, 4), round(request.z, 4)]
         self.node.get_logger().debug(
+            f'area={area} key={config_key} offset(m)={offset_m} '
+            f'ref_yaw={yaw_offset_deg:.2f}deg ref_pitch={request.pitch_deg:.2f}deg; '
             f'Camera(m)={point_m} -> end(mm)={end_mm} -> arm base(mm)={base_mm} '
-            f'+ offset(m)={self.target_offset_m} -> req(m)={req_xyz}; '
+            f'-> req(m)={req_xyz}; '
             f'tcp(m)={[round(end_x, 4), round(end_y, 4), round(end_z, 4)]}, '
             f'obs_pitch={pitch_deg:.2f}deg, obs_yaw={math.degrees(yaw):.2f}deg, '
             f'move_cartesian pitch={request.pitch_deg:.3f}deg, gripper=CLOSE')

@@ -20,13 +20,15 @@ def load_config(path: str, waypoint_file: str | None = None) -> Dict[str, Any]:
     with fallback_path.open(encoding='utf-8') as stream:
         params['qr_fallback'] = yaml.safe_load(stream)
     validate_config(params)
-    params["target_offset_m"] = validate_target_offset(
-        params["target_offset_m"], f"target_offset_m in {path}")
+    params["target_offset_ac_m"] = validate_target_offset(
+        params["target_offset_ac_m"], f"target_offset_ac_m in {path}")
+    params["target_offset_b_m"] = validate_target_offset(
+        params["target_offset_b_m"], f"target_offset_b_m in {path}")
     return params
 
 
 def validate_target_offset(
-    values: Any, context: str = "target_offset_m"
+    values: Any, context: str = "target offset"
 ) -> tuple[float, float, float]:
     """Validate target offset as a 3-element finite float sequence (meters)."""
     if (not isinstance(values, (list, tuple)) or len(values) != 3
@@ -36,17 +38,27 @@ def validate_target_offset(
     return (float(values[0]), float(values[1]), float(values[2]))
 
 
-def load_target_offset(config_path: str) -> tuple[float, float, float]:
-    """Load and validate target_offset_m from a mission config YAML file."""
+def load_target_offsets(
+    config_path: str,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Load and validate target_offset_ac_m and target_offset_b_m from mission config YAML."""
     path = Path(config_path)
     if not path.is_file():
         raise ValueError(f"mission config file does not exist: {config_path}")
     with path.open(encoding="utf-8") as stream:
         doc = yaml.safe_load(stream) or {}
     params = doc.get("fruit_mission", {}).get("ros__parameters", {})
-    if "target_offset_m" not in params:
-        raise ValueError(f"target_offset_m missing in {config_path}")
-    return validate_target_offset(params["target_offset_m"], f"target_offset_m in {config_path}")
+    if "target_offset_ac_m" not in params:
+        raise ValueError(f"target_offset_ac_m missing in {config_path}")
+    if "target_offset_b_m" not in params:
+        raise ValueError(f"target_offset_b_m missing in {config_path}")
+    ac_offset = validate_target_offset(
+        params["target_offset_ac_m"], f"target_offset_ac_m in {config_path}"
+    )
+    b_offset = validate_target_offset(
+        params["target_offset_b_m"], f"target_offset_b_m in {config_path}"
+    )
+    return ac_offset, b_offset
 
 
 def validate_config(params: Mapping[str, Any]) -> None:
@@ -89,9 +101,12 @@ def validate_config(params: Mapping[str, Any]) -> None:
         raise ValueError("decision_topic must not be empty")
     if not str(params.get("camera_extrinsic_config", "")).strip():
         raise ValueError("camera_extrinsic_config must not be empty")
-    if "target_offset_m" not in params:
-        raise ValueError("target_offset_m must be specified in config")
-    validate_target_offset(params["target_offset_m"], "target_offset_m")
+    if "target_offset_ac_m" not in params:
+        raise ValueError("target_offset_ac_m must be specified in config")
+    validate_target_offset(params["target_offset_ac_m"], "target_offset_ac_m")
+    if "target_offset_b_m" not in params:
+        raise ValueError("target_offset_b_m must be specified in config")
+    validate_target_offset(params["target_offset_b_m"], "target_offset_b_m")
     if not str(params.get("observation_window_topic", "")).strip():
         raise ValueError("observation_window_topic must not be empty")
     _validate_qr_fallbacks(params['qr_fallback'])

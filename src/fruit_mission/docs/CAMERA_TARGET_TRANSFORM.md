@@ -9,7 +9,7 @@ FruitDecision（RGB 光学坐标，米，保留图像 header）
        camera -> 夹爪中心 E（mm）
        planner ArmTelemetry -> 已校正模型偏航、真实 TCP xyz/pitch
        E -> 机械臂固定基座 B（mm）
-       应用 mission target_offset_m（米，换算为 mm）
+       按区域应用末端相对偏置 target_offset_ac_m / target_offset_b_m（米，换算为 mm）
        B 坐标 / 1000 -> MoveArmCartesian（米）
   -> /arm_planner_node/move_cartesian
   -> 等待 response.success / message / trajectory_id
@@ -73,12 +73,24 @@ P_B_mm = R_B_E * P_E_mm + 1000 * planner_TCP_position_m
 
 所以相机到夹爪的固定矩阵本身并不足以提交 planner；必须加上观测姿态的第二步。
 
-第三步由 mission 的 `fruit_mission.yaml` 配置 `target_offset_m=[dx,dy,dz]`（米）。
-在 E -> B 完成后，X/Z 直接加 `1000*dx` / `1000*dz`；Y 根据原始 Base Y
-的正负加 `+1000*abs(dy)` 或 `-1000*abs(dy)`，Base Y 为零时不加侧向偏置。
-当前调参值为 `[0.0, 0.03, -0.015]`，正式任务和独立调试客户端共用读取、有限数校验及
-`apply_target_offset_mm()`。这是视觉表面点到抓取点的补偿，不能用它代替或重复应用
-planner 的刚性 `geometry.tool_z_offset_m`。日志同时保留偏置前 Base 坐标和最终请求。
+第三步由 mission 的 `fruit_mission.yaml` 分区域配置末端相对偏置（米）：
+A/C 采用 `target_offset_ac_m: [0.0, 0.03, -0.015]`，B 采用 `target_offset_b_m: [0.03, 0.0, -0.015]`。
+局部坐标系定义：+X 为夹爪正前方深入，+Y 为夹爪左侧，+Z 为夹爪上方，各分量保留输入符号，不再根据 Base Y 自动变号。
+偏置计算使用补偿前目标方向 yaw 与最终抓取请求 pitch（`motion.pitch_deg`，为 null 时使用观测 pitch）构建旋转矩阵：
+
+```text
+yaw_offset = atan2(base_y, base_x)
+pitch_request = motion.pitch_deg（或观测 pitch）
+R_offset = Rz(yaw_offset) * Ry(-pitch_request)
+P_request_mm = P_B_mm + R_offset * (1000 * offset_local_m)
+```
+
+A/C 沿用历史数值但物理含义调整为末端局部坐标（局部左移 3 cm、局部下移 1.5 cm），非零局部 Y 在偏置后会导致最终 yaw 发生微调；
+B 采用局部深入 3 cm、局部下移 1.5 cm。正式任务使用 `MissionContext._current_area`，单点调试客户端使用 `--zone` 参数。
+两套配置均须存在并独立验证三个有限数，缺失或非法直接报错，不跨区回退。
+这是视觉表面点到抓取点的末端相对补偿，不能用它代替或重复应用 planner 的刚性 `geometry.tool_z_offset_m`。
+日志同时保留区域、配置键、局部偏置、偏置参考 yaw/pitch、偏置前 Base 坐标和最终请求点。
+源码修改后需重新构建 `fruit_mission` 并重启 `fruit_mission_node` 或 `camera_arm_target_client`。
 
 此次修正了 E -> S 的局部 Z 符号。原值 `-66.726 mm` 把螺纹孔放在了抓取中心下方；
 末端俯仰约 -91.45°、偏航约 90° 时，局部 Z 几乎沿基座 +Y，符号错误造成约
@@ -195,6 +207,14 @@ PY
 C++ 独立头文件为 `include/fruit_mission/camera_target_transform.hpp`，函数
 `fruit_mission::transformCameraToEndEffectorMm(camera_mm, rotation, translation_mm)`；
 只使用标准库，R/t 显式传入，避免复制一套硬编码标定。当前 mission 为 Python，运行链只用 Python 实现。
+
+纯数学离线单元测试（验证相对末端偏置与姿态旋转计算，不驱动硬件）：
+
+```bash
+cd /home/rc4/fruit_ws
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
+python3 -m unittest discover -s src/fruit_mission/test -p test_camera_target_transform.py -v
+```
 
 ## 构建与剩余集成限制
 

@@ -137,7 +137,8 @@ class MissionContext:
         self._camera_planner = CameraTargetPlannerClient(
             node,
             config.get("camera_extrinsic_config", DEFAULT_EXTRINSIC_CONFIG),
-            target_offset_m=config.get("target_offset_m", (0.0, 0.0, 0.0)),
+            target_offset_ac_m=config.get("target_offset_ac_m", (0.0, 0.0, 0.0)),
+            target_offset_b_m=config.get("target_offset_b_m", (0.0, 0.0, 0.0)),
         )
         self._follow_waypoints_client = ActionClient(
             node,
@@ -702,7 +703,9 @@ class MissionContext:
 
     def camera_target_request(self, point: PointStamped):
         """Freeze a camera point using the shared measured-joint transform."""
-        return self._camera_planner.target_request(point)
+        if self._current_area not in ("A", "B", "C"):
+            raise ValueError(f"Invalid mission current_area: {self._current_area}")
+        return self._camera_planner.target_request(point, self._current_area)
 
     def move_to_base_target(self, request) -> _ArmMotionResult:
         """One planner CLOSE/dwell request, starting only with stationary feedback."""

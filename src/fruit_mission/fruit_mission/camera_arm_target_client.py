@@ -21,7 +21,7 @@ from fruit_mission.camera_target_planner_client import (
     CameraTargetPlannerClient,
     DEFAULT_EXTRINSIC_CONFIG,
 )
-from fruit_mission.config import load_target_offset
+from fruit_mission.config import load_target_offsets
 from fruit_mission.script_hardware_client import latched_qos, reliable_qos
 
 
@@ -254,10 +254,16 @@ class CameraArmTargetClient(Node):
         # 2. Initialize CameraTargetPlannerClient
         extrinsic_cfg = self.get_parameter('camera_extrinsic_config').value
         config_path = self.get_parameter('config_path').value
-        target_offset_m = load_target_offset(config_path)
-        self.get_logger().debug(f'Loaded target_offset_m={target_offset_m} from {config_path}')
+        target_offset_ac_m, target_offset_b_m = load_target_offsets(config_path)
+        self.get_logger().debug(
+            f'Loaded target_offset_ac_m={target_offset_ac_m}, '
+            f'target_offset_b_m={target_offset_b_m} from {config_path}')
         self._camera_planner = CameraTargetPlannerClient(
-            self, extrinsic_cfg, target_offset_m=target_offset_m)
+            self,
+            extrinsic_cfg,
+            target_offset_ac_m=target_offset_ac_m,
+            target_offset_b_m=target_offset_b_m,
+        )
 
         # 3. Publish current area so fruit_perception_node loads the correct model
         if not self.report_current_area(zone):
@@ -305,7 +311,7 @@ class CameraArmTargetClient(Node):
         # 8. Transform optical target to arm base coordinates
         self.get_logger().debug('Transforming target to arm base coordinates...')
         try:
-            req = self._camera_planner.target_request(target_point)
+            req = self._camera_planner.target_request(target_point, zone)
         except ValueError as err:
             self.get_logger().error(f'Target transform failed: {err}')
             return 1
