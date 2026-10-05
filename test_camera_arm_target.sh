@@ -12,7 +12,7 @@ readonly LOGGING_HELPER="${WORKSPACE_DIR}/scripts/fruit_runtime_logging.bash"
 LAUNCH_PID=""
 PLANNER_PID=""
 STOPPING=0
-MODEL=""
+ZONE=""
 DIRECTION=""
 DEBUG=0
 
@@ -24,14 +24,14 @@ log()
 usage()
 {
   cat <<'EOF'
-Usage: ./test_camera_arm_target.sh --model A|B --left|--right [--debug]
+Usage: ./test_camera_arm_target.sh --zone A|B|C --left|--right [--debug]
 
 Test camera and arm coordination.
 Arm returns to the home position first, executes observation and grasp,
-then executes the corresponding store preset (left_store or right_store)
+then executes the zone-specific store preset (e.g. left_store_a or right_store_c)
 to release the fruit, then explicitly executes home and waits for completion.
-  --model A|B     A: vegetable model, B: fruit model (supports --zone A|B as alias)
-  --left|--right  Arm side presets (left_look/left_store or right_look/right_store)
+  --zone A|B|C   Competition zone; A/C use vegetable model, B uses fruit model
+  --left|--right  Arm side; presets are <side>_look_<zone> and <side>_store_<zone>
   --debug         Print per-frame camera detections and coordinates
 EOF
 }
@@ -40,13 +40,14 @@ parse_arguments()
 {
   while (( $# > 0 )); do
     case "$1" in
-      --model|-m|--zone|-z)
-        (( $# >= 2 )) || { log "ERROR: $1 requires A or B"; return 2; }
-        [[ -z "${MODEL}" ]] || { log "ERROR: model may only be specified once"; return 2; }
+      --zone|-z)
+        (( $# >= 2 )) || { log "ERROR: $1 requires A, B or C"; return 2; }
+        [[ -z "${ZONE}" ]] || { log "ERROR: zone may only be specified once"; return 2; }
         case "$2" in
-          A|a) MODEL=A ;;
-          B|b) MODEL=B ;;
-          *) log "ERROR: model must be A (vegetable) or B (fruit)"; return 2 ;;
+          A|a) ZONE=A ;;
+          B|b) ZONE=B ;;
+          C|c) ZONE=C ;;
+          *) log "ERROR: zone must be A, B or C"; return 2 ;;
         esac
         shift 2
         ;;
@@ -73,7 +74,7 @@ parse_arguments()
     esac
   done
 
-  [[ -n "${MODEL}" ]] || { log "ERROR: --model A (vegetable) or --model B (fruit) is required"; return 2; }
+  [[ -n "${ZONE}" ]] || { log "ERROR: --zone A|B|C is required"; return 2; }
   [[ -n "${DIRECTION}" ]] || {
     log "ERROR: --left or --right is required"
     return 2
@@ -235,7 +236,7 @@ main()
 
   log "Waiting for the perception stack"
   if ros2 run fruit_mission camera_arm_target_client \
-    --model "${MODEL}" "${DIRECTION}" "${client_args[@]}" \
+    --zone "${ZONE}" "${DIRECTION}" "${client_args[@]}" \
     --ros-args --params-file "${CLIENT_CONFIG}" \
     2>&1 | /usr/bin/python3 "${filter_script}" --output-file "${client_log}" --component "client" $( (( DEBUG != 0 )) && echo "--debug" ); then
     log "Task sequence completed"

@@ -1,17 +1,17 @@
 # fruit_qr_planner
 
-ROS 2 Humble package for the competition's one-shot QR workflow. It reads camera images,
-uses the decoded official QR payloads to publish the B-zone plan followed by the C-zone
-plan, then stops accepting further codes.
+ROS 2 Humble package for mission-owned B/C QR observation windows. It reads camera
+images and parses each payload according to the active window's area. There is no
+B-then-C sequence state machine: C can be scanned first, and later B/C windows
+can be processed without restarting the node.
 
 ## Interfaces
 
 - Input: `/camera/color/image_raw` (`sensor_msgs/msg/Image`)
 - Observation window: `/fruit_mission/observation_window` (`std_msgs/msg/String`, JSON)
-- Current area: `/fruit_mission/current_area` (`std_msgs/msg/String`)
 - B plan: `/fruit/b_pick_plan` (`std_msgs/msg/String`, UTF-8 JSON)
 - C plan: `/fruit/c_pick_plan` (`std_msgs/msg/String`, UTF-8 JSON)
-- Parameters: `image_topic`, `observation_window_topic`, `current_area_topic`, and `confirm_frames` (default `1`)
+- Parameters: `image_topic`, `observation_window_topic`, and `confirm_frames` (default `1`)
 
 Decoding only occurs during an active observation window with `purpose="qr"` and for frames whose capture timestamp is at or after the window's start time. Outside a valid QR window, frames are immediately dropped to minimize CPU overhead.
 Each plan published includes `observation_window_id`, `image_stamp_sec`, and `image_stamp_nanosec`.
@@ -21,11 +21,13 @@ invalid integer image timestamps, wrong window IDs, and mismatched QR purpose or
 Both plan topics use Reliable, Transient Local QoS with depth 1, so consumers
 can retrieve the published plan. Within each window, only one valid plan is published.
 
-If mission enters C before a B code was decoded, the current-area message or a C observation window advances the
-scanner directly to C. This preserves the C scan opportunity when mission used its
-configured B fallback after the 10-second plan wait. QR timeout fallback contents are
-owned by `fruit_mission/config/fruit_mission.yaml`; this node only decodes and publishes
-codes that were actually read.
+Window area B directly selects the B parser; C directly selects the C parser.
+Consecutive-frame confirmation resets for each window and when no code is read.
+Current-area messages do not advance a QR state or start scanning. QR timeout
+fallback contents are owned by `fruit_mission/config/qr_fallback.yaml`; this node
+only decodes and publishes codes that were actually read. Mission directly executes
+the `qr_scan` arm preset before opening a window; no MCU task/callback or camera
+switch is involved.
 
 The official B/C QR payloads are trusted. The planner only normalizes formatting before
 building JSON: BOM, CRLF line endings, surrounding whitespace, ASCII commas, Chinese
@@ -60,4 +62,4 @@ ros2 topic echo /fruit/b_pick_plan
 ros2 topic echo /fruit/c_pick_plan
 ```
 
-Restart the node before the next competition round to reset the B-then-C sequence.
+Close the old window and open a new one for another scan; no sequence reset is needed.

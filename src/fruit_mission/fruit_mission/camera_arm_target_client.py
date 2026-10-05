@@ -124,7 +124,7 @@ class CameraArmTargetClient(Node):
         return not conflicts.intersection(
             name for name, _ns in self.get_node_names_and_namespaces())
 
-    def open_observation_window(self, model: str) -> str:
+    def open_observation_window(self, zone: str) -> str:
         """Open an observation window for target acquisition."""
         now = self.get_clock().now()
         sec, nanosec = now.seconds_nanoseconds()
@@ -132,24 +132,24 @@ class CameraArmTargetClient(Node):
         self._active_window_id = window_id
         self._active_window_start_sec = sec
         self._active_window_start_nanosec = nanosec
-        self._active_window_area = model
+        self._active_window_area = zone
         self._active_window_purpose = "harvest"
-        self._active_window_expected_type = "ripe" if model == "A" else ""
+        self._active_window_expected_type = "ripe" if zone == "A" else ""
         self._latest_decision = None
         cmd = {
             "window_id": window_id,
             "valid": 1,
             "start_sec": sec,
             "start_nanosec": nanosec,
-            "area": model,
+            "area": zone,
             "purpose": "harvest",
             "expected_type": self._active_window_expected_type,
         }
         msg = String()
         msg.data = json.dumps(cmd, ensure_ascii=False, separators=(",", ":"))
         self._window_pub.publish(msg)
-        self.get_logger().info(f"Opened observation window for model {model}")
-        self.get_logger().debug(f"Observation window opened: id='{window_id}' model={model}")
+        self.get_logger().info(f"Opened observation window for zone {zone}")
+        self.get_logger().debug(f"Observation window opened: id='{window_id}' zone={zone}")
         return window_id
 
     def close_observation_window(self) -> None:
@@ -173,10 +173,10 @@ class CameraArmTargetClient(Node):
         self.get_logger().info('Closed observation window')
         self.get_logger().debug(f"Observation window closed: id='{window_id}'")
 
-    def report_current_area(self, model):
-        """Deliver model selection only after the perception subscriber is discovered."""
-        if model not in ('A', 'B'):
-            raise ValueError('Model must be A or B')
+    def report_current_area(self, zone):
+        """Deliver zone selection only after the perception subscriber is discovered."""
+        if zone not in ('A', 'B', 'C'):
+            raise ValueError('Zone must be A, B or C')
         topic = self._area_pub.topic_name
         if not self.wait_until(
             lambda: any(info.node_name == 'fruit_perception_node'
@@ -185,14 +185,14 @@ class CameraArmTargetClient(Node):
         ):
             self.get_logger().error('Perception area subscriber discovery timed out')
             return False
-        self._area_pub.publish(String(data=model))
+        self._area_pub.publish(String(data=zone))
         if not self._area_pub.wait_for_all_acked(Duration(seconds=_bounded_timeout(
                 self.get_parameter('current_area_delivery_timeout_sec').value))):
             self.get_logger().error('Perception area delivery acknowledgment timed out')
             return False
         return True
 
-    def _wait_for_target(self, model: str, window_id: str, timeout: float = 10.0):
+    def _wait_for_target(self, zone: str, window_id: str, timeout: float = 10.0):
         deadline = time.monotonic() + _bounded_timeout(timeout)
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self, timeout_sec=0.1)
@@ -202,7 +202,7 @@ class CameraArmTargetClient(Node):
             if msg is None:
                 continue
 
-            if model == 'A':
+            if zone in ('A', 'C'):
                 if msg.has_target:
                     pt = msg.target_point
                     if (math.isfinite(pt.x) and math.isfinite(pt.y)
@@ -211,7 +211,7 @@ class CameraArmTargetClient(Node):
                         target.header = msg.header
                         target.point = pt
                         self.get_logger().info(
-                            f'Model A (vegetable) target locked: '
+                            f'Zone {zone} (vegetable) target locked: '
                             f'x={pt.x:.3f}, y={pt.y:.3f}, z={pt.z:.3f}')
                         return target
             else:
@@ -234,12 +234,14 @@ class CameraArmTargetClient(Node):
                     return target
         return None
 
-    def run_sequence(self, model: str, direction: str) -> int:
-        look_preset = f'{direction}_look'
-        model_name = 'vegetable' if model == 'A' else 'fruit'
+    def run_sequence(self, zone: str, direction: str) -> int:
+        if zone not in ('A', 'B', 'C') or direction not in ('left', 'right'):
+            raise ValueError('Expected zone A/B/C and direction left/right')
+        look_preset = f'{direction}_look_{zone.lower()}'
+        model_name = 'fruit' if zone == 'B' else 'vegetable'
         self.get_logger().info(
             f'=== Starting Camera-Arm Target Test ===\n'
-            f'  Model: {model} ({model_name})\n'
+            f'  Zone: {zone} ({model_name})\n'
             f'  Preset: {look_preset}')
 
         # 1. Wait for hardware bridge
@@ -258,9 +260,9 @@ class CameraArmTargetClient(Node):
             self, extrinsic_cfg, target_offset_m=target_offset_m)
 
         # 3. Publish current area so fruit_perception_node loads the correct model
-        if not self.report_current_area(model):
+        if not self.report_current_area(zone):
             return 1
-        self.get_logger().info(f'Delivered current area: {model}')
+        self.get_logger().info(f'Delivered current area: {zone}')
 
         # 4. Move arm to home preset first
         self.get_logger().info('Moving arm to home preset...')
@@ -288,11 +290,11 @@ class CameraArmTargetClient(Node):
 
         # 7. Open observation window and collect target
         self.get_logger().info('Opening observation window for target acquisition...')
-        window_id = self.open_observation_window(model)
+        window_id = self.open_observation_window(zone)
         timeout_sec = _bounded_timeout(self.get_parameter('detection_timeout_sec').value)
         self.get_logger().info(f'Observing for targets (timeout={timeout_sec}s)...')
         try:
-            target_point = self._wait_for_target(model, window_id, timeout=timeout_sec)
+            target_point = self._wait_for_target(zone, window_id, timeout=timeout_sec)
         finally:
             self.close_observation_window()
 
@@ -319,7 +321,7 @@ class CameraArmTargetClient(Node):
             return 1
 
         # 12. Move arm to store preset and release fruit
-        store_preset = f'{direction}_store'
+        store_preset = f'{direction}_store_{zone.lower()}'
         self.get_logger().info(f'Moving arm to {store_preset} and releasing fruit...')
         completed, reason = self._camera_planner.execute_preset(store_preset, self.wait_until)
         if not completed:
@@ -351,28 +353,20 @@ def main(args=None):
                       help='Check if conflicting nodes are absent (serial bridge may exist)')
     parser.add_argument('--debug', action='store_true',
                         help='Enable per-frame detection debug logging')
-    parser.add_argument('--model', '-m', choices=('A', 'B', 'a', 'b'),
-                        help='Perception model: A (vegetable) or B (fruit)')
-    parser.add_argument('--zone', '-z', choices=('A', 'B', 'C', 'a', 'b', 'c'),
-                        help='Alias for --model')
+    parser.add_argument('--zone', '-z', type=str.upper, choices=('A', 'B', 'C'),
+                        help='Competition zone: A/C use vegetable model, B uses fruit model')
     direction = parser.add_mutually_exclusive_group()
     direction.add_argument('--left', dest='direction', action='store_const', const='left',
-                           help='Use left_look and left_store presets')
+                           help='Use the zone-specific left_look and left_store presets')
     direction.add_argument('--right', dest='direction', action='store_const', const='right',
-                           help='Use right_look and right_store presets')
+                           help='Use the zone-specific right_look and right_store presets')
     options, ros_args = parser.parse_known_args(args)
     unknown = remove_ros_args(args=ros_args)
     if unknown:
         parser.error(f'unrecognized arguments: {" ".join(unknown)}')
     if not options.require_stack_absent:
-        raw_model = options.model or options.zone
-        if raw_model is None or options.direction is None:
-            parser.error('--model A|B (or --zone) and --left/--right are required')
-        model = raw_model.upper()
-        if model not in ('A', 'B'):
-            parser.error('--model must be A (vegetable) or B (fruit)')
-    else:
-        model = None
+        if options.zone is None or options.direction is None:
+            parser.error('--zone A|B|C and --left/--right are required')
 
     rclpy.init(args=ros_args)
     node = CameraArmTargetClient(debug=options.debug)
@@ -381,7 +375,7 @@ def main(args=None):
         if options.require_stack_absent:
             status = 0 if node.stack_is_absent() else 9
         else:
-            status = node.run_sequence(model, options.direction)
+            status = node.run_sequence(options.zone, options.direction)
     except KeyboardInterrupt:
         if node._camera_planner is not None:
             node._camera_planner.request_stop()

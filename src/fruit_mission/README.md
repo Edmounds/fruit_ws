@@ -26,8 +26,8 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 | 积木 | 参数与职责 |
 | --- | --- |
 | `navigate(ctx, waypoints, side=None)` | 明确导航点；有 side 时导航与 Look 并行。失败清理待消费 Look，安全恢复并返回 False。 |
-| `pick_a(ctx, side=...)` | 当前点单侧 Look 完成 → 开启 harvest 观察窗口 → 识别成熟目标 → CLOSE/驻留 → Harvest/OPEN/驻留 → Home。无导航、无重复抓取。 |
-| `pick_b_tree(ctx, tree_name=..., target=..., side=...)` | 每树观察一次、开启 harvest 窗口比较二维码品种、选择最多两个成熟目标，首次抓取前先冻结全部基座请求并关闭窗口，再逐个抓取/Harvest/Home。 |
+| `pick_a(ctx, side=...)` | 区域 Look 完成 → 实测静止后 OPEN/HOLD → harvest 窗口 → 成熟目标 → CLOSE/驻留 → 区域 Store/OPEN/驻留 → Home。无导航、无重复抓取。 |
+| `pick_b_tree(ctx, tree_name=..., target=..., side=...)` | 每树观察一次、张爪后开启 harvest 窗口比较二维码品种、选择最多两个成熟目标，首次抓取前冻结全部基座请求并关闭窗口，再逐个抓取/区域 Store/Home。 |
 | `navigate_c(ctx, task)` | 复用现有 C 几何规划，记录路线和 camera_side；失败的记录在恢复前由分区流程保存。 |
 | `pick_c(ctx, task, side=...)` | 当前二维码项的单次识别/采摘、结果记录和播报；不增加方向复核。 |
 | `scan_b_qr / scan_c_qr(ctx, arrived=...)` | 已到点且 QR 姿态执行完成后开启 QR 扫码窗口；到点/扫码失败均用 mission 自有固定计划，保存、播报并恢复。 |
@@ -37,11 +37,11 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 
 `MissionContext` 只保留 ROS 反馈、导航发送、感知窗口、planner 原语及安全交接；
 品种判断和语音格式在 `decisions.py`，C 路线数学继续在 `waypoint_route.py`。
-独立单点调试入口 `test_camera_arm_target.sh`（`camera_arm_target_client`）不依赖导航，按用户确认在抓取及驻留成功后调用对应侧 `left_store` 或 `right_store` 执行放果工序，再调用 `home` 并等待完成；不是停在目标点的工具，也不重复调用另一套 Harvest。正式 mission 保持 CLOSE→配置的 Harvest 放果工序→Home。它是人工硬件工具，不能作为自动测试运行。
+独立单点调试入口 `test_camera_arm_target.sh`（`camera_arm_target_client`）不依赖导航，只接受 `--zone A|B|C --left|--right`（可加 `--debug`），不再接受 `--model`。区域同时选择模型（A/C 蔬菜、B 水果）和 `<side>_look_<zone>` / `<side>_store_<zone>`；例如 `--zone C --left` 使用 `left_look_c`、`left_store_c`。工序为 Home→区域 Look→OPEN/HOLD→识别→CLOSE/HOLD→区域 Store→Home，不加入跨区保护动作。它是人工硬件工具，不能作为自动测试运行。
 原 `mission_flow.py` 和作为判断帮助文件的 `logic.py` 已移除，避免两个主流程来源。
 
-调用处只显示比赛参数。真实 Look/QR/Harvest/Home 预设名称、超时仍在
-`config/fruit_mission.yaml`；姿态、速度、标定在对应 planner/相机源码 YAML，
+调用处只显示比赛参数。超时在 `config/fruit_mission.yaml`；预设名称直接遵循
+planner YAML，姿态、速度、标定在对应 planner/相机源码 YAML，
 不把这些值复制进比赛主流程。开窗前及窗口内的底盘与机械臂静止由现场物理保证，
 移除了原开窗前的 `stable_stop` 阻塞等待；未知运动结果时保留 STOP 与取消。
 恢复不做独立停稳等待；Home/QR 等预设入口直接检查当前新鲜有效的低速反馈，
@@ -49,7 +49,11 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 `a_observation_order` 配置。
 
 窗口结果在入缓存前核对 ID、用途及合法窗后图像时间；扫码计划另核对区域，非对象 JSON 与非法时间忽略后继续等待或使用既有固定兜底。
-姿态统一遵循 planner 的 `arm_presets.yaml` 名称定义，删除了原有中间映射：观察直接调用 `left_look`/`right_look`，放果工序直接调用 `left_store`/`right_store`，复归调用 `home`。
+姿态统一遵循 planner 的 `arm_presets.yaml` 名称定义，无中间映射：观察调用 `left_look_a/b/c` 或 `right_look_a/b/c`，放果调用 `left_store_a/b/c` 或 `right_store_a/b/c`，扫码直接调用 `qr_scan`，复归调用 `home`。Look 完成后复用共享客户端等待新鲜静止反馈，执行 OPEN/HOLD 后才开窗；张爪失败走既有一次 Home，不再即时检查旧 RUNNING 缓存而提前拒绝。
+
+旧正常 `retract` 边界改用 `shenzhi`：A 每点结束、B/C 扫码后、B 每树结束、C 每项结束，以及对应区域出口；最后一个点/树/项与出口重合时不重复执行。失败操作只沿用已有一次 Home，不追加保护动作。边界仍要求保护位，未确认 `shenzhi` 不放行后续导航，即使恢复 Home 成功也不冒充保护位；软件继续推进。已完成且当前实测静止的 `shenzhi` 可用于导航交接或直接启动并行 Look，不强制先回 Home。
+
+真实姿态及已定义名称以源码 YAML 为准。本任务只引用名字，不覆盖操作者已有坐标，不补空预设或假成功；现场运行前须补齐所用预设。QR 解析按窗口区域直接选择 B/C，无自动 B→C 状态推进；窗口 ID、图像时间和固定兜底保留。
 B 树收到 `targets_ready=true` 的空列表表示完成但无果实，立即按空树跳过；仅未收到完成结果才算识别超时。关闭窗口保留开启时上下文。
 
 正式任务和相机单点调试共用 `fruit_mission.yaml` 的 `target_offset_m`（当前

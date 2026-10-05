@@ -101,7 +101,7 @@ planner 的刚性 `geometry.tool_z_offset_m`。日志同时保留偏置前 Base 
 - `motion.linear_path: false`：关节空间 PTP 平滑规划（false 为 PTP，true 为笛卡尔 LIN）。
 - 视觉目标末点使用 CLOSE，保留转换出的 XYZ，不沿用旧固件的 Z=-100mm、pitch=-90°，不编造接近或提拉坐标。
 
-抓取流程为目标 CLOSE → 驻留 → 对应侧 Store（末点 OPEN、驻留，执行 left_store/right_store）→ Home。
+抓取流程为目标 CLOSE → 驻留 → 对应区域/侧 Store（包含 OPEN、驻留）→ Home。
 `MoveArmCartesian` 没有驻留字段，因此 CLOSE 完成后复用 `move_joints`：以新鲜、有限、在限位内的实测原始四轴角为目标，HOLD 保持 `planning.default_dwell_ms`，仍由 planner 生成并执行轨迹，不在 mission 中生成轨迹或用 sleep 假冒执行完成。该驻留值须为正数。
 Store/Home 都必须返回成功才记录本次工序完成；这不是视觉证实果实实际入筐。
 
@@ -124,11 +124,12 @@ sleep，处理 STOP 派发应答后只尝试一次 Home。预设入口直接检�
 ## 观察与 A/B/C 编排
 
 - 导航与相应 Look 并行；导航成功、Look 成功后开窗。观察期间至目标冻结/提交之前，底盘和机械臂静止由现场物理保证，不增加开窗前或窗口内的独立静止等待。运动入口仍检查原始 ArmStatus 的新鲜、有限、限位内低速反馈；关节阈值取 mission `stationary.joint_speed_rps`，不把非有限速度伪造为零。
-- A：导航与 left_look 并行 → 左侧识别/抓取/left_store/Home → right_look → 右侧对应工序。
+- A：导航与 `left_look_a` 并行 → OPEN/HOLD → 左侧识别/抓取/`left_store_a`/Home → `right_look_a`/OPEN/HOLD → 右侧对应工序。
 - B：每树只观察一次，按既有像素评分选择最多两个匹配且成熟的目标。在首次观察姿态下，一次性转换并保存两个基座坐标/绝对 pitch。第二抓直接用已保存请求，不重新 Look、识别或换算；第一抓失败也推进下一冻结目标，实际运动仍受反馈与 planner 保护。
 - C：二维码任务顺序、路线与左右侧使用现有规划结果，导航时提前 Look，不增加到点方向复核。导航失败跳过当前项，不在未到达的位置抓取。
 - 局部失败跳过当前项，A 左右侧和 B 冻结目标逐项继续，不跨层传播 `safe_to_continue`。失败只做一次必要 Home；状态未知仍取消导航并请求 STOP，未获有效实测反馈时跳过危险动作。除既有导航重试外，没有识别/抓取/姿态重试。底盘已接受 goal 后等待终态，不再以 10 秒执行期限中断；goal 应答与取消仍独立限时。
-- 二维码导航、姿态、模式或识别失败均使用 `config/qr_fallback.yaml`，仍播报、导航、作业，不跳过整个区域。
+- 二维码导航、姿态或识别失败均使用 `config/qr_fallback.yaml`，仍推进软件流程；物理动作受反馈及保护姿态门控。扫码直接执行 `qr_scan`，QR 解析只按当前窗口 B/C 区域，不维护扫码顺序状态机。
+- 旧正常 retract 边界使用 `shenzhi`：A 每点、B/C 扫码、B 每树、C 每项结束及区域出口，重合出口不重复调用。失败仍一次 Home，不追加保护动作；必要保护位未确认时不放行转场。新鲜静止的已确认 shenzhi 可以用于导航交接及启动并行 Look。
 
 ## 离线算例（不控制硬件）
 
@@ -208,11 +209,11 @@ source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 启动检查覆盖 move_cartesian、move_joints、execute_preset、STOP 服务及轨迹 Header/Point/Mode 订阅、ArmStatus 发布端点，不再等待旧 task/callback 端点。每项启动等待不超过 10 秒；就绪超时告警，不因外围节点退出直接结束 mission。
 
 正式 mission 统一直接使用 `arm_presets.yaml` 姿态定义，删除中间映射字典：
-观察入口 `start_observation` 直接调用 `left_look`/`right_look`，放果工序直接调用 `left_store`/`right_store`，复归调用 `home`，扫码调用 `qr_look`。任务配置文件不再包含 `arm_presets` 映射键。这里姿态名称与 planner YAML 严格统一；各姿态的真实关节轨迹均在
+观察入口 `start_observation` 直接调用 `<side>_look_<zone>`，放果调用 `<side>_store_<zone>`（left/right，a/b/c），复归 `home`，扫码 `qr_scan`，正常转场保护 `shenzhi`。任务配置不含 `arm_presets` 映射键。这里姿态名称与 planner YAML 统一；各姿态的真实关节轨迹均在
 planner 的 `arm_presets.yaml` 中定义与维护。不补假姿态。缺失、越限或硬件执行失败均返回失败。
-区域只通过现有持久 ROS 话题通知感知/扫码节点，不再发送下位机区域命令。
+真实姿态及已定义名称以源码 YAML 为准；操作者须检查并补齐所用预设。客户端不覆盖已有坐标，不补空轨迹或回退到 A 区姿态。区域话题供感知模型选择；QR 区域由窗口指定，不发送下位机区域命令。
 
-独立 `camera_arm_target_client` 与 `test_camera_arm_target.sh` 不依赖底盘导航栈 `/odometry` 与正式比赛 Harvest 映射；每次运行先执行 `home`，随后进入 `left_look`/`right_look` 观察姿态，实测静止并张爪后开启 harvest 观察窗口，完成基座解算与 CLOSE/HOLD 抓取。按用户新确认，成功后继续执行对应侧 `left_store`/`right_store` 放果工序，再显式执行 `home` 并等待完成，不停留在目标点，也不重复执行另一套 Harvest。任何工序失败不报整个流程成功。该脚本会驱动硬件，不是自动测试。
+独立 `camera_arm_target_client` 与 `test_camera_arm_target.sh` 不依赖导航，只接受 `--zone A|B|C --left|--right`（可加 `--debug`），旧 `--model` 删除。区域同时决定模型（A/C 蔬菜、B 水果）和 Look/Store 后缀（a/b/c）。每次先 Home，再区域 Look、实测静止 OPEN/HOLD、harvest 窗口、基座解算、CLOSE/HOLD、区域 Store、Home，不加入跨区 shenzhi。任何工序失败不报整个流程成功。该脚本会驱动硬件，不是自动测试。
 
 - 模型选择使用可靠、持久区域发布端，先等待 `fruit_perception_node` 的实际区域订阅端，再发布一次并等待 DDS acknowledgment；仅扫码节点订阅或串口桥就绪不能视为感知区域端就绪。DDS 确认是传输层交付，不是推理就绪回执。
 - 不再支持品种过滤参数。B 等待 `targets_ready`，只从有限置信度、有效正深度的 `*_ripe` 目标中选最高置信度者；无成熟目标时等待超时，不回退到无类型信息的 `target_point` 或未成熟目标。

@@ -111,20 +111,25 @@ ros2 topic echo /fruit_perception/decision
 ```bash
 cd /home/rc4/fruit_ws
 # 蔬菜模型 (A区): 左侧观察并抓取
-./test_camera_arm_target.sh --model A --left
+./test_camera_arm_target.sh --zone A --left
 
 # 水果模型 (B区): 不区分苹果或梨，抓取成熟水果
-./test_camera_arm_target.sh --model B --right
-./test_camera_arm_target.sh --model B --left --debug
+./test_camera_arm_target.sh --zone B --right
+./test_camera_arm_target.sh --zone B --left --debug
+
+# C 区蔬菜模型及 C 区姿态（补齐 YAML 姿态后才运行）
+./test_camera_arm_target.sh --zone C --left
 ```
 
 参数说明：
-- `--model A|B`：指定感知模型（`A` 为蔬菜 vegetable 模型，`B` 为水果 fruit 模型，亦兼容 `--zone A|B`）。
-- `--left|--right`：指定作业侧，执行 `left_look`/`left_store` 或 `right_look`/`right_store` 预设。
+- `--zone A|B|C`：同时选择区域模型和姿态；A/C 用蔬菜模型，B 用水果模型。旧 `--model` 已删除。
+- `--left|--right`：指定作业侧，执行 `<side>_look_<zone>` / `<side>_store_<zone>`，区域后缀小写，例如 `left_look_a`、`right_store_c`。
 - `--debug`：显式开启串口关键数据帧（轨迹头、轨迹点、控制模式）的终端解码打印；原始 raw 十六进制数据已彻底移除，逐帧相机详情与高频状态包统一落盘至会话日志文件。
 
 流程说明：
-脚本等待实际感知节点的区域订阅端就绪后发布模型选择，并等待可靠 DDS 确认，避免串口桥先就绪时丢失 B 模型选择。机械臂先回到 `home`，再运动至 `left_look` 或 `right_look`，通过 planner 的新鲜实测关节角请求张爪（OPEN + HOLD 驻留），完成后开启 harvest 观察窗口；深度目标转换到基座后应用 mission `target_offset_m`，再运动至目标点闭爪（CLOSE + HOLD）。成功后执行对应侧 `left_store` 或 `right_store` 放果，再显式执行 `home`。B 只从感知完成统计后的有效成熟目标中选择置信度最高者，不区分苹果或梨；无成熟目标不下发目标运动，不回退抓未成熟目标。品种参数已删除。机械臂运动直接等待下位机执行结果，可由 `Ctrl-C`/STOP 中断；端点、识别与区域交付仍各自独立限时，最大 10 秒，较短等待不变。Look 后不重复做独立静止等待，OPEN/HOLD 仍逐次取得新鲜有效的实测硬件角。
+脚本等待实际感知节点的区域订阅端就绪后发布区域，并等待可靠 DDS 确认。工序为 `home` → 区域 Look → 实测关节角 OPEN/HOLD → harvest 窗口 → 目标 CLOSE/HOLD → 区域 Store → `home`。B 只选统计完成后的有效成熟水果；A/C 使用蔬菜目标。坐标换算和 `target_offset_m` 仍共用 mission 实现。运动等待下位机结果，端点、识别与区域交付各自限时最多 10 秒；共享 OPEN/HOLD 逐次等待新鲜有效的静止反馈，不做外层即时拒绝。
+
+正式 mission 在旧正常收臂边界调用 `shenzhi`，扫码直接调用 `qr_scan`，不使用下位机任务或摄像头切换状态机。QR 按当前窗口 B/C 区域解析，不依赖先 B 后 C。真实姿态及已定义名称以源码 YAML 为准，现场运行前须补齐所用预设；客户端不填空轨迹或覆盖已有坐标。缺失按失败处理，必要保护姿态未确认不放行转场；单点测试不调用 `shenzhi`。
 
 ## 运行日志与终端调试说明
 

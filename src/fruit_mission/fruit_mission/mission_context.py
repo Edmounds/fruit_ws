@@ -103,6 +103,8 @@ class MissionContext:
         self._pending_observation = None
         self._observation_side = None
         self._arm_home_confirmed = False
+        self._arm_shenzhi_confirmed = False
+        self._shenzhi_required = False
         self._navigation_stopped = True
         self._navigation_handle = None
         self._navigation_result = None
@@ -373,8 +375,9 @@ class MissionContext:
     ) -> bool:
         if not names:
             return True
-        if not self._navigation_stopped or not (
-            (self._arm_home_confirmed and self._camera_planner.is_stationary(
+        if self._shenzhi_required or not self._navigation_stopped or not (
+            ((self._arm_home_confirmed or self._arm_shenzhi_confirmed)
+             and self._camera_planner.is_stationary(
                 self.config['stationary']['joint_speed_rps'])) or (
                 self._pending_observation is not None
                 and self._pending_observation[1] is not None
@@ -654,8 +657,8 @@ class MissionContext:
 
     def open_gripper(self) -> _ArmMotionResult:
         """OPEN at measured raw joints, then HOLD for the configured gripper dwell."""
-        if not self._camera_planner.is_stationary(self.config['stationary']['joint_speed_rps']):
-            return _ArmMotionResult(False, 'arm_pose_unavailable')
+        self._arm_home_confirmed = False
+        self._arm_shenzhi_confirmed = False
         completed, reason = self._camera_planner.open_gripper(
             self._wait_until, self.config['stationary']['joint_speed_rps'])
         return _ArmMotionResult(completed, reason)
@@ -664,16 +667,21 @@ class MissionContext:
         """Look and navigation share the executor, not blocking worker threads."""
         if side not in ('left', 'right'):
             raise ValueError('side must be left or right')
+        if self._current_area not in ('A', 'B', 'C'):
+            raise ValueError('Observation requires an A/B/C area')
         if self._pending_observation is not None:
             raise RuntimeError('Previous observation has not been consumed')
         future = None
-        if ((self._arm_home_confirmed or self.recover_home())
+        if (not self._shenzhi_required
+                and (self._arm_home_confirmed or self._arm_shenzhi_confirmed
+                     or self.recover_home())
                 and self._camera_planner.is_stationary(
                     self.config['stationary']['joint_speed_rps'])):
-            name = f'{side}_look'
+            name = f'{side}_look_{self._current_area.lower()}'
             future = self._camera_planner.start_preset(name)
             if future is not None:
                 self._arm_home_confirmed = False
+                self._arm_shenzhi_confirmed = False
         self._pending_observation = (side, future)
 
     def _observation_failed(self) -> bool:
@@ -701,6 +709,7 @@ class MissionContext:
         if not self._camera_planner.is_stationary(self.config['stationary']['joint_speed_rps']):
             return _ArmMotionResult(False, 'arm_pose_unavailable')
         self._arm_home_confirmed = False
+        self._arm_shenzhi_confirmed = False
         completed, reason = self._camera_planner.move_to_base_target(
             request, self._wait_until, self.config['stationary']['joint_speed_rps'])
         return _ArmMotionResult(completed, reason)
@@ -711,9 +720,9 @@ class MissionContext:
         message.data = str(expected_type or "")
         self._expected_fruit_type_publisher.publish(message)
 
-    def send_qr_pose(self) -> bool:
-        """Execute the QR observation preset."""
-        return self.execute_arm_preset("qr_look").completed
+    def require_shenzhi(self) -> None:
+        """A planned protection boundary cannot be satisfied by recovery Home."""
+        self._shenzhi_required = True
 
     def send_return_initial_pose(self) -> bool:
         """Execute the initial-pose recovery preset."""
@@ -844,9 +853,15 @@ class MissionContext:
         if (not self._navigation_stopped or not self._camera_planner.is_stationary(
                 self.config['stationary']['joint_speed_rps'])):
             self._arm_home_confirmed = False
+            self._arm_shenzhi_confirmed = False
             return _ArmMotionResult(False, 'arm_pose_unavailable')
+        self._arm_home_confirmed = False
+        self._arm_shenzhi_confirmed = False
         completed, reason = self._camera_planner.execute_preset(preset_name, self._wait_until)
         self._arm_home_confirmed = preset_name == 'home' and completed
+        self._arm_shenzhi_confirmed = preset_name == 'shenzhi' and completed
+        if self._arm_shenzhi_confirmed:
+            self._shenzhi_required = False
         return _ArmMotionResult(completed, reason)
 
     def wait_camera_target(

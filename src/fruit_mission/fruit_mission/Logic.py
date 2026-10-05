@@ -1,6 +1,7 @@
 """Competition composition: edit routes and action order here, not in ROS callbacks."""
 
 from fruit_mission.actions import navigate
+from fruit_mission.actions import enter_shenzhi
 from fruit_mission.actions import navigate_c
 from fruit_mission.actions import pick_a
 from fruit_mission.actions import pick_b_tree
@@ -35,20 +36,32 @@ def run_a(ctx):
     ctx.report_current_area("A")
 
     if navigate(ctx, ["A1"], side="left"):
-        pick_a(ctx, side="left")
-        pick_a(ctx, side="right")
+        left = pick_a(ctx, side="left")
+        right = pick_a(ctx, side="right")
+        enter_shenzhi(ctx, completed=left.success and right.success)
+    else:
+        enter_shenzhi(ctx, completed=False)
 
     if navigate(ctx, ["A2"], side="left"):
-        pick_a(ctx, side="left")
-        pick_a(ctx, side="right")
+        left = pick_a(ctx, side="left")
+        right = pick_a(ctx, side="right")
+        enter_shenzhi(ctx, completed=left.success and right.success)
+    else:
+        enter_shenzhi(ctx, completed=False)
 
     if navigate(ctx, ["A3"], side="left"):
-        pick_a(ctx, side="left")
-        pick_a(ctx, side="right")
+        left = pick_a(ctx, side="left")
+        right = pick_a(ctx, side="right")
+        enter_shenzhi(ctx, completed=left.success and right.success)
+    else:
+        enter_shenzhi(ctx, completed=False)
 
     if navigate(ctx, ["A4"], side="left"):
-        pick_a(ctx, side="left")
-        pick_a(ctx, side="right")
+        left = pick_a(ctx, side="left")
+        right = pick_a(ctx, side="right")
+        enter_shenzhi(ctx, completed=left.success and right.success)
+    else:
+        enter_shenzhi(ctx, completed=False)
 
 
 def run_b(ctx, plan):
@@ -64,15 +77,17 @@ def run_b(ctx, plan):
         side = "right" if position % 2 == 1 else "left"
         waypoint = waypoints[position - 1]
         if navigate(ctx, [waypoint], side=side):
-            pick_b_tree(
+            completed = pick_b_tree(
                 ctx,
                 tree_name=tree_name,
                 target=str(task["target"]),
                 side=side,
                 waypoint=waypoint,
             )
+            enter_shenzhi(ctx, completed=completed)
         else:
             ctx.announce(f"B区{tree_name}导航失败，跳过。")
+            enter_shenzhi(ctx, completed=False)
 
 
 def run_c(ctx, plan):
@@ -83,8 +98,10 @@ def run_c(ctx, plan):
         if navigation["status"] != "succeeded":
             ctx.save_c_distribution(plan)
             ctx.recover_home()
+            enter_shenzhi(ctx, completed=False)
             continue
-        pick_c(ctx, task, side=navigation["camera_side"])
+        result = pick_c(ctx, task, side=navigation["camera_side"])
+        enter_shenzhi(ctx, completed=result.success)
         ctx.save_c_distribution(plan)
     ctx.save_c_distribution(plan)
 

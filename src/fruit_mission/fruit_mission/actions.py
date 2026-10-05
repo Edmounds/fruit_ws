@@ -19,10 +19,22 @@ def navigate(ctx, waypoints, *, side=None):
     return False
 
 
+def enter_shenzhi(ctx, *, completed):
+    """Normal work ends in protection; failed work keeps its one Home recovery."""
+    ctx.require_shenzhi()
+    if not completed:
+        return False
+    motion = ctx.execute_arm_preset('shenzhi')
+    if not motion.completed:
+        ctx.node.get_logger().warning(f'保护姿态失败，禁止后续转场: {motion.reason_code}')
+        ctx.recover_home()
+    return motion.completed
+
+
 def scan_b_qr(ctx, *, arrived):
-    """QR pose -> QR window -> QR plan/fallback -> announcement -> Home."""
+    """qr_scan -> QR window -> plan/fallback -> announcement -> shenzhi."""
     ctx.report_current_area("B")
-    ready = arrived and ctx.send_qr_pose()
+    ready = arrived and ctx.execute_arm_preset('qr_scan').completed
     plan = None
     if ready:
         window_id = ctx.open_observation_window("B", "qr")
@@ -30,20 +42,22 @@ def scan_b_qr(ctx, *, arrived):
             plan = ctx.wait_b_plan(window_id)
         finally:
             ctx.close_observation_window()
-    if plan is None:
+    decoded = plan is not None
+    if not decoded:
         ctx.node.get_logger().warning("B区二维码获取失败，使用配置的兜底顺序")
         plan = build_b_plan("\n".join(ctx.config["qr_fallback"]["b_targets"]))
     ctx.save_b_plan(plan)
     ctx.announce(format_b_announcement(plan))
-    if arrived:  # Failed navigation already performed its one recovery.
+    if arrived and not decoded:  # Failed navigation already recovered once.
         ctx.recover_home()
+    enter_shenzhi(ctx, completed=decoded)
     return plan
 
 
 def scan_c_qr(ctx, *, arrived):
-    """QR pose -> QR window -> QR plan/fallback -> task table -> Home."""
+    """qr_scan -> QR window -> plan/fallback -> task table -> shenzhi."""
     ctx.report_current_area("C")
-    ready = arrived and ctx.send_qr_pose()
+    ready = arrived and ctx.execute_arm_preset('qr_scan').completed
     plan = None
     if ready:
         window_id = ctx.open_observation_window("C", "qr")
@@ -51,7 +65,8 @@ def scan_c_qr(ctx, *, arrived):
             plan = ctx.wait_c_plan(window_id)
         finally:
             ctx.close_observation_window()
-    if plan is None:
+    decoded = plan is not None
+    if not decoded:
         ctx.node.get_logger().warning("C区二维码获取失败，使用配置的兜底顺序")
         fallback = ctx.config["qr_fallback"]
         lines = list(fallback["c_targets"])
@@ -63,8 +78,9 @@ def scan_c_qr(ctx, *, arrived):
         format_c_announcement(plan),
         lead_time_sec=float(ctx.config.get("c_qr_announce_lead_sec", 4.0)),
     )
-    if arrived:
+    if arrived and not decoded:
         ctx.recover_home()
+    enter_shenzhi(ctx, completed=decoded)
     return distribution
 
 
@@ -105,9 +121,12 @@ def observe_and_pick(ctx, *, side, expected_type):
 
 def _grasp_and_collect(ctx, request, *, side, matched_type=None):
     """One CLOSE/dwell -> side Store/OPEN -> Home; failure recovers once."""
+    area = ctx._current_area
+    if area not in ('A', 'B', 'C'):
+        raise ValueError('Store requires an A/B/C area')
     motion = ctx.move_to_base_target(request)
     if motion.completed:
-        motion = ctx.execute_arm_preset(f"{side}_store")
+        motion = ctx.execute_arm_preset(f"{side}_store_{area.lower()}")
     if not motion.completed:
         ctx.recover_home()
         return PickExecutionResult(False, motion.reason_code, matched_type)

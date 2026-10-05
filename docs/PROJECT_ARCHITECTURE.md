@@ -17,14 +17,14 @@
 **正式 mission 已接入 planner，整机尚未验收：**mission 和单 camera 调试客户端共用
 `CameraTargetPlannerClient` 处理目标。正式 mission 的观察/二维码/收臂/恢复用命名预设服务，
 区域通知只走 ROS；独立 camera/区域调试工具的旧姿态接口未迁移。预设轨迹尚待补齐。
-当前视觉目标运动使用 CLOSE，随后实测硬件角 HOLD 驻留、对应侧 Store 放果工序（left_store/right_store）和 Home；服务完成仍不能证明果实实际入筐。
+当前视觉目标运动使用 CLOSE，随后实测硬件角 HOLD 驻留、对应区域/侧 Store 放果工序和 Home；服务完成仍不能证明果实实际入筐。
 
 ## 2. 总体架构
 
 ```text
                     +------------------------+
 二维码识别包 ------> | fruit_mission          |
-                    | A/B/C 比赛状态机        |
+                    | A/B/C 比赛编排          |
 camera 识别/深度目标 ->| 顺序、播报、日志、决策  |
                     +-----------+------------+
                                 |
@@ -88,11 +88,11 @@ fruit_ws/src/
 ├── fruit_hardware_bridge/        # 串口启动入口（未实现语义映射）
 ├── fruit_arm_interfaces/         # planner 三类运动 service 定义
 ├── fruit_arm_planner/            # 4-DOF 机械臂运动学解算、关节偏置映射与轨迹规划
-├── fruit_perception/             # 单 camera、模式管理与两阶段 OpenVINO
+├── fruit_perception/             # 单 camera、观察窗口与两阶段 OpenVINO
 ├── fruit_qr_planner/             # camera 彩色图扫码并持久发布 B/C 计划
 ├── fruit_waypoint_recorder/      # 航点录制与 Web 航点编辑器
 ├── fruit_waypoint_rviz_plugin/   # RViz Waypoint Maker 面板
-├── fruit_mission/                # A/B/C 比赛状态机与编排
+├── fruit_mission/                # A/B/C 比赛编排
 └── joy_linux/                    # 手柄遥控节点
 ```
 
@@ -128,6 +128,7 @@ camera 的固定原生流开启同步、深度对齐与 RGBD。相机硬件流�
 
 1. 到站且 QR 姿态完成后开启 QR 观察窗口，Python/OpenCV 扫码节点对彩色原图解码并确认计划（`confirm_frames=1`）。
 2. B/C 计划使用 Reliable、Transient Local、深度 1 发布，计划中附带窗口 ID 及帧时间戳。
+   QR 直接按窗口区域选择 B/C 解析，不再维护 B→C→COMPLETED 顺序状态机；新窗口重置候选及连续帧确认，当前区域通知不推进扫码阶段。
 3. camera RGBD 持续执行水果/蔬菜推理，整帧 letterbox 到 640x640，不做分块。
    根据 `/fruit_mission/current_area` 选择两阶段链路：A/C 用 `vegetable_type/best.onnx`，
    B/D 用 `fruit_type/best.onnx`，再做熟度分类。`model_root` 来自源码 YAML；
@@ -196,8 +197,10 @@ RGBD 复合消息和 `compressed`/`compressedDepth`/`theora` 派生图像进入�
 | 串口可靠消息 ACK | 每 1 秒重发 | 收到 ACK 或进程退出前持续重发；`reliable_max_retries=3` 只是每累计三次输出告警，不是停止重发 |
 
 局部失败不提前结束 A/B/C 软件流程，A 左右侧和 B 冻结目标按顺序处理，不跨层传播 `safe_to_continue`。未知运动先取消导航并 STOP，确认派发应答后只尝试一次 Home；恢复不做独立停稳循环或用 sleep 放行。预设入口直接检查导航终态、新鲜无错误、有限且在限位内的低速四轴反馈，不满足即跳过；planner 仍拒绝忙状态及 STOP 后未恢复 IDLE 的请求。不得自动清除 EMERGENCY。没有非导航重试，也没有到点侧向复核。
-正式 mission 姿态统一遵循 `arm_presets.yaml` 名称定义，删除中间映射字典，直接调用 `left_look/right_look/qr_look/left_store/right_store/home`。
-真实轨迹由用户配置，本次不修改 planner 文件或填写假姿态。Look 末点 OPEN，Store 末点 OPEN/驻留，Home 保持；视觉请求末点 CLOSE。Cartesian 服务没有驻留字段，随后复用 `move_joints` 在实测原始四轴角执行 HOLD，耗时读取 planner `default_dwell_ms`；不自行生成轨迹或用 sleep 宣告动作完成。
+正式 mission 姿态遵循 `arm_presets.yaml`：`<side>_look_<zone>` / `<side>_store_<zone>`（left/right，a/b/c）、`qr_scan`、`shenzhi`、`home`，无中间映射字典。
+真实轨迹由用户配置，已定义名称和坐标以源码 YAML 为准；客户端不覆盖已有坐标，不添加空预设，缺失返回失败。Look 完成后在实测静止角执行 OPEN/HOLD，再开识别窗口；Store 包含 OPEN/驻留，Home 保持，视觉请求末点 CLOSE。Cartesian 服务没有驻留字段，随后复用 `move_joints` 在实测原始四轴角执行 HOLD，耗时读取 planner `default_dwell_ms`；不自行生成轨迹或用 sleep 宣告动作完成。
+
+正常 A 每点、B/C 扫码、B 每树、C 每项结束后进入 `shenzhi`，最后一项与区域出口重合时不重复调用。失败仍一次安全 Home，不追加保护动作；必要保护位未确认时禁止后续导航，软件任务仍推进。导航交接认可已完成且当前实测静止的 `shenzhi`；导航与区域 Look 的既有并行方式保留。
 
 机械臂运动入口的低速阈值取 mission `stationary.joint_speed_rps`，反馈新鲜度取 planner 配置；原始 ArmStatus/遥测的非有限速度不替成零。原开窗前 `stable_stop` 与恢复前独立停稳循环已移除，不宣称仍执行连续 0.5 秒或 `/odometry` 静止检测。识别、扫码、端点和取消各有独立期限，机械臂及已接受的导航 goal 等待执行结果。
 
@@ -215,7 +218,7 @@ RGBD 复合消息和 `compressed`/`compressedDepth`/`theora` 派生图像进入�
 - `/arm_planner_node/execute_preset`：执行源码 YAML 中存在的预设名称。
 - `/arm_planner_node/stop`、`/arm_planner_node/emergency_stop`：发布停止/急停；服务成功不是硬件已停稳确认。
 
-mission 直接使用 `home`、`left_look`、`right_look`、`qr_look`、`left_store` 和 `right_store` 这些预设名称，无中间映射；服务只执行 planner YAML 中实际存在的预设，不能假定现场已经补齐真实轨迹。`retract` 不属于当前 A/B/C 编排。
+mission 直接使用区域 Look/Store、`qr_scan`、`shenzhi` 和 `home` 预设，无下位机任务状态切换。旧正常 `retract` 调用位置使用 `shenzhi`；服务只执行 YAML 中实际存在的预设，不能假定现场已补齐轨迹。
 证据采纳由 `/fruit_mission/observation_window` 观察窗口驱动，与机械臂姿态解耦。
 新客户端必须按包级 API 接入；旧方向/收臂接口不再作为新增功能的范例。
 
@@ -232,7 +235,7 @@ mission 直接使用 `home`、`left_look`、`right_look`、`qr_look`、`left_sto
 - 收到非法任务、非法状态或超范围关节角时拒绝执行；
 - 通信恢复后不得自动继续失联前未确认完成的危险动作。
 
-## 7. A、B、C 区状态机契约
+## 7. A、B、C 区编排契约
 
 ### 7.1 A 区
 
@@ -245,10 +248,11 @@ ENTER_A
        WAIT_NAV_AND_LOOK_SUCCESS
        for side in ["left", "right"]:
          [right] -> EXECUTE_RIGHT_LOOK
-         OPEN_HARVEST_WINDOW
+         OPEN_GRIPPER_AND_HOLD -> OPEN_HARVEST_WINDOW
          WAIT_CAMERA_TARGET(ripe)
          [has target] -> TRANSFORM_TO_ARM_BASE -> CLOSE/DWELL -> HARVEST_OPEN/DWELL -> HOME
          [no target] -> SAFE_RECOVER
+       [normal work completed] -> SHENZHI
   -> RESUME_COVERAGE_ROUTE
   -> LEAVE_A
 ```
@@ -256,7 +260,7 @@ ENTER_A
 - A 区作业点按配置顺序先左后右依次转向并开启 camera harvest 观察窗口；左侧失败也推进右侧，实际运动受入口保护。
 - A 区候选只允许精确字符串 `ripe` 和 `unripe`；只有 `ripe` 才能进入锁定，`unripe` 不触发抓取。
 - 仅当锁定成熟且深度有效的目标时转换坐标并调用 `move_cartesian`。未识别到目标或仅有未成熟目标时正常跳过。
-- 导航与左侧 Look 并行，到点且双机构静止后才启识别；每次抓取完成对应 Store 放果（left_store/right_store）及 Home，再处理右侧。
+- 导航与 `left_look_a` 并行；到点且 Look 完成后 OPEN/HOLD 再识别。每次抓取完成 `left_store_a` / `right_store_a` 及 Home，再处理另一侧。
 - 局部失败只做一次必要 Home 后推进；运动未知不能因 STOP 已发布被视为已停稳或直接放行导航。
 
 ### 7.2 C 区
@@ -271,7 +275,7 @@ READ_C_QR
        OPEN_HARVEST_WINDOW
        -> DETECT_EXPECTED_RIPE_TYPE
        [no match/unripe/type mismatch] -> ANNOUNCE_SKIP -> ADVANCE
-       [expected ripe candidate] -> TRANSFORM_TO_ARM_BASE -> CLOSE/DWELL -> STORE_OPEN/DWELL -> HOME -> ANNOUNCE_RESULT -> ADVANCE
+       [expected ripe candidate] -> TRANSFORM_TO_ARM_BASE -> CLOSE/DWELL -> STORE_OPEN/DWELL -> HOME -> ANNOUNCE_RESULT -> SHENZHI -> ADVANCE
   -> LEAVE_C
 ```
 
@@ -302,6 +306,7 @@ USE_SAVED_B_PLAN
        FREEZE_UP_TO_TWO_MATCHED_RIPE_BASE_TARGETS
        for frozen_target:
          CLOSE/DWELL -> HARVEST_OPEN/DWELL -> HOME
+       [normal work completed] -> SHENZHI
        ADVANCE_ONCE
   -> CLOSE_OBSERVATION_WINDOW
   -> END_MISSION_FLOW
@@ -312,9 +317,9 @@ USE_SAVED_B_PLAN
 - 无效中心深度的检测保留二维证据，但不得生成三维抓取点。
 - B 区机械臂目标由 mission 转为固定基座坐标，调用 `move_cartesian` 并等待服务执行结果，不再发送 `ArmTarget(0x13)` 或等待目标 `callback_id=3`。
 - B 区 camera 固定采集 50 帧，按 3D 轨迹输出最多两个稳定目标；原始类型、检测框和标注图保留误识别证据。二维码期望类型不传入感知节点，mission 做品种匹配、成熟筛选。
-- 成熟且匹配目标按既有原像素 `score = abs(pixel_x - image_width / 2) - pixel_y` 排序，同分保留原顺序，最多取两个。首次观察姿态下将两个目标一次性转换为基座坐标/绝对 pitch，后续直接用冻结请求，不重新观察/换算。每抓一次都完成对应 Store 放果（left_store/right_store）和 Home。
+- 成熟且匹配目标按既有原像素 `score = abs(pixel_x - image_width / 2) - pixel_y` 排序，同分保留原顺序，最多取两个。首次观察姿态下将两个目标一次性转换为基座坐标/绝对 pitch，后续直接用冻结请求，不重新观察/换算。每抓一次都完成 `left_store_b` / `right_store_b` 和 Home。
 - 第一抓失败也推进第二个冻结目标，未获有效反馈时该次物理动作被拒绝，不重试抓取或重新观察。
-- `test_camera_arm_target.sh --model A|B --left|--right [--debug]` 专用于相机与机械臂联调：先等待实际感知区域订阅端并确认可靠 DDS 交付，机械臂进入 look 后以新鲜实测角执行 OPEN/HOLD，不重复做独立静止等待，再开启识别。B 不区分品种，只选统计完成后的有效成熟目标，不回退抓未成熟目标。成功 CLOSE/HOLD 后执行对应侧 `left_store` 或 `right_store`，再显式 Home。运动等待下位机结果，端点与识别独立限时。脚本会驱动硬件，不是自动验证工具。
+- `test_camera_arm_target.sh --zone A|B|C --left|--right [--debug]` 专用于单点联调，旧 `--model` 删除：先可靠交付区域，Home→区域 Look→新鲜静止角 OPEN/HOLD→识别→CLOSE/HOLD→区域 Store→Home。A/C 用蔬菜模型，B 用水果模型且只选成熟目标；不调用跨区 `shenzhi`。端点与识别独立限时，运动等待下位机结果。脚本会驱动硬件，不是自动验证工具。
 
 ### 7.4 语音时序
 

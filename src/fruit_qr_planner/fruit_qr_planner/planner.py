@@ -1,7 +1,7 @@
-"""Pure parsing and sequencing logic shared by the ROS node and unit tests."""
+"""Pure QR payload normalization and B/C plan parsing."""
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 
 B_STAGES = ["navigate", "identify", "announce", "pick_or_skip", "advance"]
@@ -22,6 +22,11 @@ class ParseError(ValueError):
 def _normalized_lines(payload: str) -> List[str]:
     normalized = payload.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
     return [line.strip() for line in normalized.split("\n") if line.strip()]
+
+
+def normalize_payload(payload: str) -> str:
+    """Canonical text used for consecutive-frame confirmation."""
+    return "\n".join(_normalized_lines(payload))
 
 
 def _plan(zone: str, scan_index: int, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -91,63 +96,3 @@ def _parse_c_task_line(line: str) -> Tuple[str, int]:
     if not target:
         raise ParseError(f"C QR task line has no target name: {line}")
     return target, int(match.group())
-
-
-class PlanSequence:
-    """Sequence decoded payloads through the one-shot B-then-C workflow."""
-
-    WAITING_FOR_B = "WAITING_FOR_B"
-    WAITING_FOR_C = "WAITING_FOR_C"
-    COMPLETED = "COMPLETED"
-
-    def __init__(self, confirm_frames: int = 1) -> None:
-        if confirm_frames <= 0:
-            raise ValueError("confirm_frames must be greater than zero")
-        self.confirm_frames = confirm_frames
-        self.state = self.WAITING_FOR_B
-        self._candidate: Optional[str] = None
-        self._candidate_count = 0
-
-    def observe(self, payload: str) -> Optional[Dict[str, Any]]:
-        plan, _error = self.observe_with_error(payload)
-        return plan
-
-    def observe_with_error(self, payload: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        if self.state == self.COMPLETED:
-            return None, None
-
-        canonical_payload = "\n".join(_normalized_lines(payload))
-        if canonical_payload != self._candidate:
-            self._candidate = canonical_payload
-            self._candidate_count = 1
-        else:
-            self._candidate_count += 1
-
-        try:
-            plan = self._parse_for_current_state(payload)
-        except ParseError as exc:
-            return None, str(exc)
-
-        if self._candidate_count < self.confirm_frames:
-            return None, None
-
-        self._reset_candidate()
-        self.state = self.WAITING_FOR_C if self.state == self.WAITING_FOR_B else self.COMPLETED
-        return plan, None
-
-    def expect_c(self) -> bool:
-        """Advance an unfinished B scan when mission has already entered C."""
-        if self.state != self.WAITING_FOR_B:
-            return False
-        self._reset_candidate()
-        self.state = self.WAITING_FOR_C
-        return True
-
-    def _parse_for_current_state(self, payload: str) -> Dict[str, Any]:
-        if self.state == self.WAITING_FOR_B:
-            return build_b_plan(payload)
-        return build_c_plan(payload)
-
-    def _reset_candidate(self) -> None:
-        self._candidate = None
-        self._candidate_count = 0
