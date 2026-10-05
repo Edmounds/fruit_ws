@@ -124,7 +124,7 @@ fruit_ws/src/
 深度相机节点为 `/camera`，原生接口为 `/camera/*`，感知输出为
 `/fruit_perception/camera/*`，决策发布于 `/fruit_perception/decision`。
 
-camera 的固定原生流开启同步、深度对齐与 RGBD。相机硬件流常开、模型持续推理：
+camera 的固定原生流开启同步、深度对齐与 RGBD（Color 为 `1280x720x30` RGB8，原生深度为 `848x480x30` Z16 配合 High Accuracy 预设与手动曝光，对齐深度保持 1280x720 对齐像素空间）。相机硬件流常开、模型持续推理：
 
 1. 到站且 QR 姿态完成后开启 QR 观察窗口，Python/OpenCV 扫码节点对彩色原图解码并确认计划（`confirm_frames=1`）。
 2. B/C 计划使用 Reliable、Transient Local、深度 1 发布，计划中附带窗口 ID 及帧时间戳。

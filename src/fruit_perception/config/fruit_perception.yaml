@@ -17,8 +17,16 @@ camera:
     rgb_camera.backlight_compensation: false
     rgb_camera.power_line_frequency: 3
     enable_depth: true
-    depth_module.depth_profile: "1280x720x30"
+    depth_module.depth_profile: "848x480x30"
     depth_module.depth_format: "Z16"
+    depth_module.visual_preset: 3
+    depth_module.enable_auto_exposure: false
+    depth_module.exposure: 10589
+    depth_module.gain: 16
+    depth_module.emitter_enabled: 1
+    depth_module.laser_power: 150.0
+    spatial_filter.enable: true
+    temporal_filter.enable: true
     enable_sync: true
     align_depth.enable: true
     enable_rgbd: true

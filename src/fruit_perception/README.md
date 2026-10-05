@@ -49,7 +49,13 @@ Target locking and candidate accumulation only occur within a valid harvest wind
 Closing a window (`valid: 0`) immediately revokes evidence accumulation and resets selectors.
 
 The camera node synchronizes color and depth, aligns depth to color, and publishes
-both aligned images in one RGBD message (`/camera/rgbd`).
+both aligned images in one RGBD message (`/camera/rgbd`). Color profile is configured to
+`1280x720x30` (`RGB8`). Native depth profile is configured to `848x480x30` (`Z16`) with
+`depth_module.visual_preset: 3` (High Accuracy), disabled depth auto exposure,
+manual depth exposure (`10589` usec), gain (`16`), laser emitter (`1`), laser power (`150.0`),
+and post-processing filters (`spatial_filter.enable: true`, `temporal_filter.enable: true`).
+Aligned depth (`/camera/aligned_depth_to_color/image_raw`) and `/camera/rgbd` remain in
+the `1280x720` color pixel coordinate frame for accurate 2D/3D projection.
 
 Each RGBD callback also publishes only its `std_msgs/Header` on
 `/fruit_perception/camera/rgbd_heartbeat`. The external debug monitor combines
