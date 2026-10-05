@@ -20,26 +20,37 @@ def navigate(ctx, waypoints, *, side=None):
 
 
 def scan_b_qr(ctx, *, arrived):
-    """QR pose -> standstill -> QR plan/fallback -> announcement -> Home."""
+    """QR pose -> QR window -> QR plan/fallback -> announcement -> Home."""
     ctx.report_current_area("B")
-    ready = arrived and ctx.send_qr_pose() and ctx.stable_stop()
-    plan = ctx.wait_b_plan() if ready and ctx.set_perception_mode("QR") else None
+    ready = arrived and ctx.send_qr_pose()
+    plan = None
+    if ready:
+        window_id = ctx.open_observation_window("B", "qr")
+        try:
+            plan = ctx.wait_b_plan(window_id)
+        finally:
+            ctx.close_observation_window()
     if plan is None:
         ctx.node.get_logger().warning("B区二维码获取失败，使用配置的兜底顺序")
         plan = build_b_plan("\n".join(ctx.config["qr_fallback"]["b_targets"]))
     ctx.save_b_plan(plan)
-    ctx.announce(format_b_announcement(plan), length_scale=_qr_length_scale(ctx))
-    ctx.set_perception_mode("OFF")
+    ctx.announce(format_b_announcement(plan))
     if arrived:  # Failed navigation already performed its one recovery.
         ctx.recover_home()
     return plan
 
 
 def scan_c_qr(ctx, *, arrived):
-    """QR pose -> standstill -> QR plan/fallback -> task table -> Home."""
+    """QR pose -> QR window -> QR plan/fallback -> task table -> Home."""
     ctx.report_current_area("C")
-    ready = arrived and ctx.send_qr_pose() and ctx.stable_stop()
-    plan = ctx.wait_c_plan() if ready and ctx.set_perception_mode("QR") else None
+    ready = arrived and ctx.send_qr_pose()
+    plan = None
+    if ready:
+        window_id = ctx.open_observation_window("C", "qr")
+        try:
+            plan = ctx.wait_c_plan(window_id)
+        finally:
+            ctx.close_observation_window()
     if plan is None:
         ctx.node.get_logger().warning("C区二维码获取失败，使用配置的兜底顺序")
         fallback = ctx.config["qr_fallback"]
@@ -51,9 +62,7 @@ def scan_c_qr(ctx, *, arrived):
     ctx.announce_and_wait(
         format_c_announcement(plan),
         lead_time_sec=float(ctx.config.get("c_qr_announce_lead_sec", 4.0)),
-        length_scale=_qr_length_scale(ctx),
     )
-    ctx.set_perception_mode("OFF")
     if arrived:
         ctx.recover_home()
     return distribution
@@ -62,121 +71,115 @@ def scan_c_qr(ctx, *, arrived):
 def pick_a(ctx, *, side):
     """One side at the current A point, with no navigation or grasp retries."""
     result = observe_and_pick(ctx, side=side, expected_type="ripe")
-    if not result.success and not result.safe_to_continue:
+    if not result.success:
         ctx.node.get_logger().warning(f"A区当前动作跳过: {result.reason_code}")
     return result
 
 
 def observe_and_pick(ctx, *, side, expected_type):
-    """Look -> measured standstill -> fresh target -> CLOSE/Harvest/Home."""
+    """Look (open gripper) -> harvest window -> fresh target -> CLOSE/Store/Home."""
     ctx.set_expected_fruit_type(expected_type)
     look = ctx.finish_observation(side)
     if not look.completed:
-        return PickExecutionResult(False, look.reason_code, safe_to_continue=ctx.recover_home())
-    if not ctx.stable_stop():
-        return PickExecutionResult(
-            False, "stationary_timeout", safe_to_continue=ctx.recover_home())
-    fresh_after = ctx.node.get_clock().now().nanoseconds
-    if not ctx.set_perception_mode("DETECT"):
-        return PickExecutionResult(
-            False, "detect_mode_timeout", safe_to_continue=ctx.recover_home())
-    selection = ctx.wait_camera_target(fresh_after, expected_type)
+        ctx.recover_home()
+        return PickExecutionResult(False, look.reason_code)
+    area = ctx._current_area or "A"
+    window_id = ctx.open_observation_window(area, "harvest", expected_type)
+    try:
+        selection = ctx.wait_camera_target(window_id, expected_type)
+    finally:
+        ctx.close_observation_window()
     if selection.target is None:
+        ctx.recover_home()
         return PickExecutionResult(
-            False, selection.reason_code, selection.matched_type, ctx.recover_home())
+            False, selection.reason_code, selection.matched_type)
     try:
         request = ctx.camera_target_request(selection.target.point)
     except ValueError as error:
         ctx.node.get_logger().warning(str(error))
+        ctx.recover_home()
         return PickExecutionResult(
-            False, "camera_target_invalid", selection.matched_type, ctx.recover_home())
-    result = _grasp_and_collect(ctx, request, side=side)
-    return PickExecutionResult(
-        result.success, result.reason_code, selection.matched_type, result.safe_to_continue)
+            False, "camera_target_invalid", selection.matched_type)
+    return _grasp_and_collect(ctx, request, side=side, matched_type=selection.matched_type)
 
 
-def _grasp_and_collect(ctx, request, *, side):
-    """One CLOSE/dwell -> side Harvest/OPEN -> Home; failure recovers once."""
-    ctx.set_perception_mode("OFF")
-    grasp = ctx.move_to_base_target(request)
-    if not grasp.completed:
-        return PickExecutionResult(False, grasp.reason_code, safe_to_continue=ctx.recover_home())
-    harvest = ctx.execute_arm_preset(f"harvest_{side}")
-    if not harvest.completed:
-        return PickExecutionResult(
-            False, harvest.reason_code, safe_to_continue=ctx.recover_home())
+def _grasp_and_collect(ctx, request, *, side, matched_type=None):
+    """One CLOSE/dwell -> side Store/OPEN -> Home; failure recovers once."""
+    motion = ctx.move_to_base_target(request)
+    if motion.completed:
+        motion = ctx.execute_arm_preset(f"{side}_store")
+    if not motion.completed:
+        ctx.recover_home()
+        return PickExecutionResult(False, motion.reason_code, matched_type)
     home = ctx.execute_arm_preset("home")
+    if home.completed:
+        ctx.record_pick(matched_type)
     return PickExecutionResult(
-        home.completed, "harvest_completed" if home.completed else home.reason_code,
-        safe_to_continue=home.completed,
+        home.completed, "store_completed" if home.completed else home.reason_code,
+        matched_type,
     )
 
 
-def pick_b_tree(ctx, *, waypoint, target, side):
-    """Observe once; freeze up to two matching ripe targets before either grasp."""
+def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
+    """Observe (open gripper) once; freeze up to two matching ripe targets before either grasp."""
+    label = tree_name or waypoint or "第一棵树"
     look = ctx.finish_observation(side)
     if not look.completed:
         reason = _b_observation_failure_text(look.reason_code)
         ctx.recover_home()
-        ctx.announce(f"B区{waypoint}，{reason}，跳过。")
+        ctx.announce(f"B区{label}，{reason}，跳过。")
         return False
-    if not ctx.stable_stop():
-        ctx.recover_home()
-        ctx.announce(f"B区{waypoint}，识别失败，跳过。")
-        return False
-    if not ctx.set_perception_mode("DETECT"):
-        ctx.recover_home()
-        ctx.announce(f"B区{waypoint}，深度相机识别模式切换失败，跳过。")
-        return False
-    targets = ctx.wait_b_targets(ctx.node.get_clock().now().nanoseconds)
+    window_id = ctx.open_observation_window("B", "harvest", target)
+    try:
+        targets = ctx.wait_b_targets(window_id)
+    finally:
+        ctx.close_observation_window()
     if targets is None:
         ctx.recover_home()
-        ctx.announce(f"B区{waypoint}，识别超时，跳过。")
+        ctx.announce(f"B区{label}，识别超时，跳过。")
         return False
-    selected = _select_b_targets(ctx, waypoint, target, targets)
+    selected = _select_b_targets(ctx, label, target, targets)
     requests = []
     for item in selected:
         try:
-            requests.append(ctx.camera_target_request(item.point))
+            req = ctx.camera_target_request(item.point)
+            requests.append((req, item.model_type))
         except ValueError as error:
             ctx.node.get_logger().warning(f"Skipping invalid B target: {error}")
     if not requests:
         ctx.recover_home()
         return False
     success = True
-    for request in requests:
-        result = _grasp_and_collect(ctx, request, side=side)
+    for request, model_type in requests:
+        result = _grasp_and_collect(ctx, request, side=side, matched_type=model_type)
         success = result.success and success
         if not result.success:
             reason = _b_arm_failure_text(result.reason_code)
-            if not result.safe_to_continue:
-                ctx.announce(f"B区{waypoint}，{reason}，跳过剩余目标。")
-                break
-            ctx.announce(f"B区{waypoint}，{reason}，继续下一个目标。")
+            ctx.announce(f"B区{label}，{reason}，继续下一个目标。")
     return success
 
 
-def _select_b_targets(ctx, waypoint, target, targets):
+def _select_b_targets(ctx, label, target, targets):
     decision = decide_b_tree_targets(
         target, expected_ripe_type(target),
         ((item.model_type, item.pixel_x, item.pixel_y, item.image_width) for item in targets),
     )
     if decision.reason_code == "no_detection":
-        ctx.announce(f"B区{waypoint}，没有识别到果实，跳过。")
+        ctx.announce(f"B区{label}，没有识别到果实，跳过。")
         return []
     if decision.reason_code == "inconsistent_types":
-        ctx.announce(f"B区{waypoint}，识别结果不一致，跳过。")
+        ctx.announce(f"B区{label}，识别结果不一致，跳过。")
         return []
     if decision.reason_code == "type_mismatch":
-        ctx.announce(f"B区{waypoint}，识别到{decision.observed_name}，和二维码不一致，跳过。")
+        ctx.announce(f"B区{label}，识别到{decision.observed_name}，和二维码不一致，跳过。")
         return []
     if decision.target_index is None:
         ctx.announce(
-            f"B区{waypoint}，识别到{decision.observed_name}，和二维码一致，"
+            f"B区{label}，识别到{decision.observed_name}，和二维码一致，"
             f"没有成熟{target}，跳过。")
         return []
     ctx.announce(
-        f"B区{waypoint}，识别到{decision.observed_name}，和二维码一致，开始抓成熟{target}。")
+        f"B区{label}，识别到{decision.observed_name}，和二维码一致，开始抓成熟{target}。")
     return [targets[index] for index in decision.target_indices]
 
 
@@ -222,14 +225,11 @@ def pick_c(ctx, task, *, side):
     return result
 
 
-def _qr_length_scale(ctx):
-    return float(ctx.config.get("tts", {}).get("qr_length_scale", 0.8))
-
-
 def _b_observation_failure_text(reason_code):
     return {
-        "side_pose_timeout": "机械臂转向采摘位置超时",
-        "detect_mode_timeout": "深度相机识别模式切换失败",
+        "arm_callback_failed": "机械臂执行失败",
+        "arm_endpoints_not_ready": "机械臂通信端点未就绪",
+        "arm_pose_unavailable": "机械臂执行失败",
         "camera_target_timeout": "识别超时",
     }.get(reason_code, "识别失败")
 
@@ -237,7 +237,6 @@ def _b_observation_failure_text(reason_code):
 def _b_arm_failure_text(reason_code):
     return {
         "arm_callback_failed": "机械臂执行报错",
-        "arm_callback_timeout": "机械臂执行通信超时",
         "arm_endpoints_not_ready": "机械臂通信端点未就绪",
     }.get(reason_code, "机械臂执行失败")
 
@@ -258,10 +257,7 @@ def _c_skip_text(position, target, reason_code, matched_type):
 
 def _pick_failure_text(reason_code):
     return {
-        "side_pose_timeout": "机械臂转向采摘位置超时",
-        "detect_mode_timeout": "深度相机识别模式切换失败",
         "camera_target_timeout": "深度相机没有识别到可抓取目标",
         "arm_callback_failed": "机械臂执行报错",
-        "arm_callback_timeout": "机械臂执行通信超时",
         "arm_endpoints_not_ready": "机械臂通信端点未就绪",
     }.get(reason_code, "闭环抓取失败")

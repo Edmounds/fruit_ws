@@ -8,8 +8,9 @@ MAX_BAGS=5
 DEBUG_MONITOR_PID=""
 START_MONITOR=1
 BAG_LABEL=""
+DEBUG_MODE=0
 
-RECORD_EXCLUDE_REGEX='(^/camera/depth/image_rect_raw$|^/camera/rgbd$|/(compressed|compressedDepth|theora)$)'
+RECORD_EXCLUDE_REGEX='(^/camera/(color|depth|extrinsics|rgbd).*|^/camera/aligned_depth_to_color/camera_info$|/(compressed|compressedDepth|theora)$)'
 
 BAG_NAME_PATTERN='^([A-Za-z0-9_.-]+_)?([0-9]{8}_[0-9]{6})(_[0-9]+)?$'
 
@@ -17,10 +18,12 @@ usage() {
   cat <<'EOF'
 Usage: ./record_rosbag.sh [label] [--full] [--no-monitor]
 
-Record all discovered ROS topics, including hidden Action topics, LiDAR, and
-point-cloud topics. To control camera load and bag size, Camera unaligned raw
-depth, the composite RGBD topic, and image transport derivatives are excluded.
-The retained image topics are Camera color raw/aligned-depth/annotated images.
+Record all discovered ROS topics using the MCAP storage format.
+To control camera load and bag size, Camera raw color, unaligned raw depth,
+the composite RGBD topic, camera info/metadata, and image transport derivatives
+are excluded.
+The retained visual topics are Camera annotated image (/fruit_perception/camera/annotated_image),
+aligned depth (/camera/aligned_depth_to_color/image_raw), and fruit decisions (/fruit_perception/decision).
 --full is accepted as an explicit mode flag.
 The bag is written to:
   rosbags/YYYYMMDD_HHMMSS/
@@ -41,6 +44,10 @@ while (($# > 0)); do
       ;;
     --no-monitor)
       START_MONITOR=0
+      shift
+      ;;
+    --debug)
+      DEBUG_MODE=1
       shift
       ;;
     --full)
@@ -65,16 +72,20 @@ if [[ -n "$BAG_LABEL" && ! "$BAG_LABEL" =~ ^[A-Za-z0-9_.-]+$ ]]; then
 fi
 
 source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
+source "$WORKSPACE/scripts/fruit_runtime_logging.bash"
 set -u
 
+fruit_logging_init "record_rosbag" "${DEBUG_MODE}"
 
 cleanup()
 {
+  local status=$?
   if [[ -n "$DEBUG_MONITOR_PID" ]]; then
     kill -INT "$DEBUG_MONITOR_PID" 2>/dev/null || true
     wait "$DEBUG_MONITOR_PID" 2>/dev/null || true
     DEBUG_MONITOR_PID=""
   fi
+  fruit_logging_close "${status}"
 }
 
 trap cleanup EXIT INT TERM
@@ -121,14 +132,22 @@ if [[ -e "$BAG_PATH" ]]; then
 fi
 
 printf '[rosbag] output: %s\n' "$BAG_PATH"
+printf '[rosbag] storage: mcap\n'
 printf '[rosbag] recording all non-excluded topics, including LiDAR and point-cloud topics\n'
-printf '[rosbag] visual topics: Camera color raw/aligned depth/annotated\n'
+printf '[rosbag] visual topics: Camera annotated image, aligned depth, and fruit decisions (raw color excluded)\n'
 printf '[rosbag] excluded topic regex: %s\n' "$RECORD_EXCLUDE_REGEX"
 printf '[rosbag] retaining the newest %s date-named bags\n' "$MAX_BAGS"
 printf '[rosbag] press Ctrl-C once when the failure has been captured\n'
 
 if ((START_MONITOR)); then
-  "$WORKSPACE/scripts/robot_debug_monitor.sh" rosbag &
+  local_filter_script="$WORKSPACE/scripts/runtime_log_filter.py"
+  local_monitor_log="$FRUIT_RUNTIME_SESSION_DIR/monitor.log"
+  setsid env "DEBUG_OPT=$DEBUG_MODE" bash -c '
+    set -o pipefail
+    filter_args=(--output-file "'"${local_monitor_log}"'" --component "monitor")
+    [[ "$DEBUG_OPT" == "1" ]] && filter_args+=(--debug)
+    exec "$@" 2>&1 | /usr/bin/python3 "'"${local_filter_script}"'" "${filter_args[@]}"
+  ' runner "$WORKSPACE/scripts/robot_debug_monitor.sh" rosbag &
   DEBUG_MONITOR_PID=$!
 fi
 
@@ -136,7 +155,6 @@ fi
 ros2 bag record \
   --all \
   --include-hidden-topics \
+  --storage mcap \
   --exclude "$RECORD_EXCLUDE_REGEX" \
-  --output "$BAG_PATH" \
-  --compression-mode file \
-  --compression-format zstd
+  --output "$BAG_PATH"

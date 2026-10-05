@@ -36,7 +36,7 @@
                                     └───────────────────────┘
                                                 │
                                                 ▼ 广播
-                                     话题: ~/joint_states (20Hz 实时实测物理角)
+                                     话题: ~/joint_states (20Hz 原始角、模型角、TCP)
 ```
 
 > **节点命名空间约定**：
@@ -95,7 +95,7 @@ ros2 topic pub --once /arm_planner_node/cmd_cartesian geometry_msgs/msg/PointSta
 - **完整话题名**：`/arm_planner_node/cmd_preset`
 - **消息类型**：`std_msgs/msg/String`
 - **通信语义**：异步非阻塞下发。通过名称索引触发 `arm_presets.yaml` 中配置的固定姿态；当前关节预设使用 `link_angles`（大臂相对竖直、小臂相对水平、末端绝对俯仰），其中末端设为 `0°` 时会按小臂角度和偏置换算腕电机目标。若预设改为 `coordinate_frame: joints`，四项则是原始硬件角。
-- **支持名称**：以源码 `config/arm_presets.yaml` 的 `presets` 为准。当前为 `zero`、`left_look`、`right_look`、`pick_sequence`；同名预设必须存在，不能假定 home/retract 永远可用。
+- **支持名称**：以源码 `config/arm_presets.yaml` 的 `presets` 为准。当前为 `zero`、`left_look`、`right_look`、`pick_sequence`、`home`、`left_store`、`right_store`；同名预设必须存在，不能假定 retract 永远可用。
 
 - **命令行测试示例**：
 ```bash
@@ -156,8 +156,8 @@ presets:
 ### 1. 笛卡尔末端带模式选择服务 (`~/move_cartesian`)
 - **服务类型**：`fruit_arm_interfaces/srv/MoveArmCartesian`
 - **请求字段**：
-  - `x, y, z` (`float32`): 空间坐标 (m)
-  - `pitch_deg` (`float32`): 俯仰角 (度，0度严格水平)
+  - `x, y, z` (`float32`): 真实夹爪抓取点 TCP 的基座空间坐标 (m)
+  - `pitch_deg` (`float32`): 末端 a4 伸出段俯仰角（度，0度表示该段水平，不是腕轴到 TCP 的斜线水平）
   - `duration_ms` (`uint32`): 期望耗时 (ms)
   - `gripper_action` (`uint8`): 夹爪动作 (0=保持, 1=张开, 2=闭合)
   - **`linear_path` (`bool`)**: **解算模式选择！** `true`=高精度严格空间直线（逐点逆解），`false`=快速平滑弧线（终点单次逆解）
@@ -165,8 +165,8 @@ presets:
   - `success` (`bool`): 是否成功执行完毕
   - `message` (`string`): 执行状态描述或报错原因
   - `trajectory_id` (`uint32`): 任务流水号
-- **执行结果**：节点从发布启动 Mode 起，以轨迹末点时间加配置的 `execution_timeout_buffer_sec` 等待本次轨迹 ID 的新状态。收到 `COMPLETED` 才返回成功；`FAILED`、`EMERGENCY`、主动停止或超时返回失败。超时会发布 STOP；发布成功不代表硬件已停稳。
-- **目标偏置**：服务收到的 `(x, y, z)` 在 PTP 求解或 LIN 路径规划前，逐轴加上 `arm_presets.yaml` 的 `planning.cartesian_offset_m`（单位 m）。例如偏置 `[0, 0, -0.03]` 时，输入 `(0, 0, 0)` 会以 `(0, 0, -0.03)` 求解；是否可达仍由 IK 和限位检查决定。LIN 起点使用实测关节角的正解坐标，不加偏置；`pitch_deg` 不变。`cmd_cartesian` 复用本服务回调，因此同样生效；`ExecuteArmPreset` 的笛卡尔航点及关节控制不受影响。
+- **执行结果**：节点从发布启动 Mode 起，等待下位机上报本次轨迹 ID 的新状态。收到 `COMPLETED` 返回成功；下位机报错（`FAILED`、`EMERGENCY`）或外部主动调用 STOP 返回失败。发布 STOP 成功不代表硬件已停稳。
+- **统一抓取点模型**：`arm_presets.yaml` 的 `geometry.a4` 定义腕轴沿末端局部 X 的伸出长度，`geometry.tool_z_offset_m` 定义真实抓取点相对伸出段末端的局部 Z 偏移（米，下方为负，当前 `-0.03`）。偏移随腕部旋转，FK/IK、PTP/LIN、`cmd_cartesian` 和 Cartesian preset 共用，不再额外加减输入坐标。`pitch_deg=0°` 时 a4 段水平，真实抓取点比腕轴低 3 cm，并到达请求 XYZ。关节角命令/预设保持原角度语义，不额外转 IK；其 FK 输出同样为 TCP。旧 `planning.cartesian_offset_m` 已移除。现有预设航点数值不自动迁移，由操作者按新 TCP 定义核对；几何修改后须重启 planner、控制台和 mission，不能仅 reload presets。
 
 ---
 
@@ -174,6 +174,11 @@ presets:
 - **服务类型**：`fruit_arm_interfaces/srv/MoveArmJoints`
 - **请求字段**：`joints_deg[4]` 为四个原始硬件角（度），不应用连杆零位偏置；另有 `duration_ms`、`gripper_action`。控制台 `joints` 是连杆角，`motors` 才与本服务语义一致。
 - **应答字段**：`success`, `message`, `trajectory_id`
+
+相机单点调试客户端在 Look 后、开启识别前，以新鲜且静止的实测四轴硬件角调用本服务，
+先 `gripper_action=1`（OPEN），再以更新的实测角调用 `gripper_action=0`（HOLD）驻留；
+两次请求均无限等待下位机执行结果，失败不继续目标运动；端点与实测反馈取得仍分别
+限幅到 10 秒，较短配置不变。此流程不修改 Look 预设，不引入直接串口或原始轨迹控制。
 
 ---
 
@@ -185,8 +190,7 @@ presets:
 ---
 
 ### 4. 基础停机与急停服务
-- `~/home` (`std_srvs/srv/Trigger`)：执行同名 `home` 预设，必须先在 YAML 中配置
-- `~/retract` (`std_srvs/srv/Trigger`)：执行同名 `retract` 预设，必须先在 YAML 中配置
+- `~/home` (`std_srvs/srv/Trigger`)：执行同名 `home` 预设快捷服务
 - `~/stop` (`std_srvs/srv/Trigger`)：平滑受控停止 (mode=1)
 - `~/emergency_stop` (`std_srvs/srv/Trigger`)：硬件最高优先级急停 (mode=2)
 
@@ -205,13 +209,35 @@ presets:
 
 ### 机械臂实时状态广播 (`~/joint_states`)
 - **完整话题名**：`/arm_planner_node/joint_states`
-- **消息类型**：`sensor_msgs/msg/JointState`
+- **消息类型**：`fruit_arm_interfaces/msg/ArmTelemetry`
 - **发布频率**：仅在收到有效四轴反馈时发布，正常情况下跟随下位机约 20 Hz 状态回传。
-- **功能描述**：实时将下位机回传的物理编码器数值转为标准 ROS 2 `JointState`，供 RViz 机械臂 3D 模型联动或上层监控节点监视。
-- **字段规范**：
-  - `name`: `['joint_1', 'joint_2', 'joint_3', 'joint_4']`
-  - `position`: 当前 4 个关节的实测物理弧度值 $[q_1, q_2, q_3, q_4]$
-  - `velocity`: 当前 4 个关节的瞬时角速度 (rad/s)
+- **功能描述**：同一帧有效电机反馈同时提供原始硬件角、逆 Joint Mapping 后的模型角，以及共享 FK 算出的真实夹爪抓取点 TCP。不新增话题、不修改标准 ROS 消息定义。
+
+| 字段 | 含义 / 单位 |
+| --- | --- |
+| `header` | planner 收到反馈后的 ROS 时间；`frame_id=arm_base_link` 是 geometry 定义的固定机械臂根部坐标系，不是相机或底盘坐标系；此消息不发布 TF。 |
+| `hardware_joint_state` | `sensor_msgs/JointState`：原始电机角 `h1..h4`，`position` 为 rad，`velocity` 为 rad/s，不消除标定偏置。 |
+| `model_joint_state` | `sensor_msgs/JointState`：逆 mapping 后的 `q1..q4`，`position` 为 rad，`velocity` 为 rad/s；Q1=偏航，Q2=大臂相对水平，Q3=小臂相对大臂，Q4=腕部相对小臂。**不再对这组数据执行逆 mapping。** |
+| `tcp_position` | `geometry_msgs/Point`：真实夹爪抓取点 XYZ，单位 m，已经包含 `geometry.tool_z_offset_m`。 |
+| `tcp_pitch_deg` | a4 伸出段的绝对俯仰角，单位度；0° 表示 12 cm 段水平，TCP 位于其下方 3 cm，不是腕轴到 TCP 的斜线水平。 |
+| `trajectory_id/task_status/progress/gripper_state/error_code` | 原帧硬件状态元数据，原样保留；数值语义以 `fruit_hardware_interfaces/msg/ArmStatus` 为准。 |
+
+两个 JointState 的 `name` 均为 `['joint_1','joint_2','joint_3','joint_4']`，四轴 position/velocity 各四项，effort 为空；header 与外层一致。角速度按方向及 Q3 耦合求导，不减常量 offset；非有限速度保留，不伪造为零。无效/越限位置不发布遥测，消费者必须检查反馈新鲜度，不能把最后一帧当成当前状态。
+
+**兼容性变更**：该话题不再是标准 JointState，旧订阅者必须改为 ArmTelemetry；RViz/robot_state_publisher 不能直接把此话题当成标准 JointState 输入。本次不新增适配话题。`~/cmd_joints` 仍使用标准 JointState，运动服务及硬件状态协议不变。
+
+确认硬件安全停稳，停止旧 planner、控制台及 mission；构建接口和消费者，然后重新加载运行环境并重启这些进程。不能让同名话题的新旧消息类型同时运行，`reload_presets` 也不能代替重启。可只读核对：
+
+```bash
+cd /home/rc4/fruit_ws
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
+colcon build --base-paths src --packages-select fruit_arm_interfaces fruit_arm_planner fruit_mission \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
+# 重启 planner 和客户端后执行以下只读命令，不会命令机械臂运动：
+ros2 interface show fruit_arm_interfaces/msg/ArmTelemetry
+ros2 topic echo --once /arm_planner_node/joint_states fruit_arm_interfaces/msg/ArmTelemetry
+```
 
 ---
 
@@ -219,11 +245,11 @@ presets:
 
 1. 分别创建 `MoveArmJoints`、`MoveArmCartesian` 和 `ExecuteArmPreset` service 客户端。mission 只提交这三类请求，不直接发布 `TrajectoryHeader`、`TrajectoryPoint` 或 `ArmControlMode`。
 2. 调用笛卡尔服务前，由负责视觉和坐标转换的模块把目标转换到机械臂根部固定坐标系。`pitch_deg` 是末端俯仰角；`linear_path` 只选择 PTP 或 LIN，不改变坐标系。
-3. 客户端异步发出 service 请求，由 mission 现有 executor/状态机等待其 future；等待期限需覆盖轨迹发送、全部逐段运动和超时缓冲。不要在正在由同一 executor 调用的回调中再次 `spin_until_future_complete`，避免回调互相等待。
-4. future 完成后先处理 service 异常，再判断 `response.success`。仅 `success=true` 表示对应轨迹已由下位机报告完成；`trajectory_id` 用于诊断关联，`message` 记录失败原因。客户端自身等待超时不能推断机械臂已停止，应使用明确的 STOP 流程。
+3. 客户端异步发出 service 请求，由 mission 现有 executor 等待其 future；机械臂执行没有前端期限或自动超时 STOP。下位机完成/报错、主动 STOP/取消或节点退出决定结果。端点发现仍独立限时。不要在正在由同一 executor 调用的回调中再次 `spin_until_future_complete`，避免回调互相等待。
+4. future 完成后先处理 service 异常，再判断 `response.success`。仅 `success=true` 表示对应轨迹已由下位机报告完成；`trajectory_id` 用于诊断关联，`message` 记录失败原因。请求异常时结果未知，应取消并请求 STOP，不能推断机械臂已停止。
 5. 若任务中途需中断，调用独立的 STOP 或急停入口。它们当前的 `Trigger.success=true` 只表示规划器已发布控制 Mode；下位机是否停稳应观察后续状态。详细时序和残余风险见[通信架构文档](02_COMMUNICATION_PROTOCOL.md)。
-6. 正式 mission 的观察、二维码、收臂与恢复均调用 `execute_preset`，名称由
-   `fruit_mission/config/fruit_mission.yaml` 的 `arm_presets` 映射配置；当前字符串为
-   `left_look`、`right_look`、`qr_look`、`retract`、`home`，不表示这些轨迹已配置完成。
-   预设缺失/失败/超时不能视为动作完成。A 区每个作业点及区域结束必须确认收臂完成后才导航，
-   不再支持收臂超时继续。区域通知为 ROS 状态，不走下位机旧 task/callback 协议。
+6. 正式 mission 的观察、二维码、放果与恢复均调用 `execute_preset`，名称直接遵循
+   `arm_presets.yaml` 姿态定义（如 `left_look`、`right_look`、`qr_look`、`left_store`、`right_store`、`home`），不使用中间映射字典。
+   预设缺失/失败不能视为动作完成。导航可与 Look 并行，其余运动仍受有效反馈、
+   导航终态和 planner 占用保护。恢复只尝试一次 Home，不设独立停稳循环，
+   未取得有效低速反馈则跳过；不因 STOP 已发布而放行。区域通知为 ROS 状态，不走下位机旧 task/callback 协议。

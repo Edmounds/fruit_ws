@@ -57,6 +57,12 @@ def generate_launch_description():
                 ),
                 description="Absolute path to the axis navigation parameters",
             ),
+            DeclareLaunchArgument(
+                "axis_log_level",
+                default_value="info",
+                choices=["debug", "info", "warn", "error", "fatal"],
+                description="Log level for axis_waypoint_action_server",
+            ),
 
             DeclareLaunchArgument(
                 "lidar_config",
@@ -89,6 +95,11 @@ def generate_launch_description():
                     {
                         "use_sim_time": use_sim_time,
                     },
+                ],
+                arguments=[
+                    "--ros-args",
+                    "--log-level",
+                    LaunchConfiguration("axis_log_level"),
                 ],
                 output="screen",
                 emulate_tty=True,

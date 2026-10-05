@@ -16,10 +16,6 @@ SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yam
 WAYPOINT_FILE="$WORKSPACE/src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml"
 ODOM_FRAME="odom"
 
-RUN_ROOT="$WORKSPACE/tmp/fruit_mission/runs"
-RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
-RUN_DIR="$RUN_ROOT/$RUN_ID"
-ORCHESTRATOR_LOG="$RUN_DIR/orchestrator.log"
 MISSION_FLOW="full"
 DEBUG_RECORD_ENABLED=0
 REUSE_NAVIGATION=false
@@ -79,10 +75,12 @@ readiness_pid=""
 stopped=0
 
 source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
+source "$WORKSPACE/scripts/fruit_runtime_logging.bash"
 set -u
 
-
-mkdir -p "$RUN_DIR"
+fruit_logging_init "fruit_mission" "${DEBUG_RECORD_ENABLED}"
+RUN_DIR="${FRUIT_RUNTIME_SESSION_DIR}"
+ORCHESTRATOR_LOG="${RUN_DIR}/orchestrator.log"
 
 log() {
   local line
@@ -155,12 +153,15 @@ start_process() {
   shift
   local log_file="$RUN_DIR/$name.log"
   local pid
+  local filter_script="$WORKSPACE/scripts/runtime_log_filter.py"
 
   : > "$log_file"
   log "START $name: $(command_string "$@")"
-  setsid env "FRUIT_SUBSYSTEM_LOG=$log_file" bash -c '
+  setsid env "FRUIT_SUBSYSTEM_LOG=$log_file" "DEBUG_OPT=$DEBUG_RECORD_ENABLED" bash -c '
     set -o pipefail
-    stdbuf -oL -eL "$@" 2>&1 | tee -a "$FRUIT_SUBSYSTEM_LOG"
+    filter_args=(--output-file "$FRUIT_SUBSYSTEM_LOG" --component "'"$name"'")
+    [[ "$DEBUG_OPT" == "1" ]] && filter_args+=(--debug)
+    stdbuf -oL -eL "$@" 2>&1 | /usr/bin/python3 "'"$filter_script"'" "${filter_args[@]}"
   ' fruit-stack "$@" &
   pid=$!
   child_pids+=("$pid")
@@ -175,12 +176,15 @@ start_debug_process() {
   shift
   local log_file="$RUN_DIR/$name.log"
   local pid
+  local filter_script="$WORKSPACE/scripts/runtime_log_filter.py"
 
   : > "$log_file"
   log "START $name: $(command_string "$@")"
-  setsid env "FRUIT_SUBSYSTEM_LOG=$log_file" bash -c '
+  setsid env "FRUIT_SUBSYSTEM_LOG=$log_file" "DEBUG_OPT=$DEBUG_RECORD_ENABLED" bash -c '
     set -o pipefail
-    stdbuf -oL -eL "$@" 2>&1 | tee -a "$FRUIT_SUBSYSTEM_LOG"
+    filter_args=(--output-file "$FRUIT_SUBSYSTEM_LOG" --component "'"$name"'")
+    [[ "$DEBUG_OPT" == "1" ]] && filter_args+=(--debug)
+    stdbuf -oL -eL "$@" 2>&1 | /usr/bin/python3 "'"$filter_script"'" "${filter_args[@]}"
   ' fruit-stack "$@" &
   pid=$!
   debug_pids+=("$pid")
@@ -285,21 +289,7 @@ wait_for_odometry() {
   else
     status=$?
   fi
-  log "WARNING: $label odometry unavailable; no recognition without stationary feedback"
-}
-
-wait_for_active_off() {
-  local timeout_sec=$1
-  local status
-
-  log "WAIT camera mode manager active=OFF timeout=${timeout_sec}s"
-  if run_readiness_client active-mode --mode OFF --timeout "$timeout_sec"; then
-    log "READY camera mode manager active=OFF"
-    return 0
-  else
-    status=$?
-  fi
-  log "WARNING: camera mode unavailable; mission will skip unavailable work"
+  log "WARNING: $label odometry unavailable; navigation requires odometry"
 }
 
 wait_for_topic_endpoint_count() {
@@ -352,8 +342,7 @@ log_recent_child_output() {
   local log_file=$2
 
   [[ -r "$log_file" ]] || return 0
-  log "EXIT recent $name output from $log_file"
-  tail -n 80 "$log_file" | sed "s/^/[$name] /" | tee -a "$ORCHESTRATOR_LOG"
+  log "EXIT $name output recorded at $log_file"
 }
 
 stop_children() {
@@ -422,6 +411,7 @@ stop_children() {
     wait "$pid" 2>/dev/null || true
   done
   ((${#debug_pids[@]} == 0)) || wait "${debug_pids[@]}" 2>/dev/null || true
+  fruit_logging_close 0
   log "STOP complete; logs kept at $RUN_DIR"
 }
 
@@ -460,11 +450,9 @@ import yaml
 with open(sys.argv[1], encoding="utf-8") as stream:
     document = yaml.safe_load(stream)
 params = document["fruit_mission"]["ros__parameters"]
-tts = params["tts"]
+tts = params.get("tts", {})
 for key in (
-    "piper_executable",
-    "model_path",
-    "config_path",
+    "manifest_path",
     "aplay_executable",
 ):
     value = tts.get(key)
@@ -474,20 +462,18 @@ for key in (
 PY
 )" || die "failed to read mission runtime paths from $MISSION_CONFIG"
 mapfile -t mission_runtime_path_values <<< "$mission_runtime_paths"
-if ((${#mission_runtime_path_values[@]} != 4)); then
+if ((${#mission_runtime_path_values[@]} != 2)); then
   die "mission config returned an unexpected number of runtime paths"
 fi
 
-PIPER_EXECUTABLE=${mission_runtime_path_values[0]}
-MODEL_PATH=${mission_runtime_path_values[1]}
-MODEL_CONFIG=${mission_runtime_path_values[2]}
-APLAY_EXECUTABLE=${mission_runtime_path_values[3]}
+VOICE_MANIFEST=${mission_runtime_path_values[0]}
+APLAY_EXECUTABLE=${mission_runtime_path_values[1]}
 
 check_file "$WAYPOINT_FILE"
-for required_file in "$MODEL_PATH" "$MODEL_CONFIG"; do
-  [[ -r "$required_file" ]] || log "WARNING: speech file unavailable: $required_file"
+for required_file in "$VOICE_MANIFEST"; do
+  [[ -r "$required_file" ]] || log "WARNING: voice manifest unavailable: $required_file"
 done
-for required_executable in "$PIPER_EXECUTABLE" "$APLAY_EXECUTABLE"; do
+for required_executable in "$APLAY_EXECUTABLE"; do
   [[ -x "$required_executable" ]] || log "WARNING: speech executable unavailable: $required_executable"
 done
 
@@ -520,7 +506,6 @@ if [[ "$REUSE_NAVIGATION" == true ]]; then
     /fruit_perception_container \
     /camera \
     /fruit_perception_node \
-    /camera_mode_manager \
     /fruit_qr_planner \
     /arm_planner_node \
     /fruit_mission
@@ -529,13 +514,11 @@ else
     /livox_ros_driver2 \
     /laserMapping \
     /loam_interface \
-    /serial_controller \
     /axis_waypoint_action_server \
     /twist_mux \
     /fruit_perception_container \
     /camera \
     /fruit_perception_node \
-    /camera_mode_manager \
     /fruit_qr_planner \
     /arm_planner_node \
     /fruit_mission
@@ -549,7 +532,10 @@ if [[ "$REUSE_NAVIGATION" != true ]]; then
     "$MONITOR_SCRIPT" fruit-mission
 fi
 
-START_SERIAL_BRIDGE=true
+START_SERIAL_BRIDGE=$(run_readiness_client bridge-start-required)
+if [[ "$START_SERIAL_BRIDGE" == false ]]; then
+  log "RUN reuse: existing serial bridge remains owned by its original launcher"
+fi
 if [[ "$REUSE_NAVIGATION" == true ]]; then
   START_SERIAL_BRIDGE=false
   log "RUN reuse: existing navigation, serial bridge, and debug monitor remain owned by start_navigation.sh"
@@ -566,14 +552,13 @@ wait_for_tf "stable odometry origin" odom base_link 5
 start_process "perception" \
   ros2 launch "$PERCEPTION_LAUNCH" \
     "use_sim_time:=false" \
-    "serial_debug_raw_frame:=true" \
+    "serial_debug_raw_frame:=$([[ $DEBUG_RECORD_ENABLED -eq 1 ]] && echo 'true' || echo 'false')" \
     "start_serial_bridge:=$START_SERIAL_BRIDGE"
 
 
 wait_for_nodes "perception readiness" 10 \
   /serial_controller \
   /fruit_perception_node \
-  /camera_mode_manager \
   /fruit_qr_planner
 wait_for_serial_bridge_running 10
 start_process "arm_planner" \
@@ -604,7 +589,12 @@ wait_for_topic_endpoint_count \
   publishers \
   1 \
   10
-wait_for_active_off 10
+wait_for_topic_endpoint_count \
+  "perception observation window subscription" \
+  "/fruit_mission/observation_window" \
+  subscribers \
+  1 \
+  10
 
 if ((DEBUG_RECORD_ENABLED)); then
   start_process "rosbag" \
@@ -623,7 +613,7 @@ start_process "mission" \
 if [[ "$REUSE_NAVIGATION" == true ]]; then
   log "RUN mission started; Ctrl-C stops mission, arm planner, and perception but keeps the reused navigation stack running"
 else
-  log "RUN mission started; press Ctrl-C to stop the complete stack"
+  log "RUN mission started; press Ctrl-C to stop launched processes (reused bridge stays running)"
 fi
 set +e
 # A dead perception/QR/planner process must not tear down the competition.

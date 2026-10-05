@@ -23,7 +23,6 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from fruit_navigation.axis_planner import (
     AxisPose,
-    ProgressWatchdog,
     normalize_angle,
     pose_from_ros,
 )
@@ -345,11 +344,6 @@ class AxisWaypointActionServer(Node):
 
     def _rotate_to(self, goal_handle, target_yaw: float, yaw_tolerance: float) -> bool:
         period = 1.0 / self._control_frequency
-        watchdog = ProgressWatchdog(
-            self._progress_timeout_sec,
-            self._progress_min_delta,
-            time.monotonic(),
-        )
         while rclpy.ok():
             if self._should_stop(goal_handle):
                 return False
@@ -363,14 +357,6 @@ class AxisWaypointActionServer(Node):
                     return True
                 time.sleep(period)
                 continue
-            if watchdog.stalled(error, time.monotonic()):
-                self.get_logger().error(
-                    "Aborting waypoint goal: no rotation progress "
-                    f"current_yaw={current.yaw:.3f} target_yaw={target_yaw:.3f} "
-                    f"yaw_error={error:.3f} tolerance={yaw_tolerance:.3f}"
-                )
-                self._publish_stop_burst()
-                return False
             twist = Twist()
             twist.angular.z = self._rotation_command(error)
             self._publish_limited_command(twist)
@@ -389,11 +375,6 @@ class AxisWaypointActionServer(Node):
         final_yaw: Optional[float] = None,
     ) -> bool:
         period = 1.0 / self._control_frequency
-        watchdog = ProgressWatchdog(
-            self._progress_timeout_sec,
-            self._progress_min_delta,
-            time.monotonic(),
-        )
         direction_x = math.cos(path_heading)
         direction_y = math.sin(path_heading)
         while rclpy.ok():
@@ -424,21 +405,6 @@ class AxisWaypointActionServer(Node):
                     return True
                 time.sleep(period)
                 continue
-            progress_error = math.hypot(remaining, lateral_error)
-            if watchdog.stalled(progress_error, time.monotonic()):
-                self.get_logger().error(
-                    "Aborting waypoint goal: no progress "
-                    f"start=({start.x:.3f},{start.y:.3f}) "
-                    f"current=({current.x:.3f},{current.y:.3f},{current.yaw:.3f}) "
-                    f"target=({target.x:.3f},{target.y:.3f},{target.yaw:.3f}) "
-                    f"traveled={traveled:.3f}/{distance:.3f} "
-                    f"remaining={remaining:.3f} lateral_error={lateral_error:.3f} "
-                    f"progress_error={progress_error:.3f} "
-                    f"forward_tolerance={self._forward_tolerance:.3f} "
-                    f"lateral_tolerance={self._lateral_tolerance:.3f}"
-                )
-                self._publish_stop_burst()
-                return False
 
             yaw_target = approach_yaw
             if final_yaw is not None and remaining < self._final_yaw_blend_distance:

@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
-from dataclasses import dataclass
 import time
 from typing import Any, Dict, Mapping, Optional, Sequence, Union
+import uuid
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PointStamped, PoseStamped
 from nav2_msgs.action import FollowWaypoints
-from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -29,8 +30,8 @@ from fruit_perception.msg import FruitDecision
 from fruit_mission.camera_target_planner_client import CameraTargetPlannerClient
 from fruit_mission.camera_target_planner_client import DEFAULT_EXTRINSIC_CONFIG
 from fruit_mission.config import _validate_qr_fallbacks
-from fruit_mission.decisions import merge_seen_types
-from fruit_mission.tts import PiperSpeaker
+from fruit_mission.decisions import format_produce_count, merge_seen_types, spoken_produce_name
+from fruit_mission.tts import RecordedSpeaker
 from fruit_mission.waypoint_route import MissionWaypointRoute
 from fruit_mission.waypoint_route import WaypointPose
 from fruit_qr_planner.planner import build_b_plan, build_c_plan
@@ -55,7 +56,6 @@ class _CameraSelection:
 class _ArmMotionResult:
     completed: bool
     reason_code: str
-    safe_to_continue: bool
 
 
 @dataclass(frozen=True)
@@ -75,7 +75,8 @@ class MissionContext:
     def __init__(self, node: Node, config: Mapping[str, Any], speaker=None) -> None:
         self.node = node
         self.config = config
-        self.speaker = speaker or PiperSpeaker(config["tts"], node.get_logger())
+        self.speaker = speaker or RecordedSpeaker(config.get("tts", {}), node.get_logger())
+        self._pick_counts: Counter[str] = Counter()
         self.route = MissionWaypointRoute.from_file(
             Path(str(config["waypoint_file"])),
             str(config.get("mission_flow", "full")),
@@ -85,8 +86,12 @@ class MissionContext:
         self._current_waypoint_name: Optional[str] = None
         self._current_route_yaw: Optional[float] = None
         self._current_area: Optional[str] = None
-        self._latest_active_mode: Optional[str] = None
-        self._active_mode_generation = 0
+        self._active_window_id: Optional[str] = None
+        self._active_window_start_sec: int = 0
+        self._active_window_start_nanosec: int = 0
+        self._active_window_area: str = ""
+        self._active_window_purpose: str = ""
+        self._active_window_expected_type: str = ""
         self._latest_camera_types: Optional[list[str]] = None
         self._latest_camera_types_stamp_ns = 0
         self._latest_camera_target: Optional[PointStamped] = None
@@ -95,8 +100,6 @@ class MissionContext:
         self._latest_b_targets_stamp_ns = 0
         self._latest_b_plan: Optional[Dict[str, Any]] = None
         self._latest_c_plan: Optional[Dict[str, Any]] = None
-        self._base_odometry = None
-        self._base_received_at = 0.0
         self._pending_observation = None
         self._observation_side = None
         self._arm_home_confirmed = False
@@ -110,10 +113,14 @@ class MissionContext:
             spin_thread=False,
         )
 
-        self._mode_publisher = node.create_publisher(
+        self._observation_window_publisher = node.create_publisher(
             String,
-            config["perception_mode_topic"],
-            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE),
+            config["observation_window_topic"],
+            QoSProfile(
+                depth=10,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.VOLATILE,
+            ),
         )
         self._expected_fruit_type_publisher = node.create_publisher(
             String,
@@ -126,20 +133,14 @@ class MissionContext:
             _latched_qos(),
         )
         self._camera_planner = CameraTargetPlannerClient(
-            node, config.get("camera_extrinsic_config", DEFAULT_EXTRINSIC_CONFIG)
+            node,
+            config.get("camera_extrinsic_config", DEFAULT_EXTRINSIC_CONFIG),
+            target_offset_m=config.get("target_offset_m", (0.0, 0.0, 0.0)),
         )
         self._follow_waypoints_client = ActionClient(
             node,
             FollowWaypoints,
             str(config["follow_waypoints_action"]),
-        )
-        node.create_subscription(
-            Odometry, config['odometry_topic'], self._on_odometry, 10)
-        node.create_subscription(
-            String,
-            config["active_mode_topic"],
-            self._on_active_mode,
-            _latched_qos(),
         )
         node.create_subscription(
             FruitDecision,
@@ -373,7 +374,8 @@ class MissionContext:
         if not names:
             return True
         if not self._navigation_stopped or not (
-            self._arm_home_confirmed or (
+            (self._arm_home_confirmed and self._camera_planner.is_stationary(
+                self.config['stationary']['joint_speed_rps'])) or (
                 self._pending_observation is not None
                 and self._pending_observation[1] is not None
             )
@@ -535,78 +537,102 @@ class MissionContext:
             return False
         return self._wait_until(lambda: self._navigation_stopped, 10.0)
 
-    def _on_odometry(self, message: Odometry) -> None:
-        self._base_odometry = message
-        self._base_received_at = time.monotonic()
+    def open_observation_window(
+        self,
+        area: str,
+        purpose: str,
+        expected_type: Optional[str] = None,
+    ) -> str:
+        """Open a new observation window and broadcast its parameters."""
+        now = self.node.get_clock().now()
+        sec, nanosec = now.seconds_nanoseconds()
+        window_id = str(uuid.uuid4())
+        self._active_window_id = window_id
+        self._active_window_start_sec = sec
+        self._active_window_start_nanosec = nanosec
+        self._active_window_area = area
+        self._active_window_purpose = purpose
+        self._active_window_expected_type = str(expected_type or "")
+        self._latest_camera_target = None
+        self._latest_camera_types = None
+        self._latest_camera_types_stamp_ns = 0
+        self._latest_b_targets = None
+        self._latest_b_targets_header = None
+        self._latest_b_targets_stamp_ns = 0
+        if purpose == "qr":
+            if area == "B":
+                self._latest_b_plan = None
+            elif area == "C":
+                self._latest_c_plan = None
 
-    def stable_stop(self) -> bool:
-        """Both measured mechanisms must stay stationary before a new window."""
-        limits = self.config['stationary']
-        stable_since = None
-
-        def stationary():
-            nonlocal stable_since
-            message = self._base_odometry
-            base_ok = False
-            if message is not None:
-                stamp = message.header.stamp
-                age = (self.node.get_clock().now().nanoseconds
-                       - stamp.sec * 1_000_000_000 - stamp.nanosec) / 1e9
-                twist = message.twist.twist
-                values = (twist.linear.x, twist.linear.y, twist.linear.z,
-                          twist.angular.x, twist.angular.y, twist.angular.z)
-                base_ok = (
-                    message.header.frame_id == self.config['map_frame']
-                    and 0 <= age <= limits['odometry_max_age_sec']
-                    and time.monotonic() - self._base_received_at <= limits['odometry_max_age_sec']
-                    and all(math.isfinite(v) for v in values)
-                    and math.sqrt(sum(v * v for v in values[:3])) <= limits['linear_speed_mps']
-                    and math.sqrt(sum(v * v for v in values[3:])) <= limits['angular_speed_rps']
-                )
-            if not (base_ok and self._camera_planner.is_stationary(limits['joint_speed_rps'])):
-                stable_since = None
-                return False
-            now = time.monotonic()
-            if stable_since is None:
-                stable_since = now
-            return now - stable_since >= limits['duration_sec']
-
-        return self._wait_until(stationary, limits['timeout_sec'])
-
-    def set_perception_mode(self, mode: str) -> bool:
-        """Publish a perception mode and wait for the active-mode echo."""
-        message = String()
-        message.data = mode
-        previous_generation = self._active_mode_generation
-        self._mode_publisher.publish(message)
-        return self._wait_until(
-            lambda: self._active_mode_generation > previous_generation
-            and self._latest_active_mode == mode,
-            float(self.config['active_mode_timeout_sec']),
+        cmd = {
+            "window_id": window_id,
+            "valid": 1,
+            "start_sec": sec,
+            "start_nanosec": nanosec,
+            "area": area,
+            "purpose": purpose,
+            "expected_type": str(expected_type or ""),
+        }
+        msg = String()
+        msg.data = json.dumps(cmd, ensure_ascii=False, separators=(",", ":"))
+        self._observation_window_publisher.publish(msg)
+        self.node.get_logger().info(
+            f"Opened observation window '{window_id}' for area={area}, "
+            f"purpose={purpose}, expected='{expected_type or ''}'"
         )
+        return window_id
 
-    def wait_b_plan(self) -> Optional[Dict[str, Any]]:
-        """Wait for the latched B QR plan."""
+    def close_observation_window(self) -> None:
+        """Close current observation window if open."""
+        if self._active_window_id is None:
+            return
+        window_id = self._active_window_id
+        self._active_window_id = None
+        cmd = {
+            "window_id": window_id,
+            "valid": 0,
+            "start_sec": self._active_window_start_sec,
+            "start_nanosec": self._active_window_start_nanosec,
+            "area": self._active_window_area,
+            "purpose": self._active_window_purpose,
+            "expected_type": self._active_window_expected_type,
+        }
+        msg = String()
+        msg.data = json.dumps(cmd, ensure_ascii=False, separators=(",", ":"))
+        self._observation_window_publisher.publish(msg)
+        self.node.get_logger().info(f"Closed observation window '{window_id}'")
+
+    def wait_b_plan(self, window_id: str) -> Optional[Dict[str, Any]]:
+        """Wait for the B QR plan matching current window."""
         self._wait_until(
-            lambda: self._latest_b_plan is not None,
+            lambda: self._latest_b_plan is not None
+            and self._latest_b_plan.get("observation_window_id") == window_id,
             float(self.config["qr_plan_timeout_sec"]),
         )
-        return self._latest_b_plan
+        if (
+            self._latest_b_plan is not None
+            and self._latest_b_plan.get("observation_window_id") == window_id
+        ):
+            return self._latest_b_plan
+        return None
 
-    def wait_c_plan(self) -> Optional[Dict[str, Any]]:
-        """Wait for the latched C QR plan."""
+    def wait_c_plan(self, window_id: str) -> Optional[Dict[str, Any]]:
+        """Wait for the C QR plan matching current window."""
         self._wait_until(
-            lambda: self._latest_c_plan is not None,
+            lambda: self._latest_c_plan is not None
+            and self._latest_c_plan.get("observation_window_id") == window_id,
             float(self.config["qr_plan_timeout_sec"]),
         )
-        return self._latest_c_plan
-
-    def send_pick_direction(self, side: str) -> bool:
-        """Execute the named observation preset and wait for completion."""
-        return self.finish_observation(side).completed
+        if (
+            self._latest_c_plan is not None
+            and self._latest_c_plan.get("observation_window_id") == window_id
+        ):
+            return self._latest_c_plan
+        return None
 
     def finish_observation(self, side: str) -> _ArmMotionResult:
-        """Consume the matching Look request and wait for hardware completion."""
+        """Consume the matching Look request, open gripper, and wait for hardware completion."""
         if side not in ("left", "right"):
             raise ValueError("side must be left or right")
         if self._pending_observation is None:
@@ -616,8 +642,23 @@ class MissionContext:
         if pending_side != side:
             raise ValueError('Observation side must match the navigation plan')
         completed, reason = self._camera_planner.finish_motion(future, self._wait_until)
-        self._observation_side = side if completed else None
-        return _ArmMotionResult(completed, reason, completed)
+        if not completed:
+            self._observation_side = None
+            return _ArmMotionResult(False, reason)
+        self._observation_side = side
+        gripper_result = self.open_gripper()
+        if not gripper_result.completed:
+            self._observation_side = None
+            return gripper_result
+        return _ArmMotionResult(True, 'completed')
+
+    def open_gripper(self) -> _ArmMotionResult:
+        """OPEN at measured raw joints, then HOLD for the configured gripper dwell."""
+        if not self._camera_planner.is_stationary(self.config['stationary']['joint_speed_rps']):
+            return _ArmMotionResult(False, 'arm_pose_unavailable')
+        completed, reason = self._camera_planner.open_gripper(
+            self._wait_until, self.config['stationary']['joint_speed_rps'])
+        return _ArmMotionResult(completed, reason)
 
     def start_observation(self, side: str) -> None:
         """Look and navigation share the executor, not blocking worker threads."""
@@ -625,10 +666,11 @@ class MissionContext:
             raise ValueError('side must be left or right')
         if self._pending_observation is not None:
             raise RuntimeError('Previous observation has not been consumed')
-        self.set_perception_mode('OFF')
         future = None
-        if self._arm_home_confirmed or self.recover_home():
-            name = self.config['arm_presets'][f'observation_{side}']
+        if ((self._arm_home_confirmed or self.recover_home())
+                and self._camera_planner.is_stationary(
+                    self.config['stationary']['joint_speed_rps'])):
+            name = f'{side}_look'
             future = self._camera_planner.start_preset(name)
             if future is not None:
                 self._arm_home_confirmed = False
@@ -657,11 +699,11 @@ class MissionContext:
     def move_to_base_target(self, request) -> _ArmMotionResult:
         """One planner CLOSE/dwell request, starting only with stationary feedback."""
         if not self._camera_planner.is_stationary(self.config['stationary']['joint_speed_rps']):
-            return _ArmMotionResult(False, 'arm_pose_unavailable', False)
+            return _ArmMotionResult(False, 'arm_pose_unavailable')
         self._arm_home_confirmed = False
         completed, reason = self._camera_planner.move_to_base_target(
             request, self._wait_until, self.config['stationary']['joint_speed_rps'])
-        return _ArmMotionResult(completed, reason, False)
+        return _ArmMotionResult(completed, reason)
 
     def set_expected_fruit_type(self, expected_type: Optional[str]) -> None:
         """Set the Camera target class; an empty value disables filtering."""
@@ -670,11 +712,11 @@ class MissionContext:
         self._expected_fruit_type_publisher.publish(message)
 
     def send_qr_pose(self) -> bool:
-        """Execute the configured QR observation preset."""
-        return self.execute_arm_preset("qr").completed
+        """Execute the QR observation preset."""
+        return self.execute_arm_preset("qr_look").completed
 
     def send_return_initial_pose(self) -> bool:
-        """Execute the configured initial-pose recovery preset."""
+        """Execute the initial-pose recovery preset."""
         return self.execute_arm_preset("home").completed
 
     def recover_home(self) -> bool:
@@ -685,20 +727,29 @@ class MissionContext:
         if status is not None and status.task_status == status.STATUS_EMERGENCY:
             self.cancel_navigation()
             return False
-        stopped_after = time.monotonic()
-        if not self._arm_home_confirmed:
-            self._camera_planner.request_stop()
+        stop_future = None
+        stationary = self._camera_planner.is_stationary(
+            self.config['stationary']['joint_speed_rps'])
+        self._arm_home_confirmed = self._arm_home_confirmed and stationary
+        motion_future = self._camera_planner._motion_future
+        if not self._arm_home_confirmed and (
+                (motion_future is not None and not motion_future.done())
+                or not stationary):
+            stop_future = self._camera_planner.request_stop()
         if not self.cancel_navigation():
             return False
         if self._arm_home_confirmed:
             return True
-        if not self._wait_until(
-            lambda: self._camera_planner.is_stationary(
-                self.config['stationary']['joint_speed_rps'], stopped_after, require_idle=True),
-            10.0,
-        ):
-            self.node.get_logger().warning('Arm stop unconfirmed; skipping unsafe motion')
-            return False
+        if stop_future is not None:
+            try:
+                if not self._wait_until(stop_future.done, 10.0):
+                    return False
+                response = stop_future.result()
+                if response is None or not response.success:
+                    return False
+            except Exception as error:
+                self.node.get_logger().warning(f'Cannot confirm STOP dispatch: {error}')
+                return False
         return self.send_return_initial_pose()
 
     def report_current_area(self, area: str) -> bool:
@@ -711,47 +762,50 @@ class MissionContext:
         self._current_area_publisher.publish(message)
         return True
 
-    def announce(self, text: str, length_scale: Optional[float] = None) -> bool:
+    def record_pick(self, matched_type: Optional[str]) -> None:
+        """Record one confirmed harvested produce target."""
+        name = spoken_produce_name(matched_type)
+        if name and name != "未知果实":
+            self._pick_counts[name] += 1
+            self.node.get_logger().info(f"记录采摘工序完成：{name}，当前累计：{self._pick_counts[name]}")
+
+    def announce_summary(self) -> None:
+        """Speak final mission summary by produce category directly."""
+        self.announce_and_wait("任务流程结束")
+        total = sum(self._pick_counts.values())
+        if total == 0:
+            self.announce_and_wait("本次没有采摘记录")
+            return
+
+        self.announce_and_wait("本次采摘记录")
+        ordered_produces = ["苹果", "梨子", "南瓜", "西红柿", "辣椒", "洋葱"]
+        for produce in ordered_produces:
+            count = self._pick_counts.get(produce, 0)
+            if count > 0:
+                phrase = format_produce_count(produce, count)
+                self.announce_and_wait(phrase)
+
+    def announce(self, text: str, **_kwargs) -> bool:
         """Speak text through the configured TTS backend."""
         self.node.get_logger().info(f"播报：{text}")
-        if length_scale is not None:
-            try:
-                return bool(self.speaker.announce(text, length_scale=length_scale))
-            except TypeError:
-                pass
-        return self.speaker.announce(text)
+        return bool(self.speaker.announce(text))
 
     def announce_and_wait(
         self,
         text: str,
         lead_time_sec: float = 0.0,
-        length_scale: Optional[float] = None,
+        **_kwargs,
     ) -> bool:
         """Speak text and wait until playback completes or reaches its lead time."""
         self.node.get_logger().info(f"同步播报：{text}")
         announce_and_wait = getattr(self.speaker, "announce_and_wait", None)
         if callable(announce_and_wait):
-            if lead_time_sec > 0.0:
-                try:
-                    return bool(
-                        announce_and_wait(
-                            text,
-                            lead_time_sec=lead_time_sec,
-                            length_scale=length_scale,
-                        )
-                    )
-                except TypeError:
-                    pass
-            elif length_scale is not None:
-                try:
-                    return bool(announce_and_wait(text, length_scale=length_scale))
-                except TypeError:
-                    pass
-            return bool(announce_and_wait(text))
-        return self.speaker.announce(text)
+            return bool(announce_and_wait(text, lead_time_sec=lead_time_sec))
+        return bool(self.speaker.announce(text))
 
     def close(self) -> None:
         """Release mission runtime helpers."""
+        self.close_observation_window()
         self._camera_planner.request_stop()
         self.cancel_navigation()
         # Drain the STOP service request before tearing down its ROS client.
@@ -785,44 +839,43 @@ class MissionContext:
         except OSError as error:
             self.node.get_logger().warning(f'Cannot save B plan record: {error}')
 
-    def execute_arm_preset(self, action: str) -> _ArmMotionResult:
-        """Resolve an action's configured preset and wait for actual completion."""
-        name = self.config["arm_presets"][action]
-        completed, reason = self._camera_planner.execute_preset(name, self._wait_until)
-        self._arm_home_confirmed = action == 'home' and completed
-        return _ArmMotionResult(completed, reason, completed)
+    def execute_arm_preset(self, preset_name: str) -> _ArmMotionResult:
+        """Execute a preset directly from arm_presets.yaml and wait for completion."""
+        if (not self._navigation_stopped or not self._camera_planner.is_stationary(
+                self.config['stationary']['joint_speed_rps'])):
+            self._arm_home_confirmed = False
+            return _ArmMotionResult(False, 'arm_pose_unavailable')
+        completed, reason = self._camera_planner.execute_preset(preset_name, self._wait_until)
+        self._arm_home_confirmed = preset_name == 'home' and completed
+        return _ArmMotionResult(completed, reason)
 
     def wait_camera_target(
         self,
-        fresh_after_ns: int,
+        window_id: str,
         expected_type: Optional[str],
     ) -> _CameraSelection:
         self._latest_camera_target = None
         self._latest_camera_types = None
         self._latest_camera_types_stamp_ns = 0
         seen_types: list[str] = []
-        latest_stamp_ns = fresh_after_ns
         deadline = time.monotonic() + float(self.config["camera_detection_timeout_sec"])
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self.node, timeout_sec=0.1)
-            if self._latest_camera_types_stamp_ns > fresh_after_ns:
-                latest_types = self._latest_camera_types or []
+            if self._active_window_id != window_id:
+                break
+            latest_types = self._latest_camera_types or []
+            if latest_types:
                 seen_types = merge_seen_types(seen_types, latest_types)
             if self._latest_camera_target is None:
                 continue
             target = self._latest_camera_target
-            stamp = target.header.stamp
-            stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
-            if stamp_ns <= latest_stamp_ns:
-                self._latest_camera_target = None
-                continue
-            latest_stamp_ns = stamp_ns
             point = (
                 float(target.point.x),
                 float(target.point.y),
                 float(target.point.z),
             )
             if not all(math.isfinite(value) for value in point):
+                self._latest_camera_target = None
                 continue
             self.node.get_logger().info(
                 "Camera target received from perception window: "
@@ -857,7 +910,7 @@ class MissionContext:
 
     def wait_b_targets(
         self,
-        fresh_after_ns: int,
+        window_id: str,
     ) -> Optional[list[BTreeTarget]]:
         self._latest_b_targets = None
         self._latest_b_targets_header = None
@@ -865,9 +918,9 @@ class MissionContext:
         deadline = time.monotonic() + float(self.config["camera_detection_timeout_sec"])
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self.node, timeout_sec=0.1)
+            if self._active_window_id != window_id:
+                break
             if self._latest_b_targets is None:
-                continue
-            if self._latest_b_targets_stamp_ns <= fresh_after_ns:
                 continue
             targets = []
             for item in self._latest_b_targets:
@@ -901,9 +954,9 @@ class MissionContext:
             return targets
         return None
 
-    def _wait_until(self, predicate, timeout_sec: float) -> bool:
-        deadline = time.monotonic() + timeout_sec
-        while rclpy.ok() and time.monotonic() < deadline:
+    def _wait_until(self, predicate, timeout_sec: Optional[float] = None) -> bool:
+        deadline = None if timeout_sec is None else time.monotonic() + timeout_sec
+        while rclpy.ok() and (deadline is None or time.monotonic() < deadline):
             if predicate():
                 return True
             rclpy.spin_once(self.node, timeout_sec=0.1)
@@ -912,7 +965,7 @@ class MissionContext:
     def _wait_future(self, future, watch_observation=False) -> bool:
         ready = self._wait_until(
             lambda: future.done() or (watch_observation and self._observation_failed()),
-            10.0,
+            None if watch_observation else 10.0,
         )
         return ready and future.done()
 
@@ -944,13 +997,25 @@ class MissionContext:
             stamped.pose.orientation.w = math.cos(yaw * 0.5)
         return stamped
 
-    def _on_active_mode(self, message: String) -> None:
-        self._latest_active_mode = message.data
-        self._active_mode_generation += 1
-
     def _on_decision(self, message: FruitDecision) -> None:
-        self._latest_camera_types = list(message.types)
+        if (
+            self._active_window_id is None
+            or message.observation_window_id != self._active_window_id
+            or self._active_window_purpose != "harvest"
+        ):
+            return
         stamp = message.header.stamp
+        if (
+            stamp.sec < 0
+            or not 0 <= stamp.nanosec < 1_000_000_000
+            or stamp.sec < self._active_window_start_sec
+            or (
+                stamp.sec == self._active_window_start_sec
+                and stamp.nanosec < self._active_window_start_nanosec
+            )
+        ):
+            return
+        self._latest_camera_types = list(message.types)
         self._latest_camera_types_stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
         if message.targets_ready:
             self._latest_b_targets = list(message.targets)
@@ -977,27 +1042,66 @@ class MissionContext:
     def _receive_plan(self, message: String, zone: str):
         """Reject invalid ROS input without throwing out of the executor callback."""
         try:
+            if self._active_window_id is None:
+                return None
+            if self._active_window_purpose != "qr":
+                return None
+            if self._active_window_area != zone:
+                return None
             plan = json.loads(message.data)
-            if plan['zone'] != zone:
-                raise ValueError('QR plan zone mismatch')
-            tasks = sorted(plan['tasks'], key=lambda task: task['sequence'])
-            if [task['sequence'] for task in tasks] != list(range(1, 9)):
-                raise ValueError('QR plan requires eight ordered tasks')
-            fallback = dict(self.config['qr_fallback'])
-            names = [task['target'] for task in tasks]
-            positions = [task['position_id'] for task in tasks]
-            if zone == 'B':
+            if not isinstance(plan, dict):
+                self.node.get_logger().warning(f"Non-object {zone} QR plan ignored")
+                return None
+            plan_window_id = plan.get("observation_window_id")
+            if plan_window_id != self._active_window_id:
+                return None
+            img_sec = plan.get("image_stamp_sec")
+            img_nanosec = plan.get("image_stamp_nanosec")
+            if (
+                isinstance(img_sec, bool)
+                or not isinstance(img_sec, int)
+                or isinstance(img_nanosec, bool)
+                or not isinstance(img_nanosec, int)
+                or not (0 <= img_nanosec < 1_000_000_000)
+                or not 0 <= img_sec <= 0x7FFFFFFF
+            ):
+                self.node.get_logger().warning(
+                    f"Invalid timestamp in {zone} QR plan: sec={img_sec}, nanosec={img_nanosec}"
+                )
+                return None
+            if (
+                img_sec < self._active_window_start_sec
+                or (
+                    img_sec == self._active_window_start_sec
+                    and img_nanosec < self._active_window_start_nanosec
+                )
+            ):
+                return None
+            if plan.get("zone") != zone:
+                raise ValueError("QR plan zone mismatch")
+            tasks = sorted(plan["tasks"], key=lambda task: task["sequence"])
+            if [task["sequence"] for task in tasks] != list(range(1, 9)):
+                raise ValueError("QR plan requires eight ordered tasks")
+            fallback = dict(self.config["qr_fallback"])
+            names = [task["target"] for task in tasks]
+            positions = [task["position_id"] for task in tasks]
+            if zone == "B":
                 if positions != list(range(1, 9)):
-                    raise ValueError('B tree positions must remain ordered')
-                fallback['b_targets'] = names
+                    raise ValueError("B tree positions must remain ordered")
+                fallback["b_targets"] = names
             else:
-                fallback['c_targets'], fallback['c_positions'] = names, positions
+                fallback["c_targets"], fallback["c_positions"] = names, positions
             _validate_qr_fallbacks(fallback)
-            if zone == 'B':
-                return build_b_plan('\n'.join(names))
-            return build_c_plan('\n'.join(names + [','.join(map(str, positions))]))
+            if zone == "B":
+                built = build_b_plan("\n".join(names))
+            else:
+                built = build_c_plan("\n".join(names + [",".join(map(str, positions))]))
+            built["observation_window_id"] = plan_window_id
+            built["image_stamp_sec"] = img_sec
+            built["image_stamp_nanosec"] = img_nanosec
+            return built
         except (ValueError, TypeError, KeyError) as error:
-            self.node.get_logger().warning(f'Invalid {zone} QR plan ignored: {error}')
+            self.node.get_logger().warning(f"Invalid {zone} QR plan ignored: {error}")
             return None
 
 

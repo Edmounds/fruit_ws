@@ -101,6 +101,18 @@ class JointTransformer:
             self.channels[3].to_algo(q_hw[3]),
         )
 
+    def hardware_velocity_to_algo(
+        self, velocity_hw: Tuple[float, float, float, float]
+    ) -> Tuple[float, float, float, float]:
+        """硬件角速度 -> 算法角速度 (rad/s)；常量零位偏置不参与求导."""
+        q2_velocity = velocity_hw[1] / self.channels[1].direction
+        return (
+            velocity_hw[0] / self.channels[0].direction,
+            q2_velocity,
+            velocity_hw[2] / self.channels[2].direction - q2_velocity,
+            velocity_hw[3] / self.channels[3].direction,
+        )
+
     def check_hardware_limits(
         self, q_hw: Tuple[float, float, float, float]
     ) -> Tuple[bool, str]:

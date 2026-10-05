@@ -53,6 +53,28 @@ source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 切换前已经启动的 ROS 进程仍使用旧 RMW，不能与新进程混跑。停止整套旧进程后重新加载
 环境并启动；若 ROS 2 daemon 曾由旧环境启动，切换时执行一次 `ros2 daemon stop`。
 
+### 启动脚本复用串口桥
+
+`start_fruit_perception.sh`、`start_navigation.sh`、`waypoints_maker.sh`、
+`start_tele.sh`、`start_fruit_mission.sh` 和 `test_camera_arm_target.sh`
+会检查当前 ROS 图中的 `serial_controller`、机械臂状态和桥 ready 发布者。
+检测到已有桥就复用，不再重复启动，也不在退出时停止该桥；没有才启动。
+已有桥即使 `ready=false` 也不会被当成缺失，硬件就绪等待仍由原有流程负责。
+复用不会修改已有桥的串口、日志或 raw-frame 配置；重复桥或消息类型冲突仍报错。
+相机测试仍拒绝已有感知容器、arm planner 或 mission，避免重复控制。
+不使用串口桥的脚本无需改动；`test_camera_detector.py` 已有复用逻辑。
+
+更新后重新构建 `fruit_mission` 和 `joy_linux`，再启动脚本：
+
+```bash
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
+colcon build --base-paths src --packages-select fruit_mission joy_linux \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
+# 只读检查：true 表示需要启动桥，false 表示复用已有桥
+ros2 run fruit_mission stack_readiness_client bridge-start-required
+```
+
 ### 清理残留进程和设备占用
 
 启动整套任务、摄像头调参或串口直连工具前，可先检查再清理项目进程：
@@ -82,21 +104,42 @@ sudo systemctl stop fruit-perception.service
 ros2 topic echo /fruit_perception/decision
 ```
 
-### B 区单树感知与机械臂测试
+### 相机与机械臂配合调试
 
-测试 B 区单棵树时必须指定观察方向和二维码期望品种：
+测试机械臂观察与单点识别抓取闭环：
 
 ```bash
 cd /home/rc4/fruit_ws
-./test_camera_arm_target.sh --zone B --right --apple
-./test_camera_arm_target.sh --zone B --left --pear --debug
+# 蔬菜模型 (A区): 左侧观察并抓取
+./test_camera_arm_target.sh --model A --left
+
+# 水果模型 (B区): 不区分苹果或梨，抓取成熟水果
+./test_camera_arm_target.sh --model B --right
+./test_camera_arm_target.sh --model B --left --debug
 ```
 
-`--apple` 和 `--pear` 只能用于 B 区且必须二选一。脚本等待感知节点完成 50 帧
-整树统计，再按正式 mission 的规则比较整树品种和期望品种，只向下位机发送品种一致的
-成熟目标对应的 planner 请求。没有目标、品种不一致或只有未成熟目标时正常跳过，不发送 `ArmTarget`。
-单树抓取、跳过或执行失败后都会发送 `task_id=7` 并等待机械臂收缩姿态回调；感知进程
-继续保留，便于现场检查，按 `Ctrl-C` 后退出。
+参数说明：
+- `--model A|B`：指定感知模型（`A` 为蔬菜 vegetable 模型，`B` 为水果 fruit 模型，亦兼容 `--zone A|B`）。
+- `--left|--right`：指定作业侧，执行 `left_look`/`left_store` 或 `right_look`/`right_store` 预设。
+- `--debug`：显式开启串口关键数据帧（轨迹头、轨迹点、控制模式）的终端解码打印；原始 raw 十六进制数据已彻底移除，逐帧相机详情与高频状态包统一落盘至会话日志文件。
+
+流程说明：
+脚本等待实际感知节点的区域订阅端就绪后发布模型选择，并等待可靠 DDS 确认，避免串口桥先就绪时丢失 B 模型选择。机械臂先回到 `home`，再运动至 `left_look` 或 `right_look`，通过 planner 的新鲜实测关节角请求张爪（OPEN + HOLD 驻留），完成后开启 harvest 观察窗口；深度目标转换到基座后应用 mission `target_offset_m`，再运动至目标点闭爪（CLOSE + HOLD）。成功后执行对应侧 `left_store` 或 `right_store` 放果，再显式执行 `home`。B 只从感知完成统计后的有效成熟目标中选择置信度最高者，不区分苹果或梨；无成熟目标不下发目标运动，不回退抓未成熟目标。品种参数已删除。机械臂运动直接等待下位机执行结果，可由 `Ctrl-C`/STOP 中断；端点、识别与区域交付仍各自独立限时，最大 10 秒，较短等待不变。Look 后不重复做独立静止等待，OPEN/HOLD 仍逐次取得新鲜有效的实测硬件角。
+
+## 运行日志与终端调试说明
+
+工作区对 7 个常用启动入口（`test_camera_arm_target.sh`、`start_fruit_perception.sh`、`start_fruit_mission.sh`、`start_navigation.sh`、`start_tele.sh`、`waypoints_maker.sh`、`record_rosbag.sh`）实施了统一的日志落盘与终端分流机制：
+
+- **终端精简输出**：
+  - 默认仅输出关键生命周期推进（就绪、连接、观察窗口、目标锁定坐标、轨迹执行完成结果、告警与错误），不刷高频周期巡检与冗长启动参数。
+  - **彻底移除 raw 原始十六进制字节**（如 `[MCU TX RAW]`），无论是否开启 debug，终端均不再输出 raw 数据。
+  - 显式传入 `--debug` 选项时，仅额外在终端打印当前允许的串口关键数据帧（轨迹头、轨迹点、控制模式）的结构化解码文本。高频底盘速度、机械臂 20Hz 状态、系统 ACK/心跳等即便在 `--debug` 下也仅保存于磁盘日志，避免刷屏。
+- **详细诊断落盘与保留**：
+  - 每次运行的完整日志存放于 `/home/rc4/fruit_ws/log/runtime/<时间戳>_<入口>_<PID>/`。
+  - 最新的运行目录可通过软链接 `/home/rc4/fruit_ws/log/runtime/latest` 快速访问。
+  - 详细内容包括：`orchestrator.log`（全局生命周期与进程列表）、各子组件独立日志（`perception.log`、`arm_planner.log`、`client.log`、`navigation.log`、`monitor.log` 等）、所有收发包完整解码字段以及 `ros/` 原生日志。
+  - 系统启动与退出时自动清理已结束的运行目录，严格保留**最近 20 次**记录；活动运行通过 `.active.lock` 文件锁保护，禁止误删。
+- **AI Agent 排查指引**：详见 [AGENTS.md](AGENTS.md)。
 
 ## 上位机机械臂调试
 
@@ -139,10 +182,15 @@ source scripts/setup_fruit_runtime.bash
 
 原 `test_tts.sh` 已不存在。播报文本与顺序见 [VOICE_FLOW.md](docs/VOICE_FLOW.md)，
 本机蓝牙音量与服务排查见 [AUDIO_VOLUME.md](docs/AUDIO_VOLUME.md)。
-Piper 可执行文件、模型和 aplay 路径以 `src/fruit_mission/config/fruit_mission.yaml` 的 `tts` 为准。
-已生成音频时可单独播放（只产生声音，不启动任务或机械臂）：
+语音采用维什戴尔（Wis'adel）gremlin 预录素材离线拼接播放，素材清单以 `src/fruit_mission/config/wisadel_voice.yaml` 为准。
+可使用离线检查与试听工具排查（只产生声音，不启动任务或机械臂）：
 ```bash
 cd /home/rc4/fruit_ws
-aplay tmp/fruit_mission/tts_latest.wav
+source scripts/setup_fruit_runtime.bash
+# 检查文案与本地音频文件完整性
+python3 scripts/prepare_wisadel_voice.py check
+# 生成并试听代表场景音频
+python3 scripts/prepare_wisadel_voice.py render --scenario intro --play
+python3 scripts/prepare_wisadel_voice.py render --scenario summary_multi --play
 ```
-当前播报实现调用 aplay 播放 WAV，不提供旧脚本的 `--default` 或 `ALSA_DEVICE` 包装接口。
+当前播报实现调用 aplay 播放本地拼接 WAV，比赛运行时完全离线，不依赖 GPU 服务器。

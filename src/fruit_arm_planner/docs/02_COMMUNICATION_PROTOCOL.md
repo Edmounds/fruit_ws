@@ -17,9 +17,11 @@ auto_serial_bridge  --传输业务数据--  下位机
 ```
 
 - 上位机负责把任务目标转换成机械臂的四轴硬件关节轨迹。视觉坐标应先在上层转换到机械臂根部固定坐标系；下位机不接收笛卡尔目标或预设名称。
-- 规划器通过 `/arm_planner_node/move_joints`、`/arm_planner_node/move_cartesian`、`/arm_planner_node/execute_preset` 接收正式运动请求。`home`、`retract` 是预设快捷服务；`cmd_joints`、`cmd_cartesian`、`cmd_preset` 是无逐请求结果的调试话题。
-- `move_joints` 的目标单位是度；`move_cartesian` 的 XYZ 单位是米、`pitch_deg` 是度。规划器的 `planning.cartesian_offset_m` 只叠加到笛卡尔服务目标（以及复用其回调的 `cmd_cartesian`），不叠加到预设航点。下发给下位机的四轴角度统一为**硬件关节弧度 rad**，关节角速度回报单位为 rad/s。
+- 规划器通过 `/arm_planner_node/move_joints`、`/arm_planner_node/move_cartesian`、`/arm_planner_node/execute_preset` 接收正式运动请求。`home` 是预设快捷服务；`cmd_joints`、`cmd_cartesian`、`cmd_preset` 是无逐请求结果的调试话题。
+- `move_joints` 的目标单位是度；`move_cartesian` 的 XYZ 是真实夹爪抓取点 TCP 的基座坐标（米），`pitch_deg` 是末端 a4 伸出段俯仰角（度）。直接输入和笛卡尔预设共用 `geometry.tool_z_offset_m` 固定结构模型，不再叠加旧 `planning.cartesian_offset_m` 输入平移。下发给下位机的四轴角度统一为**硬件关节弧度 rad**，关节角速度回报单位为 rad/s。
 - 底盘速度是独立的下发路径，不经过机械臂规划器。
+
+业务遥测仍使用 `/arm_planner_node/joint_states`，类型已改为 `fruit_arm_interfaces/msg/ArmTelemetry`：同一帧原始电机角、逆映射模型角及 FK TCP。硬件 `/fruit_hardware_bridge/arm/status` 的 ArmStatus 与线协议保持不变；模型角不要再次逆 mapping。详见[遥测字段](03_INTERFACES_AND_API.md#六遥测广播接口-telemetry)。
 
 ## 2. 上位机下发的数据
 
@@ -81,6 +83,7 @@ ROS 接口定义的 `error_code` 包括：`0` 无故障、`1001` 超时、`1002`
 ## 5. 任务结果与异常处理
 
 - 规划器从启动 Mode 发布后开始等待新的 `ArmStatus`。只有状态的 `trajectory_id` 等于本次请求 ID 且 `task_status=COMPLETED(2)`，运动 service 才返回 `success=true`；发布轨迹或收到 `RUNNING` 都不表示动作完成。
-- 匹配的 `FAILED(3)`、`EMERGENCY(4)` 或显式停止使本次运动返回失败。超过轨迹末点时间加 `execution_timeout_buffer_sec` 仍未收到完成状态，则返回超时并发布 STOP；**发布 STOP 不证明实机已经停稳**。
+- 匹配的 `FAILED(3)`、`EMERGENCY(4)` 或显式停止使本次运动返回失败。硬件报错由下位机自然上报；**发布 STOP 不证明实机已经停稳**。
+- planner 与 mission 均没有运动执行期限或超时看门狗；等待本次下位机结果，缺少结果时由操作人员主动 STOP/ESTOP 或退出。端点发现和反馈新鲜度仍独立检查，不因无限等待放宽运动起点校验。
 - 规划器在一次运动期间拒绝新的普通运动请求；没有新鲜有效的四轴状态、目标不可达、越限或轨迹格式无效时，拒绝下发。STOP/急停不依赖有效的运动起点。
 - 当前业务数据中没有“已装载全部 N 个路点”的上报字段，也没有底盘速度执行完成状态。因此不能用 `IDLE`、话题发布成功或夹爪动作命令代替这些确认。下位机的终态保持时长、故障码含义和实际缓存容量仍需实机核对。

@@ -10,6 +10,7 @@ source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
 set -u
 
 exec -a fruit_robot_debug_monitor python3 - "$LABEL" "$INTERVAL_SEC" <<'PY'
+import json
 import math
 import sys
 import time
@@ -118,11 +119,18 @@ class RobotDebugMonitor:
         self.last_health_signature = None
         self.last_nav_signature = None
         self.last_nav_latest_status = None
-        self.last_mode = {}
+        self.active_window_info = {
+            "window_id": "-",
+            "valid": 0,
+            "area": "-",
+            "purpose": "-",
+            "expected": "",
+        }
         self.last_perception_signature = {}
         self.last_perception_log_time = {}
         self.last_target_signature = None
         self.last_target_log_time = 0.0
+        self.last_camera_stream_status = None
         now = time.monotonic()
         self.camera_streams = {
             name: {
@@ -145,8 +153,7 @@ class RobotDebugMonitor:
         self.node.create_subscription(GoalStatusArray, "/follow_waypoints/_action/status", self.on_follow_status, 10)
         self.node.create_subscription(Log, "/rosout", self.on_rosout, 100)
 
-        self.node.create_subscription(String, "/fruit_mission/perception_mode", lambda msg: self.on_mode("requested", msg), 10)
-        self.node.create_subscription(String, "/fruit_perception/active_mode", lambda msg: self.on_mode("active", msg), latched_qos)
+        self.node.create_subscription(String, "/fruit_mission/observation_window", self.on_observation_window, 10)
         self.node.create_subscription(FruitDecision, "/fruit_perception/decision", self.on_decision, 100)
         self.node.create_subscription(
             Metadata,
@@ -194,7 +201,6 @@ class RobotDebugMonitor:
             "axis_waypoint_action_server",
             "fruit_mission",
             "fruit_perception_node",
-            "camera_mode_manager",
             "camera.camera",
         ):
             return
@@ -202,11 +208,28 @@ class RobotDebugMonitor:
         color = RED if level >= ros_log_level_value(Log.ERROR) else YELLOW
         log(highlight(color, "ROSOUT") + f" {message.name}: {message.msg}")
 
-    def on_mode(self, source, message):
-        if self.last_mode.get(source) == message.data:
-            return
-        self.last_mode[source] = message.data
-        log(highlight(MAGENTA, "PERCEPTION mode") + f" {source}={message.data}")
+    def on_observation_window(self, message):
+        try:
+            cmd = json.loads(message.data)
+            wid = str(cmd.get("window_id", "-"))
+            valid = int(cmd.get("valid", 0))
+            area = str(cmd.get("area", "-"))
+            purpose = str(cmd.get("purpose", "-"))
+            expected = str(cmd.get("expected_type", ""))
+            self.active_window_info = {
+                "window_id": wid,
+                "valid": valid,
+                "area": area,
+                "purpose": purpose,
+                "expected": expected,
+            }
+            state_str = "OPEN" if valid == 1 else "CLOSED"
+            log(
+                highlight(MAGENTA, "OBSERVATION window") +
+                f" state={state_str} id={wid} area={area} purpose={purpose} expected='{expected}'"
+            )
+        except Exception:
+            pass
 
     def on_decision(self, message):
         self.on_types("camera", message)
@@ -316,18 +339,26 @@ class RobotDebugMonitor:
             stamp = "ZERO"
         return f"hz={hz:.1f} last={stamp} age={age:.2f}s", age
 
-    def log_camera_streams(self, now, active_mode):
+    def log_camera_streams(self, now, perception_present):
         values = {}
         ages = {}
         for name, state in self.camera_streams.items():
             values[name], ages[name] = self.format_camera_stream(state, now)
-        expected = active_mode in ("QR", "DETECT")
+        expected = bool(perception_present)
         stale = expected and any(age > CAMERA_STREAM_STALE_SEC for age in ages.values())
         status = "STALE" if stale else "OK" if expected else "IDLE"
         color = RED if stale else GREEN if expected else CYAN
+        win = self.active_window_info
+        win_str = f"{'OPEN' if win['valid'] else 'CLOSED'}:{win['area']}:{win['purpose']}"
+
+        previous_status = self.last_camera_stream_status
+        self.last_camera_stream_status = status
+        if previous_status == "STALE" and status == "OK":
+            log(highlight(GREEN, "CAMERA streams recovered") + f" window={win_str}")
+
         log(
             highlight(color, "CAMERA streams") + " "
-            f"status={status} mode={active_mode} "
+            f"status={status} window={win_str} "
             f"color[{values['color']}] depth[{values['depth']}] rgbd[{values['rgbd']}]"
         )
 
@@ -339,15 +370,14 @@ class RobotDebugMonitor:
 
         nodes = {name for name, _namespace in self.node.get_node_names_and_namespaces()}
         fruit_perception_present = "fruit_perception_node" in nodes
-        active_mode = self.last_mode.get("active", "-")
-        requested_mode = self.last_mode.get("requested", "-")
-        self.log_camera_streams(now, active_mode)
+        self.log_camera_streams(now, fruit_perception_present)
+        win = self.active_window_info
         health_signature = (
             int(fruit_perception_present),
             self.node.count_publishers('/diagnostics'),
             self.node.count_publishers('/follow_waypoints/_action/status'),
-            requested_mode,
-            active_mode,
+            win["valid"],
+            win["window_id"],
             self.node.count_publishers('/fruit_perception/decision'),
         )
         if health_signature == self.last_health_signature:
@@ -358,7 +388,7 @@ class RobotDebugMonitor:
             f"perception_node={health_signature[0]} "
             f"diag_pub={health_signature[1]} "
             f"follow_action_status_pub={health_signature[2]} "
-            f"perception_requested={requested_mode} perception_active={active_mode} "
+            f"window_valid={win['valid']} window_id={win['window_id']} "
             f"decision_pub={health_signature[5]}"
         )
 
@@ -369,7 +399,7 @@ def main():
     node = rclpy.create_node(f"{safe_label}_robot_debug_monitor")
     log(
         "started; watching navigation, rosout warnings/errors, "
-        "camera modes, Camera stream rates and unified fruit decisions"
+        "observation windows, Camera stream rates and unified fruit decisions"
     )
     RobotDebugMonitor(node)
     try:

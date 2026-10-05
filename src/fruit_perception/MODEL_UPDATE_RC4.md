@@ -1,8 +1,8 @@
 # RC4 果蔬模型更新与识别逻辑迁移说明
 
-> **历史交付说明，不是当前部署指南。**两阶段模型已接入，左右 USB 相机及 SIDES/TREE、FruitDecision.source 已删除。
-> 当前模式为 OFF/QR/DETECT；A 对外为 ripe/unripe，C 辣椒为 chili_*，不是下文历史方案拟议的全区 pepper_* 标签。
-> 当前配置、命令及验收边界见 [TWO_STAGE_RUNTIME.md](docs/TWO_STAGE_RUNTIME.md)。下文“当前/目标/后续”均指原交付时点，不要重复实施或执行其旧构建命令。模型归档内原说明及校验和不修改。
+> **历史交付说明，不是当前部署指南。**两阶段模型已接入，左右 USB 相机、旧模式及 CameraModeManager 已彻底删除。
+> 当前架构为单 camera 常开与持续推理，由观察窗口控制数据采纳；A 对外为 ripe/unripe，C 辣椒为 chili_*，不是下文历史方案拟议的全区 pepper_* 标签。
+> 当前配置、命令及验收边界见 [TWO_STAGE_RUNTIME.md](docs/TWO_STAGE_RUNTIME.md) 与 [README.md](README.md)。下文“当前/目标/后续”均指原交付时点，不要重复实施或执行其旧构建命令。模型归档内原说明及校验和不修改。
 
 ## 1. 本次交付与边界
 

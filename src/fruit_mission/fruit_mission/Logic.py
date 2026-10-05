@@ -7,6 +7,7 @@ from fruit_mission.actions import pick_b_tree
 from fruit_mission.actions import pick_c
 from fruit_mission.actions import scan_b_qr
 from fruit_mission.actions import scan_c_qr
+from fruit_mission.decisions import format_b_tree_name
 
 
 def main(ctx):
@@ -34,22 +35,20 @@ def run_a(ctx):
     ctx.report_current_area("A")
 
     if navigate(ctx, ["A1"], side="left"):
-        if pick_a(ctx, side="left").safe_to_continue:
-            pick_a(ctx, side="right")
+        pick_a(ctx, side="left")
+        pick_a(ctx, side="right")
 
     if navigate(ctx, ["A2"], side="left"):
-        if pick_a(ctx, side="left").safe_to_continue:
-            pick_a(ctx, side="right")
+        pick_a(ctx, side="left")
+        pick_a(ctx, side="right")
 
     if navigate(ctx, ["A3"], side="left"):
-        if pick_a(ctx, side="left").safe_to_continue:
-            pick_a(ctx, side="right")
+        pick_a(ctx, side="left")
+        pick_a(ctx, side="right")
 
     if navigate(ctx, ["A4"], side="left"):
-        if pick_a(ctx, side="left").safe_to_continue:
-            pick_a(ctx, side="right")
-
-    ctx.set_perception_mode("OFF")
+        pick_a(ctx, side="left")
+        pick_a(ctx, side="right")
 
 
 def run_b(ctx, plan):
@@ -58,16 +57,22 @@ def run_b(ctx, plan):
     waypoints = ctx.route.b_goal_names()
     for task in sorted(plan["tasks"], key=lambda item: int(item["sequence"])):
         position = int(task["position_id"])
+        tree_name = format_b_tree_name(position)
         if not 1 <= position <= len(waypoints):
-            ctx.announce(f"B区第{position}棵树编号无效，跳过。")
+            ctx.announce(f"B区{tree_name}编号无效，跳过。")
             continue
         side = "right" if position % 2 == 1 else "left"
         waypoint = waypoints[position - 1]
         if navigate(ctx, [waypoint], side=side):
-            pick_b_tree(ctx, waypoint=waypoint, target=str(task["target"]), side=side)
+            pick_b_tree(
+                ctx,
+                tree_name=tree_name,
+                target=str(task["target"]),
+                side=side,
+                waypoint=waypoint,
+            )
         else:
-            ctx.announce(f"B区{waypoint}导航失败，跳过。")
-    ctx.set_perception_mode("OFF")
+            ctx.announce(f"B区{tree_name}导航失败，跳过。")
 
 
 def run_c(ctx, plan):
@@ -82,7 +87,6 @@ def run_c(ctx, plan):
         pick_c(ctx, task, side=navigation["camera_side"])
         ctx.save_c_distribution(plan)
     ctx.save_c_distribution(plan)
-    ctx.set_perception_mode("OFF")
 
 
 def debug_a(ctx):

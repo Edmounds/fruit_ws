@@ -33,6 +33,7 @@ from fruit_arm_interfaces.srv import (
     MoveArmCartesian,
     MoveArmJoints,
 )
+from fruit_arm_interfaces.msg import ArmTelemetry
 
 from fruit_arm_planner.joint_transformer import JointTransformer
 from fruit_arm_planner.kinematics import RobotKinematics
@@ -165,9 +166,6 @@ class ArmPlannerNode(Node):
         self._srv_home = self.create_service(
             Trigger, '~/home', self._srv_home_cb, callback_group=self.cb_group
         )
-        self._srv_retract = self.create_service(
-            Trigger, '~/retract', self._srv_retract_cb, callback_group=self.cb_group
-        )
         self._srv_stop = self.create_service(
             Trigger, '~/stop', self._srv_stop_cb, callback_group=self.cb_group
         )
@@ -188,7 +186,7 @@ class ArmPlannerNode(Node):
             String, '~/cmd_preset', self._on_cmd_preset, 10
         )
         self._joint_state_pub = self.create_publisher(
-            JointState, '~/joint_states', 10
+            ArmTelemetry, '~/joint_states', 10
         )
 
         self.get_logger().info('Fruit Arm Planner Node fully ready with Service API.')
@@ -208,10 +206,6 @@ class ArmPlannerNode(Node):
             for key in ('geometry', 'joint_mapping', 'planning', 'presets'):
                 if key not in params:
                     raise ValueError(f'Missing configuration section: {key}')
-            for key in ('d1', 'a2', 'a3', 'a4'):
-                value = float(params['geometry'][key])
-                if not math.isfinite(value) or value <= 0:
-                    raise ValueError(f'Invalid geometry.{key}')
             for key in ('q1', 'q2', 'q3', 'q4'):
                 cfg = params['joint_mapping'][key]
                 limits = cfg['limits_deg']
@@ -226,7 +220,8 @@ class ArmPlannerNode(Node):
             self.planner = TrajectoryPlanner(self.kinematics)
             self.get_logger().info(
                 f"Loaded arm geometry: d1={self.kinematics.d1}m, "
-                f"a2={self.kinematics.a2}m, a3={self.kinematics.a3}m, a4={self.kinematics.a4}m"
+                f"a2={self.kinematics.a2}m, a3={self.kinematics.a3}m, a4={self.kinematics.a4}m, "
+                f"tool_z_offset_m={self.kinematics.tool_z_offset_m}m"
             )
 
             # 2. 关节坐标系映射与零位偏置
@@ -245,18 +240,10 @@ class ArmPlannerNode(Node):
             self.default_dwell_ms = int(planning_cfg['default_dwell_ms'])
             self.hover_height_m = float(planning_cfg['hover_height_m'])
             self.status_max_age_sec = float(planning_cfg['status_max_age_sec'])
-            self.execution_timeout_buffer_sec = float(planning_cfg['execution_timeout_buffer_sec'])
             self.mode_start_delay_ms = int(planning_cfg['mode_start_delay_ms'])
-            offset = planning_cfg['cartesian_offset_m']
-            if (not isinstance(offset, (list, tuple)) or len(offset) != 3
-                    or not all(isinstance(value, (int, float)) and not isinstance(value, bool)
-                               and math.isfinite(value) for value in offset)):
-                raise ValueError('cartesian_offset_m must contain three finite numbers (metres)')
-            self.cartesian_offset_m = tuple(float(value) for value in offset)
             if (self.default_duration_ms <= 0 or self.interpolation_step_ms <= 0
                     or self.default_dwell_ms < 0
                     or not 0 < self.status_max_age_sec < 10
-                    or not 0 < self.execution_timeout_buffer_sec < 60
                     or not 0 <= self.mode_start_delay_ms <= 10000
                     or not math.isfinite(self.hover_height_m)):
                 raise ValueError('Invalid planning parameters')
@@ -309,21 +296,37 @@ class ArmPlannerNode(Node):
             self.get_logger().warn('Ignoring arm status with invalid joint feedback')
             return
 
-        # 发布标准 JointState
-        js_msg = JointState()
-        js_msg.header.stamp = self.get_clock().now().to_msg()
-        js_msg.name = ['joint_1', 'joint_2', 'joint_3', 'joint_4']
-        js_msg.position = list(joints)
-        js_msg.velocity = [
-            v if math.isfinite(v) else 0.0 for v in (
-                msg.joint_1_velocity, msg.joint_2_velocity,
-                msg.joint_3_velocity, msg.joint_4_velocity,
-            )
-        ]
-        self._joint_state_pub.publish(js_msg)
+        # 同一实测快照：原始硬件角、逆映射模型角和真实 TCP；不伪造无效速度为零。
+        velocities = (msg.joint_1_velocity, msg.joint_2_velocity,
+                      msg.joint_3_velocity, msg.joint_4_velocity)
+        model_joints = self.transformer.hardware_to_algo(joints)
+        x, y, z, pitch = self.kinematics.forward_kinematics(*model_joints)['end_effector']
+        telemetry = ArmTelemetry()
+        telemetry.header.stamp = self.get_clock().now().to_msg()
+        telemetry.header.frame_id = 'arm_base_link'
+        hardware = telemetry.hardware_joint_state
+        hardware.header = telemetry.header
+        hardware.name = ['joint_1', 'joint_2', 'joint_3', 'joint_4']
+        hardware.position = list(joints)
+        hardware.velocity = list(velocities)
+        model = telemetry.model_joint_state
+        model.header = telemetry.header
+        model.name = list(hardware.name)
+        model.position = list(model_joints)
+        model.velocity = list(self.transformer.hardware_velocity_to_algo(velocities))
+        telemetry.tcp_position.x = x
+        telemetry.tcp_position.y = y
+        telemetry.tcp_position.z = z
+        telemetry.tcp_pitch_deg = math.degrees(pitch)
+        telemetry.trajectory_id = msg.trajectory_id
+        telemetry.task_status = msg.task_status
+        telemetry.progress = msg.progress
+        telemetry.gripper_state = msg.gripper_state
+        telemetry.error_code = msg.error_code
+        self._joint_state_pub.publish(telemetry)
 
     # ========================================================================
-    # 核心下发与看门狗执行
+    # 核心下发与硬件结果等待
     # ========================================================================
 
     def _run_motion(
@@ -384,7 +387,7 @@ class ArmPlannerNode(Node):
         start: Tuple[float, float, float, float],
         description: str = 'trajectory',
     ) -> Tuple[bool, int, str]:
-        """将轨迹下发至单片机并同步阻塞等待 COMPLETED (带自动超时 STOP 保护)."""
+        """下发轨迹并等待下位机完成/报错、主动 STOP 或节点退出，无执行期限."""
         error = self._validate_trajectory(points, start)
         if error:
             return False, 0, error
@@ -396,11 +399,10 @@ class ArmPlannerNode(Node):
         traj_id = self.planner.get_new_trajectory_id()
         point_num = len(points)
         actual_traj_duration_ms = points[-1].time_from_start
-        timeout_sec = (actual_traj_duration_ms / 1000.0) + self.execution_timeout_buffer_sec
 
         self.get_logger().info(
             f"Dispatching {description}: traj_id={traj_id}, points={point_num}, "
-            f"duration={actual_traj_duration_ms}ms, timeout={timeout_sec:.1f}s"
+            f"duration={actual_traj_duration_ms}ms"
         )
 
         # 1. 头部声明
@@ -442,11 +444,10 @@ class ArmPlannerNode(Node):
             self._mode_pub.publish(mode)
             dispatched_at = time.monotonic()
 
-        # 4. 同步监视看门狗等待
-        deadline = dispatched_at + timeout_sec
+        # 4. 同步监视硬件状态，等待执行完成或下位机报错
         poll_interval = 0.05  # 50ms (20Hz)
 
-        while time.monotonic() < deadline:
+        while rclpy.ok():
             time.sleep(poll_interval)
             with self._state_lock:
                 reason = self._interrupt_reason
@@ -474,14 +475,7 @@ class ArmPlannerNode(Node):
                     self.get_logger().error(err_msg)
                     return False, traj_id, err_msg
 
-        # 超时未报完成：触发安全停机看门狗
-        self.stop()
-        timeout_msg = (
-            f"Execution timeout for trajectory {traj_id} after {timeout_sec:.1f}s. "
-            f"STOP published; hardware stop is not yet confirmed."
-        )
-        self.get_logger().error(timeout_msg)
-        return False, traj_id, timeout_msg
+        return False, traj_id, "Execution interrupted by node shutdown"
 
     # ========================================================================
     # 服务端点回调函数
@@ -494,15 +488,12 @@ class ArmPlannerNode(Node):
         def build(start):
             duration_ms = int(req.duration_ms) if req.duration_ms > 0 else self.default_duration_ms
             pitch_rad = math.radians(float(req.pitch_deg))
-            request_xyz = (float(req.x), float(req.y), float(req.z))
+            target_xyz = (float(req.x), float(req.y), float(req.z))
             gripper = int(req.gripper_action)
             if (duration_ms <= 0 or duration_ms > 0xFFFFFFFF
-                    or not all(math.isfinite(v) for v in (*request_xyz, pitch_rad))
+                    or not all(math.isfinite(v) for v in (*target_xyz, pitch_rad))
                     or gripper not in (0, 1, 2)):
                 return False, [], 'Invalid Cartesian target, duration or gripper action'
-            target_xyz = tuple(value + delta for value, delta in zip(request_xyz, self.cartesian_offset_m))
-            if not all(math.isfinite(value) for value in target_xyz):
-                return False, [], 'Cartesian target plus offset is not finite'
             if req.linear_path:
                 fk_current = self.kinematics.forward_kinematics(
                     *self.transformer.hardware_to_algo(start)
@@ -589,15 +580,6 @@ class ArmPlannerNode(Node):
     def _srv_home_cb(self, _req, res: Trigger.Response) -> Trigger.Response:
         req = ExecuteArmPreset.Request()
         req.preset_name = 'home'
-        preset_res = ExecuteArmPreset.Response()
-        preset_res = self._srv_execute_preset_cb(req, preset_res)
-        res.success = preset_res.success
-        res.message = preset_res.message
-        return res
-
-    def _srv_retract_cb(self, _req, res: Trigger.Response) -> Trigger.Response:
-        req = ExecuteArmPreset.Request()
-        req.preset_name = 'retract'
         preset_res = ExecuteArmPreset.Response()
         preset_res = self._srv_execute_preset_cb(req, preset_res)
         res.success = preset_res.success

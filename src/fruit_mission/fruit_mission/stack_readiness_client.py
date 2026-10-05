@@ -14,7 +14,6 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.time import Time
 from std_msgs.msg import Bool
-from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer
 from tf2_ros import TransformException
@@ -31,16 +30,12 @@ class StackReadinessClient(Node):
         self.declare_parameter(
             "bridge_ready_topic", "/auto_serial_bridge/ready"
         )
-        self.declare_parameter(
-            "active_mode_topic", "/fruit_perception/active_mode"
-        )
         self.declare_parameter("follow_waypoints_action", "/follow_waypoints")
         self.declare_parameter("graph_discovery_timeout_sec", 1.0)
 
         self.bridge_ready_topic = self._string_parameter(
             "bridge_ready_topic"
         )
-        self.active_mode_topic = self._string_parameter("active_mode_topic")
         self.follow_waypoints_action = self._string_parameter(
             "follow_waypoints_action"
         )
@@ -49,7 +44,6 @@ class StackReadinessClient(Node):
         )
 
         self._bridge_ready = False
-        self._active_mode = ""
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(
             self._tf_buffer,
@@ -60,12 +54,6 @@ class StackReadinessClient(Node):
             Bool,
             self.bridge_ready_topic,
             self._on_bridge_ready,
-            latched_qos(),
-        )
-        self._active_mode_subscription = self.create_subscription(
-            String,
-            self.active_mode_topic,
-            self._on_active_mode,
             latched_qos(),
         )
 
@@ -222,6 +210,29 @@ class StackReadinessClient(Node):
             )
         return ready
 
+    def bridge_start_required(self) -> bool:
+        """Select bridge startup without treating hardware readiness as absence."""
+        self.wait_until(lambda: False, self.graph_discovery_timeout_sec)
+        bridge_nodes = [
+            name for name, _namespace in self.get_node_names_and_namespaces()
+            if name == "serial_controller"
+        ]
+        status_publishers = self.get_publishers_info_by_topic(
+            "/fruit_hardware_bridge/arm/status"
+        )
+        ready_publishers = self.get_publishers_info_by_topic(self.bridge_ready_topic)
+        for publishers, expected_type in (
+            (status_publishers, "fruit_hardware_interfaces/msg/ArmStatus"),
+            (ready_publishers, "std_msgs/msg/Bool"),
+        ):
+            if len(publishers) > 1 or any(
+                publisher.topic_type != expected_type for publisher in publishers
+            ):
+                raise ValueError("Conflicting serial bridge publishers or message types")
+        if len(bridge_nodes) > 1:
+            raise ValueError("Multiple serial_controller nodes are already running")
+        return not (bridge_nodes or status_publishers or ready_publishers)
+
     def wait_for_endpoint(
         self,
         topic: str,
@@ -242,16 +253,6 @@ class StackReadinessClient(Node):
             self.get_logger().error(
                 f"Timed out waiting for {topic} {endpoint}>={minimum}; "
                 f"observed={counter(topic)}"
-            )
-        return ready
-
-    def wait_for_active_mode(self, mode: str, timeout_sec: float) -> bool:
-        """Wait for the typed active perception mode."""
-        ready = self.wait_until(lambda: self._active_mode == mode, timeout_sec)
-        if not ready:
-            self.get_logger().error(
-                f"Timed out waiting for {self.active_mode_topic}={mode}; "
-                f"observed={self._active_mode or '<none>'}"
             )
         return ready
 
@@ -276,9 +277,6 @@ class StackReadinessClient(Node):
 
     def _on_bridge_ready(self, message: Bool) -> None:
         self._bridge_ready = bool(message.data)
-
-    def _on_active_mode(self, message: String) -> None:
-        self._active_mode = message.data
 
     def _string_parameter(self, name: str) -> str:
         return str(self.get_parameter(name).value)
@@ -308,6 +306,8 @@ def _parser() -> argparse.ArgumentParser:
     bridge = commands.add_parser("bridge")
     bridge.add_argument("--timeout", type=float, required=True)
 
+    commands.add_parser("bridge-start-required")
+
     planner = commands.add_parser("planner")
     planner.add_argument("--timeout", type=float, required=True)
 
@@ -318,10 +318,6 @@ def _parser() -> argparse.ArgumentParser:
     )
     endpoint.add_argument("--count", type=int, required=True)
     endpoint.add_argument("--timeout", type=float, required=True)
-
-    active = commands.add_parser("active-mode")
-    active.add_argument("--mode", required=True)
-    active.add_argument("--timeout", type=float, required=True)
 
     transform = commands.add_parser("tf")
     transform.add_argument("--parent", required=True)
@@ -351,6 +347,9 @@ def main(args=None) -> None:
             ready = node.wait_for_action(action_name, options.timeout)
         elif options.command == "bridge":
             ready = node.wait_for_bridge(options.timeout)
+        elif options.command == "bridge-start-required":
+            print("true" if node.bridge_start_required() else "false", flush=True)
+            ready = True
         elif options.command == "planner":
             ready = node.wait_for_planner(options.timeout)
         elif options.command == "endpoint":
@@ -360,8 +359,6 @@ def main(args=None) -> None:
                 options.count,
                 options.timeout,
             )
-        elif options.command == "active-mode":
-            ready = node.wait_for_active_mode(options.mode, options.timeout)
         elif options.command == "tf":
             ready = node.wait_for_transform(
                 options.parent,

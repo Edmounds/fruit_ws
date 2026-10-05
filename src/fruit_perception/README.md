@@ -4,42 +4,49 @@ ROS 2 Humble C++ fruit detection using OpenVINO 2024.6 on Intel `GPU.0`.
 The species detectors and selected ripeness classifiers are initialized once
 from the configured source-directory `model_root`.
 The system uses exclusively the depth camera (`camera`), with no side USB cameras.
-The default runtime mode is `OFF`; mission commands select when detection or QR scanning is active.
+Camera streams (Color, Aligned Depth, RGBD) remain continuously active and models
+run continuous inference on incoming frames. Target evidence accumulation and
+harvest target output are strictly gated by task observation windows.
 
 `camera` denotes the depth camera (currently Intel RealSense D435i). The driver node
-is `/camera` in the root namespace, with native topics and parameter services
-under `/camera/*`. Project configuration uses `camera`, `enable_camera`, and
-`camera_*` keys.
+is `/camera` in the root namespace, with native topics under `/camera/*`.
+Project configuration uses `camera`, `enable_camera`, and `camera_*` keys.
+The legacy `camera_mode_manager` node and hardware stream stop/start requests have been removed.
 
 The `camera` component and `FruitPerceptionNode` run in one
 `component_container` with intra-process communication enabled. This keeps raw
 images out of the inter-process DDS transport path. The generated standalone
 `fruit_perception_node` executable remains available for isolated debugging.
 
-## Runtime modes
+## Observation windows
 
-Publish one of the three uppercase values to `/fruit_mission/perception_mode`:
+Perception and QR decoding are governed by timestamped observation windows published
+on `/fruit_mission/observation_window` as JSON strings:
 
-- `OFF`: stop camera capture and inference.
-- `QR`: capture camera RGBD; only the QR planner consumes color frames.
-- `DETECT`: camera RGBD acquisition and fruit detection active.
-
-When testing from the ROS 2 CLI, quote every string value:
-
-```bash
-ros2 topic pub --once /fruit_mission/perception_mode std_msgs/msg/String "{data: 'OFF'}"
-ros2 topic pub --once /fruit_mission/perception_mode std_msgs/msg/String "{data: 'DETECT'}"
+```json
+{
+  "window_id": "<uuid-string>",
+  "valid": 1,
+  "start_sec": 1712345678,
+  "start_nanosec": 123456789,
+  "area": "A",
+  "purpose": "harvest",
+  "expected_type": "ripe"
+}
 ```
 
-Successful transitions are published on `/fruit_perception/active_mode` with
-Reliable, Transient Local QoS. Invalid commands and camera service failures do
-not change or republish the active mode. `QR <-> DETECT` transitions only switch
-inference consumers without restarting the camera streams.
+- `valid`: strictly integer `1` (open window) or `0` (close window).
+- `start_sec` / `start_nanosec`: image capture cutoff timestamp (ROS time). Frames with capture stamps earlier than this cutoff are ignored for evidence accumulation.
+- `area`: `"A"`, `"B"`, or `"C"`. Observation windows do not accept D.
+- `purpose`: `"harvest"` (accumulate pick evidence) or `"qr"` (QR scanning only).
+- `expected_type`: target filter string (e.g. `"ripe"` or species label; empty string disables filtering).
 
-The RealSense parameter services appear before the device initialization thread
-declares `enable_color` and `enable_depth`. At startup, the camera mode manager
-polls both values through `get_parameters` and only begins its `OFF`
-reset after both are declared as Boolean parameters.
+When no harvest window is open or a frame was captured before window start, the node
+continues to publish 2D/3D raw detections and annotated images for diagnostics, but
+`observation_window_id` is empty (`""`), `has_target` is false, and `targets_ready` is false.
+Target locking and candidate accumulation only occur within a valid harvest window.
+
+Closing a window (`valid: 0`) immediately revokes evidence accumulation and resets selectors.
 
 The camera node synchronizes color and depth, aligns depth to color, and publishes
 both aligned images in one RGBD message (`/camera/rgbd`).
@@ -86,16 +93,16 @@ The detector chooses its model and candidate selection from the current
   selecting and running the pepper ripeness classifier.
 - Area `D`: reuses B's detector, ripeness classification and multi-target selection.
 
-The external debug monitor expects image streams in both `QR` and `DETECT`;
+The external debug monitor expects active camera streams whenever perception is running;
 missing streams are reported as `STALE`, not `IDLE`.
 
 The decision stream on `/fruit_perception/decision` contains:
 
 - header matching aligned depth
+- `observation_window_id`: active harvest window ID, or empty string when outside window
 - detected fruit `types` in confidence order
 - all detections in confidence order (`detections`), including ROI and optional 3D points
-- `has_target` and `target_point` when single-target lock is acquired and on subsequent
-  matching frames (Areas A/C), or when targets are ready (Area B/D)
+- `has_target` and `target_point` when single-target lock is acquired within a valid window (Areas A/C), or when targets are ready (Area B/D)
 - B/D zone `targets_ready` and up to two aggregated `targets`
 - annotated RGB8 image on `/fruit_perception/camera/annotated_image`
 

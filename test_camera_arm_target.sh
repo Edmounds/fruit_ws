@@ -7,16 +7,13 @@ readonly RUNTIME_SETUP="${WORKSPACE_DIR}/scripts/setup_fruit_runtime.bash"
 
 readonly START_SCRIPT="${WORKSPACE_DIR}/start_fruit_perception.sh"
 readonly CLIENT_CONFIG="${WORKSPACE_DIR}/src/fruit_mission/config/script_ros_clients.yaml"
-readonly RUN_DIR="${WORKSPACE_DIR}/tmp/camera-arm-target"
-readonly LAUNCH_LOG="${RUN_DIR}/launch.log"
-readonly CLIENT_LOG="${RUN_DIR}/client.log"
+readonly LOGGING_HELPER="${WORKSPACE_DIR}/scripts/fruit_runtime_logging.bash"
 
 LAUNCH_PID=""
 PLANNER_PID=""
 STOPPING=0
-ZONE=""
+MODEL=""
 DIRECTION=""
-B_FRUIT=""
 DEBUG=0
 
 log()
@@ -27,12 +24,15 @@ log()
 usage()
 {
   cat <<'EOF'
-Usage: ./test_camera_arm_target.sh --zone A|B|C --left|--right [--apple|--pear] [--debug]
+Usage: ./test_camera_arm_target.sh --model A|B --left|--right [--debug]
 
-Select the current area and observation direction before running the existing
-Camera recognition and arm-target workflow. Zone B requires exactly one of
---apple or --pear. --debug prints every Camera detection message and every
-selected target point with their ROS timestamps.
+Test camera and arm coordination.
+Arm returns to the home position first, executes observation and grasp,
+then executes the corresponding store preset (left_store or right_store)
+to release the fruit, then explicitly executes home and waits for completion.
+  --model A|B     A: vegetable model, B: fruit model (supports --zone A|B as alias)
+  --left|--right  Arm side presets (left_look/left_store or right_look/right_store)
+  --debug         Print per-frame camera detections and coordinates
 EOF
 }
 
@@ -40,14 +40,13 @@ parse_arguments()
 {
   while (( $# > 0 )); do
     case "$1" in
-      --zone)
-        (( $# >= 2 )) || { log "ERROR: --zone requires A, B, or C"; return 2; }
-        [[ -z "${ZONE}" ]] || { log "ERROR: --zone may only be specified once"; return 2; }
+      --model|-m|--zone|-z)
+        (( $# >= 2 )) || { log "ERROR: $1 requires A or B"; return 2; }
+        [[ -z "${MODEL}" ]] || { log "ERROR: model may only be specified once"; return 2; }
         case "$2" in
-          A|a) ZONE=A ;;
-          B|b) ZONE=B ;;
-          C|c) ZONE=C ;;
-          *) log "ERROR: --zone must be A, B, or C"; return 2 ;;
+          A|a) MODEL=A ;;
+          B|b) MODEL=B ;;
+          *) log "ERROR: model must be A (vegetable) or B (fruit)"; return 2 ;;
         esac
         shift 2
         ;;
@@ -57,14 +56,6 @@ parse_arguments()
           return 2
         }
         DIRECTION=$1
-        shift
-        ;;
-      --apple|--pear)
-        [[ -z "${B_FRUIT}" ]] || {
-          log "ERROR: choose exactly one of --apple or --pear"
-          return 2
-        }
-        B_FRUIT=$1
         shift
         ;;
       --debug)
@@ -82,20 +73,11 @@ parse_arguments()
     esac
   done
 
-  [[ -n "${ZONE}" ]] || { log "ERROR: --zone A, --zone B, or --zone C is required"; return 2; }
+  [[ -n "${MODEL}" ]] || { log "ERROR: --model A (vegetable) or --model B (fruit) is required"; return 2; }
   [[ -n "${DIRECTION}" ]] || {
     log "ERROR: --left or --right is required"
     return 2
   }
-  if [[ "${ZONE}" == B ]]; then
-    [[ -n "${B_FRUIT}" ]] || {
-      log "ERROR: --zone B requires exactly one of --apple or --pear"
-      return 2
-    }
-  elif [[ -n "${B_FRUIT}" ]]; then
-    log "ERROR: --apple and --pear may only be used with --zone B"
-    return 2
-  fi
 }
 
 process_is_alive()
@@ -153,20 +135,17 @@ cleanup()
     kill -TERM "${job_pid}" 2>/dev/null || true
   done < <(jobs -pr)
 
-  if process_is_alive "${LAUNCH_PID}"; then
-    timeout --foreground 4s ros2 run fruit_mission camera_arm_target_client \
-      --mode-off --ros-args --params-file "${CLIENT_CONFIG}" \
-      >/dev/null 2>&1 || true
-  fi
   stop_process_group "${LAUNCH_PID}"
   stop_process_group "${PLANNER_PID}"
+  fruit_logging_close "${status}"
   exit "${status}"
 }
 
 show_failure_logs()
 {
-  printf '\nLast perception output:\n' >&2
-  tail -n 40 "${LAUNCH_LOG}" >&2 || true
+  if [[ -n "${FRUIT_RUNTIME_SESSION_DIR:-}" ]]; then
+    log "Detailed logs available at: ${FRUIT_RUNTIME_SESSION_DIR}/"
+  fi
 }
 
 check_prerequisites()
@@ -199,8 +178,8 @@ keep_running()
   while true; do
     if (( stack_failure_reported == 0 )) && ! process_is_alive "${LAUNCH_PID}"; then
       stack_failure_reported=1
-      log "ERROR: perception stack exited"
-      tail -n 40 "${LAUNCH_LOG}" >&2 || true
+      log "ERROR: perception stack exited unexpectedly"
+      show_failure_logs
     fi
     sleep 1
   done
@@ -215,24 +194,18 @@ main()
     exit 2
   }
 
-  mkdir -p "${RUN_DIR}"
-  : >"${LAUNCH_LOG}"
-  : >"${CLIENT_LOG}"
-
   # shellcheck source=/home/rc4/fruit_ws/setup_fruit_runtime.bash
   source "${RUNTIME_SETUP}"
+  source "${LOGGING_HELPER}"
   set -u
+  fruit_logging_init "camera_arm_target" "${DEBUG}"
   check_prerequisites || exit 1
   if (( DEBUG != 0 )); then
     client_args+=(--debug)
-    log "Per-frame Camera detection and target-point logging is enabled"
-  fi
-  if [[ -n "${B_FRUIT}" ]]; then
-    client_args+=("${B_FRUIT}")
   fi
   ros2 run fruit_mission camera_arm_target_client \
     --require-stack-absent --ros-args --params-file "${CLIENT_CONFIG}" || {
-    log "ERROR: perception or serial nodes are already running"
+    log "ERROR: perception, arm planner, or mission nodes are already running"
     exit 1
   }
 
@@ -240,18 +213,31 @@ main()
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
-  setsid "${START_SCRIPT}" serial_debug_raw_frame:=true \
-    > >(tee -a "${LAUNCH_LOG}") 2>&1 &
+  local perception_log="${FRUIT_RUNTIME_SESSION_DIR}/perception.log"
+  local planner_log="${FRUIT_RUNTIME_SESSION_DIR}/arm_planner.log"
+  local client_log="${FRUIT_RUNTIME_SESSION_DIR}/client.log"
+
+  local filter_script="${WORKSPACE_DIR}/scripts/runtime_log_filter.py"
+  local -a perception_cmd=("${START_SCRIPT}")
+  if (( DEBUG != 0 )); then
+    perception_cmd+=(--debug)
+  fi
+
+  setsid bash -c '
+    exec "$@" 2>&1 | /usr/bin/python3 "'"${filter_script}"'" --output-file "'"${perception_log}"'" --component "perception" '"$([[ ${DEBUG} -ne 0 ]] && echo "--debug")"'
+  ' runner "${perception_cmd[@]}" &
   LAUNCH_PID=$!
-  setsid ros2 launch fruit_arm_planner fruit_arm_planner.launch.py \
-    >>"${LAUNCH_LOG}" 2>&1 &
+
+  setsid bash -c '
+    exec ros2 launch fruit_arm_planner fruit_arm_planner.launch.py log_level:=debug 2>&1 | /usr/bin/python3 "'"${filter_script}"'" --output-file "'"${planner_log}"'" --component "arm_planner"
+  ' runner &
   PLANNER_PID=$!
 
   log "Waiting for the perception stack"
   if ros2 run fruit_mission camera_arm_target_client \
-    --zone "${ZONE}" "${DIRECTION}" "${client_args[@]}" \
+    --model "${MODEL}" "${DIRECTION}" "${client_args[@]}" \
     --ros-args --params-file "${CLIENT_CONFIG}" \
-    2>&1 | tee -a "${CLIENT_LOG}"; then
+    2>&1 | /usr/bin/python3 "${filter_script}" --output-file "${client_log}" --component "client" $( (( DEBUG != 0 )) && echo "--debug" ); then
     log "Task sequence completed"
   else
     log "Task sequence stopped at the failed step; processes remain available for inspection"

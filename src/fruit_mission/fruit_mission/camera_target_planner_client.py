@@ -5,18 +5,19 @@ from pathlib import Path
 import time
 
 from fruit_arm_interfaces.srv import ExecuteArmPreset, MoveArmCartesian, MoveArmJoints
+from fruit_arm_interfaces.msg import ArmTelemetry
 from fruit_hardware_interfaces.msg import ArmStatus
 from fruit_arm_planner.joint_transformer import JointTransformer
-from fruit_arm_planner.kinematics import RobotKinematics
-from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 import yaml
 
 from fruit_mission.camera_target_transform import (
+    apply_target_offset_mm,
     load_camera_extrinsic,
     transform_camera_to_end_effector_mm,
     transform_end_to_base_mm,
 )
+from fruit_mission.config import validate_target_offset
 
 
 DEFAULT_EXTRINSIC_CONFIG = (
@@ -27,20 +28,23 @@ DEFAULT_EXTRINSIC_CONFIG = (
 class CameraTargetPlannerClient:
     """Shared by the mission flow and standalone camera client, not by planner.
 
-    DETECT and the interval before submission must keep the same stationary
-    observation pose. Use fresh measured joints, not hardcoded observation angles.
+    Observation window and the interval before submission must keep the same stationary
+    observation pose. Use fresh measured TCP telemetry, not hardcoded observation angles.
     """
 
-    def __init__(self, node, config_path=DEFAULT_EXTRINSIC_CONFIG):
+    def __init__(
+        self,
+        node,
+        config_path=DEFAULT_EXTRINSIC_CONFIG,
+        target_offset_m=(0.0, 0.0, 0.0),
+    ):
         self.node = node
+        self.target_offset_m = validate_target_offset(target_offset_m, 'target_offset_m')
         with Path(config_path).open(encoding='utf-8') as stream:
             self.config = yaml.safe_load(stream)
         self.rotation, self.translation_mm = load_camera_extrinsic(config_path)
         with Path(self.config['arm_config_path']).open(encoding='utf-8') as stream:
             arm = yaml.safe_load(stream)['arm_planner_node']['ros__parameters']
-        if not all(math.isfinite(v) and v > 0 for v in arm['geometry'].values()):
-            raise ValueError('arm geometry must be finite and positive')
-        self.kinematics = RobotKinematics.from_geometry_dict(arm['geometry'])
         self.transformer = JointTransformer.from_config_dict(arm['joint_mapping'])
         self.status_max_age_sec = float(arm['planning']['status_max_age_sec'])
         self.gripper_dwell_ms = arm['planning']['default_dwell_ms']
@@ -48,12 +52,13 @@ class CameraTargetPlannerClient:
             raise ValueError('grasp default_dwell_ms must be a positive uint32')
         if not math.isfinite(self.status_max_age_sec) or self.status_max_age_sec <= 0:
             raise ValueError('status_max_age_sec must be finite and positive')
-        for name in ('endpoint_timeout_sec', 'service_timeout_sec'):
+        for name in ('endpoint_timeout_sec',):
             value = self.config[name]
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f'{name} must be numeric')
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f'{name} must be finite and positive')
+            self.config[name] = min(10.0, float(value))
         for name in ('camera_frame', 'joint_state_topic',
                      'move_cartesian_service', 'stop_service'):
             if not isinstance(self.config[name], str) or not self.config[name].strip():
@@ -69,14 +74,13 @@ class CameraTargetPlannerClient:
                                   or not isinstance(pitch, (int, float))
                                   or not math.isfinite(pitch)):
             raise ValueError('pitch_deg must be null or a finite number')
-        self._joints = None
+        self._pose = None
         self._latest_received_at = 0.0
         self._status = None
         self._status_received_at = 0.0
         self._motion_future = None
-        self._motion_deadline = 0.0
         self._joint_subscription = node.create_subscription(
-            JointState, self.config['joint_state_topic'], self._on_joint_state, 10)
+            ArmTelemetry, self.config['joint_state_topic'], self._on_joint_state, 10)
         self._move_client = node.create_client(
             MoveArmCartesian, self.config['move_cartesian_service'])
         self._preset_client = node.create_client(
@@ -85,41 +89,46 @@ class CameraTargetPlannerClient:
         self._stop_client = node.create_client(Trigger, self.config['stop_service'])
         self._status_subscription = node.create_subscription(
             ArmStatus, '/fruit_hardware_bridge/arm/status', self._on_status, 10)
-        self._motion_timer = node.create_timer(0.1, self._check_motion_timeout)
-        offset = arm['planning'].get('cartesian_offset_m', [0.0, 0.0, 0.0])
-        node.get_logger().info(
-            f'Mission camera transform ready; planner adds cartesian_offset_m={offset}')
+        node.get_logger().debug(
+            'Mission camera transform ready; using planner mapped joints and TCP telemetry')
 
     def _on_joint_state(self, message):
         self._latest_received_at = time.monotonic()
-        self._joints = None
+        self._pose = None
+        if message.header.frame_id != 'arm_base_link':
+            return
         names = [f'joint_{i}' for i in range(1, 5)]
-        if len(message.name) != 4 or set(message.name) != set(names):
+        hardware = message.hardware_joint_state
+        model = message.model_joint_state
+        for state in (hardware, model):
+            if (len(state.name) != 4 or set(state.name) != set(names)
+                    or len(state.position) != 4
+                    or not all(math.isfinite(q) for q in state.position)):
+                return
+        joints = tuple(hardware.position[hardware.name.index(name)] for name in names)
+        tcp = message.tcp_position
+        pose = (tcp.x, tcp.y, tcp.z, message.tcp_pitch_deg,
+                model.position[model.name.index('joint_1')])
+        if (not self.transformer.check_hardware_limits(joints)[0]
+                or not all(math.isfinite(v) for v in pose)):
             return
-        if len(message.position) != 4:
-            return
-        joints = tuple(message.position[message.name.index(name)] for name in names)
-        if not all(math.isfinite(q) for q in joints):
-            return
-        if not self.transformer.check_hardware_limits(joints)[0]:
-            return
-        self._joints = joints
+        self._pose = pose
 
     @staticmethod
     def _stamp_ns(message):
         return message.header.stamp.sec * 1_000_000_000 + message.header.stamp.nanosec
 
-    def _fresh_joints(self):
+    def _fresh_pose(self):
         if time.monotonic() - self._latest_received_at > self.status_max_age_sec:
             return None
-        return self._joints
+        return self._pose
 
     def _on_status(self, message):
         self._status = message
         self._status_received_at = time.monotonic()
 
     def is_stationary(self, max_joint_speed, received_after=0.0, require_idle=False):
-        """Use finite raw feedback, not JointState's substituted velocities."""
+        """Use fresh finite raw hardware feedback for measured standstill."""
         status = self._status
         if (status is None
                 or time.monotonic() - self._status_received_at > self.status_max_age_sec
@@ -142,29 +151,33 @@ class CameraTargetPlannerClient:
         if (target.header.frame_id != self.config['camera_frame'] or stamp_ns <= 0
                 or not all(math.isfinite(v) for v in point_m) or point_m[2] <= 0):
             raise ValueError('Invalid camera target frame, stamp or depth')
-        hardware_joints = self._fresh_joints()
-        if hardware_joints is None:
-            raise ValueError('No fresh valid measured joint feedback')
-        algo = self.transformer.hardware_to_algo(hardware_joints)
-        end_x, end_y, end_z, pitch = self.kinematics.forward_kinematics(
-            *algo)['end_effector']
+        pose = self._fresh_pose()
+        if pose is None:
+            raise ValueError('No fresh valid measured TCP telemetry')
+        end_x, end_y, end_z, pitch_deg, yaw = pose
+        pitch = math.radians(pitch_deg)
         try:
             end_mm = transform_camera_to_end_effector_mm(
                 tuple(v * 1000.0 for v in point_m), self.rotation, self.translation_mm)
             base_mm = transform_end_to_base_mm(
-                end_mm, (end_x * 1000.0, end_y * 1000.0, end_z * 1000.0), algo[0], pitch)
+                end_mm, (end_x * 1000.0, end_y * 1000.0, end_z * 1000.0), yaw, pitch)
+            adjusted_base_mm = apply_target_offset_mm(base_mm, self.target_offset_m)
             request = MoveArmCartesian.Request()
-            request.x, request.y, request.z = (v / 1000.0 for v in base_mm)
+            request.x, request.y, request.z = (v / 1000.0 for v in adjusted_base_mm)
             desired_pitch = self.config['motion']['pitch_deg']
             request.pitch_deg = float(
-                math.degrees(pitch) if desired_pitch is None else desired_pitch)
+                pitch_deg if desired_pitch is None else desired_pitch)
             request.duration_ms = self.config['motion']['duration_ms']
             request.gripper_action = 2  # CLOSE at the endpoint.
             request.linear_path = self.config['motion']['linear_path']
         except (ValueError, OverflowError, AssertionError) as error:
             raise ValueError(f'Invalid transformed target: {error}') from error
-        self.node.get_logger().info(
-            f'Camera(m)={point_m} -> end(mm)={end_mm} -> arm base(mm)={base_mm}; '
+        req_xyz = [round(request.x, 4), round(request.y, 4), round(request.z, 4)]
+        self.node.get_logger().debug(
+            f'Camera(m)={point_m} -> end(mm)={end_mm} -> arm base(mm)={base_mm} '
+            f'+ offset(m)={self.target_offset_m} -> req(m)={req_xyz}; '
+            f'tcp(m)={[round(end_x, 4), round(end_y, 4), round(end_z, 4)]}, '
+            f'obs_pitch={pitch_deg:.2f}deg, obs_yaw={math.degrees(yaw):.2f}deg, '
             f'move_cartesian pitch={request.pitch_deg:.3f}deg, gripper=CLOSE')
         return request
 
@@ -178,18 +191,28 @@ class CameraTargetPlannerClient:
             return completed, reason
         # Cartesian API has no dwell field. Reuse planner PTP at measured raw
         # joints with HOLD instead of generating a trajectory or sleeping here.
-        if not wait_until(
-                lambda: self.is_stationary(max_joint_speed), self.config['endpoint_timeout_sec']):
-            return False, 'arm_pose_unavailable'
+        return self._gripper_at_measured_pose(0, wait_until, max_joint_speed)
+
+    def open_gripper(self, wait_until, max_joint_speed):
+        """OPEN at measured raw joints, then HOLD for the configured gripper dwell."""
+        completed, reason = self._gripper_at_measured_pose(1, wait_until, max_joint_speed)
+        if not completed:
+            return completed, reason
+        return self._gripper_at_measured_pose(0, wait_until, max_joint_speed)
+
+    def _gripper_at_measured_pose(self, action, wait_until, max_joint_speed):
         if not self._joints_client.wait_for_service(
                 timeout_sec=self.config['endpoint_timeout_sec']):
             return False, 'arm_endpoints_not_ready'
+        if not wait_until(
+                lambda: self.is_stationary(max_joint_speed), self.config['endpoint_timeout_sec']):
+            return False, 'arm_pose_unavailable'
         status = self._status
         dwell = MoveArmJoints.Request()
         dwell.joints_deg = [math.degrees(q) for q in (
             status.joint_1, status.joint_2, status.joint_3, status.joint_4)]
         dwell.duration_ms = self.gripper_dwell_ms
-        dwell.gripper_action = 0
+        dwell.gripper_action = action
         return self._call_motion(self._joints_client, dwell, wait_until)
 
     def start_preset(self, name):
@@ -201,7 +224,7 @@ class CameraTargetPlannerClient:
             return None
         request = ExecuteArmPreset.Request()
         request.preset_name = name
-        self.node.get_logger().info(f'Executing arm preset: {name}')
+        self.node.get_logger().debug(f'Executing arm preset: {name}')
         return self._start_motion(self._preset_client, request)
 
     def execute_preset(self, name, wait_until):
@@ -219,19 +242,10 @@ class CameraTargetPlannerClient:
             self.node.get_logger().warning(f'Cannot submit arm motion: {error}')
             return None
         self._motion_future = future
-        self._motion_deadline = time.monotonic() + self.config['service_timeout_sec']
         return future
 
-    def _check_motion_timeout(self):
-        future = self._motion_future
-        if (future is not None and not future.done()
-                and time.monotonic() >= self._motion_deadline):
-            future.cancel()
-            self._motion_future = None
-            self.request_stop()
-
     def request_stop(self):
-        """Nonblocking STOP also works from the timeout timer; it is not standstill."""
+        """Cancel the pending request and submit STOP; it is not standstill."""
         if self._motion_future is not None and not self._motion_future.done():
             self._motion_future.cancel()
             self._motion_future = None
@@ -255,13 +269,12 @@ class CameraTargetPlannerClient:
         if future is None:
             return False, 'arm_endpoints_not_ready'
         try:
-            if not wait_until(lambda: future.done() or future.cancelled(),
-                              self.config['service_timeout_sec']):
+            if not wait_until(lambda: future.done() or future.cancelled()):
                 future.cancel()
                 self.request_stop()
-                return False, 'arm_callback_timeout'
+                return False, 'arm_callback_failed'
             if future.cancelled():
-                return False, 'arm_callback_timeout'
+                return False, 'arm_callback_failed'
             response = future.result()
             if response is None:
                 raise RuntimeError('planner returned no response')
@@ -269,6 +282,10 @@ class CameraTargetPlannerClient:
             self.node.get_logger().warning(f'Planner request failed: {error}')
             self.request_stop()
             return False, 'arm_callback_failed'
-        self.node.get_logger().info(
-            f'Planner trajectory_id={response.trajectory_id}: {response.message}')
+        if response.success:
+            self.node.get_logger().info(
+                f'Planner trajectory_id={response.trajectory_id}: {response.message}')
+        else:
+            self.node.get_logger().warning(
+                f'Planner trajectory_id={response.trajectory_id} failed: {response.message}')
         return bool(response.success), 'completed' if response.success else 'arm_callback_failed'

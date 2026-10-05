@@ -72,7 +72,7 @@ def generate_launch_description():
     declare_serial_debug_raw_frame = DeclareLaunchArgument(
         'serial_debug_raw_frame',
         default_value='false',
-        description='Print auto_serial_bridge raw TX/RX frames if true',
+        description='Enable auto_serial_bridge debug log if true (raw frame dump is deprecated and disabled)',
     )
     declare_start_serial_bridge = DeclareLaunchArgument(
         'start_serial_bridge',
@@ -133,15 +133,6 @@ def generate_launch_description():
         ],
     )
 
-    camera_mode_manager = Node(
-        package='fruit_perception',
-        executable='camera_mode_manager',
-        name='camera_mode_manager',
-        output='screen',
-        emulate_tty=True,
-        parameters=[common_config, {'use_sim_time': use_sim_time}],
-        arguments=['--ros-args', '--log-level', 'warn'],
-    )
     qr_planner = Node(
         package='fruit_qr_planner',
         executable='fruit_qr_planner_node',
@@ -184,7 +175,6 @@ def generate_launch_description():
         declare_performance_hint,
         declare_perception_log_level,
         container,
-        camera_mode_manager,
         qr_planner,
         GroupAction(
             actions=[serial_bridge, serial_bridge_debug],

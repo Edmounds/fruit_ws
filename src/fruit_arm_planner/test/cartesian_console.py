@@ -11,7 +11,30 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
+
+# Record through a PTY so readline, curses and native stderr keep working.
+if __name__ == '__main__':
+    session_log = os.environ.pop('_FRUIT_ARM_CONSOLE_SESSION_LOG', None)
+    if session_log is None:
+        log_dir = Path(__file__).resolve().parent / 'log'
+        log_path = log_dir / datetime.now().strftime('%Y-%m-%d_%H-%M-%S_%f.log')
+        try:
+            log_dir.mkdir(exist_ok=True)
+            with log_path.open('x', encoding='utf-8'):
+                pass
+            env = os.environ.copy()
+            env['_FRUIT_ARM_CONSOLE_SESSION_LOG'] = str(log_path)
+            command = shlex.join([sys.executable, *sys.argv])
+            os.execve('/usr/bin/script', [
+                'script', '--quiet', '--return', '--flush',
+                '--command', command, str(log_path),
+            ], env)
+        except OSError as exc:
+            print(f'Cannot record console session: {exc}', file=sys.stderr)
+            raise SystemExit(1) from exc
+    print(f'Console session log: {session_log}', flush=True)
 
 import yaml
 
@@ -23,9 +46,9 @@ from rclpy.signals import SignalHandlerOptions
 from std_srvs.srv import Trigger
 
 from fruit_arm_interfaces.srv import ExecuteArmPreset, MoveArmCartesian, MoveArmJoints
+from fruit_arm_interfaces.msg import ArmTelemetry
 from fruit_arm_planner.arm_planner_node import validate_presets
 from fruit_arm_planner.joint_transformer import JointTransformer
-from fruit_arm_planner.kinematics import RobotKinematics
 from fruit_hardware_interfaces.msg import ArmControlMode, ArmStatus, TrajectoryHeader, TrajectoryPoint
 
 
@@ -48,10 +71,11 @@ HELP = (
     'move X Y Z PITCH_DEG [DURATION_MS] [ptp|lin] [hold|open|close]\n'
     'joints Q1 Q2 Q3 Q4 [DURATION_MS] [hold|open|close]\n'
     'motors Q1 Q2 Q3 Q4 [DURATION_MS] [hold|open|close]  Raw hardware degrees\n'
-    'preset NAME   Execute a configured preset (zero, home, retract, pick_sequence)\n'
+    'preset NAME   Execute a configured preset '
+    '(zero, home, left_look, right_look, left_store, right_store, pick_sequence)\n'
     'jog       Keyboard jog/teach: arrows=XY, a/z=Z, s/x=pitch, c/o/h=gripper, Space=save\n'
     'reload    Reload all presets in the running planner (only when not moving)\n'
-    'status    Show the latest controller status and measured joint angles\n'
+    'status    Show raw motor angles, mapped model angles and real TCP xyz/pitch\n'
     'stop      Request a controlled stop\n'
     'estop     Request an emergency stop\n'
     'level [info|debug|trace]  Show or change console log detail\n'
@@ -74,7 +98,6 @@ class ArmConsole(Node):
         self.log_level = log_level
         self.config_path = config_path
         self.transformer = JointTransformer.from_config_dict(params['joint_mapping'])
-        self.kinematics = RobotKinematics.from_geometry_dict(params['geometry'])
         self.planning = params['planning']
         self._output_lock = threading.Lock()
         self._terminal_ui = False
@@ -85,7 +108,8 @@ class ArmConsole(Node):
         self.stop_client = self.create_client(Trigger, '/arm_planner_node/stop')
         self.estop_client = self.create_client(Trigger, '/arm_planner_node/emergency_stop')
         self.reload_client = self.create_client(Trigger, '/arm_planner_node/reload_presets')
-        self.create_subscription(ArmStatus, '/fruit_hardware_bridge/arm/status', self._on_status, 10)
+        self.create_subscription(
+            ArmTelemetry, '/arm_planner_node/joint_states', self._on_status, 10)
         tx_qos = QoSProfile(depth=512, reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(
             TrajectoryHeader, '/fruit_hardware_bridge/arm/trajectory_header',
@@ -127,14 +151,18 @@ class ArmConsole(Node):
             return  # The curses screen displays telemetry without overwriting operation results.
         if self.log_level == 'info' and not changed:
             return
-        joints_deg = ', '.join(
-            f'{math.degrees(q):.1f}' for q in
-            (msg.joint_1, msg.joint_2, msg.joint_3, msg.joint_4)
-        )
+        hardware_deg = ', '.join(
+            f'{math.degrees(q):.1f}' for q in msg.hardware_joint_state.position)
+        model_deg = ', '.join(
+            f'{math.degrees(q):.1f}' for q in msg.model_joint_state.position)
+        tcp = msg.tcp_position
         self._emit(
             'RX STATUS',
             f'id={msg.trajectory_id} state={STATUS_NAMES.get(msg.task_status, msg.task_status)} '
-            f'progress={msg.progress:.1f}% joints_deg=[{joints_deg}] '
+            f'progress={msg.progress:.1f}% motors_deg=[{hardware_deg}] '
+            f'model_deg=[{model_deg}] '
+            f'tcp_m=[{tcp.x:.4f}, {tcp.y:.4f}, {tcp.z:.4f}] '
+            f'pitch_deg={msg.tcp_pitch_deg:.2f} '
             f'gripper={msg.gripper_state} error={msg.error_code}',
         )
 
@@ -172,18 +200,25 @@ class ArmConsole(Node):
             msg = self._status
             age = time.monotonic() - self._status_at
         if msg is None:
-            print('No arm status received. Check the serial bridge and lower controller.')
+            print('No arm telemetry received. Check planner, serial bridge and lower controller.')
             return
-        joints = (msg.joint_1, msg.joint_2, msg.joint_3, msg.joint_4)
+        joints = msg.hardware_joint_state.position
         angles = ', '.join(f'{math.degrees(q):.1f}' for q in joints)
-        q_algo = self.transformer.hardware_to_algo(joints)
+        q_algo = msg.model_joint_state.position
+        if len(q_algo) != 4:
+            print('Invalid model joint telemetry: expected four angles')
+            return
         link_angles = (q_algo[0], q_algo[1] - math.pi / 2,
                        q_algo[1] + q_algo[2], q_algo[1] + q_algo[2] + q_algo[3])
         print(f'Status: {STATUS_NAMES.get(msg.task_status, msg.task_status)}, '
               f'trajectory={msg.trajectory_id}, progress={msg.progress:.2f}, '
               f'error={msg.error_code}, age={age:.2f}s')
         print(f'Motors (deg): [{angles}], gripper={msg.gripper_state}')
+        print('Model joints (deg): [' + ', '.join(f'{math.degrees(q):.1f}' for q in q_algo) + ']')
         print('Link angles (deg): [' + ', '.join(f'{math.degrees(q):.1f}' for q in link_angles) + ']')
+        tcp = msg.tcp_position
+        print(f'TCP (m): [{tcp.x:.4f}, {tcp.y:.4f}, {tcp.z:.4f}], '
+              f'pitch={msg.tcp_pitch_deg:.2f} deg')
 
     def move(self, args):
         if not 4 <= len(args) <= 7:
@@ -254,7 +289,8 @@ class ArmConsole(Node):
 
     def preset(self, args):
         if len(args) != 1 or not args[0].strip():
-            print('Usage: preset NAME (zero, home, retract, pick_sequence)')
+            print('Usage: preset NAME\n'
+                  '  (e.g. zero, home, left_look, right_look, left_store, right_store)')
             return
         request = ExecuteArmPreset.Request()
         request.preset_name = args[0]
@@ -327,15 +363,24 @@ class ArmConsole(Node):
             age = time.monotonic() - self._status_at
         if status is None or age > float(self.planning['status_max_age_sec']):
             raise ValueError('Fresh four-joint feedback is required')
-        joints = (status.joint_1, status.joint_2, status.joint_3, status.joint_4)
-        if not all(math.isfinite(q) for q in joints):
-            raise ValueError('Invalid joint feedback (NaN/Inf)')
+        if status.header.frame_id != 'arm_base_link':
+            raise ValueError('TCP telemetry must be in arm_base_link')
+        hardware = status.hardware_joint_state
+        model = status.model_joint_state
+        names = ['joint_1', 'joint_2', 'joint_3', 'joint_4']
+        if (hardware.name != names or model.name != names
+                or len(hardware.position) != 4 or len(model.position) != 4):
+            raise ValueError('Invalid telemetry joint names or angle count')
+        joints = tuple(hardware.position)
+        algo = tuple(model.position)
+        tcp = status.tcp_position
+        pose = [tcp.x, tcp.y, tcp.z, status.tcp_pitch_deg]
+        if not all(math.isfinite(v) for v in (*joints, *algo, *pose)):
+            raise ValueError('Invalid joint/TCP telemetry (NaN/Inf)')
         ok, message = self.transformer.check_hardware_limits(joints)
         if not ok:
             raise ValueError(message)
-        algo = self.transformer.hardware_to_algo(joints)
-        x, y, z, pitch = self.kinematics.forward_kinematics(*algo)['end_effector']
-        return status, joints, algo, [x, y, z, math.degrees(pitch)]
+        return status, joints, algo, pose
 
     def save_point(self, name, snapshot, gripper_action=0):
         """Insert only the new waypoint/preset, preserving the rest of the YAML text."""
@@ -501,8 +546,7 @@ class ArmConsole(Node):
                                                  f'In-place gripper {gripper_names[active_gripper]}')
                 else:
                     request = MoveArmCartesian.Request()
-                    request.x, request.y, request.z = [
-                        value - delta for value, delta in zip(target[:3], self.planning['cartesian_offset_m'])]
+                    request.x, request.y, request.z = target[:3]
                     request.pitch_deg = target[3]
                     request.duration_ms = 0  # The running planner's configured default.
                     request.gripper_action = 0

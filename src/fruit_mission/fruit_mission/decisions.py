@@ -30,7 +30,6 @@ class PickExecutionResult:
     success: bool
     reason_code: str
     matched_type: Optional[str] = None
-    safe_to_continue: bool = True
 
 
 @dataclass(frozen=True)
@@ -121,6 +120,11 @@ def decide_b_tree_targets(
     return BTreeDecision("matched", observed_name, target_index, score, tuple(ranked[:2]))
 
 
+def format_b_tree_name(position_id: int) -> str:
+    """Return a spoken B-zone tree label."""
+    return f"第{_chinese_index(position_id)}棵树"
+
+
 def format_position_name(position_id: int) -> str:
     """Return a spoken C-zone position name."""
     return f"{_chinese_index(position_id)}号位置"
@@ -147,24 +151,30 @@ def ordered_c_tasks(c_plan: Mapping[str, object]) -> List[Mapping[str, object]]:
 
 
 def format_b_announcement(b_plan: Mapping[str, object]) -> str:
-    """Build a compact spoken summary for the B plan."""
+    """Build a spoken summary for the B plan."""
     parts = [
-        f"{int(task['position_id'])}{task['target']}"
+        f"第{_chinese_index(int(task['position_id']))}棵树{task['target']}"
         for task in b_plan.get("tasks", [])
     ]
-    return "，".join(parts)
+    return "；".join(parts)
 
 
 def format_c_announcement(c_plan: Mapping[str, object]) -> str:
-    """Build a compact spoken summary for the C plan."""
+    """Build a spoken summary for the C plan."""
     parts = [
         (
-            f"{int(task['sequence'])}，"
-            f"{int(task['position_id'])}{task['target']}"
+            f"第{_chinese_index(int(task['sequence']))}项，"
+            f"{format_position_name(int(task['position_id']))}，"
+            f"{task['target']}"
         )
         for task in c_plan.get("tasks", [])
     ]
-    return "，".join(parts)
+    return "；".join(parts)
+
+
+def format_produce_count(produce: str, count: int) -> str:
+    """Return a spoken summary phrase for one produce count, e.g. '南瓜两个'."""
+    return f"{produce}{_chinese_count(count)}"
 
 
 def _other_side(side: str) -> str:
@@ -187,3 +197,21 @@ def _chinese_index(value: int) -> str:
         12: "十二",
     }
     return names.get(value, str(value))
+
+
+def _chinese_count(value: int) -> str:
+    if value == 1:
+        return "一个"
+    if value == 2:
+        return "两个"
+    if 3 <= value <= 10:
+        return f"{_chinese_index(value)}个"
+    if 11 <= value <= 19:
+        return f"十{_chinese_index(value - 10)}个"
+    if 20 <= value <= 29:
+        unit = "" if value == 20 else _chinese_index(value - 20)
+        return f"二十{unit}个"
+    if 30 <= value <= 32:
+        unit = "" if value == 30 else _chinese_index(value - 30)
+        return f"三十{unit}个"
+    return f"{value}个"

@@ -15,10 +15,11 @@ DESKTOP_XAUTHORITY="$DESKTOP_RUNTIME_DIR/gdm/Xauthority"
 pids=()
 debug_pids=()
 stopped=0
+DEBUG=0
 
 usage() {
   cat <<'EOF'
-Usage: ./start_navigation.sh
+Usage: ./start_navigation.sh [--debug]
 
 Start Point-LIO navigation, serial bridge, and RViz in the startup-relative
 odom frame.
@@ -27,6 +28,10 @@ EOF
 
 while (($# > 0)); do
   case "$1" in
+    --debug)
+      DEBUG=1
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -59,6 +64,7 @@ stop_children() {
   done
   ((${#pids[@]} == 0)) || wait "${pids[@]}" 2>/dev/null || true
   ((${#debug_pids[@]} == 0)) || wait "${debug_pids[@]}" 2>/dev/null || true
+  fruit_logging_close "${status:-0}"
   pids=()
   debug_pids=()
 }
@@ -66,15 +72,31 @@ stop_children() {
 start_process() {
   local name=$1
   shift
+  local safe_name="${name// /_}"
+  local log_file="${FRUIT_RUNTIME_SESSION_DIR}/${safe_name}.log"
+  local filter_script="${WORKSPACE}/scripts/runtime_log_filter.py"
 
   printf '[navigation] starting %s\n' "$name"
-  setsid "$@" &
+  setsid env "DEBUG_OPT=$DEBUG" bash -c '
+    set -o pipefail
+    filter_args=(--output-file "'"${log_file}"'" --component "'"${safe_name}"'")
+    [[ "$DEBUG_OPT" == "1" ]] && filter_args+=(--debug)
+    exec "$@" 2>&1 | /usr/bin/python3 "'"${filter_script}"'" "${filter_args[@]}"
+  ' runner "$@" &
   pids+=("$!")
 }
 
 start_debug_monitor() {
+  local log_file="${FRUIT_RUNTIME_SESSION_DIR}/monitor.log"
+  local filter_script="${WORKSPACE}/scripts/runtime_log_filter.py"
+
   printf '[navigation] starting robot debug monitor\n'
-  setsid "$MONITOR_SCRIPT" navigation &
+  setsid env "DEBUG_OPT=$DEBUG" bash -c '
+    set -o pipefail
+    filter_args=(--output-file "'"${log_file}"'" --component "monitor")
+    [[ "$DEBUG_OPT" == "1" ]] && filter_args+=(--debug)
+    exec "$@" 2>&1 | /usr/bin/python3 "'"${filter_script}"'" "${filter_args[@]}"
+  ' runner "$MONITOR_SCRIPT" navigation &
   debug_pids+=("$!")
 }
 
@@ -102,7 +124,10 @@ wait_for_odom_tf() {
 trap stop_children INT TERM EXIT
 
 source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
+source "$WORKSPACE/scripts/fruit_runtime_logging.bash"
 set -u
+
+fruit_logging_init "navigation" "${DEBUG}"
 
 required_files=(
   "$NAV_LAUNCH" \
@@ -124,8 +149,14 @@ if [[ ! -r "$DESKTOP_XAUTHORITY" ]]; then
   exit 1
 fi
 
-start_process "serial bridge" \
-  ros2 launch "$HARDWARE_LAUNCH"
+START_SERIAL_BRIDGE=$(ros2 run fruit_mission stack_readiness_client bridge-start-required \
+  --ros-args --params-file "$SCRIPT_CLIENT_CONFIG")
+if [[ "$START_SERIAL_BRIDGE" == true ]]; then
+  start_process "serial bridge" \
+    ros2 launch "$HARDWARE_LAUNCH"
+else
+  printf '[navigation] reusing existing serial bridge; it will not be stopped on exit\n'
+fi
 
 start_process "axis navigation and odometry" \
   ros2 launch "$NAV_LAUNCH"
@@ -142,7 +173,7 @@ start_process "rviz2" \
     "DBUS_SESSION_BUS_ADDRESS=unix:path=$DESKTOP_RUNTIME_DIR/bus" \
     rviz2 -d "$RVIZ_CONFIG" -f "odom"
 
-printf '[navigation] axis odometry navigation, serial bridge, and RViz started (frame=odom). Press Ctrl-C to stop them.\n'
+printf '[navigation] axis odometry navigation, serial bridge, and RViz ready (frame=odom). Press Ctrl-C to stop launched processes.\n'
 
 if wait -n "${pids[@]}"; then
   status=0

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenCV GUI camera detector smoke-test tool."""
+"""OpenCV GUI camera detector and 3D depth inspection tool for single RealSense camera."""
 
 from __future__ import annotations
 
@@ -7,14 +7,15 @@ import argparse
 import ast
 import math
 import os
+import shutil
 import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any
-from urllib.parse import unquote, urlparse
+from typing import Any, Callable
 
 
 DEFAULT_DISPLAY = ':0'
@@ -48,22 +49,29 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 import openvino as ov  # noqa: E402
 import rclpy  # noqa: E402
+import tkinter as tk  # noqa: E402
 import yaml  # noqa: E402
 from cv_bridge import CvBridge  # noqa: E402
-from openvino.preprocess import PrePostProcessor  # noqa: E402
-from rclpy.node import Node  # noqa: E402
-from rclpy.qos import QoSProfile, ReliabilityPolicy  # noqa: E402
-from sensor_msgs.msg import Image  # noqa: E402
-
-from camera_control_gui import (  # noqa: E402
-    CameraControlPanel,
-    CameraControlService,
-    save_camera_controls,
+from fruit_arm_interfaces.msg import ArmTelemetry  # noqa: E402
+from fruit_arm_planner.joint_transformer import JointTransformer  # noqa: E402
+from fruit_mission.camera_target_transform import (  # noqa: E402
+    load_camera_extrinsic,
+    transform_camera_to_end_effector_mm,
+    transform_end_to_base_mm,
 )
+from openvino.preprocess import PrePostProcessor  # noqa: E402
+from rcl_interfaces.msg import ParameterType  # noqa: E402
+from rcl_interfaces.srv import DescribeParameters, GetParameters, SetParameters  # noqa: E402
+from rclpy.node import Node  # noqa: E402
+from rclpy.parameter import Parameter  # noqa: E402
+from rclpy.qos import QoSProfile, ReliabilityPolicy  # noqa: E402
+from sensor_msgs.msg import CameraInfo, Image  # noqa: E402
+from tkinter import ttk  # noqa: E402
 
 
 WORKSPACE = Path('/home/rc4/fruit_ws')
 CONFIG_PATH = WORKSPACE / 'src/fruit_perception/config/fruit_perception.yaml'
+EXTRINSIC_CONFIG_PATH = WORKSPACE / 'src/fruit_mission/config/camera_extrinsic.yaml'
 TMP_DIR = WORKSPACE / 'tmp'
 MODEL_INPUT_SIZE = 640
 PAD_COLOR = 114
@@ -92,58 +100,128 @@ class LetterboxTransform:
 class CameraSelection:
     name: str
     kind: str
-    topic: str
+    color_topic: str
+    depth_topic: str
+    info_topic: str
     parameters: dict[str, Any]
 
 
 class FrameSubscriber(Node):
-    def __init__(self, topic: str) -> None:
+    """Subscribes to color image, aligned depth image, camera intrinsics, and arm telemetry."""
+
+    def __init__(
+        self,
+        color_topic: str,
+        depth_topic: str,
+        info_topic: str,
+        joint_state_topic: str = '/arm_planner_node/joint_states',
+        arm_config_path: Path | str | None = None,
+    ) -> None:
         super().__init__('test_camera_detector')
         self._bridge = CvBridge()
-        self._latest_frame: np.ndarray | None = None
-        self._latest_encoding = ''
-        self._subscriptions = [
-            self.create_subscription(
-                Image,
-                topic,
-                self._on_image,
-                QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE),
-            ),
-            self.create_subscription(
-                Image,
-                topic,
-                self._on_image,
-                QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
-            ),
-        ]
+        self._latest_color: np.ndarray | None = None
+        self._latest_depth: np.ndarray | None = None
+        self.camera_info: CameraInfo | None = None
 
-    def _on_image(self, message: Image) -> None:
+        self._tcp_pose: tuple[float, float, float, float, float] | None = None
+        self._tcp_received_at = 0.0
+        self.status_max_age_sec = 0.25
+        self.transformer: JointTransformer | None = None
+        self.joint_state_topic = joint_state_topic
+        self.telemetry_conflict = False
+
+        if arm_config_path is not None and Path(arm_config_path).is_file():
+            try:
+                with Path(arm_config_path).open(encoding='utf-8') as stream:
+                    arm_params = yaml.safe_load(stream)['arm_planner_node']['ros__parameters']
+                self.transformer = JointTransformer.from_config_dict(arm_params['joint_mapping'])
+                self.status_max_age_sec = float(arm_params['planning']['status_max_age_sec'])
+            except Exception as error:  # noqa: BLE001
+                self.get_logger().warning(f'Failed to load arm configuration: {error}')
+
+        qos_best_effort = QoSProfile(depth=2, reliability=ReliabilityPolicy.BEST_EFFORT)
+        qos_reliable = QoSProfile(depth=2, reliability=ReliabilityPolicy.RELIABLE)
+        qos_telemetry = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+
+        self.create_subscription(Image, color_topic, self._on_color, qos_best_effort)
+        self.create_subscription(Image, depth_topic, self._on_depth, qos_best_effort)
+        self.create_subscription(CameraInfo, info_topic, self._on_info, qos_reliable)
+        self.create_subscription(
+            ArmTelemetry, joint_state_topic, self._on_telemetry, qos_telemetry,
+        )
+
+    def set_telemetry_conflict(self, conflict: bool) -> None:
+        self.telemetry_conflict = conflict
+        if conflict:
+            self._tcp_pose = None
+
+    def _on_color(self, message: Image) -> None:
         try:
-            frame = self._bridge.imgmsg_to_cv2(
-                message,
-                desired_encoding='rgb8',
-            )
+            frame = self._bridge.imgmsg_to_cv2(message, desired_encoding='rgb8')
+            self._latest_color = np.ascontiguousarray(frame)
         except Exception as error:  # noqa: BLE001
-            self.get_logger().error(f'Frame conversion failed: {error}')
-            return
-        self._latest_frame = np.ascontiguousarray(frame)
-        self._latest_encoding = message.encoding
+            self.get_logger().error(f'Color frame conversion failed: {error}')
 
-    def take_latest_frame(self) -> np.ndarray | None:
-        frame = self._latest_frame
-        self._latest_frame = None
-        return frame
+    def _on_depth(self, message: Image) -> None:
+        try:
+            depth = self._bridge.imgmsg_to_cv2(message, desired_encoding='passthrough')
+            self._latest_depth = np.ascontiguousarray(depth)
+        except Exception as error:  # noqa: BLE001
+            self.get_logger().error(f'Depth frame conversion failed: {error}')
+
+    def _on_info(self, message: CameraInfo) -> None:
+        self.camera_info = message
+
+    def _on_telemetry(self, message: ArmTelemetry) -> None:
+        if self.telemetry_conflict:
+            return
+        received_at = time.monotonic()
+        if message.header.frame_id != 'arm_base_link':
+            return
+        names = [f'joint_{i}' for i in range(1, 5)]
+        hardware = message.hardware_joint_state
+        model = message.model_joint_state
+        for state in (hardware, model):
+            if (len(state.name) != 4 or set(state.name) != set(names)
+                    or len(state.position) != 4
+                    or not all(math.isfinite(q) for q in state.position)):
+                return
+        joints = tuple(hardware.position[hardware.name.index(name)] for name in names)
+        tcp = message.tcp_position
+        if 'joint_1' not in model.name:
+            return
+        yaw = float(model.position[model.name.index('joint_1')])
+        pose = (float(tcp.x), float(tcp.y), float(tcp.z), float(message.tcp_pitch_deg), yaw)
+        if (self.transformer is not None and not self.transformer.check_hardware_limits(joints)[0]
+                or not all(math.isfinite(v) for v in pose)):
+            return
+        self._tcp_pose = pose
+        self._tcp_received_at = received_at
+
+    def get_fresh_tcp_pose(self) -> tuple[float, float, float, float, float] | None:
+        if self.telemetry_conflict or self._tcp_pose is None:
+            return None
+        if time.monotonic() - self._tcp_received_at > self.status_max_age_sec:
+            return None
+        return self._tcp_pose
+
+    def take_latest(self) -> tuple[np.ndarray | None, np.ndarray | None]:
+        color = self._latest_color
+        depth = self._latest_depth
+        self._latest_color = None
+        return color, depth
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='Open the camera and show OpenVINO detections.',
+        description='RealSense single camera object detection and 3D depth debug viewer.',
     )
     parser.add_argument(
         '--model',
-        required=True,
-        choices=('A', 'B', 'C', 'D'),
-        help='area detector: A/C vegetables, B/D fruits (species only)',
+        '-m',
+        default='A',
+        choices=('A', 'B', 'C', 'D', 'a', 'b', 'c', 'd'),
+        help='area detector: A/C vegetables, B/D fruits (default: A)',
     )
     parser.add_argument(
         '--conf',
@@ -164,6 +242,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_DISPLAY,
         help=f'desktop display for the GUI window (default: {DEFAULT_DISPLAY})',
     )
+    parser.add_argument(
+        '--controls',
+        action='store_true',
+        help='open the camera exposure and control parameters adjustment panel',
+    )
     return parser.parse_args()
 
 
@@ -177,7 +260,9 @@ def select_camera(config: dict[str, Any]) -> CameraSelection:
     return CameraSelection(
         name='camera',
         kind='camera',
-        topic='/camera/color/image_raw',
+        color_topic='/camera/color/image_raw',
+        depth_topic='/camera/aligned_depth_to_color/image_raw',
+        info_topic='/camera/color/camera_info',
         parameters=parameters,
     )
 
@@ -187,8 +272,261 @@ def model_path_for(letter: str, config: dict[str, Any]) -> Path:
     model_root = Path(perception['model_root'])
     if not model_root.is_absolute():
         raise ValueError('model_root must be an absolute source-directory path')
-    detector = 'fruit_type' if letter in ('B', 'D') else 'vegetable_type'
+    detector = 'fruit_type' if letter.upper() in ('B', 'D') else 'vegetable_type'
     return model_root / detector / 'best.onnx'
+
+
+def load_extrinsic_transform() -> tuple[np.ndarray, np.ndarray] | None:
+    """Load R_E_C and t_E_C (mm) from camera_extrinsic.yaml using shared validation."""
+    try:
+        r, t = load_camera_extrinsic(EXTRINSIC_CONFIG_PATH)
+        return np.array(r, dtype=float), np.array(t, dtype=float)
+    except Exception as error:  # noqa: BLE001
+        print(f'Warning: failed to load camera extrinsic: {error}', file=sys.stderr)
+        return None
+
+
+def get_depth_at(
+    depth_image: np.ndarray | None, u: int, v: int, window_radius: int = 3,
+) -> float | None:
+    """Sample median depth in a small window around (u, v) in meters."""
+    if depth_image is None:
+        return None
+    h, w = depth_image.shape[:2]
+    if not (0 <= u < w and 0 <= v < h):
+        return None
+    u1, u2 = max(0, u - window_radius), min(w, u + window_radius + 1)
+    v1, v2 = max(0, v - window_radius), min(h, v + window_radius + 1)
+    window = depth_image[v1:v2, u1:u2]
+    valid = window[window > 0]
+    if len(valid) == 0:
+        return None
+    return float(np.median(valid)) * 0.001
+
+
+def pixel_to_camera_point(
+    u: float, v: float, depth_m: float,
+    fx: float, fy: float, cx: float, cy: float,
+) -> tuple[float, float, float]:
+    """Project 2D pixel + depth to 3D point in camera optical frame (m)."""
+    x = (u - cx) * depth_m / fx
+    y = (v - cy) * depth_m / fy
+    z = depth_m
+    return x, y, z
+
+
+def camera_to_base_point(
+    point_cam_m: tuple[float, float, float],
+    r_e_c: np.ndarray | list[list[float]],
+    t_e_c_mm: np.ndarray | list[float],
+    tcp_pose: tuple[float, float, float, float, float],
+) -> tuple[float, float, float]:
+    """Transform camera optical 3D point (m) to arm base frame coordinates (m).
+
+    tcp_pose: (tcp_x_m, tcp_y_m, tcp_z_m, pitch_deg, yaw_rad)
+    """
+    cam_mm = tuple(float(v) * 1000.0 for v in point_cam_m)
+    r_rows = tuple(tuple(float(v) for v in row) for row in r_e_c)
+    t_vals = tuple(float(v) for v in t_e_c_mm)
+    end_mm = transform_camera_to_end_effector_mm(cam_mm, r_rows, t_vals)
+    origin_mm = (tcp_pose[0] * 1000.0, tcp_pose[1] * 1000.0, tcp_pose[2] * 1000.0)
+    pitch_rad = math.radians(tcp_pose[3])
+    yaw_rad = float(tcp_pose[4])
+    base_mm = transform_end_to_base_mm(end_mm, origin_mm, yaw_rad, pitch_rad)
+    return tuple(float(v) / 1000.0 for v in base_mm)
+
+
+def validate_camera_info(
+    info: CameraInfo | None,
+    image_width: int,
+    image_height: int,
+) -> tuple[float, float, float, float] | None:
+    """Validate camera info matrix; return (fx, fy, cx, cy) or None if invalid."""
+    if info is None:
+        return None
+    if info.width > 0 and info.height > 0:
+        if info.width != image_width or info.height != image_height:
+            return None
+    k = info.k
+    if len(k) < 9:
+        return None
+    fx, fy, cx, cy = float(k[0]), float(k[4]), float(k[2]), float(k[5])
+    if not (math.isfinite(fx) and math.isfinite(fy) and math.isfinite(cx) and math.isfinite(cy)):
+        return None
+    if fx <= 0.0 or fy <= 0.0 or cx < 0.0 or cy < 0.0 or cx > image_width or cy > image_height:
+        return None
+    return fx, fy, cx, cy
+
+
+def launch_background_process(
+    command: list[str], log_filename: str,
+) -> tuple[subprocess.Popen, Path]:
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = TMP_DIR / log_filename
+    log_file = log_path.open('w', encoding='utf-8')
+    log_file.write('$ ' + ' '.join(command) + '\n')
+    log_file.flush()
+    process = subprocess.Popen(
+        command,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    return process, log_path
+
+
+def ensure_arm_communication(
+    node: FrameSubscriber,
+) -> tuple[subprocess.Popen | None, subprocess.Popen | None, subprocess.Popen | None]:
+    """Check for existing serial bridge and planner; launch only missing nodes.
+
+    Returns (arm_debug_process, bridge_process, planner_process).
+    """
+    deadline = time.monotonic() + 0.6
+    while time.monotonic() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.1)
+
+    node_names = set(node.get_node_names())
+    status_topic = '/fruit_hardware_bridge/arm/status'
+    joint_state_topic = getattr(node, 'joint_state_topic', '/arm_planner_node/joint_states')
+
+    planner_pubs = node.get_publishers_info_by_topic(joint_state_topic)
+    bridge_pubs = node.get_publishers_info_by_topic(status_topic)
+
+    expected_telemetry_type = 'fruit_arm_interfaces/msg/ArmTelemetry'
+    expected_status_type = 'fruit_hardware_interfaces/msg/ArmStatus'
+
+    # Check for telemetry publisher conflicts or type mismatches
+    if len(planner_pubs) > 1:
+        pub_nodes = [f'{p.node_namespace}/{p.node_name}' for p in planner_pubs]
+        print(
+            f'Warning: {joint_state_topic} has {len(planner_pubs)} publishers '
+            f'(duplicate conflict: {pub_nodes}); cannot use telemetry, '
+            'Base coordinates will be N/A',
+            file=sys.stderr,
+            flush=True,
+        )
+        node.set_telemetry_conflict(True)
+        return None, None, None
+
+    if len(planner_pubs) == 1 and planner_pubs[0].topic_type != expected_telemetry_type:
+        print(
+            f'Warning: {joint_state_topic} publisher has unexpected type '
+            f"'{planner_pubs[0].topic_type}'; expected '{expected_telemetry_type}'. "
+            'Base coordinates will be N/A',
+            file=sys.stderr,
+            flush=True,
+        )
+        node.set_telemetry_conflict(True)
+        return None, None, None
+
+    # Check for bridge publisher conflicts or type mismatches
+    if len(bridge_pubs) > 1:
+        pub_nodes = [f'{p.node_namespace}/{p.node_name}' for p in bridge_pubs]
+        print(
+            f'Warning: {status_topic} has {len(bridge_pubs)} publishers '
+            f'(duplicate conflict: {pub_nodes}); cannot reuse bridge, '
+            'Base coordinates will be N/A',
+            file=sys.stderr,
+            flush=True,
+        )
+        node.set_telemetry_conflict(True)
+        return None, None, None
+
+    if len(bridge_pubs) == 1 and bridge_pubs[0].topic_type != expected_status_type:
+        print(
+            f'Warning: {status_topic} publisher has unexpected type '
+            f"'{bridge_pubs[0].topic_type}'; expected '{expected_status_type}'. "
+            'Base coordinates will be N/A',
+            file=sys.stderr,
+            flush=True,
+        )
+        node.set_telemetry_conflict(True)
+        return None, None, None
+
+    has_planner = ('arm_planner_node' in node_names) or (len(planner_pubs) == 1)
+    has_bridge = ('serial_controller' in node_names) or (len(bridge_pubs) == 1)
+
+    debug_proc: subprocess.Popen | None = None
+    bridge_proc: subprocess.Popen | None = None
+    planner_proc: subprocess.Popen | None = None
+
+    try:
+        if has_bridge and has_planner:
+            print('Reusing existing serial bridge and arm planner', flush=True)
+        elif not has_bridge and not has_planner:
+            print(
+                'Neither serial bridge nor arm planner detected; '
+                'launching fruit_arm_debug.launch.py...',
+                flush=True,
+            )
+            debug_proc, log_p = launch_background_process(
+                ['ros2', 'launch', 'fruit_arm_planner', 'fruit_arm_debug.launch.py',
+                 'log_level:=info'],
+                'test_camera_detector_arm_debug.log',
+            )
+            print(f'Started fruit_arm_debug launch; log={log_p}', flush=True)
+        elif has_bridge and not has_planner:
+            print(
+                'Serial bridge detected, arm planner missing; '
+                'launching fruit_arm_planner.launch.py...',
+                flush=True,
+            )
+            planner_proc, log_p = launch_background_process(
+                ['ros2', 'launch', 'fruit_arm_planner', 'fruit_arm_planner.launch.py',
+                 'log_level:=info'],
+                'test_camera_detector_planner.log',
+            )
+            print(f'Started fruit_arm_planner launch; log={log_p}', flush=True)
+        else:  # not has_bridge and has_planner
+            print(
+                'Arm planner detected, serial bridge missing; '
+                'launching fruit_hardware_bridge.launch.py...',
+                flush=True,
+            )
+            bridge_proc, log_p = launch_background_process(
+                ['ros2', 'launch', 'fruit_hardware_bridge', 'fruit_hardware_bridge.launch.py',
+                 'log_level:=info'],
+                'test_camera_detector_serial.log',
+            )
+            print(f'Started fruit_hardware_bridge launch; log={log_p}', flush=True)
+
+        if debug_proc is not None or planner_proc is not None or bridge_proc is not None:
+            print('Waiting up to 10s for arm telemetry...', flush=True)
+            wait_deadline = time.monotonic() + 10.0
+            while time.monotonic() < wait_deadline:
+                if node.get_fresh_tcp_pose() is not None:
+                    print('Arm telemetry received successfully', flush=True)
+                    break
+                for p, name in (
+                    (debug_proc, 'arm_debug'),
+                    (bridge_proc, 'serial_bridge'),
+                    (planner_proc, 'arm_planner'),
+                ):
+                    if p is not None and p.poll() is not None:
+                        print(
+                            f'Warning: {name} exited unexpectedly: code {p.returncode}',
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                rclpy.spin_once(node, timeout_sec=0.1)
+            else:
+                print(
+                    'Warning: arm telemetry not received within 10s; Base coordinates will be N/A',
+                    file=sys.stderr,
+                    flush=True,
+                )
+    except BaseException:
+        if planner_proc is not None:
+            stop_process(planner_proc)
+        if bridge_proc is not None:
+            stop_process(bridge_proc)
+        if debug_proc is not None:
+            stop_process(debug_proc)
+        raise
+
+    return debug_proc, bridge_proc, planner_proc
 
 
 def write_ros_params_file(selection: CameraSelection) -> Path:
@@ -337,10 +675,7 @@ def parse_raw_yolo_output(
         class_scores = data[4:, column]
         best_class = int(np.argmax(class_scores))
         best_score = float(class_scores[best_class])
-        if (
-            not math.isfinite(best_score)
-            or best_score < confidence_threshold
-        ):
+        if not math.isfinite(best_score) or best_score < confidence_threshold:
             continue
 
         x1 = x - width / 2.0
@@ -452,72 +787,238 @@ def to_original_box(
 
 def draw_annotations(
     frame_rgb: np.ndarray,
+    depth_frame: np.ndarray | None,
     detections: list[Detection],
     transform: LetterboxTransform,
+    intrinsics: tuple[float, float, float, float] | None,
+    extrinsic: tuple[np.ndarray, np.ndarray] | None,
+    tcp_pose: tuple[float, float, float, float, float] | None,
+    mouse_u: int,
+    mouse_v: int,
     fps: float,
+    model_name: str,
+    ripeness_classifier: RipenessClassifier | None = None,
 ) -> np.ndarray:
     annotated = frame_rgb.copy()
-    color = (0, 255, 0)
+    h, w = annotated.shape[:2]
+
+    center_color = (0, 220, 255)
 
     for detection in detections:
-        x, y, width, height = to_original_box(detection, transform)
-        if width <= 0 or height <= 0:
+        bx, by, bw, bh = to_original_box(detection, transform)
+        if bw <= 0 or bh <= 0:
             continue
-        cv2.rectangle(annotated, (x, y), (x + width, y + height), color, 2)
 
-        label = f'{detection.label} {detection.score:.2f}'
-        text_size, baseline = cv2.getTextSize(
-            label,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            1,
-        )
-        text_x = min(max(x, 0), max(0, annotated.shape[1] - text_size[0] - 6))
-        text_y = max(y - 6, text_size[1] + 4)
+        # Ripeness classification
+        is_bad = detection.label.lower() == 'bad'
+        mat_text = ''
+        box_color = (0, 255, 0)
+
+        if is_bad:
+            box_color = (0, 0, 255)  # Red for bad produce
+            mat_text = '[BAD]'
+        elif ripeness_classifier is not None:
+            rgb_roi = frame_rgb[by:by + bh, bx:bx + bw]
+            mat_result = ripeness_classifier.classify(rgb_roi, detection.label)
+            if mat_result is not None:
+                mat_status, mat_conf = mat_result
+                if mat_status == 'ripe':
+                    box_color = (0, 255, 0)  # Green for ripe
+                    mat_text = f'[{mat_status.upper()} {mat_conf * 100:.0f}%]'
+                else:
+                    box_color = (0, 165, 255)  # Orange for unripe
+                    mat_text = f'[{mat_status.upper()} {mat_conf * 100:.0f}%]'
+
+        cv2.rectangle(annotated, (bx, by), (bx + bw, by + bh), box_color, 2)
+
+        # Center point
+        uc = bx + bw // 2
+        vc = by + bh // 2
+        depth_m = get_depth_at(depth_frame, uc, vc, window_radius=3)
+
+        # Draw center point crosshair
+        cv2.circle(annotated, (uc, vc), 4, center_color, -1)
+        cv2.line(annotated, (uc - 8, vc), (uc + 8, vc), center_color, 1)
+        cv2.line(annotated, (uc, vc - 8), (uc, vc + 8), center_color, 1)
+
+        mat_suffix = f' {mat_text}' if mat_text else ''
+        if depth_m is None:
+            main_label = f'{detection.label}{mat_suffix} {detection.score:.2f} | D: NoDepth'
+            sub_label = 'Depth missing/blocked at center'
+        else:
+            main_label = f'{detection.label}{mat_suffix} {detection.score:.2f} | D={depth_m:.3f}m'
+            if intrinsics is None:
+                sub_label = 'Cam: N/A (no CameraInfo)  Base: N/A'
+            else:
+                fx, fy, cx, cy = intrinsics
+                xc, yc, zc = pixel_to_camera_point(uc, vc, depth_m, fx, fy, cx, cy)
+                if extrinsic is None:
+                    sub_label = f'Cam:({xc:+.2f}, {yc:+.2f}, {zc:.2f})m  Base: N/A (no extrinsic)'
+                elif tcp_pose is None:
+                    sub_label = f'Cam:({xc:+.2f}, {yc:+.2f}, {zc:.2f})m  Base: N/A (no TCP)'
+                else:
+                    r_e_c, t_e_c = extrinsic
+                    xb, yb, zb = camera_to_base_point((xc, yc, zc), r_e_c, t_e_c, tcp_pose)
+                    sub_label = (
+                        f'Cam:({xc:+.2f}, {yc:+.2f}, {zc:.2f})  '
+                        f'Base:({xb:+.2f}, {yb:+.2f}, {zb:+.2f})m'
+                    )
+
+        # Main label
+        ts_main, bl_main = cv2.getTextSize(main_label, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
+        tx = min(max(bx, 0), max(0, w - ts_main[0] - 6))
+        ty = max(by - 6, ts_main[1] + 4)
         cv2.rectangle(
             annotated,
-            (
-                text_x,
-                text_y - text_size[1] - 4,
-                text_size[0] + 6,
-                text_size[1] + baseline + 6,
-            ),
-            color,
+            (tx, ty - ts_main[1] - 4),
+            (tx + ts_main[0] + 6, ty + bl_main + 2),
+            box_color,
+            cv2.FILLED,
+        )
+        text_color = (255, 255, 255) if is_bad else (0, 0, 0)
+        cv2.putText(
+            annotated, main_label, (tx + 3, ty),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.48, text_color, 1, cv2.LINE_AA,
+        )
+
+        # Sub label below box
+        ts_sub, bl_sub = cv2.getTextSize(sub_label, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        sub_y = min(by + bh + ts_sub[1] + 6, h - 35)
+        sub_x = min(max(bx, 0), max(0, w - ts_sub[0] - 6))
+        cv2.rectangle(
+            annotated,
+            (sub_x, sub_y - ts_sub[1] - 2),
+            (sub_x + ts_sub[0] + 4, sub_y + bl_sub + 2),
+            (30, 30, 30),
             cv2.FILLED,
         )
         cv2.putText(
-            annotated,
-            label,
-            (text_x + 3, text_y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (0, 0, 0),
-            1,
-            cv2.LINE_AA,
+            annotated, sub_label, (sub_x + 2, sub_y),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1, cv2.LINE_AA,
         )
 
-    fps_label = f'FPS: {fps:.1f}'
-    cv2.putText(
-        annotated,
-        fps_label,
-        (10, 28),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.75,
-        (0, 0, 0),
-        4,
-        cv2.LINE_AA,
+    # Mouse inspection crosshair & coordinates
+    mouse_text = f'Mouse: ({mouse_u}, {mouse_v}) | Out of bounds'
+    if 0 <= mouse_u < w and 0 <= mouse_v < h:
+        cv2.circle(annotated, (mouse_u, mouse_v), 5, (255, 255, 0), 1)
+        m_depth = get_depth_at(depth_frame, mouse_u, mouse_v, window_radius=2)
+        if m_depth is None:
+            mouse_text = f'Mouse ({mouse_u}, {mouse_v}): Depth=None (0 mm / invalid)'
+        elif intrinsics is None:
+            mouse_text = f'Mouse ({mouse_u}, {mouse_v}): Depth={m_depth:.3f}m | Cam=N/A | Base=N/A'
+        else:
+            fx, fy, cx, cy = intrinsics
+            m_xc, m_yc, m_zc = pixel_to_camera_point(mouse_u, mouse_v, m_depth, fx, fy, cx, cy)
+            if extrinsic is None:
+                mouse_text = (
+                    f'Mouse ({mouse_u}, {mouse_v}): Depth={m_depth:.3f}m | '
+                    f'Cam=({m_xc:+.3f}, {m_yc:+.3f}, {m_zc:.3f})m | Base=N/A (no extrinsic)'
+                )
+            elif tcp_pose is None:
+                mouse_text = (
+                    f'Mouse ({mouse_u}, {mouse_v}): Depth={m_depth:.3f}m | '
+                    f'Cam=({m_xc:+.3f}, {m_yc:+.3f}, {m_zc:.3f})m | Base=N/A (no TCP)'
+                )
+            else:
+                r_e_c, t_e_c = extrinsic
+                m_xb, m_yb, m_zb = camera_to_base_point((m_xc, m_yc, m_zc), r_e_c, t_e_c, tcp_pose)
+                mouse_text = (
+                    f'Mouse ({mouse_u}, {mouse_v}): Depth={m_depth:.3f}m | '
+                    f'Cam=({m_xc:+.3f}, {m_yc:+.3f}, {m_zc:.3f})m | '
+                    f'Base=({m_xb:+.3f}, {m_yb:+.3f}, {m_zb:+.3f})m'
+                )
+
+    # Top-left info banner
+    if tcp_pose is not None:
+        tcp_status = (
+            f'TCP: [{tcp_pose[0]:.3f}, {tcp_pose[1]:.3f}, {tcp_pose[2]:.3f}]m '
+            f'p={tcp_pose[3]:.1f}°'
+        )
+    else:
+        tcp_status = 'TCP: N/A'
+    top_banner = (
+        f'Model: {model_name} | {tcp_status} | FPS: {fps:.1f} | Detections: {len(detections)}'
     )
+    cv2.rectangle(annotated, (0, 0), (w, 30), (20, 20, 20), cv2.FILLED)
     cv2.putText(
-        annotated,
-        fps_label,
-        (10, 28),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.75,
-        color,
-        2,
-        cv2.LINE_AA,
+        annotated, top_banner, (10, 21),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 120), 1, cv2.LINE_AA,
     )
+
+    # Bottom status bar (mouse probe + hotkey hints)
+    cv2.rectangle(annotated, (0, h - 32), (w, h), (15, 15, 15), cv2.FILLED)
+    cv2.putText(
+        annotated, mouse_text, (10, h - 18),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.44, (255, 255, 255), 1, cv2.LINE_AA,
+    )
+    hints = '[s]Save [m]Model [q]Quit'
+    th, _ = cv2.getTextSize(hints, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+    cv2.putText(
+        annotated, hints, (w - th[0] - 10, h - 18),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA,
+    )
+
     return annotated
+
+
+class RipenessClassifier:
+    """Two-stage crop ripeness classifier using OpenVINO edge models."""
+
+    CROPS = {'apple', 'pear', 'pumpkin', 'tomato', 'onion', 'pepper'}
+
+    def __init__(self, model_root: Path, core: ov.Core, device: str = 'GPU') -> None:
+        self.model_root = model_root / 'ripeness_edge'
+        self.core = core
+        self.device = device
+        self._requests: dict[str, tuple[Any, Any, Any]] = {}
+
+    def classify(self, rgb_roi: np.ndarray, label: str) -> tuple[str, float] | None:
+        if rgb_roi.shape[0] < 8 or rgb_roi.shape[1] < 8:
+            return None
+        crop = 'pepper' if label.lower() == 'chili' else label.lower()
+        if crop not in self.CROPS:
+            return None
+        if crop not in self._requests:
+            p = self.model_root / crop / 'best.onnx'
+            if not p.is_file():
+                return None
+            try:
+                m = self.core.read_model(str(p))
+                m.reshape([1, 3, 224, 224])
+                compiled = self.core.compile_model(
+                    m, self.device, {'PERFORMANCE_HINT': 'LATENCY'},
+                )
+                self._requests[crop] = (
+                    compiled.create_infer_request(),
+                    compiled.input(0),
+                    compiled.output(0),
+                )
+            except Exception as err:
+                print(
+                    f'Warning: failed to compile ripeness model for {crop}: {err}',
+                    file=sys.stderr,
+                )
+                return None
+
+        req, inp, outp = self._requests[crop]
+        try:
+            resized = cv2.resize(rgb_roi, (224, 224), interpolation=cv2.INTER_LINEAR)
+            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            norm = (resized.astype(np.float32) / 255.0 - mean) / std
+            blob = np.transpose(norm, (2, 0, 1))[np.newaxis, ...]
+            res = req.infer({inp: blob})
+            logits = res[outp][0]
+            exps = np.exp(logits - np.max(logits))
+            probs = exps / np.sum(exps)
+            p_ripe = float(probs[0])
+            p_unripe = float(probs[1])
+            if p_ripe >= p_unripe:
+                return 'ripe', p_ripe
+            return 'unripe', p_unripe
+        except Exception as err:
+            print(f'Warning: ripeness inference failed for {crop}: {err}', file=sys.stderr)
+            return None
 
 
 class Detector:
@@ -527,10 +1028,7 @@ class Detector:
 
         self._core = ov.Core()
         devices = self._core.available_devices
-        if 'GPU' not in devices:
-            raise RuntimeError(
-                f'OpenVINO GPU device is not available; devices: {devices}',
-            )
+        self._device = 'GPU' if 'GPU' in devices else 'CPU'
 
         model = self._core.read_model(str(model_path))
         if not model.has_rt_info(['framework', 'names']):
@@ -567,7 +1065,7 @@ class Detector:
 
         self._compiled = self._core.compile_model(
             model,
-            'GPU',
+            self._device,
             {'PERFORMANCE_HINT': 'THROUGHPUT'},
         )
         self._input_port = self._compiled.input(0)
@@ -594,6 +1092,14 @@ class Detector:
             )
         ):
             raise RuntimeError(f'Unsupported model output shape {output_shape}')
+
+    @property
+    def core(self) -> ov.Core:
+        return self._core
+
+    @property
+    def device(self) -> str:
+        return self._device
 
     def infer(self, frame_rgb: np.ndarray) -> tuple[np.ndarray, LetterboxTransform]:
         input_blob, transform = letterbox_image(frame_rgb)
@@ -632,11 +1138,371 @@ def wait_for_publisher(node: Node, topic: str, timeout_seconds: float) -> bool:
     return node.count_publishers(topic) > 0
 
 
+CAMERA_CONTROL_LABELS = {
+    'rgb_camera.enable_auto_exposure': 'Auto exposure',
+    'rgb_camera.exposure': 'Exposure',
+    'rgb_camera.gain': 'Gain',
+    'rgb_camera.enable_auto_white_balance': 'Auto white balance',
+    'rgb_camera.white_balance': 'White balance',
+    'rgb_camera.brightness': 'Brightness',
+    'rgb_camera.contrast': 'Contrast',
+    'rgb_camera.saturation': 'Saturation',
+    'rgb_camera.sharpness': 'Sharpness',
+    'rgb_camera.gamma': 'Gamma',
+    'rgb_camera.backlight_compensation': 'Backlight compensation',
+    'rgb_camera.power_line_frequency': 'Power line frequency',
+}
+
+AUTO_CONTROL_FOR = {
+    'rgb_camera.exposure': 'rgb_camera.enable_auto_exposure',
+    'rgb_camera.white_balance': 'rgb_camera.enable_auto_white_balance',
+}
+
+
+@dataclass(frozen=True)
+class CameraControl:
+    name: str
+    label: str
+    minimum: float
+    maximum: float
+    step: float
+    value: bool | int | float
+    value_type: type
+
+
+class CameraControlPanel:
+    def __init__(
+        self,
+        camera_name: str,
+        controls: list[CameraControl],
+        set_control: Callable[[str, bool | int | float], None],
+        save_controls: Callable[[dict[str, bool | int | float]], Path],
+    ) -> None:
+        if not controls:
+            raise RuntimeError(f'No adjustable controls found for {camera_name}')
+
+        self._controls = {control.name: control for control in controls}
+        self._values = {control.name: control.value for control in controls}
+        self._pending: dict[str, bool | int | float] = {}
+        self._set_control = set_control
+        self._save_controls = save_controls
+        self._save_requested = False
+        self._open = True
+        self._variables: dict[str, tk.Variable] = {}
+
+        self._root = tk.Tk()
+        self._root.title(f'{camera_name} camera controls')
+        self._root.resizable(False, True)
+        self._root.protocol('WM_DELETE_WINDOW', self.close)
+        frame = ttk.Frame(self._root, padding=10)
+        frame.grid(sticky='nsew')
+        frame.columnconfigure(1, weight=1)
+
+        for row, control in enumerate(controls):
+            ttk.Label(frame, text=control.label).grid(
+                row=row,
+                column=0,
+                padx=(0, 12),
+                pady=3,
+                sticky='w',
+            )
+            variable = self._create_variable(control)
+            self._variables[control.name] = variable
+            widget = self._create_widget(frame, control, variable)
+            widget.grid(row=row, column=1, pady=3, sticky='ew')
+
+        self._status = tk.StringVar(value='Ready')
+        ttk.Separator(frame).grid(
+            row=len(controls),
+            column=0,
+            columnspan=2,
+            pady=(8, 6),
+            sticky='ew',
+        )
+        ttk.Label(frame, textvariable=self._status).grid(
+            row=len(controls) + 1,
+            column=0,
+            columnspan=2,
+            sticky='w',
+        )
+        ttk.Button(frame, text='Save', command=self._request_save).grid(
+            row=len(controls) + 2,
+            column=0,
+            columnspan=2,
+            pady=(8, 0),
+            sticky='ew',
+        )
+        self._root.update_idletasks()
+        x = max(0, self._root.winfo_screenwidth() - self._root.winfo_reqwidth() - 20)
+        self._root.geometry(f'+{x}+60')
+
+    def _create_widget(
+        self,
+        parent: ttk.Frame,
+        control: CameraControl,
+        variable: tk.Variable,
+    ) -> tk.Widget:
+        if control.value_type is bool:
+            return ttk.Checkbutton(
+                parent,
+                variable=variable,
+                command=lambda: self._queue(control.name),
+            )
+        if control.name.endswith('power_line_frequency'):
+            values = range(int(control.minimum), int(control.maximum) + 1)
+            widget = ttk.Combobox(
+                parent,
+                textvariable=variable,
+                values=list(values),
+                state='readonly',
+                width=12,
+            )
+            widget.bind(
+                '<<ComboboxSelected>>',
+                lambda _event: self._queue(control.name),
+            )
+            return widget
+        return tk.Scale(
+            parent,
+            variable=variable,
+            from_=control.minimum,
+            to=control.maximum,
+            resolution=control.step,
+            orient=tk.HORIZONTAL,
+            length=330,
+            command=lambda _value: self._queue(control.name),
+        )
+
+    @staticmethod
+    def _create_variable(control: CameraControl) -> tk.Variable:
+        if control.value_type is bool:
+            return tk.BooleanVar(value=control.value)
+        if control.value_type is int:
+            return tk.IntVar(value=control.value)
+        return tk.DoubleVar(value=control.value)
+
+    def _queue(self, name: str) -> None:
+        auto_name = AUTO_CONTROL_FOR.get(name)
+        if auto_name in self._variables and self._variables[auto_name].get():
+            self._variables[auto_name].set(False)
+            self._pending[auto_name] = False
+        value = self._variables[name].get()
+        self._pending[name] = self._controls[name].value_type(value)
+
+    def _request_save(self) -> None:
+        self._save_requested = True
+
+    def apply_pending(self) -> None:
+        if self._open:
+            try:
+                self._root.update_idletasks()
+                self._root.update()
+            except tk.TclError:
+                self._open = False
+
+        pending = self._pending
+        self._pending = {}
+        for name, value in pending.items():
+            if value == self._values[name]:
+                continue
+            try:
+                self._set_control(name, value)
+            except Exception as error:  # noqa: BLE001
+                message = f'Failed: {self._controls[name].label}: {error}'
+                self._status.set(message)
+                self._variables[name].set(self._values[name])
+                print(message, file=sys.stderr, flush=True)
+            else:
+                self._values[name] = value
+                self._status.set(f'Applied: {self._controls[name].label}')
+                print(
+                    f'{self._controls[name].label} = '
+                    f'{self._format_value(value)}',
+                    flush=True,
+                )
+        if self._save_requested:
+            self._save()
+
+    def _save(self) -> None:
+        self._save_requested = False
+        try:
+            backup_path = self._save_controls(dict(self._values))
+        except Exception as error:  # noqa: BLE001
+            message = f'Save failed: {error}'
+            self._status.set(message)
+            print(message, file=sys.stderr, flush=True)
+            return
+        self._status.set(f'Saved; backup: {backup_path.name}')
+        print(f'Saved camera controls; backup: {backup_path}', flush=True)
+
+    @staticmethod
+    def _format_value(value: bool | int | float) -> str:
+        if isinstance(value, bool):
+            return 'On' if value else 'Off'
+        if isinstance(value, float):
+            return f'{value:.4g}'
+        return str(value)
+
+    def is_open(self) -> bool:
+        return self._open
+
+    def close(self) -> None:
+        if not self._open:
+            return
+        self._open = False
+        try:
+            self._root.destroy()
+        except tk.TclError:
+            pass
+
+
+class CameraControlService:
+    NODE_NAME = '/camera'
+
+    def __init__(self, node: Node) -> None:
+        self._node = node
+        self._get_client = node.create_client(
+            GetParameters,
+            f'{self.NODE_NAME}/get_parameters',
+        )
+        self._describe_client = node.create_client(
+            DescribeParameters,
+            f'{self.NODE_NAME}/describe_parameters',
+        )
+        self._set_client = node.create_client(
+            SetParameters,
+            f'{self.NODE_NAME}/set_parameters',
+        )
+
+    def discover(self) -> list[CameraControl]:
+        for client in (
+            self._get_client,
+            self._describe_client,
+            self._set_client,
+        ):
+            if not client.wait_for_service(timeout_sec=5.0):
+                raise RuntimeError(
+                    f'Parameter service is unavailable for {self.NODE_NAME}',
+                )
+
+        names = list(CAMERA_CONTROL_LABELS)
+        get_response = self._call(
+            self._get_client,
+            GetParameters.Request(names=names),
+        )
+        describe_response = self._call(
+            self._describe_client,
+            DescribeParameters.Request(names=names),
+        )
+
+        controls: list[CameraControl] = []
+        for name, value, descriptor in zip(
+            names,
+            get_response.values,
+            describe_response.descriptors,
+        ):
+            control = self._control_from_parameter(name, value, descriptor)
+            if control is not None:
+                controls.append(control)
+        return controls
+
+    def set(self, name: str, value: bool | int | float) -> None:
+        request = SetParameters.Request(
+            parameters=[Parameter(name, value=value).to_parameter_msg()],
+        )
+        response = self._call(self._set_client, request)
+        result = response.results[0]
+        if not result.successful:
+            raise RuntimeError(result.reason or 'parameter was rejected')
+
+    def _call(self, client: Any, request: Any) -> Any:
+        future = client.call_async(request)
+        rclpy.spin_until_future_complete(self._node, future, timeout_sec=5.0)
+        if not future.done():
+            raise RuntimeError('ROS parameter request timed out')
+        if future.exception() is not None:
+            raise RuntimeError(str(future.exception()))
+        return future.result()
+
+    @staticmethod
+    def _control_from_parameter(
+        name: str,
+        value: Any,
+        descriptor: Any,
+    ) -> CameraControl | None:
+        if value.type == ParameterType.PARAMETER_BOOL:
+            return CameraControl(
+                name,
+                CAMERA_CONTROL_LABELS[name],
+                0.0,
+                1.0,
+                1.0,
+                value.bool_value,
+                bool,
+            )
+        if (
+            value.type == ParameterType.PARAMETER_INTEGER
+            and descriptor.integer_range
+        ):
+            value_range = descriptor.integer_range[0]
+            return CameraControl(
+                name,
+                CAMERA_CONTROL_LABELS[name],
+                float(value_range.from_value),
+                float(value_range.to_value),
+                float(max(1, value_range.step)),
+                value.integer_value,
+                int,
+            )
+        if (
+            value.type == ParameterType.PARAMETER_DOUBLE
+            and descriptor.floating_point_range
+        ):
+            value_range = descriptor.floating_point_range[0]
+            if value_range.step <= 0.0:
+                return None
+            return CameraControl(
+                name,
+                CAMERA_CONTROL_LABELS[name],
+                value_range.from_value,
+                value_range.to_value,
+                value_range.step,
+                value.double_value,
+                float,
+            )
+        return None
+
+
+def save_camera_controls(
+    camera_name: str,
+    values: dict[str, bool | int | float],
+    config_path: Path,
+    tmp_dir: Path,
+) -> Path:
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    backup_path = tmp_dir / f'fruit_perception_{timestamp}.yaml.bak'
+    shutil.copy2(config_path, backup_path)
+
+    with config_path.open('r', encoding='utf-8') as f:
+        doc = yaml.safe_load(f)
+    if 'camera' not in doc or 'ros__parameters' not in doc['camera']:
+        raise KeyError('Invalid config: missing camera.ros__parameters')
+    doc['camera']['ros__parameters'].update(values)
+    with config_path.open('w', encoding='utf-8') as f:
+        yaml.safe_dump(doc, f, sort_keys=False)
+
+    return backup_path
+
+
 def run() -> int:
     args = parse_args()
     config = load_config()
     selection = select_camera(config)
-    model_path = model_path_for(args.model, config)
+
+    current_model = args.model.upper()
+    model_path = model_path_for(current_model, config)
+
     perception = config['fruit_perception_node']['ros__parameters']
     confidence_threshold = float(
         perception['confidence_threshold'] if args.conf is None else args.conf,
@@ -652,84 +1518,115 @@ def run() -> int:
             raise ValueError(f'{name} must be between 0 and 1, got {value}')
 
     detector = Detector(model_path)
+    extrinsic = load_extrinsic_transform()
+    model_root = Path(perception['model_root'])
+    ripeness_classifier = RipenessClassifier(model_root, detector.core, detector.device)
+
     rclpy.init()
-    node = FrameSubscriber(selection.topic)
+
+    joint_state_topic = '/arm_planner_node/joint_states'
+    arm_config_path = WORKSPACE / 'src/fruit_arm_planner/config/arm_presets.yaml'
+    try:
+        with EXTRINSIC_CONFIG_PATH.open(encoding='utf-8') as f:
+            cfg = yaml.safe_load(f)
+        if isinstance(cfg, dict):
+            joint_state_topic = str(cfg.get('joint_state_topic', joint_state_topic))
+            if 'arm_config_path' in cfg:
+                arm_config_path = Path(str(cfg['arm_config_path']))
+    except Exception:  # noqa: BLE001
+        pass
+
+    node = FrameSubscriber(
+        selection.color_topic,
+        selection.depth_topic,
+        selection.info_topic,
+        joint_state_topic,
+        arm_config_path,
+    )
+
+    owned_arm_debug: subprocess.Popen | None = None
+    owned_bridge: subprocess.Popen | None = None
+    owned_planner: subprocess.Popen | None = None
     camera_process: subprocess.Popen | None = None
     log_path = TMP_DIR / f'test_camera_detector_{selection.name}.log'
-    if wait_for_publisher(node, selection.topic, 1.0):
-        print(
-            f'Using existing publisher on {selection.topic}; '
-            f'model {model_path}; conf {confidence_threshold:.3f}; '
-            f'iou {nms_iou_threshold:.3f}',
-            flush=True,
-        )
-    else:
-        camera_process, log_path = start_camera(selection)
-        print(
-            f'Started {selection.name}; image topic {selection.topic}; '
-            f'model {model_path}; conf {confidence_threshold:.3f}; '
-            f'iou {nms_iou_threshold:.3f}; log {log_path}',
-            flush=True,
-        )
-    window_name = f'{selection.name} model {args.model}'
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.moveWindow(window_name, 20, 60)
+    control_panel = None
+
     try:
-        if not wait_for_publisher(
-            node,
-            selection.topic,
-            10.0,
-        ):
-            check_camera_process(camera_process, log_path)
-            raise RuntimeError(
-                f'Timed out waiting for Camera frames on {selection.topic}',
+        owned_arm_debug, owned_bridge, owned_planner = ensure_arm_communication(node)
+
+        if wait_for_publisher(node, selection.color_topic, 1.0):
+            print(
+                f'Using existing camera stream on {selection.color_topic}; '
+                f'model={model_path.name}; conf={confidence_threshold:.2f}',
+                flush=True,
             )
-        control_service = CameraControlService(node)
-        control_panel = CameraControlPanel(
-            selection.name,
-            control_service.discover(),
-            control_service.set,
-            lambda values: save_camera_controls(
-                selection.name,
-                values,
-                CONFIG_PATH,
-                TMP_DIR,
-            ),
-        )
-    except BaseException:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
-        stop_process(camera_process)
-        cv2.destroyAllWindows()
-        raise
+        else:
+            camera_process, log_path = start_camera(selection)
+            print(
+                f'Started RealSense camera; color={selection.color_topic}; '
+                f'depth={selection.depth_topic}; log={log_path}',
+                flush=True,
+            )
 
-    last_frame_time = 0.0
-    displayed_fps = 0.0
-    last_wait_message = 0.0
-    announced_first_frame = False
+        window_name = 'RealSense 3D Detector & Depth Inspector'
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, 1280, 720)
+        cv2.moveWindow(window_name, 20, 40)
 
-    try:
+        mouse_coords = [-1, -1]
+
+        def on_mouse(event: int, x: int, y: int, _flags: int, _param: Any) -> None:
+            mouse_coords[0] = x
+            mouse_coords[1] = y
+
+        cv2.setMouseCallback(window_name, on_mouse)
+
+        if args.controls:
+            try:
+                control_service = CameraControlService(node)
+                control_panel = CameraControlPanel(
+                    selection.name,
+                    control_service.discover(),
+                    control_service.set,
+                    lambda values: save_camera_controls(
+                        selection.name, values, CONFIG_PATH, TMP_DIR,
+                    ),
+                )
+            except Exception as err:
+                print(f'Warning: failed to initialize control panel: {err}', file=sys.stderr)
+
+        last_frame_time = 0.0
+        displayed_fps = 0.0
+        last_wait_message = 0.0
+        announced_first_frame = False
+
+        print('\n=== RealSense 3D Inspector Controls ===')
+        print('  [Hover Mouse] : Probe depth and 3D camera / arm base coordinates')
+        print('  [Key s]       : Save current annotated snapshot image to disk')
+        print('  [Key m]       : Toggle model between A (vegetables) and B (fruits)')
+        print('  [Key q / ESC] : Quit viewer\n')
+
         while rclpy.ok():
             check_camera_process(camera_process, log_path)
-            control_panel.apply_pending()
+            if control_panel is not None:
+                control_panel.apply_pending()
             rclpy.spin_once(node, timeout_sec=0.01)
-            frame = node.take_latest_frame()
+
+            frame, depth_frame = node.take_latest()
             if frame is None:
                 now = time.monotonic()
                 if not announced_first_frame and now - last_wait_message > 2.0:
-                    print(f'Waiting for frames on {selection.topic}...', flush=True)
+                    print(f'Waiting for frames on {selection.color_topic}...', flush=True)
                     last_wait_message = now
-                if (
-                    cv2.waitKey(1) in (27, ord('q'))
-                    or not control_panel.is_open()
-                ):
+                key = cv2.waitKey(1)
+                if key in (27, ord('q'), ord('Q')):
                     break
                 continue
+
             if not announced_first_frame:
                 print(
-                    f'Received first frame from {selection.topic}: '
-                    f'{frame.shape[1]}x{frame.shape[0]}',
+                    f'Received first frame: {frame.shape[1]}x{frame.shape[0]} '
+                    f'(depth available: {depth_frame is not None})',
                     flush=True,
                 )
                 announced_first_frame = True
@@ -753,20 +1650,47 @@ def run() -> int:
                 )
             last_frame_time = now
 
+            h_img, w_img = frame.shape[:2]
+            if depth_frame is not None and depth_frame.shape[:2] != (h_img, w_img):
+                depth_frame = None
+
+            intrinsics = validate_camera_info(node.camera_info, w_img, h_img)
+            tcp_pose = node.get_fresh_tcp_pose()
+
             annotated_rgb = draw_annotations(
                 frame,
+                depth_frame,
                 detections,
                 transform,
+                intrinsics,
+                extrinsic,
+                tcp_pose,
+                mouse_coords[0],
+                mouse_coords[1],
                 displayed_fps,
+                f'{current_model} ({"fruit" if current_model in ("B", "D") else "vegetable"})',
+                ripeness_classifier=ripeness_classifier,
             )
             annotated_bgr = cv2.cvtColor(annotated_rgb, cv2.COLOR_RGB2BGR)
             cv2.imshow(window_name, annotated_bgr)
 
             key = cv2.waitKey(1)
-            if key in (27, ord('q')) or not control_panel.is_open():
+            if key in (27, ord('q'), ord('Q')):
                 break
+            elif key in (ord('s'), ord('S')):
+                timestamp = time.strftime('%Y%m%d_%H%M%S')
+                save_path = WORKSPACE / f'snapshot_{timestamp}.jpg'
+                cv2.imwrite(str(save_path), annotated_bgr)
+                print(f'>>> Saved snapshot to {save_path}', flush=True)
+            elif key in (ord('m'), ord('M')):
+                current_model = 'B' if current_model in ('A', 'C') else 'A'
+                model_path = model_path_for(current_model, config)
+                detector = Detector(model_path)
+                print(f'>>> Switched to Model {current_model}: {model_path.name}', flush=True)
+
     finally:
-        control_panel.close()
+        if control_panel is not None:
+            control_panel.close()
         try:
             node.destroy_node()
         except Exception:  # noqa: BLE001
@@ -776,6 +1700,12 @@ def run() -> int:
                 rclpy.shutdown()
         except Exception:  # noqa: BLE001
             pass
+        if owned_planner is not None:
+            stop_process(owned_planner)
+        if owned_bridge is not None:
+            stop_process(owned_bridge)
+        if owned_arm_debug is not None:
+            stop_process(owned_arm_debug)
         stop_process(camera_process)
         cv2.destroyAllWindows()
 

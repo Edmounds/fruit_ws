@@ -14,6 +14,10 @@ For the Xbox Series controller used on this robot, the left stick vertical axis
 (axis 1) drives `linear.x`, and the right stick horizontal axis (axis 2) drives
 `angular.z` (`geometry_msgs/msg/Twist` on `/cmd_vel`).
 
+The workspace `start_tele.sh` reuses an existing serial bridge and leaves it running
+on exit. `joy_cmd_vel_serial.launch.py` accepts `start_serial_bridge:=false` to
+launch only joystick teleop; its default remains `true` for direct launch users.
+
 ## Device Selection
 
 There are two parameters controlling which device should be used:

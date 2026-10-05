@@ -32,6 +32,8 @@ def _validated_node(context):
     if waypoint_document.get("frame_id") != map_frame:
         raise RuntimeError(f"waypoint YAML frame_id must be {map_frame}")
 
+    log_level = LaunchConfiguration("log_level").perform(context).strip()
+
     return [
         Node(
             package="fruit_mission",
@@ -39,6 +41,7 @@ def _validated_node(context):
             name="fruit_mission",
             output="screen",
             emulate_tty=True,
+            arguments=["--ros-args", "--log-level", log_level],
             parameters=[
                 MISSION_CONFIG,
                 {
@@ -74,6 +77,12 @@ def generate_launch_description():
                 "map_frame",
                 default_value="odom",
                 description="Coordinate frame used by mission waypoints",
+            ),
+            DeclareLaunchArgument(
+                "log_level",
+                default_value="info",
+                choices=["debug", "info", "warn", "error", "fatal"],
+                description="Logging level for fruit_mission_node",
             ),
 
             OpaqueFunction(function=_validated_node),

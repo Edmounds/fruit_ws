@@ -64,6 +64,15 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 # 同时逐点显示轨迹：添加 --log-level trace
 ```
 
+每次启动自动在 `src/fruit_arm_planner/test/log/` 新建日志，文件名使用机器本地时间，
+格式为 `YYYY-MM-DD_HH-MM-SS_微秒.log`；启动时会显示完整路径，不覆盖已有文件。
+控制台使用系统自带的 `/usr/bin/script` 记录完整终端会话：标准输出、错误输出、
+异常栈、命令回显和 jog 界面均保留，终端显示照常，每次写入后刷新日志。
+日志是原始终端记录，含 ANSI 光标/颜色控制序列；日志目录已被 Git 的 `log/` 规则忽略。
+日志按当前 `info/debug/trace` 等级记录实际输出，不额外开启被该等级隐藏的遥测。
+仅记录控制台进程，不自动收集另一个终端中的 planner/串口桥输出。
+如果无法创建或打开日志，则报错退出，不启动机械臂客户端，也不静默降级成无日志运行。
+
 控制台通过规划器服务规划并立即执行以下运动命令：
 
 | 命令 | 含义与示例 |
@@ -71,7 +80,8 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 | `move X Y Z PITCH_DEG [DURATION_MS] [ptp|lin] [hold|open|close]` | 笛卡尔目标（m、绝对俯仰角度）；例如 `move 0.20 0 0.25 0 2500 ptp hold` |
 | `joints Q1 Q2 Q3 Q4 [DURATION_MS] [hold|open|close]` | 连杆目标角度（度）：Q2 相对竖直（后仰为正），Q3 为小臂相对水平面的绝对角，Q4 为末端相对水平面的绝对俯仰角。控制台按 YAML 偏置换算后下发；例如 `joints 0 20 -40 0 2500 hold` |
 | `motors Q1 Q2 Q3 Q4 [DURATION_MS] [hold|open|close]` | 直接输入四个原始电机硬件角（度），不再叠加偏置；沿用旧版 `joints` 的语义 |
-| `preset NAME` | 执行源码 YAML 中存在的预设，例如 `preset zero`；当前名称为 `zero`、`left_look`、`right_look`、`pick_sequence`，现场可调 |
+| `preset NAME` | 执行源码 YAML 中存在的预设，例如 `preset zero`；当前名称为 `zero`、`left_look`、`right_look`、`pick_sequence`、`home`、`left_store`、`right_store`，现场可调 |
+| `status` | 显示同一帧原始电机角、逆映射模型角、连杆角，以及真实 TCP 的 XYZ（m）和绝对 pitch（度） |
 | `jog` | 进入终端内键盘微调和示教打点界面，按键直接执行运动 |
 | `reload` | 调用 `/arm_planner_node/reload_presets`，重新加载源码 YAML 的全部 presets |
 
@@ -93,7 +103,7 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 | Esc | 清除待执行目标并退出；若仍有运动则请求 STOP |
 | Ctrl+C | 请求急停并退出控制台 |
 
-进入时以最新四轴实测角的 FK 作为初始 XYZ 和俯仰角。空闲时按键自动提交运动；运动期间继续累加目标，完成后自动执行最新目标，**不逐键排队、不打断当前轨迹**。每次提交使用运行中 Planner 的 `default_duration_ms`，位置/俯仰运动的夹爪动作为保持。界面区分实测位置、累计目标、执行目标、待执行夹爪动作及当前点记录动作；不可达、越限、执行失败或停止后清除所有待执行动作、不自动续发，须检查原因并重新进入模式。
+进入时使用 planner 最新遥测的真实 TCP 作为初始 XYZ 和俯仰角，不在控制台再次逆 mapping 或 FK。空闲时按键自动提交运动；运动期间继续累加目标，完成后自动执行最新目标，**不逐键排队、不打断当前轨迹**。每次提交使用运行中 Planner 的 `default_duration_ms`，位置/俯仰运动的夹爪动作为保持。界面区分实测位置、累计目标、执行目标、待执行夹爪动作及当前点记录动作；不可达、越限、执行失败或停止后清除所有待执行动作、不自动续发，须检查原因并重新进入模式。
 
 `c/o` 复用 `move_joints` 服务，以最新有效四轴实测硬件角（转为度）作为目标，只改变夹爪动作，不再 IK 或叠加 Cartesian offset。服务起点仍由 Planner 获取实测角，反馈与执行有时间差，不应视为硬件锁轴。夹爪动作在默认时长轨迹的末点触发，并非按键瞬间完成。运动中按 `c/o` 会合并为最新待执行夹爪动作；当前动作结束后先原地执行夹爪动作，再继续累计移动。`h` 取消尚未下发的夹爪动作，已提交的请求不受它撤销。
 
@@ -101,7 +111,7 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 
 移动键和夹爪键不会写文件。空格只在全部累计运动和夹爪请求完成后可用，冻结当前有效实测位置和姿态，再输入 preset 名称：已有 preset 按其 `cartesian` / `joints` / `link_angles` 类型转换后追加，不存在则新建 Cartesian preset。航点时间读取源码 YAML 的 `planning.default_duration_ms`，`gripper` 保存当前点的动作标签；不额外写入 `dwell_ms`，闭合/张开航点回放沿用 `planning.default_dwell_ms`。原有配置和注释不整体重写，文件写入失败不覆盖原文件。保存后自动请求热重载；若重载失败，文件仍已保存，处理错误后执行 `reload`。
 
-点动显示及记录的是实际模型坐标。提交笛卡尔服务前先减去 `cartesian_offset_m`，抵消 Planner 的偏置叠加；Cartesian preset 直接保存 FK 坐标，不再加偏置。终端弹窗期间不执行运动键；Esc 取消和保存均不会执行该 preset。
+点动显示及记录的是统一 FK 模型的真实夹爪抓取点 TCP 坐标；提交服务和保存 Cartesian preset 使用同一坐标，不再加减输入偏置。终端弹窗期间不执行运动键；Esc 取消和保存均不会执行该 preset。
 
 `reload` 只刷新全部 presets，运动期间或校验失败时保留旧内存内容，不修改几何、关节映射及 planning。调整默认时长、偏置或机械参数后重启 Planner 和控制台，保证双方使用同一份配置；升级本次 Python 代码也需构建并重启 Planner。点动时长是计划运动时间，不含通信及启动等待，不代表固定按键执行频率。
 
@@ -111,8 +121,11 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 ros2 service call /arm_planner_node/reload_presets std_srvs/srv/Trigger '{}'
 ```
 
-`DURATION_MS=0` 或省略时使用规划器默认时间；两种关节命令默认夹爪保持。当前标定下，`joints 0 0 0 0` 会换算成约 `[0, 1, -6, -5]°` 的硬件目标；`motors 0 0 0 0` 则原样下发全零硬件角。`status` 显示原始电机角以及按 YAML 反算的连杆角。还支持 `stop`、`estop`、`level`、`help`、`quit`。
-预设的 `coordinate_frame: link_angles` 使用与 `joints` 相同的四项定义，末端目标为 `0°` 时腕部自动抵消小臂倾角；`coordinate_frame: joints` 保留原始电机角定义。折叠姿态也须校验腕部映射后是否超限，不能复制旧限位数值；当前配置没有 `home/retract`，对应快捷服务会返回未知预设失败。
+`DURATION_MS=0` 或省略时使用规划器默认时间；两种关节命令默认夹爪保持。当前标定下，`joints 0 0 0 0` 会换算成约 `[0, 1, -13, -5]°` 的硬件目标；标定修改后以源码 YAML 实际数值为准。`motors 0 0 0 0` 则原样下发全零硬件角。`status` 显示原始电机角、planner 提供的逆映射模型角、由模型角换算的连杆角及真实 TCP。还支持 `stop`、`estop`、`level`、`help`、`quit`。
+预设的 `coordinate_frame: link_angles` 使用与 `joints` 相同的四项定义，末端目标为 `0°` 时腕部自动抵消小臂倾角；`coordinate_frame: joints` 保留原始电机角定义。折叠姿态也须校验腕部映射后是否超限，不能复制旧限位数值；`home` 快捷服务仅在同名预设存在时可用，以当前源码 YAML 为准。
+
+控制台现在订阅 `/arm_planner_node/joint_states` 的 `fruit_arm_interfaces/msg/ArmTelemetry`，不再以原始硬件 Status 自行计算 FK。debug 每帧显示 `motors_deg/model_deg/tcp_m/pitch_deg`，jog 和示教使用同一帧校正模型角及 TCP；原地夹爪和 `joints` 硬件角预设保存仍使用该帧原始硬件角，避免二次偏置。消息类型变更必须一起构建接口、planner 和 mission 并重启消费者；旧 standard JointState 订阅者不兼容，话题名称保持不变。
+
 运行中输入 `level info`、`level debug` 或 `level trace` 可立即切换，不需要重启：
 
 | 等级 | 输出 |
@@ -153,8 +166,37 @@ geometry:
   d1: 0.062      # 底座安装面至肩轴中心距
   a2: 0.26       # 肩轴至肘轴距
   a3: 0.26       # 肘轴至腕轴距
-  a4: 0.12       # 腕轴至夹爪采摘作用点中心距
+  a4: 0.12       # 腕轴沿末端局部 X 方向的伸出长度，pitch=0 时此段水平
+  tool_z_offset_m: -0.03  # 真实抓取点的末端局部 Z 偏移，下方为负，随腕部旋转
 ```
+
+`tool_z_offset_m` 是预设 YAML 内可调的固定结构尺寸，不是世界坐标平移，也不是腕电机的零位角偏置。`pitch=0°` 表示 12 cm 伸出段水平，XYZ 指定下方 3 cm 的真实抓取点；腕轴到抓取点的斜线不用于定义 pitch。直接输入、PTP/LIN、笛卡尔预设、jog/FK/示教和 mission 共用同一模型。旧 `planning.cartesian_offset_m` 输入补偿已移除，避免重复补偿。
+
+修改后重新启动 planner、控制台及 mission/相机调试客户端；仅 `reload_presets` 不会刷新几何。现有预设航点不自动改写或迁移，旧模型下记录的坐标需由操作者核对。
+
+以下最小检查仅离线执行数学解算，不启动控制节点、不发送运动请求；先完成构建：
+
+```bash
+source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
+/usr/bin/python3 - <<'PY'
+import math
+import yaml
+from fruit_arm_planner.kinematics import RobotKinematics
+with open('/home/rc4/fruit_ws/src/fruit_arm_planner/config/arm_presets.yaml') as stream:
+    geometry = yaml.safe_load(stream)['arm_planner_node']['ros__parameters']['geometry']
+kinematics = RobotKinematics.from_geometry_dict(geometry)
+target = (0.25, 0.0, 0.25)
+ok, joints, message = kinematics.inverse_kinematics(*target, pitch_deg=0.0)
+if not ok:
+    raise RuntimeError(message)
+pose = kinematics.forward_kinematics(*joints)
+assert math.dist(pose['end_effector'][:3], target) < 1e-9
+assert abs(pose['points'][4][2] - pose['points'][3][2]) < 1e-9
+print('TCP (m, rad):', pose['end_effector'], 'wrist (m):', pose['points'][3])
+PY
+```
+
+当前 12 cm / -3 cm 几何下，此水平目标的 TCP 为 `(0.25,0,0.25)m`，腕轴为 `(0.13,0,0.28)m`。这是数学检查，不验证实机标定或关节安全限位。
 
 ### 2. 实机零位偏置与方向校准 (`joint_mapping`)
 - **若某关节旋转方向与预期相反（例如给正角反而向下运动）**：
@@ -170,11 +212,10 @@ geometry:
 ### 4. 反馈和等待参数 (`planning`)
 
 - `status_max_age_sec`：状态到达规划器后的最大可用时长，当前配置为 0.25 秒。20 Hz 回报正常时约每 50 ms 更新一次。
-- `execution_timeout_buffer_sec`：从发布启动 Mode 起，轨迹末点时间之外的等待余量，默认 2 秒。超时会发布 STOP，但该发布不等于固件确认停止。
+- 运动执行无限等待匹配轨迹 ID 的下位机完成/报错；主动 STOP/ESTOP 或节点退出可中断。`execution_timeout_buffer_sec` 已从配置与加载校验删除，mission 也不再设置前端运动超时。端点发现和反馈新鲜度仍独立校验。
 - `interpolation_step_ms`：路点时间间隔目标值。每条轨迹均从最新实测角的 0 ms 路点开始；预设 `duration_ms` 为逐段时长。
 - `default_dwell_ms`：预设夹爪动作路点未指定 `dwell_ms` 时的默认驻留时间。
 - `mode_start_delay_ms`：发布全部路点后、发布 `Mode=TRAJECTORY` 前的调试等待时间，默认 100 ms。它只是时间缓冲，不能证明通信桥已经完成逐点发送或下位机已经装载全部路点；正式修复仍应由通信桥提供跨消息发送屏障。
-- `cartesian_offset_m`：笛卡尔服务目标的 `[x, y, z]` 平移量（米）。例如 `[0.0, 0.0, -0.03]` 会让服务目标的 Z 减少 3 cm，然后再做 PTP/LIN 解算和限位校验；`cmd_cartesian` 也生效，YAML 笛卡尔预设、关节服务及关节预设不受影响。修改后重启规划节点才生效。
 
 节点启动时从源码目录的 `arm_presets.yaml` 读取几何、四轴偏置/方向/限位、规划时间参数与预设；缺少必需项或基本结构无效时启动失败，不回退到 Python 中的机械参数。修改限位前应核实四轴实测角仍在新范围内，否则规划器会拒绝运动。
 
@@ -194,7 +235,7 @@ source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 # ========================================================
 # 1. 基础服务调用（预设姿态触发）
 # ========================================================
-# 执行现有基准预设；home/retract 快捷服务仅在配置了同名预设后可用
+# 执行现有基准预设；home 快捷服务仅在配置了同名预设后可用
 ros2 service call /arm_planner_node/execute_preset fruit_arm_interfaces/srv/ExecuteArmPreset \
   "{preset_name: 'zero'}"
 
@@ -257,10 +298,10 @@ ros2 topic echo /fruit_hardware_bridge/arm/status
 - 检查 `task_status`；运动中或急停锁定时不能发新运动。急停后按固件协议发送 STOP 解锁，并等待新鲜的 IDLE 回报。
 - 调用 STOP 的服务成功只表示 Mode 已交给 ROS 发布器；必须观察后续状态确认硬件已经返回空闲。
 
-### 故障 0.1：服务超时或已发布轨迹但机械臂没有运行
+### 故障 0.1：服务持续等待或已发布轨迹但机械臂没有运行
 - 记录服务返回的 `trajectory_id`，对照 `/fruit_hardware_bridge/arm/status` 的 ID、`task_status` 与 `error_code`。
 - 规划器按 Header、全部 Point、Mode 顺序发布，但 ROS 话题及桥接层不同报文 ID 之间没有跨队列到达屏障；如果 Mode 在点收齐前到达，固件应报错，具体错误行为仍需现场核实。
-- 超时 STOP 可能在桥接层排队；不要把返回超时当作电机已经停稳。
+- 执行没有自动超时 STOP；需要人工中断时使用 STOP/ESTOP。停止命令可能在桥接层排队，不要把服务返回当作电机已经停稳。
 
 ### 故障 1：发布指令后机械臂毫无反应
 - **排查步骤 1**：检查底层串口通信桥 `auto_serial_bridge` 是否已启动：

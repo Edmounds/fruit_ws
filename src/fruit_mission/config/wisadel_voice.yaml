@@ -1,0 +1,542 @@
+version: 1
+audio_dir: "../sounds/wisadel"
+sample_rate: 32000
+channels: 1
+sample_width: 2  # 16-bit PCM
+
+phrases:
+  # -------------------------------------------------------------
+  # 1. 固定台词 (Fixed announcements)
+  # -------------------------------------------------------------
+  - id: start
+    text: "我们是重庆大学 RoboCup 水果采摘队伍，现在开始采摘"
+    tts_text: "我们是重庆大学若博卡普水果采摘队伍，现在开始采摘"
+    file: "start.wav"
+  - id: flow_finish
+    text: "任务流程结束"
+    file: "flow_finish.wav"
+
+  # -------------------------------------------------------------
+  # 2. 汇总相关 (Summary)
+  # -------------------------------------------------------------
+  - id: summary_intro
+    text: "本次采摘记录"
+    file: "summary_intro.wav"
+  - id: summary_none
+    text: "本次没有采摘记录"
+    file: "summary_none.wav"
+
+  # -------------------------------------------------------------
+  # 3. 基础果蔬品种 (Produce names)
+  # -------------------------------------------------------------
+  - id: produce_apple
+    text: "苹果"
+    file: "produce_apple.wav"
+  - id: produce_pear
+    text: "梨子"
+    file: "produce_pear.wav"
+  - id: produce_pumpkin
+    text: "南瓜"
+    file: "produce_pumpkin.wav"
+  - id: produce_tomato
+    text: "西红柿"
+    file: "produce_tomato.wav"
+  - id: produce_chili
+    text: "辣椒"
+    file: "produce_chili.wav"
+  - id: produce_onion
+    text: "洋葱"
+    file: "produce_onion.wav"
+
+  # -------------------------------------------------------------
+  # 4. 汇总数量短语 1~32 (Quantity phrases)
+  # -------------------------------------------------------------
+  - id: count_1
+    text: "一个"
+    file: "count_1.wav"
+  - id: count_2
+    text: "两个"
+    file: "count_2.wav"
+  - id: count_3
+    text: "三个"
+    file: "count_3.wav"
+  - id: count_4
+    text: "四个"
+    file: "count_4.wav"
+  - id: count_5
+    text: "五个"
+    file: "count_5.wav"
+  - id: count_6
+    text: "六个"
+    file: "count_6.wav"
+  - id: count_7
+    text: "七个"
+    file: "count_7.wav"
+  - id: count_8
+    text: "八个"
+    file: "count_8.wav"
+  - id: count_9
+    text: "九个"
+    file: "count_9.wav"
+  - id: count_10
+    text: "十个"
+    file: "count_10.wav"
+  - id: count_11
+    text: "十一个"
+    file: "count_11.wav"
+  - id: count_12
+    text: "十二个"
+    file: "count_12.wav"
+  - id: count_13
+    text: "十三个"
+    file: "count_13.wav"
+  - id: count_14
+    text: "十四个"
+    file: "count_14.wav"
+  - id: count_15
+    text: "十五个"
+    file: "count_15.wav"
+  - id: count_16
+    text: "十六个"
+    file: "count_16.wav"
+  - id: count_17
+    text: "十七个"
+    file: "count_17.wav"
+  - id: count_18
+    text: "十八个"
+    file: "count_18.wav"
+  - id: count_19
+    text: "十九个"
+    file: "count_19.wav"
+  - id: count_20
+    text: "二十个"
+    file: "count_20.wav"
+  - id: count_21
+    text: "二十一个"
+    file: "count_21.wav"
+  - id: count_22
+    text: "二十二个"
+    file: "count_22.wav"
+  - id: count_23
+    text: "二十三个"
+    file: "count_23.wav"
+  - id: count_24
+    text: "二十四个"
+    file: "count_24.wav"
+  - id: count_25
+    text: "二十五个"
+    file: "count_25.wav"
+  - id: count_26
+    text: "二十六个"
+    file: "count_26.wav"
+  - id: count_27
+    text: "二十七个"
+    file: "count_27.wav"
+  - id: count_28
+    text: "二十八个"
+    file: "count_28.wav"
+  - id: count_29
+    text: "二十九个"
+    file: "count_29.wav"
+  - id: count_30
+    text: "三十个"
+    file: "count_30.wav"
+  - id: count_31
+    text: "三十一个"
+    file: "count_31.wav"
+  - id: count_32
+    text: "三十二个"
+    file: "count_32.wav"
+
+  # -------------------------------------------------------------
+  # 5. B区树号前缀 (B tree prefixes)
+  # -------------------------------------------------------------
+  - id: b_tree_1
+    text: "B区第一棵树"
+    file: "b_tree_1.wav"
+  - id: b_tree_2
+    text: "B区第二棵树"
+    file: "b_tree_2.wav"
+  - id: b_tree_3
+    text: "B区第三棵树"
+    file: "b_tree_3.wav"
+  - id: b_tree_4
+    text: "B区第四棵树"
+    file: "b_tree_4.wav"
+  - id: b_tree_5
+    text: "B区第五棵树"
+    file: "b_tree_5.wav"
+  - id: b_tree_6
+    text: "B区第六棵树"
+    file: "b_tree_6.wav"
+  - id: b_tree_7
+    text: "B区第七棵树"
+    file: "b_tree_7.wav"
+  - id: b_tree_8
+    text: "B区第八棵树"
+    file: "b_tree_8.wav"
+
+  # -------------------------------------------------------------
+  # 6. B区二维码摘要整项 (B QR tasks: tree + fruit)
+  # -------------------------------------------------------------
+  - id: b_qr_1_apple
+    text: "第一棵树苹果"
+    file: "b_qr_1_apple.wav"
+  - id: b_qr_1_pear
+    text: "第一棵树梨子"
+    file: "b_qr_1_pear.wav"
+  - id: b_qr_2_apple
+    text: "第二棵树苹果"
+    file: "b_qr_2_apple.wav"
+  - id: b_qr_2_pear
+    text: "第二棵树梨子"
+    file: "b_qr_2_pear.wav"
+  - id: b_qr_3_apple
+    text: "第三棵树苹果"
+    file: "b_qr_3_apple.wav"
+  - id: b_qr_3_pear
+    text: "第三棵树梨子"
+    file: "b_qr_3_pear.wav"
+  - id: b_qr_4_apple
+    text: "第四棵树苹果"
+    file: "b_qr_4_apple.wav"
+  - id: b_qr_4_pear
+    text: "第四棵树梨子"
+    file: "b_qr_4_pear.wav"
+  - id: b_qr_5_apple
+    text: "第五棵树苹果"
+    file: "b_qr_5_apple.wav"
+  - id: b_qr_5_pear
+    text: "第五棵树梨子"
+    file: "b_qr_5_pear.wav"
+  - id: b_qr_6_apple
+    text: "第六棵树苹果"
+    file: "b_qr_6_apple.wav"
+  - id: b_qr_6_pear
+    text: "第六棵树梨子"
+    file: "b_qr_6_pear.wav"
+  - id: b_qr_7_apple
+    text: "第七棵树苹果"
+    file: "b_qr_7_apple.wav"
+  - id: b_qr_7_pear
+    text: "第七棵树梨子"
+    file: "b_qr_7_pear.wav"
+  - id: b_qr_8_apple
+    text: "第八棵树苹果"
+    file: "b_qr_8_apple.wav"
+  - id: b_qr_8_pear
+    text: "第八棵树梨子"
+    file: "b_qr_8_pear.wav"
+
+  # -------------------------------------------------------------
+  # 7. C区项号 (C sequences 1~8)
+  # -------------------------------------------------------------
+  - id: c_seq_1
+    text: "第一项"
+    file: "c_seq_1.wav"
+  - id: c_seq_2
+    text: "第二项"
+    file: "c_seq_2.wav"
+  - id: c_seq_3
+    text: "第三项"
+    file: "c_seq_3.wav"
+  - id: c_seq_4
+    text: "第四项"
+    file: "c_seq_4.wav"
+  - id: c_seq_5
+    text: "第五项"
+    file: "c_seq_5.wav"
+  - id: c_seq_6
+    text: "第六项"
+    file: "c_seq_6.wav"
+  - id: c_seq_7
+    text: "第七项"
+    file: "c_seq_7.wav"
+  - id: c_seq_8
+    text: "第八项"
+    file: "c_seq_8.wav"
+
+  # -------------------------------------------------------------
+  # 8. C区位置名 (C position names 1~12)
+  # -------------------------------------------------------------
+  - id: c_pos_1
+    text: "一号位置"
+    file: "c_pos_1.wav"
+  - id: c_pos_2
+    text: "二号位置"
+    file: "c_pos_2.wav"
+  - id: c_pos_3
+    text: "三号位置"
+    file: "c_pos_3.wav"
+  - id: c_pos_4
+    text: "四号位置"
+    file: "c_pos_4.wav"
+  - id: c_pos_5
+    text: "五号位置"
+    file: "c_pos_5.wav"
+  - id: c_pos_6
+    text: "六号位置"
+    file: "c_pos_6.wav"
+  - id: c_pos_7
+    text: "七号位置"
+    file: "c_pos_7.wav"
+  - id: c_pos_8
+    text: "八号位置"
+    file: "c_pos_8.wav"
+  - id: c_pos_9
+    text: "九号位置"
+    file: "c_pos_9.wav"
+  - id: c_pos_10
+    text: "十号位置"
+    file: "c_pos_10.wav"
+  - id: c_pos_11
+    text: "十一号位置"
+    file: "c_pos_11.wav"
+  - id: c_pos_12
+    text: "十二号位置"
+    file: "c_pos_12.wav"
+
+  # -------------------------------------------------------------
+  # 9. C区作业位置前缀 (C-zone prefixes for in-field events)
+  # -------------------------------------------------------------
+  - id: c_zone_pos_1
+    text: "C区一号位置"
+    file: "c_zone_pos_1.wav"
+  - id: c_zone_pos_2
+    text: "C区二号位置"
+    file: "c_zone_pos_2.wav"
+  - id: c_zone_pos_3
+    text: "C区三号位置"
+    file: "c_zone_pos_3.wav"
+  - id: c_zone_pos_4
+    text: "C区四号位置"
+    file: "c_zone_pos_4.wav"
+  - id: c_zone_pos_5
+    text: "C区五号位置"
+    file: "c_zone_pos_5.wav"
+  - id: c_zone_pos_6
+    text: "C区六号位置"
+    file: "c_zone_pos_6.wav"
+  - id: c_zone_pos_7
+    text: "C区七号位置"
+    file: "c_zone_pos_7.wav"
+  - id: c_zone_pos_8
+    text: "C区八号位置"
+    file: "c_zone_pos_8.wav"
+  - id: c_zone_pos_9
+    text: "C区九号位置"
+    file: "c_zone_pos_9.wav"
+  - id: c_zone_pos_10
+    text: "C区十号位置"
+    file: "c_zone_pos_10.wav"
+  - id: c_zone_pos_11
+    text: "C区十一号位置"
+    file: "c_zone_pos_11.wav"
+  - id: c_zone_pos_12
+    text: "C区十二号位置"
+    file: "c_zone_pos_12.wav"
+
+  # -------------------------------------------------------------
+  # 10. 应该采目标 (Expected produce phrases for C)
+  # -------------------------------------------------------------
+  - id: expect_apple
+    text: "应该采苹果"
+    file: "expect_apple.wav"
+  - id: expect_pear
+    text: "应该采梨子"
+    file: "expect_pear.wav"
+  - id: expect_pumpkin
+    text: "应该采南瓜"
+    file: "expect_pumpkin.wav"
+  - id: expect_tomato
+    text: "应该采西红柿"
+    file: "expect_tomato.wav"
+  - id: expect_chili
+    text: "应该采辣椒"
+    file: "expect_chili.wav"
+  - id: expect_onion
+    text: "应该采洋葱"
+    file: "expect_onion.wav"
+
+  # -------------------------------------------------------------
+  # 11. 观察到的目标 (Observed types: ripe, unripe, unknown)
+  # -------------------------------------------------------------
+  - id: ripe_apple
+    text: "成熟苹果"
+    file: "ripe_apple.wav"
+  - id: ripe_pear
+    text: "成熟梨子"
+    file: "ripe_pear.wav"
+  - id: ripe_pumpkin
+    text: "成熟南瓜"
+    file: "ripe_pumpkin.wav"
+  - id: ripe_tomato
+    text: "成熟西红柿"
+    file: "ripe_tomato.wav"
+  - id: ripe_chili
+    text: "成熟辣椒"
+    file: "ripe_chili.wav"
+  - id: ripe_onion
+    text: "成熟洋葱"
+    file: "ripe_onion.wav"
+  - id: unripe_apple
+    text: "不成熟苹果"
+    file: "unripe_apple.wav"
+  - id: unripe_pear
+    text: "不成熟梨子"
+    file: "unripe_pear.wav"
+  - id: unripe_pumpkin
+    text: "不成熟南瓜"
+    file: "unripe_pumpkin.wav"
+  - id: unripe_tomato
+    text: "不成熟西红柿"
+    file: "unripe_tomato.wav"
+  - id: unripe_chili
+    text: "不成熟辣椒"
+    file: "unripe_chili.wav"
+  - id: unripe_onion
+    text: "不成熟洋葱"
+    file: "unripe_onion.wav"
+  - id: unknown_fruit
+    text: "未知果实"
+    file: "unknown_fruit.wav"
+  - id: unknown_target
+    text: "未知目标"
+    file: "unknown_target.wav"
+  - id: other_target
+    text: "其他目标"
+    file: "other_target.wav"
+
+  # -------------------------------------------------------------
+  # 12. 识别动作与工序 (Actions, matching and success)
+  # -------------------------------------------------------------
+  - id: act_recognize
+    text: "识别到"
+    file: "act_recognize.wav"
+  - id: act_harvest_done
+    text: "采摘放置工序完成"
+    file: "act_harvest_done.wav"
+  - id: qr_mismatch_skip
+    text: "和二维码不一致，跳过"
+    file: "qr_mismatch_skip.wav"
+  - id: qr_match_start_apple
+    text: "和二维码一致，开始抓成熟苹果"
+    file: "qr_match_start_apple.wav"
+  - id: qr_match_start_pear
+    text: "和二维码一致，开始抓成熟梨子"
+    file: "qr_match_start_pear.wav"
+  - id: qr_match_no_ripe_apple
+    text: "和二维码一致，没有成熟苹果，跳过"
+    file: "qr_match_no_ripe_apple.wav"
+  - id: qr_match_no_ripe_pear
+    text: "和二维码一致，没有成熟梨子，跳过"
+    file: "qr_match_no_ripe_pear.wav"
+
+  # -------------------------------------------------------------
+  # 13. 跳过与失败判断 (Skips and failure clauses)
+  # -------------------------------------------------------------
+  - id: skip_no_fruit
+    text: "没有识别到果实，跳过"
+    file: "skip_no_fruit.wav"
+  - id: skip_no_target
+    text: "没有识别到目标，跳过"
+    file: "skip_no_target.wav"
+  - id: skip_inconsistent
+    text: "识别结果不一致，跳过"
+    file: "skip_inconsistent.wav"
+  - id: skip_no_ripe_apple
+    text: "没有识别到成熟苹果，跳过"
+    file: "skip_no_ripe_apple.wav"
+  - id: skip_no_ripe_pear
+    text: "没有识别到成熟梨子，跳过"
+    file: "skip_no_ripe_pear.wav"
+  - id: skip_no_ripe_pumpkin
+    text: "没有识别到成熟南瓜，跳过"
+    file: "skip_no_ripe_pumpkin.wav"
+  - id: skip_no_ripe_tomato
+    text: "没有识别到成熟西红柿，跳过"
+    file: "skip_no_ripe_tomato.wav"
+  - id: skip_no_ripe_chili
+    text: "没有识别到成熟辣椒，跳过"
+    file: "skip_no_ripe_chili.wav"
+  - id: skip_no_ripe_onion
+    text: "没有识别到成熟洋葱，跳过"
+    file: "skip_no_ripe_onion.wav"
+  - id: nav_fail_skip
+    text: "导航失败，跳过"
+    file: "nav_fail_skip.wav"
+  - id: nav_plan_fail_skip
+    text: "当前项导航规划失败，跳过"
+    file: "nav_plan_fail_skip.wav"
+  - id: invalid_id_skip
+    text: "编号无效，跳过"
+    file: "invalid_id_skip.wav"
+  - id: detect_fail_skip
+    text: "识别失败，跳过"
+    file: "detect_fail_skip.wav"
+  - id: detect_timeout_skip
+    text: "识别超时，跳过"
+    file: "detect_timeout_skip.wav"
+  - id: pick_fail
+    text: "闭环抓取失败"
+    file: "pick_fail.wav"
+  - id: arm_turn_timeout_skip
+    text: "机械臂转向采摘位置超时，跳过"
+    file: "arm_turn_timeout_skip.wav"
+  - id: arm_turn_timeout
+    text: "机械臂转向采摘位置超时"
+    file: "arm_turn_timeout.wav"
+  - id: cam_switch_fail_skip
+    text: "深度相机识别模式切换失败，跳过"
+    file: "cam_switch_fail_skip.wav"
+  - id: cam_switch_fail
+    text: "深度相机识别模式切换失败"
+    file: "cam_switch_fail.wav"
+  - id: cam_no_target
+    text: "深度相机没有识别到可抓取目标"
+    file: "cam_no_target.wav"
+  - id: arm_err_skip_remain
+    text: "机械臂执行报错，跳过剩余目标"
+    file: "arm_err_skip_remain.wav"
+  - id: arm_err_continue
+    text: "机械臂执行报错，继续下一个目标"
+    file: "arm_err_continue.wav"
+  - id: arm_err
+    text: "机械臂执行报错"
+    file: "arm_err.wav"
+  - id: arm_timeout_skip_remain
+    text: "机械臂执行通信超时，跳过剩余目标"
+    file: "arm_timeout_skip_remain.wav"
+  - id: arm_timeout_continue
+    text: "机械臂执行通信超时，继续下一个目标"
+    file: "arm_timeout_continue.wav"
+  - id: arm_timeout
+    text: "机械臂执行通信超时"
+    file: "arm_timeout.wav"
+  - id: arm_not_ready_skip_remain
+    text: "机械臂通信端点未就绪，跳过剩余目标"
+    file: "arm_not_ready_skip_remain.wav"
+  - id: arm_not_ready_continue
+    text: "机械臂通信端点未就绪，继续下一个目标"
+    file: "arm_not_ready_continue.wav"
+  - id: arm_not_ready
+    text: "机械臂通信端点未就绪"
+    file: "arm_not_ready.wav"
+  - id: arm_fail_skip_remain
+    text: "机械臂执行失败，跳过剩余目标"
+    file: "arm_fail_skip_remain.wav"
+  - id: arm_fail_continue
+    text: "机械臂执行失败，继续下一个目标"
+    file: "arm_fail_continue.wav"
+  - id: arm_fail
+    text: "机械臂执行失败"
+    file: "arm_fail.wav"
+  - id: skip_remain
+    text: "跳过剩余目标"
+    file: "skip_remain.wav"
+  - id: continue_next
+    text: "继续下一个目标"
+    file: "continue_next.wav"
+  - id: just_skip
+    text: "跳过"
+    file: "just_skip.wav"

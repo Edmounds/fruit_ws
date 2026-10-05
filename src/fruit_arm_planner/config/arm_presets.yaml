@@ -7,7 +7,8 @@ arm_planner_node:
       d1: 0.062       # 基座高度 (底盘安装面至肩部俯仰轴)
       a2: 0.26       # 大臂长度 (肩轴至肘轴)
       a3: 0.26       # 小臂长度 (肘轴至腕轴)
-      a4: 0.12       # 腕部至末端夹爪作用点长度
+      a4: 0.12       # 腕轴沿末端局部 X 方向伸出长度；pitch=0 时此段水平
+      tool_z_offset_m: -0.03  # 真实抓取点的末端局部 Z 偏移，随腕部旋转；下方为负
 
     # ------------------------------------------------------------------------
     # 2. 关节坐标系映射与零位偏置
@@ -21,19 +22,19 @@ arm_planner_node:
       q1:
         offset_deg: 0.0          # 偏航底座零位 (正前为0, 左正右负)
         direction: 1.0
-        limits_deg: [-180.0, 180.0]
+        limits_deg: [-185.0, 185.0]
       q2:
         offset_deg: -89.0        # 几何竖直 q2=90° 时，硬件目标角为1°
         direction: 1.0
-        limits_deg: [-87.0, 45.0] # -87°为接近底盘水平极限，+45°为后仰极限
+        limits_deg: [-87.0, 90.0] # -87°为接近底盘水平极限，+45°为后仰极限
       q3:
-        offset_deg: -6.0         # 模型小臂水平 q2+q3=0° 时，硬件目标角为-6°
+        offset_deg: -13.0         # 模型小臂水平 q2+q3=0° 时，硬件目标角为-6°
         direction: 1.0
         limits_deg: [-135.0, 90.0]
       q4:
         offset_deg: -5.0         # 模型腕部与小臂同向 q4=0° 时，硬件目标角为-5°
         direction: 1.0
-        limits_deg: [-90.0, 105.0]
+        limits_deg: [-130.0, 130.0]
 
     # ------------------------------------------------------------------------
     # 3. 规划与插值默认参数
@@ -43,10 +44,8 @@ arm_planner_node:
       interpolation_step_ms: 200   # 约5Hz 插值周期 (ms)
       default_dwell_ms: 500       # 夹爪动作路点未写 dwell_ms 时的驻留时间 (ms)
       status_max_age_sec: 0.25    # 接受四轴实测反馈的最大接收时延 (s)
-      execution_timeout_buffer_sec: 2.0  # 轨迹时长之外的状态等待余量 (s)
       mode_start_delay_ms: 100    # 调试缓冲：路点发布后等待再发送启动 Mode (ms)
       hover_height_m: 0.06        # 安全悬停提升高度 (m)
-      cartesian_offset_m: [0.0, 0.0, 0.03]  # 笛卡尔服务目标的 XYZ 偏置 (m)，预设不叠加
 
     # ------------------------------------------------------------------------
     # 4. 机械臂预设工序与固定轨迹动作库
@@ -64,13 +63,13 @@ arm_planner_node:
         waypoints:
           - { target: [0.0, 0.0, 0.0, 0.0], duration_ms: 2500, gripper: 0 }
 
-      left_look:
+      left_look_a:
         description: "机械臂左侧观察位姿"
         coordinate_frame: "cartesian"
         waypoints:
           - { target: [0.0, 0.15, 0.30, -58.0], duration_ms: 1000, gripper: 0 }
 
-      right_look:
+      right_look_a:
         description: "机械臂右侧观察位姿"
         coordinate_frame: "cartesian"
         waypoints:
@@ -88,3 +87,114 @@ arm_planner_node:
           - { target: [0.40, 0.0, 0.40, 0.0], duration_ms: 1000, gripper: 0, dwell_ms: 0 }
           # 段 3: 带着果实收回到安全悬停高度，耗时 1500ms，保持夹紧
           - { target: [0.20, 0.0, 0.25, 0.0], duration_ms: 1500, gripper: 0, dwell_ms: 0 }
+
+      home:
+        description: "返回运动初始位置"
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.22
+          - -0.00
+          - 0.17
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
+
+      left_store_a:
+        description: "左方抓取完毕后存储并回到原位"
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.00
+          - 0.29
+          - 0.23
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+        - {duration_ms: 2000, gripper: 1, target: [-0.18, 0.01, 0.23, 0.0]}
+        - {duration_ms: 2000, gripper: 0, target: [0.00, 0.22, 0.23, 0.0]}
+        - {duration_ms: 2000, gripper: 0, target: [0.22, 0.00, 0.17, 0.0]}
+
+      right_store_a:
+        description: "右方抓取完毕后存储并回到原位"
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.00
+          - -0.29
+          - 0.23
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+        - {duration_ms: 2000, gripper: 1, target: [-0.18, -0.01, 0.23, 0.0]}
+        - {duration_ms: 2000, gripper: 0, target: [0.00, -0.22, 0.23, 0.0]}
+        - {duration_ms: 2000, gripper: 0, target: [0.22, -0.00, 0.17, 0.0]}
+
+      qr_scan:
+        description: "二维码扫描位姿"
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.3532
+          - 0.00
+          - 0.1289
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
+
+      shenzhi:
+        description: "伸直位姿"
+        coordinate_frame: "link_angles"
+        waypoints:
+          - { target: [0.0, 0.0, 90.0, 0.0], duration_ms: 1000, gripper: 0 }
+
+      left_look_c:
+        description: "机械臂左侧观察位姿"
+        coordinate_frame: "cartesian"
+        waypoints:
+          - { target: [0.0, 0.15, 0.30, -58.0], duration_ms: 1000, gripper: 0 }
+
+      right_look_c:
+        description: "机械臂右侧观察位姿"
+        coordinate_frame: "cartesian"
+        waypoints:
+          - { target: [0.0, -0.15, 0.30, 58.0], duration_ms: 1000, gripper: 0 }
+
+      left_store_c:
+        description: "左方抓取完毕后存储并回到原位"
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.00
+          - 0.29
+          - 0.23
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+        - {duration_ms: 2000, gripper: 1, target: [-0.18, 0.01, 0.23, 0.0]}
+        - {duration_ms: 2000, gripper: 0, target: [0.00, 0.22, 0.23, 0.0]}
+        - {duration_ms: 2000, gripper: 0, target: [0.22, 0.00, 0.17, 0.0]}
+
+      right_store_c:
+        description: "右方抓取完毕后存储并回到原位"
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.00
+          - -0.29
+          - 0.23
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+        - {duration_ms: 2000, gripper: 1, target: [-0.18, -0.01, 0.23, 0.0]}
+        - {duration_ms: 2000, gripper: 0, target: [0.00, -0.22, 0.23, 0.0]}
+        - {duration_ms: 2000, gripper: 0, target: [0.22, -0.00, 0.17, 0.0]}
+
+      left_look_b:
+        description: "机械臂左侧观察位姿"
+        coordinate_frame: "cartesian"
+        waypoints:
+          - { target: [0.0203, 0.0703, 0.303, -46.7], duration_ms: 1000, gripper: 0 }
+      #right_look_b:
+      #left_store_b:
+      #right_store_b

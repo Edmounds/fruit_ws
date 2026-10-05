@@ -10,7 +10,7 @@
 | [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md) | 模块边界、数据流、任务顺序及未完成集成 |
 | [ODOMETRY_NAVIGATION.md](ODOMETRY_NAVIGATION.md) | Point-LIO、TF、轴向导航和启动入口 |
 | [WAYPOINT_RECORDING.md](WAYPOINT_RECORDING.md) | RViz 录点、Web 编辑、C 区拓扑与 yaw |
-| [PERCEPTION_MODE_COMMANDS.md](PERCEPTION_MODE_COMMANDS.md) | OFF / QR / DETECT 的 ROS CLI 操作 |
+| [PERCEPTION_MODE_COMMANDS.md](PERCEPTION_MODE_COMMANDS.md) | 单相机常开与观察窗口的 ROS CLI 操作 |
 | [CAMERA_TUNING.md](CAMERA_TUNING.md) | 单 camera 的物种检测 GUI 与参数持久化 |
 | [DATASET_PIPELINE.md](DATASET_PIPELINE.md) | 当前图像采集工具与训练环境边界 |
 | [LOWER_CONTROLLER_COMMANDS.md](LOWER_CONTROLLER_COMMANDS.md) | 串口消息契约、状态与通信限制；不是绕过 planner 的操作指南 |

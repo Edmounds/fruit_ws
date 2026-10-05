@@ -37,8 +37,7 @@ fruit_perception_node:
     camera_rgbd_heartbeat_topic: "/fruit_perception/camera/rgbd_heartbeat"
     decision_topic: "/fruit_perception/decision"
     camera_annotated_topic: "/fruit_perception/camera/annotated_image"
-    perception_mode_topic: "/fruit_mission/perception_mode"
-    active_mode_topic: "/fruit_perception/active_mode"
+    observation_window_topic: "/fruit_mission/observation_window"
     current_area_topic: "/fruit_mission/current_area"
     expected_fruit_type_topic: "/fruit_mission/expected_fruit_type"
     model_root: "/home/rc4/fruit_ws/src/fruit_perception/model"
@@ -61,10 +60,3 @@ fruit_perception_node:
     camera_b_target_max_count: 2
     camera_b_target_association_radius_m: 0.03
     camera_b_target_outlier_sigma: 2.0
-
-camera_mode_manager:
-  ros__parameters:
-    perception_mode_topic: "/fruit_mission/perception_mode"
-    active_mode_topic: "/fruit_perception/active_mode"
-    camera_parameter_service: "/camera/set_parameters"
-    camera_get_parameters_service: "/camera/get_parameters"

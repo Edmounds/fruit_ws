@@ -81,6 +81,26 @@ def transform_end_to_base_mm(end_xyz_mm, end_origin_mm, yaw_rad, pitch_rad):
     ), 'base point (mm)')
 
 
+def apply_target_offset_mm(base_xyz_mm, offset_m):
+    """Apply base-frame target offset [dx, dy, dz] in meters to base point in mm.
+
+    dx and dz are added directly (scaled to mm).
+    dy represents lateral offset magnitude in meters; its sign is determined
+    by the sign of base_y (+abs(dy) when base_y > 0, -abs(dy) when base_y < 0).
+    """
+    bx, by, bz = _vector3(base_xyz_mm, 'base point (mm)')
+    dx, dy, dz = _vector3(offset_m, 'target offset (m)')
+    dx_mm = dx * 1000.0
+    dz_mm = dz * 1000.0
+    if by > 0.0:
+        dy_mm = abs(dy) * 1000.0
+    elif by < 0.0:
+        dy_mm = -abs(dy) * 1000.0
+    else:
+        dy_mm = 0.0
+    return _vector3((bx + dx_mm, by + dy_mm, bz + dz_mm), 'adjusted base point (mm)')
+
+
 if __name__ == '__main__':
     import argparse
     import json

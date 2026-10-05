@@ -60,12 +60,19 @@ def generate_launch_description():
         default_value=default_auto_name_file,
         description="YAML file containing formal waypoint names in recording order",
     )
+    declare_log_level = DeclareLaunchArgument(
+        "log_level",
+        default_value="info",
+        choices=["debug", "info", "warn", "error", "fatal"],
+        description="Logging level for waypoint recorder node",
+    )
     launch_actions = [
         declare_use_sim_time,
         declare_waypoint_file,
         declare_frame_id,
         declare_auto_name_prefix,
         declare_auto_name_file,
+        declare_log_level,
     ]
     for node_config in nodes_to_launch:
         parameters = list(node_config.get("parameters", []))
@@ -87,6 +94,7 @@ def generate_launch_description():
                 emulate_tty=True,
                 parameters=parameters,
                 remappings=node_config.get("remappings", []),
+                arguments=["--ros-args", "--log-level", LaunchConfiguration("log_level")],
             )
         )
 

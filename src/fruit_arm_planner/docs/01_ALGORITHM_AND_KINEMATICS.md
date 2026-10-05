@@ -23,10 +23,11 @@
        Z (天顶)
        ▲
        │                  [肘关节 P2]
-       │                  ●──────────────● [腕关节 P3] ───● [夹爪作用中心 P4]
+       │                  ●──────────────● [腕关节 P3] ───● [伸出段末端 P4]
        │                 /  (小臂连杆 a3)    (腕部连杆 a4)
-       │                / (大臂连杆 a2)
-       │               /
+       │                /                                 │ 固定局部 Z 偏移
+       │               /                                  ● [真实抓取点 TCP]
+       │              / (大臂连杆 a2)
        │              ● [肩关节 P1]
        │              │
        │              │ (基座高度 d1)
@@ -38,9 +39,10 @@
 - **`d1` (基座高度)**：底盘安装基准面到肩部俯仰轴轴心的高度差；
 - **`a2` (大臂长度)**：肩部旋转轴中心到肘部旋转轴中心的距离；
 - **`a3` (小臂长度)**：肘部旋转轴中心到腕部俯仰轴中心的距离；
-- **`a4` (末端作用长度)**：腕部旋转轴中心到夹爪采摘作用中心的距离。
+- **`a4` (末端伸出长度)**：腕部旋转轴沿末端局部 X 方向到伸出段末端的长度，不是腕轴到真实抓取点的斜线长度。
+- **`tool_z_offset_m`**：伸出段末端到真实夹爪抓取点 TCP 的固定局部 Z 偏移，下方为负，随腕部俯仰和底座偏航旋转。当前为 `-0.03 m`，在 YAML 中调参，不是世界 Z 平移，也不增加运动自由度。
 
-四个尺寸在启动时全部由 `config/arm_presets.yaml` 提供，算法内部不设几何默认值。
+上述几何参数在启动时全部由 `config/arm_presets.yaml` 提供。四个连杆尺寸必须有限且为正，局部 Z 偏移必须是有限数，可为零或正负值；算法内部不设几何默认值。
 
 ---
 
@@ -74,19 +76,23 @@ $$P_2 = \big(r_2 \cdot \cos(q_1), \; r_2 \cdot \sin(q_1), \; z_2\big)$$
 投影到 3D 笛卡尔坐标系：
 $$P_3 = \big(r_3 \cdot \cos(q_1), \; r_3 \cdot \sin(q_1), \; z_3\big)$$
 
-#### ④ 末端夹爪中心 $P_4$ 与末端空间俯仰角 $\text{pitch}$：
-夹爪连杆的总俯仰角为前三轴转角之和：
+#### ④ 伸出段末端 $P_4$ 与末端空间俯仰角 $\text{pitch}$：
+末端伸出段 a4 的总俯仰角为三个俯仰关节转角之和：
 $$\text{pitch} = q_2 + q_3 + q_4$$
 - 径向投影距离：$r_4 = r_3 + a_4 \cdot \cos(\text{pitch})$
 - 坚直高度：$z_4 = z_3 + a_4 \cdot \sin(\text{pitch})$
-最终末端执行器空间位姿：
-$$X = r_4 \cdot \cos(q_1), \quad Y = r_4 \cdot \sin(q_1), \quad Z = z_4$$
+#### ⑤ 真实夹爪抓取点 TCP：
+令 $b=\text{tool\_z\_offset\_m}$，固定偏移沿末端局部 Z 轴旋转：
+$$r_{TCP}=r_4-b\sin(\text{pitch}), \qquad z_{TCP}=z_4+b\cos(\text{pitch})$$
+$$X=r_{TCP}\cos(q_1), \quad Y=r_{TCP}\sin(q_1), \quad Z=z_{TCP}$$
+
+FK 的 `end_effector` 返回 TCP 的 `(x,y,z,pitch)`；`points` 按顺序返回 `P0/P1/P2/P3/P4/TCP`，包含固定下偏段。`pitch` 仍然描述 a4 段，**不描述腕轴到 TCP 的斜线**。`pitch=0°` 时 a4 水平，TCP 比腕轴低 3 cm；不会为斜线附加角度修正。
 
 ---
 
 ## 三、逆向运动学 (IK) 几何解析推导
 
-逆运动学（Inverse Kinematics, IK）负责根据给定的目标笛卡尔空间点 $(X, Y, Z)$ 及期望俯仰角 $\text{pitch}$，反算出 4 个关节理论转角 $(q_1, q_2, q_3, q_4)$。
+逆运动学（Inverse Kinematics, IK）负责根据真实抓取点 TCP 的目标 $(X, Y, Z)$ 及 a4 段期望俯仰角 $\text{pitch}$，反算出 4 个关节理论转角 $(q_1, q_2, q_3, q_4)$。直接笛卡尔请求和笛卡尔预设共用此模型，不再对输入坐标额外平移。
 
 ### 1. 求解基座旋转偏航角 $q_1$
 由于机械臂安装于小车前进方向，底座直接朝向目标点在底盘水平面上的投影：
@@ -95,9 +101,11 @@ $$q_1 = \text{atan2}(Y, X)$$
 $$r = \sqrt{X^2 + Y^2}$$
 
 ### 2. 末端隔离，逆推腕部中心 $P_3$ 在 $(r, z)$ 平面内的位置
-已知末端作用点位置为 $(r, Z)$，末端杆长为 $a_4$。沿反方向推导腕关节中心坐标 $(r_w, z_w)$：
-$$r_w = r - a_4 \cdot \cos(\text{pitch})$$
-$$z_w = (Z - d_1) - a_4 \cdot \sin(\text{pitch})$$
+已知 TCP 位置为 $(r, Z)$，伸出长度为 $a_4$，局部 Z 偏移为 $b$。反向扣除这两段刚性结构，得到腕关节中心坐标（$z_w$ 相对肩轴）：
+$$r_w = r - a_4 \cos(\text{pitch}) + b\sin(\text{pitch})$$
+$$z_w = (Z - d_1) - a_4 \sin(\text{pitch}) - b\cos(\text{pitch})$$
+
+水平时 $b=-0.03m$，腕轴比请求的 TCP 高 3 cm；倾斜时按姿态旋转补偿。腕部角仍为 $q_4=\text{pitch}-(q_2+q_3)$，与关节零位标定无关。
 
 ### 3. 工作空间物理可达性检查
 计算肩关节 $P_1(0, d_1)$ 到腕关节 $P_3(r_w, z_w + d_1)$ 的直线连线长度 $d$：
@@ -169,12 +177,14 @@ $$q_{3,\text{algo}} = \frac{q_{3,\text{hardware}} - \text{offset}_3}{\text{direc
   - 向上抬为正，向前下方俯低为负，大臂俯下到接近水平时对应 $-87^\circ \sim -90^\circ$；
 - **Q3（小臂）**：
   - 小臂水平朝前时，绝对倾角 $q_2 + q_3 = 0^\circ$，硬件角也为 $0^\circ$；
-  - 已确认小臂水平时原始反馈约为 $0^\circ$，且大臂单独转动时该反馈不变；当前 YAML 用 $-6^\circ$ 的标定偏置，计算时由映射器统一处理；
+- 已确认小臂水平时原始反馈约为 $0^\circ$，且大臂单独转动时该反馈不变；计算时由映射器统一处理源码 YAML 的标定偏置，当前值为 $-13^\circ$，不从 YAML 注释或旧文档取值；
   - 小臂相对水平面向上为正，向下为负；
 - **Q4（腕部）**：
   - 电机安装在小臂上，算法将 Q4 定义为末端相对小臂的角度。当前 YAML 映射为 $\mathbf{offset = -5.0^\circ, direction = +1.0}$；当小臂不水平时，Q4 的硬件角为零并不代表末端水平。
 
 ---
+
+反馈遥测还提供模型角速度：$\dot q_2=\dot h_2/direction_2$，$\dot q_3=\dot h_3/direction_3-\dot q_2$，Q1/Q4 各自除以 direction。常量 offset 求导为零，不能对速度套用角度偏置。此转换复用 `JointTransformer.hardware_velocity_to_algo`，非有限速度不替成零。
 
 ## 六、五次多项式平滑轨迹插值原理 (TrajectoryPlanner)
 
@@ -202,6 +212,11 @@ $$S(s) = 10 \cdot s^3 - 15 \cdot s^4 + 6 \cdot s^5$$
 $$q(t) = q_{\text{start}} + S\left(\frac{t}{T}\right) \cdot (q_{\text{target}} - q_{\text{start}})$$
 
 按 YAML 的 `planning.interpolation_step_ms` 采样生成包含时间戳与 4 关节弧度值的 `TrajectoryPoint` 序列；当前配置为 200ms。
+
+`duration_ms` 描述计划轨迹时间，不是服务执行期限。planner 和 mission 均等待下位机
+报告完成/失败或主动停止，`planning.execution_timeout_buffer_sec` 已删除；此变更不影响
+插补、几何、标定或预设航点，反馈新鲜度与限位校验仍保留。修改代码后构建并重启 planner
+及 mission；仅 reload presets 不会更新执行策略。
 
 ---
 

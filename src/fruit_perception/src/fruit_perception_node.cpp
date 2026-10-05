@@ -34,11 +34,121 @@
 #include "fruit_perception/msg/fruit_decision.hpp"
 #include "fruit_perception/msg/fruit_detection.hpp"
 #include "fruit_perception/msg/fruit_target.hpp"
-#include "fruit_perception/perception_mode.hpp"
 #include "fruit_perception/ripeness_classifier.hpp"
 
 namespace fruit_perception
 {
+namespace
+{
+struct ObservationWindowCommand
+{
+  std::string window_id;
+  int valid{0};
+  std::int64_t start_sec{0};
+  std::int64_t start_nanosec{0};
+  char area{'A'};
+  std::string purpose;
+  std::string expected_type;
+};
+
+std::optional<ObservationWindowCommand> parse_observation_window_command(
+  const std::string & json_str, const rclcpp::Logger & logger)
+{
+  if (json_str.empty()) {
+    return std::nullopt;
+  }
+  try {
+    cv::FileStorage fs(
+      json_str, cv::FileStorage::READ | cv::FileStorage::MEMORY | cv::FileStorage::FORMAT_JSON);
+    if (!fs.isOpened()) {
+      RCLCPP_WARN(logger, "Failed to parse observation window JSON");
+      return std::nullopt;
+    }
+    const auto wid_node = fs["window_id"];
+    const auto valid_node = fs["valid"];
+    const auto sec_node = fs["start_sec"];
+    const auto nsec_node = fs["start_nanosec"];
+    const auto area_node = fs["area"];
+    const auto purpose_node = fs["purpose"];
+    const auto expected_node = fs["expected_type"];
+
+    if (!wid_node.isString() || !valid_node.isInt() || !sec_node.isInt() ||
+      !nsec_node.isInt() || !area_node.isString() || !purpose_node.isString())
+    {
+      RCLCPP_WARN(logger, "Observation window JSON field types invalid or missing");
+      return std::nullopt;
+    }
+    if (!expected_node.empty() && !expected_node.isString()) {
+      RCLCPP_WARN(logger, "Observation window expected_type is not a string");
+      return std::nullopt;
+    }
+
+    ObservationWindowCommand cmd;
+    cmd.window_id = static_cast<std::string>(wid_node);
+    if (cmd.window_id.empty()) {
+      RCLCPP_WARN(logger, "Observation window window_id is empty");
+      return std::nullopt;
+    }
+
+    cmd.valid = static_cast<int>(valid_node);
+    if (cmd.valid != 0 && cmd.valid != 1) {
+      RCLCPP_WARN(logger, "Observation window valid flag must be 0 or 1, got %d", cmd.valid);
+      return std::nullopt;
+    }
+
+    cmd.start_sec = static_cast<std::int64_t>(static_cast<int>(sec_node));
+    if (cmd.start_sec < 0) {
+      RCLCPP_WARN(logger, "Observation window start_sec must be non-negative");
+      return std::nullopt;
+    }
+
+    cmd.start_nanosec = static_cast<std::int64_t>(static_cast<int>(nsec_node));
+    if (cmd.start_nanosec < 0 || cmd.start_nanosec >= 1000000000LL) {
+      RCLCPP_WARN(logger, "Observation window start_nanosec must be in [0, 999999999]");
+      return std::nullopt;
+    }
+
+    const std::string area_str = static_cast<std::string>(area_node);
+    if (area_str != "A" && area_str != "B" && area_str != "C") {
+      RCLCPP_WARN(logger, "Observation window area '%s' invalid", area_str.c_str());
+      return std::nullopt;
+    }
+    cmd.area = area_str.front();
+
+    cmd.purpose = static_cast<std::string>(purpose_node);
+    if (cmd.purpose != "harvest" && cmd.purpose != "qr") {
+      RCLCPP_WARN(logger, "Observation window purpose '%s' invalid", cmd.purpose.c_str());
+      return std::nullopt;
+    }
+
+    if (!expected_node.empty()) {
+      cmd.expected_type = static_cast<std::string>(expected_node);
+    }
+    return cmd;
+  } catch (const cv::Exception & e) {
+    RCLCPP_WARN(logger, "Observation window JSON parse exception: %s", e.what());
+    return std::nullopt;
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(logger, "Observation window exception: %s", e.what());
+    return std::nullopt;
+  }
+}
+
+bool is_stamp_at_or_after(
+  const builtin_interfaces::msg::Time & stamp, std::int64_t start_sec,
+  std::int64_t start_nanosec)
+{
+  const auto stamp_sec = static_cast<std::int64_t>(stamp.sec);
+  const auto stamp_nanosec = static_cast<std::int64_t>(stamp.nanosec);
+  if (stamp_sec > start_sec) {
+    return true;
+  }
+  if (stamp_sec == start_sec && stamp_nanosec >= start_nanosec) {
+    return true;
+  }
+  return false;
+}
+}  // namespace
 class FruitPerceptionNode : public rclcpp::Node
 {
 public:
@@ -118,22 +228,12 @@ public:
     b_target_selector_config_.maturity_confidence_threshold =
       target_selector_config_.maturity_confidence_threshold;
 
-    const auto active_mode_topic = declare_parameter(
-      "active_mode_topic", "/fruit_perception/active_mode");
-    mode_subscription_ = create_subscription<std_msgs::msg::String>(
-      active_mode_topic, rclcpp::QoS(1).reliable(),
+    const auto observation_window_topic = declare_parameter(
+      "observation_window_topic", "/fruit_mission/observation_window");
+    observation_window_subscription_ = create_subscription<std_msgs::msg::String>(
+      observation_window_topic, rclcpp::QoS(10).reliable(),
       [this](std_msgs::msg::String::ConstSharedPtr message) {
-        const auto mode = parse_perception_mode(message->data);
-        if (!mode) {
-          RCLCPP_ERROR(
-            get_logger(), "Invalid active perception mode '%s'; inference mode unchanged",
-            message->data.c_str());
-          return;
-        }
-        const auto previous = perception_mode_.exchange(*mode);
-        if (previous != *mode || *mode == PerceptionMode::kDetect) {
-          target_selection_generation_.fetch_add(1U);
-        }
+        on_observation_window(message);
       });
 
     const auto current_area_topic = declare_parameter(
@@ -142,7 +242,7 @@ public:
       current_area_topic, rclcpp::QoS(1).reliable(),
       [this](std_msgs::msg::String::ConstSharedPtr message) {
         if (message->data == "A" || message->data == "B" ||
-          message->data == "C" || message->data == "D")
+        message->data == "C" || message->data == "D")
         {
           const char previous = current_area_.exchange(message->data.front());
           if (previous != message->data.front()) {
@@ -287,6 +387,19 @@ private:
     std::uint64_t target_selection_generation{0U};
     std::uint64_t submitted_target_selection_generation{0U};
     std::atomic<bool> busy{false};
+
+    struct SubmissionContext
+    {
+      std::string window_id;
+      bool is_harvest_window{false};
+      std::int64_t start_sec{0};
+      std::int64_t start_nanosec{0};
+      char area{'A'};
+      std::string expected_type;
+      builtin_interfaces::msg::Time rgb_stamp;
+      builtin_interfaces::msg::Time depth_stamp;
+    };
+    SubmissionContext submission_context;
   };
 
   struct ModelRuntime
@@ -343,8 +456,9 @@ private:
     runtime.compiled_model = core_.compile_model(
       model, "GPU.0",
       ov::hint::inference_precision(ov::element::f16),
-      ov::hint::performance_mode(performance_hint_ == "throughput" ?
-      ov::hint::PerformanceMode::THROUGHPUT : ov::hint::PerformanceMode::LATENCY),
+      ov::hint::performance_mode(
+        performance_hint_ == "throughput" ?
+        ov::hint::PerformanceMode::THROUGHPUT : ov::hint::PerformanceMode::LATENCY),
       ov::hint::num_requests(static_cast<std::uint32_t>(request_count)));
 
     const auto execution_devices = runtime.compiled_model.get_property(ov::execution_devices);
@@ -415,7 +529,7 @@ private:
   void submit_rgbd(
     Stream & stream, const realsense2_camera_msgs::msg::RGBD::ConstSharedPtr & rgbd)
   {
-    if (stopping_.load() || !runs_camera_inference(perception_mode_.load())) {
+    if (stopping_.load()) {
       return;
     }
 
@@ -433,6 +547,28 @@ private:
         stream.target_selection_generation = target_generation;
       }
       stream.submitted_target_selection_generation = target_generation;
+
+      Stream::SubmissionContext context;
+      {
+        std::lock_guard<std::mutex> lock(window_mutex_);
+        if (current_window_.valid && current_window_.purpose == "harvest") {
+          context.window_id = current_window_.window_id;
+          context.is_harvest_window = true;
+          context.start_sec = current_window_.start_sec;
+          context.start_nanosec = current_window_.start_nanosec;
+          context.area = current_window_.area;
+          context.expected_type = current_window_.expected_type;
+        } else {
+          context.window_id = "";
+          context.is_harvest_window = false;
+          context.area = current_area_.load();
+          context.expected_type = expected_fruit_type();
+        }
+      }
+      context.rgb_stamp = rgbd->rgb.header.stamp;
+      context.depth_stamp = rgbd->depth.header.stamp;
+      stream.submission_context = std::move(context);
+
       stream.frame = cv_bridge::toCvShare(
         rgbd->rgb, rgbd, sensor_msgs::image_encodings::RGB8);
       stream.aligned_depth = cv_bridge::toCvShare(
@@ -440,7 +576,7 @@ private:
       stream.depth_camera_info = rgbd->depth_camera_info;
       stream.transform = letterbox_image(stream.frame->image, stream.input_image);
       stream.header = rgbd->rgb.header;
-      auto * request = select_camera_request(stream);
+      auto * request = select_camera_request(stream, stream.submission_context.area);
       if (request == nullptr) {
         stream.busy.store(false);
         return;
@@ -467,12 +603,8 @@ private:
         confidence_threshold_,
         nms_iou_threshold_);
 
-      if (!runs_camera_inference(perception_mode_.load())) {
-        stream.busy.store(false);
-        return;
-      }
-
-      const char area = current_area_.load();
+      const auto context = stream.submission_context;
+      const char area = context.area;
       std::vector<Detection> classified;
       classified.reserve(detections.size());
       std::vector<double> maturity_confidences;
@@ -488,9 +620,11 @@ private:
         }
         const int x1 = std::max(0, static_cast<int>(std::floor(box.x - box.width * 0.1)));
         const int y1 = std::max(0, static_cast<int>(std::floor(box.y - box.height * 0.1)));
-        const int x2 = std::min(stream.frame->image.cols,
+        const int x2 = std::min(
+          stream.frame->image.cols,
           static_cast<int>(std::ceil(box.x + box.width * 1.1)));
-        const int y2 = std::min(stream.frame->image.rows,
+        const int y2 = std::min(
+          stream.frame->image.rows,
           static_cast<int>(std::ceil(box.y + box.height * 1.1)));
         if (x2 - x1 < 8 || y2 - y1 < 8) {
           continue;
@@ -548,111 +682,119 @@ private:
         result.detections.push_back(std::move(item));
       }
 
-      if (stream.submitted_target_selection_generation !=
-        target_selection_generation_.load())
-      {
-        stream.busy.store(false);
-        return;
-      }
+      const bool in_window = context.is_harvest_window &&
+        !context.window_id.empty() &&
+        (stream.submitted_target_selection_generation == target_selection_generation_.load()) &&
+        is_stamp_at_or_after(context.rgb_stamp, context.start_sec, context.start_nanosec) &&
+        is_stamp_at_or_after(context.depth_stamp, context.start_sec, context.start_nanosec);
 
-      if (area == 'B' || area == 'D') {
-        std::vector<BTargetCandidate> candidates;
-        candidates.reserve(outputs.size());
-        for (std::size_t index = 0U; index < outputs.size(); ++index) {
-          const auto & output = outputs[index];
-          if (!output.has_point ||
-            !std::isfinite(output.point.x) ||
-            !std::isfinite(output.point.y) ||
-            !std::isfinite(output.point.z))
-          {
-            continue;
+      if (in_window) {
+        result.observation_window_id = context.window_id;
+        if (area == 'B' || area == 'D') {
+          std::vector<BTargetCandidate> candidates;
+          candidates.reserve(outputs.size());
+          for (std::size_t index = 0U; index < outputs.size(); ++index) {
+            const auto & output = outputs[index];
+            if (!output.has_point ||
+              !std::isfinite(output.point.x) ||
+              !std::isfinite(output.point.y) ||
+              !std::isfinite(output.point.z))
+            {
+              continue;
+            }
+            candidates.push_back(
+              BTargetCandidate{
+                output.type,
+                output.point,
+                cv::Point2d{
+                  static_cast<double>(output.roi.x) +
+                  static_cast<double>(output.roi.width) * 0.5,
+                  static_cast<double>(output.roi.y) +
+                  static_cast<double>(output.roi.height) * 0.5},
+                static_cast<std::size_t>(stream.transform.original_width),
+                static_cast<double>(output.confidence), maturity_confidences[index]});
           }
-          candidates.push_back(
-            BTargetCandidate{
-              output.type,
-              output.point,
-              cv::Point2d{
-                static_cast<double>(output.roi.x) +
-                static_cast<double>(output.roi.width) * 0.5,
-                static_cast<double>(output.roi.y) +
-                static_cast<double>(output.roi.height) * 0.5},
-              static_cast<std::size_t>(stream.transform.original_width),
-              static_cast<double>(output.confidence), maturity_confidences[index]});
-        }
 
-        const auto target_update = stream.b_target_selector->update(candidates);
-        result.targets_ready = target_update.ready;
-        result.targets.reserve(target_update.targets.size());
-        for (const auto & target : target_update.targets) {
-          msg::FruitTarget item;
-          item.type = target.type;
-          item.confidence = static_cast<float>(target.confidence);
-          item.has_point = true;
-          item.point.x = target.point.x;
-          item.point.y = target.point.y;
-          item.point.z = target.point.z;
-          item.pixel_x = static_cast<float>(target.pixel_center.x);
-          item.pixel_y = static_cast<float>(target.pixel_center.y);
-          item.image_width = static_cast<std::uint32_t>(target.image_width);
-          item.observation_count = static_cast<std::uint32_t>(target.observation_count);
-          item.inlier_count = static_cast<std::uint32_t>(target.inlier_count);
-          result.targets.push_back(std::move(item));
-        }
-        if (!result.targets.empty()) {
-          result.has_target = true;
-          result.target_point = result.targets.front().point;
+          const auto target_update = stream.b_target_selector->update(candidates);
+          result.targets_ready = target_update.ready;
+          result.targets.reserve(target_update.targets.size());
+          for (const auto & target : target_update.targets) {
+            msg::FruitTarget item;
+            item.type = target.type;
+            item.confidence = static_cast<float>(target.confidence);
+            item.has_point = true;
+            item.point.x = target.point.x;
+            item.point.y = target.point.y;
+            item.point.z = target.point.z;
+            item.pixel_x = static_cast<float>(target.pixel_center.x);
+            item.pixel_y = static_cast<float>(target.pixel_center.y);
+            item.image_width = static_cast<std::uint32_t>(target.image_width);
+            item.observation_count = static_cast<std::uint32_t>(target.observation_count);
+            item.inlier_count = static_cast<std::uint32_t>(target.inlier_count);
+            result.targets.push_back(std::move(item));
+          }
+          if (!result.targets.empty()) {
+            result.has_target = true;
+            result.target_point = result.targets.front().point;
+          }
+        } else {
+          std::vector<CameraTargetCandidate> candidates;
+          candidates.reserve(outputs.size());
+          const auto expected_type = context.expected_type;
+          const double half_width = static_cast<double>(stream.frame->image.cols) * 0.5;
+          for (std::size_t index = 0U; index < outputs.size(); ++index) {
+            const auto & output = outputs[index];
+            if (!output.has_point ||
+              !std::isfinite(output.point.x) ||
+              !std::isfinite(output.point.y) ||
+              !std::isfinite(output.point.z))
+            {
+              continue;
+            }
+            const double roi_center_x =
+              static_cast<double>(output.roi.x) + static_cast<double>(output.roi.width) * 0.5;
+            const double horizontal_offset = std::clamp(
+              std::abs(roi_center_x - half_width) / half_width, 0.0, 1.0);
+            candidates.push_back(
+              CameraTargetCandidate{
+                output.point, static_cast<double>(output.confidence), 1.0 - horizontal_offset,
+                output.type, maturity_confidences[index]});
+          }
+
+          const auto target_update = stream.target_selector->update(candidates, expected_type);
+          if (target_update.lock_lost) {
+            RCLCPP_WARN(
+              get_logger(),
+              "Camera target lock lost after %zu missed frames; reacquiring",
+              target_selector_config_.lock_miss_frames);
+          }
+          if (target_update.lock_acquired) {
+            RCLCPP_INFO(
+              get_logger(),
+              "Camera target locked with %zu/%zu inliers in a %zu-frame window: score=%.3f, "
+              "confidence=%.3f, horizontal_centrality=%.3f, "
+              "mean=(%.3f, %.3f, %.3f), stddev=(%.4f, %.4f, %.4f)",
+              target_update.inlier_count, target_update.observation_count,
+              target_selector_config_.acquisition_frames,
+              target_update.score, target_update.confidence,
+              target_update.horizontal_centrality,
+              target_update.reference_point.x, target_update.reference_point.y,
+              target_update.reference_point.z, target_update.stddev.x,
+              target_update.stddev.y, target_update.stddev.z);
+          }
+          if (target_update.point) {
+            result.has_target = true;
+            result.target_point.x = target_update.point->x;
+            result.target_point.y = target_update.point->y;
+            result.target_point.z = target_update.point->z;
+          }
         }
       } else {
-        std::vector<CameraTargetCandidate> candidates;
-        candidates.reserve(outputs.size());
-        const auto expected_type = expected_fruit_type();
-        const double half_width = static_cast<double>(stream.frame->image.cols) * 0.5;
-        for (std::size_t index = 0U; index < outputs.size(); ++index) {
-          const auto & output = outputs[index];
-          if (!output.has_point ||
-            !std::isfinite(output.point.x) ||
-            !std::isfinite(output.point.y) ||
-            !std::isfinite(output.point.z))
-          {
-            continue;
-          }
-          const double roi_center_x =
-            static_cast<double>(output.roi.x) + static_cast<double>(output.roi.width) * 0.5;
-          const double horizontal_offset = std::clamp(
-            std::abs(roi_center_x - half_width) / half_width, 0.0, 1.0);
-          candidates.push_back(
-            CameraTargetCandidate{
-              output.point, static_cast<double>(output.confidence), 1.0 - horizontal_offset,
-              output.type, maturity_confidences[index]});
-        }
-
-        const auto target_update = stream.target_selector->update(candidates, expected_type);
-        if (target_update.lock_lost) {
-          RCLCPP_WARN(
-            get_logger(),
-            "Camera target lock lost after %zu missed frames; reacquiring",
-            target_selector_config_.lock_miss_frames);
-        }
-        if (target_update.lock_acquired) {
-          RCLCPP_INFO(
-            get_logger(),
-            "Camera target locked with %zu/%zu inliers in a %zu-frame window: score=%.3f, "
-            "confidence=%.3f, horizontal_centrality=%.3f, "
-            "mean=(%.3f, %.3f, %.3f), stddev=(%.4f, %.4f, %.4f)",
-            target_update.inlier_count, target_update.observation_count,
-            target_selector_config_.acquisition_frames,
-            target_update.score, target_update.confidence,
-            target_update.horizontal_centrality,
-            target_update.reference_point.x, target_update.reference_point.y,
-            target_update.reference_point.z, target_update.stddev.x,
-            target_update.stddev.y, target_update.stddev.z);
-        }
-        if (target_update.point) {
-          result.has_target = true;
-          result.target_point.x = target_update.point->x;
-          result.target_point.y = target_update.point->y;
-          result.target_point.z = target_update.point->z;
-        }
+        result.observation_window_id = "";
+        result.has_target = false;
+        result.targets_ready = false;
+        result.targets.clear();
+        result.target_point = geometry_msgs::msg::Point();
       }
 
       if (stopping_.load() || stream.submitted_target_selection_generation !=
@@ -696,7 +838,8 @@ private:
           stream.total_classification_ms / frames, stream.classified_rois / frames);
         stream.statistics_started = now;
         stream.completed_frames = stream.classified_rois = 0U;
-        stream.total_detection_ms = stream.total_classification_ms = stream.total_processing_ms = 0.0;
+        stream.total_detection_ms = stream.total_classification_ms = stream.total_processing_ms =
+          0.0;
       }
 
       if (stream.image_publisher->get_subscription_count() > 0U) {
@@ -719,6 +862,9 @@ private:
       {
         msg::FruitDecision empty;
         empty.header = stream.header;
+        empty.observation_window_id = "";
+        empty.has_target = false;
+        empty.targets_ready = false;
         stream.decision_publisher->publish(empty);
       }
     }
@@ -758,9 +904,8 @@ private:
     return expected_fruit_type_;
   }
 
-  Stream::RequestSlot * select_camera_request(Stream & stream) const
+  Stream::RequestSlot * select_camera_request(Stream & stream, char area) const
   {
-    const char area = current_area_.load();
     if (area == 'A' || area == 'C') {
       return stream.vegetable_request;
     }
@@ -768,6 +913,43 @@ private:
       return stream.fruit_request;
     }
     return nullptr;
+  }
+
+  void on_observation_window(const std_msgs::msg::String::ConstSharedPtr & message)
+  {
+    const auto cmd = parse_observation_window_command(message->data, get_logger());
+    if (!cmd) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(window_mutex_);
+    if (cmd->valid == 1) {
+      current_window_.window_id = cmd->window_id;
+      current_window_.valid = true;
+      current_window_.start_sec = cmd->start_sec;
+      current_window_.start_nanosec = cmd->start_nanosec;
+      current_window_.area = cmd->area;
+      current_window_.purpose = cmd->purpose;
+      current_window_.expected_type = cmd->expected_type;
+      target_selection_generation_.fetch_add(1U);
+      RCLCPP_INFO(
+        get_logger(),
+        "Opened observation window '%s': area=%c, purpose=%s, start=%ld.%09ld, expected='%s'",
+        cmd->window_id.c_str(), cmd->area, cmd->purpose.c_str(),
+        static_cast<long>(cmd->start_sec), static_cast<long>(cmd->start_nanosec),
+        cmd->expected_type.c_str());
+    } else {
+      if (current_window_.valid && current_window_.window_id == cmd->window_id) {
+        current_window_.valid = false;
+        target_selection_generation_.fetch_add(1U);
+        RCLCPP_INFO(
+          get_logger(), "Closed observation window '%s'", cmd->window_id.c_str());
+      } else if (current_window_.valid) {
+        RCLCPP_WARN(
+          get_logger(),
+          "Ignoring close for window '%s'; active window is '%s'",
+          cmd->window_id.c_str(), current_window_.window_id.c_str());
+      }
+    }
   }
 
   ov::Core core_;
@@ -784,11 +966,24 @@ private:
   BTargetSelectorConfig b_target_selector_config_{8U, 2U, 0.03, 2.0};
   std::atomic<std::uint64_t> target_selection_generation_{0U};
   std::atomic<bool> stopping_{false};
-  std::atomic<PerceptionMode> perception_mode_{PerceptionMode::kOff};
   std::atomic<char> current_area_{'A'};
+
+  struct ActiveWindow
+  {
+    std::string window_id;
+    bool valid{false};
+    std::int64_t start_sec{0};
+    std::int64_t start_nanosec{0};
+    char area{'A'};
+    std::string purpose;
+    std::string expected_type;
+  };
+  ActiveWindow current_window_;
+  std::mutex window_mutex_;
+
   rclcpp::Publisher<msg::FruitDecision>::SharedPtr decision_publisher_;
   rclcpp::Publisher<std_msgs::msg::Header>::SharedPtr rgbd_heartbeat_publisher_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_subscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr observation_window_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr current_area_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr expected_fruit_type_subscription_;
   mutable std::mutex expected_fruit_type_mutex_;

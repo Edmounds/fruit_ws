@@ -16,7 +16,6 @@ find_package(
 find_package(cv_bridge REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(OpenVINO 2024.6 EXACT REQUIRED COMPONENTS Runtime)
-find_package(rcl_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(realsense2_camera_msgs REQUIRED)
@@ -41,22 +40,6 @@ add_library(
   src/target_localization.cpp
 )
 
-add_library(perception_mode src/perception_mode.cpp)
-target_include_directories(perception_mode PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-)
-target_compile_features(perception_mode PUBLIC cxx_std_17)
-
-add_executable(camera_mode_manager src/camera_mode_manager.cpp)
-target_compile_features(camera_mode_manager PUBLIC cxx_std_17)
-target_link_libraries(camera_mode_manager perception_mode)
-ament_target_dependencies(
-  camera_mode_manager
-  rcl_interfaces
-  rclcpp
-  std_msgs
-)
 target_include_directories(detection_parser PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -81,7 +64,6 @@ target_compile_features(fruit_perception_component PUBLIC cxx_std_17)
 target_link_libraries(
   fruit_perception_component
   detection_parser
-  perception_mode
   openvino::runtime
   ${OpenCV_LIBRARIES}
 )
@@ -104,7 +86,7 @@ rclcpp_components_register_node(
   EXECUTABLE fruit_perception_node
 )
 
-install(TARGETS camera_mode_manager detection_parser perception_mode fruit_perception_component
+install(TARGETS detection_parser fruit_perception_component
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -135,9 +117,6 @@ if(BUILD_TESTING)
   target_link_libraries(test_detection_output detection_parser ${OpenCV_LIBRARIES})
   target_include_directories(test_detection_output PRIVATE ${OpenCV_INCLUDE_DIRS})
   ament_target_dependencies(test_detection_output sensor_msgs)
-
-  ament_add_gtest(test_perception_mode test/test_perception_mode.cpp)
-  target_link_libraries(test_perception_mode perception_mode)
 endif()
 
 ament_export_dependencies(rosidl_default_runtime)

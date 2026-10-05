@@ -26,25 +26,35 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 | 积木 | 参数与职责 |
 | --- | --- |
 | `navigate(ctx, waypoints, side=None)` | 明确导航点；有 side 时导航与 Look 并行。失败清理待消费 Look，安全恢复并返回 False。 |
-| `pick_a(ctx, side=...)` | 当前点单侧 Look 完成 → 实测停稳 → 识别成熟目标 → CLOSE/驻留 → Harvest/OPEN/驻留 → Home。无导航、无重复抓取。 |
-| `pick_b_tree(ctx, waypoint=..., target=..., side=...)` | 每树观察一次、比较二维码品种、选择最多两个成熟目标，先冻结全部基座请求，再逐个抓取/Harvest/Home。 |
+| `pick_a(ctx, side=...)` | 当前点单侧 Look 完成 → 开启 harvest 观察窗口 → 识别成熟目标 → CLOSE/驻留 → Harvest/OPEN/驻留 → Home。无导航、无重复抓取。 |
+| `pick_b_tree(ctx, tree_name=..., target=..., side=...)` | 每树观察一次、开启 harvest 窗口比较二维码品种、选择最多两个成熟目标，首次抓取前先冻结全部基座请求并关闭窗口，再逐个抓取/Harvest/Home。 |
 | `navigate_c(ctx, task)` | 复用现有 C 几何规划，记录路线和 camera_side；失败的记录在恢复前由分区流程保存。 |
 | `pick_c(ctx, task, side=...)` | 当前二维码项的单次识别/采摘、结果记录和播报；不增加方向复核。 |
-| `scan_b_qr / scan_c_qr(ctx, arrived=...)` | 已到点才执行 QR 姿态、停稳和扫码；到点/扫码失败均用 mission 自有固定计划，保存、播报并恢复。 |
+| `scan_b_qr / scan_c_qr(ctx, arrived=...)` | 已到点且 QR 姿态执行完成后开启 QR 扫码窗口；到点/扫码失败均用 mission 自有固定计划，保存、播报并恢复。 |
 
 `arrived` 使用前一个 `navigate` 的返回值；导航失败已经执行过一次安全恢复，
 扫码函数只使用兜底计划，不再为同一导航失败重复尝试 Home。
 
 `MissionContext` 只保留 ROS 反馈、导航发送、感知窗口、planner 原语及安全交接；
 品种判断和语音格式在 `decisions.py`，C 路线数学继续在 `waypoint_route.py`。
-原单点调试入口也调用相同的 `observe_and_pick` / `pick_b_tree` 积木；B 无可采目标
-或任一选中目标工序失败时不返回假成功。它是人工硬件工具，不能作为自动测试运行。
+独立单点调试入口 `test_camera_arm_target.sh`（`camera_arm_target_client`）不依赖导航，按用户确认在抓取及驻留成功后调用对应侧 `left_store` 或 `right_store` 执行放果工序，再调用 `home` 并等待完成；不是停在目标点的工具，也不重复调用另一套 Harvest。正式 mission 保持 CLOSE→配置的 Harvest 放果工序→Home。它是人工硬件工具，不能作为自动测试运行。
 原 `mission_flow.py` 和作为判断帮助文件的 `logic.py` 已移除，避免两个主流程来源。
 
-调用处只显示比赛参数。真实 Look/QR/Harvest/Home 预设名称、超时和停稳阈值仍在
+调用处只显示比赛参数。真实 Look/QR/Harvest/Home 预设名称、超时仍在
 `config/fruit_mission.yaml`；姿态、速度、标定在对应 planner/相机源码 YAML，
-不把这些值复制进比赛主流程。A 左右调用顺序现在直接在 `Logic.py`，不再使用
+不把这些值复制进比赛主流程。开窗前及窗口内的底盘与机械臂静止由现场物理保证，
+移除了原开窗前的 `stable_stop` 阻塞等待；未知运动结果时保留 STOP 与取消。
+恢复不做独立停稳等待；Home/QR 等预设入口直接检查当前新鲜有效的低速反馈，
+不满足即跳过，planner 仍保留运动占用与 STOP 后 IDLE 保护。A 左右调用顺序直接在 `Logic.py`，不再使用
 `a_observation_order` 配置。
+
+窗口结果在入缓存前核对 ID、用途及合法窗后图像时间；扫码计划另核对区域，非对象 JSON 与非法时间忽略后继续等待或使用既有固定兜底。
+姿态统一遵循 planner 的 `arm_presets.yaml` 名称定义，删除了原有中间映射：观察直接调用 `left_look`/`right_look`，放果工序直接调用 `left_store`/`right_store`，复归调用 `home`。
+B 树收到 `targets_ready=true` 的空列表表示完成但无果实，立即按空树跳过；仅未收到完成结果才算识别超时。关闭窗口保留开启时上下文。
+
+正式任务和相机单点调试共用 `fruit_mission.yaml` 的 `target_offset_m`（当前
+`[0.0, 0.03, -0.015]` 米）。Base 转换后应用：X/Z 直接相加，Y 按原 Base Y 的
+正负增加侧向幅值，为零则不加。入口统一验证三个有限数，不叠加 planner 的工具几何偏移。
 
 ## 比赛和单区调试共用同一套函数
 
@@ -71,16 +81,24 @@ source scripts/setup_fruit_runtime.bash
 源码修改后需重新构建 `fruit_mission` 并重启节点。配置继续从源码路径读取，
 不用修改 install 中的副本。
 
+启动脚本统一通过 `stack_readiness_client bridge-start-required` 检查串口桥：
+标准输出为 `true`（缺失，需要启动）或 `false`（已存在，复用）。节点、
+ArmStatus 或 ready 发布者均可识别已有桥，`ready=false` 不代表缺失；
+重复节点/发布者或错误消息类型会让检查失败。检查只读，不命令硬件。
+单点客户端的 `--require-stack-absent` 允许已有串口桥，但仍拒绝已有感知容器、
+planner 和 mission；复用桥不由当前脚本清理，也不更改其配置。
+
 ## 失败不阻断比赛，但绝不授权未知运动
 
 - 普通观察、采摘、二维码或外围节点失败，跳过当前操作，继续 A/B/C 软件流程。
-- `pick_a` 返回 `success / reason_code / matched_type / safe_to_continue`。
-  左侧普通失败且安全恢复后仍可做右侧；不能确认安全则不做同点右侧。
-- B 第一抓普通失败且安全恢复后可做第二抓；不能确认安全则跳过该树剩余目标，
-  不重新观察或反复抓取。C 无论本项结果如何都推进下一项。
+- `pick_a` 返回 `success / reason_code / matched_type`。左侧失败也调用同点右侧，
+  B 第一抓失败也推进下一冻结目标；不跨层传播 `safe_to_continue` 或跳过剩余目标。
+  C 无论本项结果如何都推进下一项，不重新观察或反复抓取。
 - 后续导航/Look/抓取仍受既有反馈和运动占用门控；软件推进不是运动许可。
-  保留导航取消、STOP、紧急状态锁和新鲜实测静止确认，恢复是一遍安全 Home。
-- 各操作独立超时，原来超过 10 秒的等待最多 10 秒，原来更短的不加长。
+  保留导航取消、STOP、紧急状态锁和运动入口的新鲜实测静止检查，恢复只尝试一次 Home。
+- 机械臂执行无限等待下位机结果，可由主动 STOP/取消或节点退出中断。
+  已接受的导航 goal 同样等待终态，不设推进看门狗；goal 应答、取消、端点、识别、
+  扫码等仍用独立的有限等待，超过 10 秒最多 10 秒，较短的不加长。
 - 只用上位机 `fruit_arm_planner` 服务，不发原始轨迹/串口。服务执行完成才算工序成功，
   不把发布、STOP 已发送或语音播报当成硬件完成。
 

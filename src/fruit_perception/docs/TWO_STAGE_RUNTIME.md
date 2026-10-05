@@ -17,7 +17,7 @@
 - YOLO 的缩放使用 OpenCV 线性插值，并非 PIL/torchvision 抗锯齿缩放的逐像素复刻；相同真实 ROI 的跨端概率一致性和准确率留待后续识别验收，当前仅证明运行契约与性能。
 - 分类器 reshape 为静态 batch=1，逐 ROI 推理；不限制检测数，不为了帧率跳过分类。
 - 内部结果按模型品种组成熟度标签；对外 A 区保留 `ripe/unripe`，C 区辣椒映射为 `chili_ripe/chili_unripe`，其他品种使用 `<crop>_ripe/unripe`（斜杠表示两个字符串）。检测置信度仍作为 ROS confidence，分类概率保存在内部结果/DEBUG 日志。GUI 物种检测标签如 `pepper` 不等于正式 ROS 标签。
-- 分类失败丢弃该 ROI，不假造 unripe。切模式/区域后旧在途帧不发布。
+- 分类失败丢弃该 ROI，不假造 unripe。开窗/关窗及区域切换后旧在途帧不累积为当前窗口证据。
 
 模型固定 `GPU.0` 和 FP16 推理提示，检测使用可调 `performance_hint=latency|throughput`，分类使用 LATENCY；不使用含 CPU 的 AUTO/HETERO/MULTI。保留输入 f32 契约，内部 FP16 不重写原 ONNX。
 本机设置 GPU `queue_throttle=LOW`，减少驱动在 CPU 上的忙轮询；离线基准中检测+2 ROI 的进程 CPU 从约 104% 降到约 25%，吞吐约下降 3%。不是把模型切到 CPU，也不是降低输入尺寸。
@@ -41,7 +41,7 @@ B 区经过短窗口预观察，当前存活候选全部确认且品种一致后
 
 这些数值是可调起始值，不是实景标定。清晰 A/C 最快在第 6 个处理帧确认，清晰 B 在第 8 个处理帧确认；
 不能把相机 30 FPS 当成实际两阶段处理速度，亦不能据此保证 1 秒识别。
-本轮不改深度算法、相机 OFF/开启语义、运动服务、实测静止或 STOP 安全链。
+相机视频流常开、持续推理，仅在到位后观察窗口累积确认证据；保留运动服务、未知运动 STOP 及恢复安全链。
 
 ## 构建和启动
 
@@ -56,9 +56,9 @@ ros2 launch fruit_perception fruit_perception.launch.py \
 # 比较统一分类器：停掉上一次 launch 后使用 ripeness_model:=yolo
 ```
 
-模型选择只在启动时生效。默认 OFF 不推理；根据当前区域进入 DETECT，QR 不做果蔬推理。
+模型选择只在启动时生效。相机视频流与模型推理常开并持续运行；根据 `/fruit_mission/observation_window` 观察窗口采纳与累积证据，窗口外不输出采摘目标。
 相机和感知 component 在同一容器并启用进程内通信。仅感知验收时禁止启动任务或串口桥。
-模式及区域命令见[模式操作](../../../docs/PERCEPTION_MODE_COMMANDS.md)。
+窗口接口及操作见[观察窗口参考](../../../docs/PERCEPTION_MODE_COMMANDS.md)。
 
 性能日志每五秒输出一次（需把感知节点 logger 设为 INFO）：
 

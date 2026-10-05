@@ -16,6 +16,7 @@ DESKTOP_RUNTIME_DIR="/run/user/$(id -u)"
 DESKTOP_DISPLAY=:0
 DESKTOP_XAUTHORITY="$DESKTOP_RUNTIME_DIR/gdm/Xauthority"
 USE_TELEOP=false
+DEBUG=0
 
 pids=()
 debug_pids=()
@@ -23,7 +24,7 @@ stopped=0
 
 usage() {
   cat <<'EOF'
-Usage: ./waypoints_maker.sh [--tele]
+Usage: ./waypoints_maker.sh [--tele] [--debug]
 
 Start Point-LIO odometry navigation, RViz, and the waypoint recorder in the
 startup-relative odom frame.
@@ -52,6 +53,7 @@ stop_children() {
   done
   ((${#pids[@]} == 0)) || wait "${pids[@]}" 2>/dev/null || true
   ((${#debug_pids[@]} == 0)) || wait "${debug_pids[@]}" 2>/dev/null || true
+  fruit_logging_close "${status:-0}"
   pids=()
   debug_pids=()
 }
@@ -59,15 +61,31 @@ stop_children() {
 start_process() {
   local name=$1
   shift
+  local safe_name="${name// /_}"
+  local log_file="${FRUIT_RUNTIME_SESSION_DIR}/${safe_name}.log"
+  local filter_script="${WORKSPACE}/scripts/runtime_log_filter.py"
 
   printf '[waypoints-maker] starting %s\n' "$name"
-  setsid "$@" &
+  setsid env "DEBUG_OPT=$DEBUG" bash -c '
+    set -o pipefail
+    filter_args=(--output-file "'"${log_file}"'" --component "'"${safe_name}"'")
+    [[ "$DEBUG_OPT" == "1" ]] && filter_args+=(--debug)
+    exec "$@" 2>&1 | /usr/bin/python3 "'"${filter_script}"'" "${filter_args[@]}"
+  ' runner "$@" &
   pids+=("$!")
 }
 
 start_debug_monitor() {
+  local log_file="${FRUIT_RUNTIME_SESSION_DIR}/monitor.log"
+  local filter_script="${WORKSPACE}/scripts/runtime_log_filter.py"
+
   printf '[waypoints-maker] starting robot debug monitor\n'
-  setsid "$MONITOR_SCRIPT" waypoints-maker &
+  setsid env "DEBUG_OPT=$DEBUG" bash -c '
+    set -o pipefail
+    filter_args=(--output-file "'"${log_file}"'" --component "monitor")
+    [[ "$DEBUG_OPT" == "1" ]] && filter_args+=(--debug)
+    exec "$@" 2>&1 | /usr/bin/python3 "'"${filter_script}"'" "${filter_args[@]}"
+  ' runner "$MONITOR_SCRIPT" waypoints-maker &
   debug_pids+=("$!")
 }
 
@@ -100,6 +118,10 @@ while (($# > 0)); do
       USE_TELEOP=true
       shift
       ;;
+    --debug)
+      DEBUG=1
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -112,7 +134,10 @@ while (($# > 0)); do
 done
 
 source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
+source "$WORKSPACE/scripts/fruit_runtime_logging.bash"
 set -u
+
+fruit_logging_init "waypoints_maker" "${DEBUG}"
 
 required_files=(
   "$NAV_LAUNCH" \
@@ -144,8 +169,14 @@ if [[ ! -r "$DESKTOP_XAUTHORITY" ]]; then
   exit 1
 fi
 
-start_process "serial bridge" \
-  ros2 launch "$HARDWARE_LAUNCH"
+START_SERIAL_BRIDGE=$(ros2 run fruit_mission stack_readiness_client bridge-start-required \
+  --ros-args --params-file "$SCRIPT_CLIENT_CONFIG")
+if [[ "$START_SERIAL_BRIDGE" == true ]]; then
+  start_process "serial bridge" \
+    ros2 launch "$HARDWARE_LAUNCH"
+else
+  printf '[waypoints-maker] reusing existing serial bridge; it will not be stopped on exit\n'
+fi
 
 if [[ "$USE_TELEOP" == true ]]; then
   nav_process_name="axis navigation, odometry, and teleop"

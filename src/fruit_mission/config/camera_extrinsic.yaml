@@ -2,8 +2,9 @@
 # E: 夹爪抓取中心，局部 +X 前、+Y 左、+Z 上（随末端姿态旋转）。
 # S: D435i 底部螺纹孔表面圆心；S 的轴与 E 同向。
 # C: RGB 光学原点，+X 右、+Y 下、+Z 前。
-# 用户测量 S -> E = [75.413, 0, 66.726] mm；此处保存反向 E -> S。
-translation_end_to_screw_mm: [-75.413, 0.0, -66.726]
+# 用户确认 S 在 E 后方 75.413 mm、局部上方 66.726 mm（36.726 + 30）。
+# E -> S = [-75.413, 0, +66.726] mm；反向 S -> E 的 Z 为负。
+translation_end_to_screw_mm: [-75.413, 0.0, 66.726]
 
 # 沿用 tmp/vison/Engineer/APPLICATION/camera_target_transform_config.h
 # 的固定机身/光学数据；未在本次任务中独立验证其官方来源。
@@ -13,17 +14,17 @@ rotation_end_from_rgb:
   - [-0.99999200, 0.00320883, -0.00240529]
   - [-0.00321453, -0.99999200, 0.00236935]
 
-# 复用现有几何尺寸和硬件角映射，只读，不修改 planner。
+# 复用现有规划配置与限位参数，只读，不修改 planner。
 arm_config_path: /home/rc4/fruit_ws/src/fruit_arm_planner/config/arm_presets.yaml
 camera_frame: camera_color_optical_frame
 joint_state_topic: /arm_planner_node/joint_states
 move_cartesian_service: /arm_planner_node/move_cartesian
 stop_service: /arm_planner_node/stop
 endpoint_timeout_sec: 10.0
-service_timeout_sec: 10.0
+# 运动完成由 planner/下位机状态决定，不设置前端执行期限。
 
 # mission 在目标末点闭爪，后续 Harvest/Home 由上位机调用预设。
 motion:
-  pitch_deg: null  # null: 保持图像时刻的末端俯仰角；数值: 指定对地俯仰角（度）
-  duration_ms: 0  # 0: 使用 planner 的默认耗时
-  linear_path: false
+  pitch_deg: 0.0  # 指定对地绝对俯仰角（度），0.0 为相对于 base 严格水平抓取
+  duration_ms: 1500  # 1500ms 平滑探出抓取
+  linear_path: false  # false: 关节空间 PTP 平滑规划

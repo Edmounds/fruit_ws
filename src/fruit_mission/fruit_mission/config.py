@@ -20,7 +20,33 @@ def load_config(path: str, waypoint_file: str | None = None) -> Dict[str, Any]:
     with fallback_path.open(encoding='utf-8') as stream:
         params['qr_fallback'] = yaml.safe_load(stream)
     validate_config(params)
+    params["target_offset_m"] = validate_target_offset(
+        params["target_offset_m"], f"target_offset_m in {path}")
     return params
+
+
+def validate_target_offset(
+    values: Any, context: str = "target_offset_m"
+) -> tuple[float, float, float]:
+    """Validate target offset as a 3-element finite float sequence (meters)."""
+    if (not isinstance(values, (list, tuple)) or len(values) != 3
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+                   for v in values)):
+        raise ValueError(f"{context} must contain three finite numbers")
+    return (float(values[0]), float(values[1]), float(values[2]))
+
+
+def load_target_offset(config_path: str) -> tuple[float, float, float]:
+    """Load and validate target_offset_m from a mission config YAML file."""
+    path = Path(config_path)
+    if not path.is_file():
+        raise ValueError(f"mission config file does not exist: {config_path}")
+    with path.open(encoding="utf-8") as stream:
+        doc = yaml.safe_load(stream) or {}
+    params = doc.get("fruit_mission", {}).get("ros__parameters", {})
+    if "target_offset_m" not in params:
+        raise ValueError(f"target_offset_m missing in {config_path}")
+    return validate_target_offset(params["target_offset_m"], f"target_offset_m in {config_path}")
 
 
 def validate_config(params: Mapping[str, Any]) -> None:
@@ -63,31 +89,22 @@ def validate_config(params: Mapping[str, Any]) -> None:
         raise ValueError("decision_topic must not be empty")
     if not str(params.get("camera_extrinsic_config", "")).strip():
         raise ValueError("camera_extrinsic_config must not be empty")
-    presets = params.get("arm_presets")
-    if not isinstance(presets, dict):
-        raise ValueError("arm_presets must be a mapping")
-    for action in ('observation_left', 'observation_right', 'harvest_left',
-                   'harvest_right', 'qr', 'home'):
-        name = presets.get(action)
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError(f"arm_presets.{action} must be a nonempty string")
+    if "target_offset_m" not in params:
+        raise ValueError("target_offset_m must be specified in config")
+    validate_target_offset(params["target_offset_m"], "target_offset_m")
+    if not str(params.get("observation_window_topic", "")).strip():
+        raise ValueError("observation_window_topic must not be empty")
     _validate_qr_fallbacks(params['qr_fallback'])
-    if not isinstance(params.get('odometry_topic'), str) or not params['odometry_topic'].strip():
-        raise ValueError('odometry_topic must be a nonempty string')
     stationary = params.get('stationary')
     if not isinstance(stationary, dict):
         raise ValueError('stationary must be a mapping')
-    for name in ('linear_speed_mps', 'angular_speed_rps', 'joint_speed_rps',
-                 'duration_sec', 'odometry_max_age_sec', 'timeout_sec'):
-        value = stationary.get(name)
-        if (isinstance(value, bool) or not isinstance(value, (int, float))
-                or not math.isfinite(value) or value <= 0):
-            raise ValueError(f'stationary.{name} must be finite and positive')
-    if not stationary['duration_sec'] <= stationary['timeout_sec'] <= 10.0:
-        raise ValueError('stationary duration must fit within timeout <= 10s')
+    joint_speed = stationary.get('joint_speed_rps')
+    if (isinstance(joint_speed, bool) or not isinstance(joint_speed, (int, float))
+            or not math.isfinite(joint_speed) or joint_speed <= 0):
+        raise ValueError('stationary.joint_speed_rps must be finite and positive')
     tts = params.get("tts", {})
-    if "qr_length_scale" in tts and float(tts["qr_length_scale"]) <= 0.0:
-        raise ValueError("tts.qr_length_scale must be positive")
+    if "playback_timeout_sec" in tts and float(tts["playback_timeout_sec"]) <= 0.0:
+        raise ValueError("tts.playback_timeout_sec must be positive")
     mission_flow = str(params.get("mission_flow", "full")).strip().lower()
     if mission_flow not in {"full", "ac", "a", "b", "c"}:
         raise ValueError("mission_flow must be full, ac, a, b, or c")

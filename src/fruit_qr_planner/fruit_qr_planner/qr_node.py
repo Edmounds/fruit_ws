@@ -40,6 +40,63 @@ def plan_qos() -> QoSProfile:
     )
 
 
+def observation_window_qos() -> QoSProfile:
+    return QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=10,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.VOLATILE,
+    )
+
+
+def _parse_observation_window_command(data: str) -> Optional[Dict[str, Any]]:
+    if not data or not data.strip():
+        return None
+    try:
+        parsed = json.loads(data)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    window_id = parsed.get("window_id")
+    valid = parsed.get("valid")
+    start_sec = parsed.get("start_sec")
+    start_nanosec = parsed.get("start_nanosec")
+    area = parsed.get("area")
+    purpose = parsed.get("purpose")
+    expected_type = parsed.get("expected_type", "")
+
+    if not isinstance(window_id, str) or not window_id.strip():
+        return None
+    if isinstance(valid, bool) or not isinstance(valid, int) or valid not in (0, 1):
+        return None
+    if isinstance(start_sec, bool) or not isinstance(start_sec, int) or start_sec < 0:
+        return None
+    if (
+        isinstance(start_nanosec, bool)
+        or not isinstance(start_nanosec, int)
+        or start_nanosec < 0
+        or start_nanosec >= 1_000_000_000
+    ):
+        return None
+    if not isinstance(area, str) or area not in ("A", "B", "C"):
+        return None
+    if not isinstance(purpose, str) or purpose not in ("harvest", "qr"):
+        return None
+    if not isinstance(expected_type, str):
+        return None
+
+    return {
+        "window_id": window_id.strip(),
+        "valid": valid,
+        "start_sec": start_sec,
+        "start_nanosec": start_nanosec,
+        "area": area,
+        "purpose": purpose,
+        "expected_type": expected_type,
+    }
+
+
 def image_to_bgr(message: Image, cv2_module: Any) -> Any:
     if message.encoding not in ("rgb8", "bgr8"):
         raise ValueError("QR input must use rgb8 or bgr8 encoding")
@@ -66,11 +123,20 @@ class FruitQrPlannerNode(Node):
             "current_area_topic",
             "/fruit_mission/current_area",
         )
+        self.declare_parameter(
+            "observation_window_topic",
+            "/fruit_mission/observation_window",
+        )
         self.declare_parameter("confirm_frames", 1)
 
         image_topic = self.get_parameter("image_topic").get_parameter_value().string_value
         current_area_topic = (
             self.get_parameter("current_area_topic")
+            .get_parameter_value()
+            .string_value
+        )
+        observation_window_topic = (
+            self.get_parameter("observation_window_topic")
             .get_parameter_value()
             .string_value
         )
@@ -93,6 +159,8 @@ class FruitQrPlannerNode(Node):
         self._cv2 = cv2
         self._decode_barcodes = decode_barcodes
         self._sequence = PlanSequence(confirm_frames=confirm_frames)
+        self._current_window: Optional[Dict[str, Any]] = None
+        self._window_completed = False
         self._b_publisher = self.create_publisher(String, "/fruit/b_pick_plan", plan_qos())
         self._c_publisher = self.create_publisher(String, "/fruit/c_pick_plan", plan_qos())
         self._subscription = self.create_subscription(
@@ -107,9 +175,56 @@ class FruitQrPlannerNode(Node):
             self._on_current_area,
             plan_qos(),
         )
+        self._window_subscription = self.create_subscription(
+            String,
+            observation_window_topic,
+            self._on_observation_window,
+            observation_window_qos(),
+        )
         self.get_logger().info(
             f"Waiting for B-zone QR code on {image_topic}; confirm_frames={confirm_frames}"
         )
+
+    def _on_observation_window(self, message: String) -> None:
+        cmd = _parse_observation_window_command(message.data)
+        if cmd is None:
+            self.get_logger().warning(
+                f"Ignoring invalid observation window payload: {message.data}"
+            )
+            return
+
+        window_id = cmd["window_id"]
+        valid = cmd["valid"]
+        area = cmd["area"]
+        purpose = cmd["purpose"]
+
+        if valid == 1:
+            if purpose == "qr" and area in ("B", "C"):
+                self._current_window = cmd
+                self._window_completed = False
+                if area == "B":
+                    self._sequence.state = PlanSequence.WAITING_FOR_B
+                    self._sequence._reset_candidate()
+                else:
+                    self._sequence.state = PlanSequence.WAITING_FOR_C
+                    self._sequence._reset_candidate()
+                self.get_logger().info(
+                    f"Opened QR observation window '{window_id}' for area {area}"
+                )
+            else:
+                if self._current_window is not None:
+                    self._current_window = None
+                    self._sequence._reset_candidate()
+        else:
+            if (
+                self._current_window is not None
+                and self._current_window["window_id"] == window_id
+            ):
+                self._current_window = None
+                self._sequence._reset_candidate()
+                self.get_logger().info(
+                    f"Closed QR observation window '{window_id}'"
+                )
 
     def _on_current_area(self, message: String) -> None:
         entered_c = message.data.strip().upper() == "C"
@@ -120,8 +235,21 @@ class FruitQrPlannerNode(Node):
             )
 
     def _on_image(self, message: Image) -> None:
-        if self._sequence.state == PlanSequence.COMPLETED:
+        if self._current_window is None or self._window_completed:
             return
+
+        window = self._current_window
+        msg_stamp = message.header.stamp
+        if (msg_stamp.sec, msg_stamp.nanosec) < (window["start_sec"], window["start_nanosec"]):
+            return
+
+        target_area = window["area"]
+        if target_area == "B" and self._sequence.state != PlanSequence.WAITING_FOR_B:
+            self._sequence.state = PlanSequence.WAITING_FOR_B
+            self._sequence._reset_candidate()
+        elif target_area == "C" and self._sequence.state != PlanSequence.WAITING_FOR_C:
+            self._sequence.state = PlanSequence.WAITING_FOR_C
+            self._sequence._reset_candidate()
 
         try:
             image = image_to_bgr(message, self._cv2)
@@ -141,19 +269,26 @@ class FruitQrPlannerNode(Node):
         if plan is None:
             return
 
+        plan["observation_window_id"] = window["window_id"]
+        plan["image_stamp_sec"] = msg_stamp.sec
+        plan["image_stamp_nanosec"] = msg_stamp.nanosec
+
         output = String()
         output.data = encode_plan_json(plan)
         if plan["zone"] == "B":
             self._b_publisher.publish(output)
+            self._window_completed = True
             self.get_logger().info(
-                f"Published B-zone pick plan with {plan['task_count']} tasks; now waiting for C"
+                f"Published B-zone pick plan with {plan['task_count']} tasks "
+                f"(window={window['window_id']}); waiting for next window"
             )
         else:
             self._c_publisher.publish(output)
+            self._window_completed = True
             self.get_logger().info(
-                f"Published C-zone pick plan with {plan['task_count']} tasks; QR sequence completed"
+                f"Published C-zone pick plan with {plan['task_count']} tasks "
+                f"(window={window['window_id']})"
             )
-            self._stop_scanning()
 
     def _stop_scanning(self) -> None:
         if self._subscription is not None:

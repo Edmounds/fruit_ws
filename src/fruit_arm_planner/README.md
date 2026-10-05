@@ -14,6 +14,10 @@ mission 负责相机坐标转换、目标筛选和 A/B/C 顺序，本包负责 F
 真实预设轨迹、标定、STOP 优先级和下位机保护仍需现场验收，服务成功不能单独证明完整实机闭环。
 坐标边界见[mission 换算说明](../fruit_mission/docs/CAMERA_TARGET_TRANSFORM.md)，控制必须按[接口 API](docs/03_INTERFACES_AND_API.md)。
 
+笛卡尔 XYZ 统一指真实夹爪抓取点 TCP。`config/arm_presets.yaml` 的 `geometry.tool_z_offset_m` 配置随腕部旋转的固定下偏（当前 `-0.03 m`）；`pitch=0°` 表示 `a4` 伸出段水平，不是腕轴到 TCP 的斜线水平。直接输入和笛卡尔预设共用 FK/IK，不再额外平移输入。现有预设数值不自动迁移；几何调参后重启 planner、控制台和 mission。
+
+`/arm_planner_node/joint_states` 现为 `fruit_arm_interfaces/msg/ArmTelemetry`，原话题名不变：保留原始硬件角/速度，新增逆映射模型角/速度及真实 TCP XYZ（m）/pitch（度）。控制台 `status`、jog/示教与 mission 直接使用 planner 遥测，不重复减偏置或 FK。标准 JointState 订阅者需适配；接口、planner、mission 必须一起构建并重启。原始硬件 Status 和运动服务输入语义不变。
+
 ---
 
 ## 专题文档导航 (Documentation Index)
@@ -24,7 +28,7 @@ mission 负责相机坐标转换、目标筛选和 A/B/C 顺序，本包负责 F
 | :---: | :--- | :--- |
 | **01** | [**底层算法与运动学推导**](docs/01_ALGORITHM_AND_KINEMATICS.md) | 机械臂连杆几何模型、解析几何法正逆解 (FK/IK) 公式推导、高位构型 (Elbow-Up) 约束、双向坐标系偏置映射 (JointTransformer) 与五次多项式平滑插值数学证明 |
 | **02** | [**通信架构与数据流**](docs/02_COMMUNICATION_PROTOCOL.md) | mission 到规划器、规划器到桥、桥到下位机的接口、二进制结构、ACK/状态语义、完整时序与已知限制 |
-| **03** | [**对外暴露接口与 API 说明**](docs/03_INTERFACES_AND_API.md) | 节点对外暴露的所有 ROS 2 服务 (`move_cartesian`, `move_joints`, `execute_preset`, `home`, `retract`, `stop`)、双模式解算与 Python 客户端代码调用范式 |
+| **03** | [**对外暴露接口与 API 说明**](docs/03_INTERFACES_AND_API.md) | 节点对外暴露的所有 ROS 2 服务 (`move_cartesian`, `move_joints`, `execute_preset`, `home`, `stop`)、双模式解算与 Python 客户端代码调用范式 |
 | **04** | [**启动、调参配置与实机调试**](docs/04_SETUP_AND_DEBUGGING.md) | Launch 启动与参数注入、`arm_presets.yaml` 零位偏置与限位调参手册、CLI 命令行快速调试指令集与现场常见故障排查手册 (Troubleshooting) |
 | **附录** | [**重构清单**](docs/REFACTOR_SPEC_AND_CHECKLIST.md) | 已实施的包内改造、验收边界及待核实的固件事实 |
 | **实机核查** | [**四轴角度与解算链路核查**](docs/05_PHYSICAL_ARM_MAPPING_REVIEW.md) | 同步带小臂与相对腕部的角度关系、Q3 零位修正和剩余校准项 |
@@ -61,8 +65,8 @@ ros2 launch fruit_arm_planner fruit_arm_planner.launch.py
 ### 3. 常用调试指令
 
 下列运动调用会实际驱动硬件，先确认周围安全且反馈有效。
-预设名以源码 YAML 为准；当前有 `zero/left_look/right_look/pick_sequence`，
-`home/retract` 快捷服务依赖同名预设存在，否则会返回失败。
+预设名以源码 YAML 为准；当前有 `zero/left_look/right_look/pick_sequence/home/left_store/right_store`，
+`home` 快捷服务依赖同名预设存在，否则会返回失败。
 ```bash
 # 通过正式服务执行配置中存在的预设
 ros2 service call /arm_planner_node/execute_preset fruit_arm_interfaces/srv/ExecuteArmPreset \

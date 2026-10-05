@@ -10,7 +10,8 @@ class RobotKinematics:
     """
     4自由度机械臂纯几何运动学求解器 (4-DOF Robot Arm Kinematics)
     构型：偏航基座(Yaw) + 肩部俯仰(Pitch) + 肘部俯仰(Pitch) + 腕部俯仰(Pitch)
-    基准状态：各关节为 0 时，机械臂各连杆沿 X 轴水平伸直。
+    基准状态：各关节为 0 时，各运动连杆沿 X 轴水平伸直。
+    抓取点另有随腕部旋转的局部 Z 偏移；pitch 始终描述 a4 段的方向。
     """
 
     def __init__(
@@ -18,13 +19,21 @@ class RobotKinematics:
         d1: float,  # 基座高度 (m)
         a2: float,  # 大臂长度 (m)
         a3: float,  # 小臂长度 (m)
-        a4: float,  # 末端/夹爪长度 (m)
+        a4: float,  # 腕轴沿末端局部 X 方向的伸出长度 (m)
+        tool_z_offset_m: float,  # 抓取点的末端局部 Z 偏移 (m，下方为负)
         joint_limits: Optional[Dict[str, Tuple[float, float]]] = None,
     ):
+        if not all(math.isfinite(v) and v > 0 for v in (d1, a2, a3, a4)):
+            raise ValueError('Arm link dimensions must be finite and positive')
+        if (isinstance(tool_z_offset_m, bool)
+                or not isinstance(tool_z_offset_m, (int, float))
+                or not math.isfinite(tool_z_offset_m)):
+            raise ValueError('geometry.tool_z_offset_m must be a finite number (metres)')
         self.d1 = d1
         self.a2 = a2
         self.a3 = a3
         self.a4 = a4
+        self.tool_z_offset_m = float(tool_z_offset_m)
         self.joint_limits = joint_limits
 
     @classmethod
@@ -35,6 +44,7 @@ class RobotKinematics:
             a2=float(geo_dict["a2"]),
             a3=float(geo_dict["a3"]),
             a4=float(geo_dict["a4"]),
+            tool_z_offset_m=geo_dict["tool_z_offset_m"],
         )
 
     def forward_kinematics(
@@ -60,9 +70,14 @@ class RobotKinematics:
         z4 = z3 + self.a4 * math.sin(pitch)
         p4 = (r4 * math.cos(q1), r4 * math.sin(q1), z4)
 
+        # TCP 固定在 a4 段末端的局部 Z 偏移处，不改变夹爪方向 pitch。
+        r_tcp = r4 - self.tool_z_offset_m * math.sin(pitch)
+        z_tcp = z4 + self.tool_z_offset_m * math.cos(pitch)
+        tcp = (r_tcp * math.cos(q1), r_tcp * math.sin(q1), z_tcp)
+
         return {
-            "end_effector": (p4[0], p4[1], p4[2], pitch),
-            "points": [p0, p1, p2, p3, p4],
+            "end_effector": (tcp[0], tcp[1], tcp[2], pitch),
+            "points": [p0, p1, p2, p3, p4, tcp],
         }
 
     def inverse_kinematics(
@@ -77,8 +92,8 @@ class RobotKinematics:
     ) -> Tuple[bool, Tuple[float, float, float, float], str]:
         """逆运动学 (IK)：根据末端坐标 (x, y, z) 与期望末端俯仰角求解理论关节角 (q1, q2, q3, q4).
 
-        :param x, y, z: 末端目标坐标 (单位: m)
-        :param pitch: 期望末端俯仰角 (弧度，水平为0，向下为负，向上为正)
+        :param x, y, z: 真实夹爪抓取点 TCP 的目标坐标 (单位: m)
+        :param pitch: a4 段俯仰角 (弧度，水平为0，向下为负，向上为正)，不是腕轴到 TCP 的连线角
         :param pitch_deg: 期望末端俯仰角 (角度制，若指定则优先使用)
         :param elbow_up: 是否为肘关节高位构型 (Elbow-Up, 默认 True)
         :param force_elbow_up: 是否强制只使用高位构型 (默认 True)
@@ -103,8 +118,10 @@ class RobotKinematics:
 
         for target_pitch in candidate_pitches:
             # 2. 腕关节在 (r, z) 平面内的位置 (rw, zw)
-            rw = r - self.a4 * math.cos(target_pitch)
-            zw = (z - self.d1) - self.a4 * math.sin(target_pitch)
+            rw = (r - self.a4 * math.cos(target_pitch)
+                  + self.tool_z_offset_m * math.sin(target_pitch))
+            zw = ((z - self.d1) - self.a4 * math.sin(target_pitch)
+                  - self.tool_z_offset_m * math.cos(target_pitch))
 
             # 肩-腕直线距离 d
             d_sq = rw * rw + zw * zw

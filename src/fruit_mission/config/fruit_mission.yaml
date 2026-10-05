@@ -2,16 +2,9 @@ fruit_mission:
   ros__parameters:
     qr_plan_timeout_sec: 10.0
     qr_fallback_file: "/home/rc4/fruit_ws/src/fruit_mission/config/qr_fallback.yaml"
-    active_mode_timeout_sec: 10.0
     camera_detection_timeout_sec: 10.0
-    odometry_topic: "/odometry"
     stationary:
-      linear_speed_mps: 0.02
-      angular_speed_rps: 0.05
       joint_speed_rps: 0.05
-      duration_sec: 0.5
-      odometry_max_age_sec: 0.5
-      timeout_sec: 10.0
     c_distribution_output_dir: "/home/rc4/fruit_ws/tmp/fruit_mission"
     waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml"
     mission_flow: "full"
@@ -24,30 +17,21 @@ fruit_mission:
     c_graph_max_start_distance: 0.75
     c_qr_announce_lead_sec: 10.0
 
-    perception_mode_topic: "/fruit_mission/perception_mode"
+    observation_window_topic: "/fruit_mission/observation_window"
     current_area_topic: "/fruit_mission/current_area"
-    active_mode_topic: "/fruit_perception/active_mode"
     expected_fruit_type_topic: "/fruit_mission/expected_fruit_type"
     decision_topic: "/fruit_perception/decision"
     b_plan_topic: "/fruit/b_pick_plan"
     c_plan_topic: "/fruit/c_pick_plan"
     camera_extrinsic_config: "/home/rc4/fruit_ws/src/fruit_mission/config/camera_extrinsic.yaml"
-    # Names only: define the actual joint trajectories in arm_presets.yaml.
-    # Local failures skip the operation; never substitute a placeholder pose.
-    arm_presets:
-      observation_left: "left_look"
-      observation_right: "right_look"
-      harvest_left: "left_harvest"
-      harvest_right: "right_harvest"
-      qr: "qr_look"
-      home: "home"
+    # Target offset in arm base frame (meters): [x, y, z]
+    # Applied after optical->base conversion, before MoveArmCartesian.
+    # X and Z are added directly. Y is lateral magnitude; its sign is automatically
+    # determined by the sign of the transformed target base_y (+Y for left, -Y for right).
+    target_offset_m: [0.0, 0.03, -0.015]
 
     tts:
-      piper_executable: "/home/rc4/fruit_ws/.venv/piper-tts/bin/piper"
-      model_path: "/home/rc4/fruit_ws/.cache/piper-tts/zh_CN-huayan-medium/zh_CN-huayan-medium.onnx"
-      config_path: "/home/rc4/fruit_ws/.cache/piper-tts/zh_CN-huayan-medium/zh_CN-huayan-medium.onnx.json"
+      manifest_path: "/home/rc4/fruit_ws/src/fruit_mission/config/wisadel_voice.yaml"
       aplay_executable: "/usr/bin/aplay"
-      wav_path: "/home/rc4/fruit_ws/tmp/fruit_mission/tts_latest.wav"
-      qr_length_scale: 0.8
-      generation_timeout_sec: 10.0
+      wav_path: "/home/rc4/fruit_ws/tmp/fruit_mission/stitched_speech.wav"
       playback_timeout_sec: 10.0
