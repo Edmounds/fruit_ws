@@ -1,4 +1,3 @@
-import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -61,7 +60,14 @@ def generate_launch_description():
             output='screen',
             emulate_tty=True,
             parameters=final_parameters,
-            arguments=['--ros-args', '--log-level', log_level],
+            arguments=[
+                '--ros-args',
+                '--log-level', log_level,
+                '--log-level', 'rcl:=info',
+                '--log-level', 'rclpy:=info',
+                '--log-level', 'rcutils:=info',
+                '--log-level', 'rmw_cyclonedds_cpp:=info',
+            ],
             remappings=node_cfg.get('remappings', []),
         )
         launch_actions.append(node)

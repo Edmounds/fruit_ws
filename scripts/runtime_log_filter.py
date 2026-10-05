@@ -13,6 +13,12 @@ import sys
 
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
+# Patterns that should NEVER be logged to file nor displayed on terminal (pure middleware noise).
+DISCARD_PATTERNS = [
+    re.compile(r"\[DEBUG\].*?\[(?:rcl|rclpy|rcutils|rmw_cyclonedds_cpp)\]:"),
+    re.compile(r"\[rcl\]:\s+(?:Initializing wait set|Subscription taking message|Subscription take succeeded)"),
+]
+
 # Patterns that should NEVER be displayed on terminal under any circumstances.
 TERMINAL_NEVER_SHOW_PATTERNS = [
     re.compile(r"\[MCU TX RAW\]"),
@@ -79,6 +85,13 @@ class LogFilter:
             self.log_file.close()
 
     def process_line(self, raw_line: str):
+        clean_line = ANSI_ESCAPE_RE.sub("", raw_line).strip()
+
+        # 0. Completely discard noisy middleware logs (neither written to file nor displayed).
+        for pat in DISCARD_PATTERNS:
+            if pat.search(clean_line):
+                return
+
         # 1. Always write raw line to log file.
         try:
             self.log_file.write(raw_line)
@@ -86,7 +99,6 @@ class LogFilter:
         except Exception as e:
             sys.stderr.write(f"[log_filter] Write error: {e}\n")
 
-        clean_line = ANSI_ESCAPE_RE.sub("", raw_line).strip()
         if not clean_line:
             if self.in_traceback:
                 sys.stdout.write(raw_line)

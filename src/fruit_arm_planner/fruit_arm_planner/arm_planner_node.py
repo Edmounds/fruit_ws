@@ -14,6 +14,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.logging import LoggingSeverity, get_logger_effective_level, set_logger_level
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
@@ -75,6 +76,13 @@ class ArmPlannerNode(Node):
 
     def __init__(self) -> None:
         super().__init__('arm_planner_node')
+
+        # --------------------------------------------------------------------
+        # 0. 屏蔽底层中间件 (rcl / rclpy / rcutils / rmw) 的高频调试轮询日志
+        # --------------------------------------------------------------------
+        for name in ('rcl', 'rclpy', 'rcutils', 'rmw_cyclonedds_cpp'):
+            if get_logger_effective_level(name) < LoggingSeverity.INFO:
+                set_logger_level(name, LoggingSeverity.INFO)
 
         self.cb_group = ReentrantCallbackGroup()
 
@@ -652,6 +660,9 @@ class ArmPlannerNode(Node):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
+    for name in ('rcl', 'rclpy', 'rcutils', 'rmw_cyclonedds_cpp'):
+        if get_logger_effective_level(name) < LoggingSeverity.INFO:
+            set_logger_level(name, LoggingSeverity.INFO)
     node = ArmPlannerNode()
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
