@@ -186,6 +186,7 @@ ros2 service call /arm_planner_node/reload_presets std_srvs/srv/Trigger '{}'
 - Shared **Git Workflow & Multi-Agent Collaboration** rules are maintained in [/home/rc4/.pi/agent/APPEND_SYSTEM.md](/home/rc4/.pi/agent/APPEND_SYSTEM.md). If your system prompt does not include them, read that section before editing. Workspace-specific requirements:
   - Robot deployment uses `main` only. Do not switch branches to operate different robot versions.
   - When a worktree is needed, use the `using-git-worktrees` workflow. Prefer `.worktrees/`, first checking `git check-ignore .worktrees/<branch>`.
+  - The shared prompt is machine-local, outside this repository. Workspace commits do not version that file.
 
 ## Coordinated Updates
 
