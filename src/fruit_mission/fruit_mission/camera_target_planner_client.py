@@ -2,6 +2,7 @@
 
 import math
 from pathlib import Path
+import re
 import time
 
 from fruit_arm_interfaces.srv import ExecuteArmPreset, MoveArmCartesian, MoveArmJoints
@@ -23,6 +24,59 @@ from fruit_mission.config import validate_target_offset
 DEFAULT_EXTRINSIC_CONFIG = (
     '/home/rc4/fruit_ws/src/fruit_mission/config/camera_extrinsic.yaml'
 )
+
+HARDWARE_FAILURE_RE = re.compile(
+    r'Hardware reported failure:\s*task_status=(\d+),\s*error_code=(\d+)'
+)
+
+
+def format_task_status_cn(task_status: int) -> str:
+    status_map = {
+        ArmStatus.STATUS_IDLE: '空闲 (STATUS_IDLE: 0)',
+        ArmStatus.STATUS_RUNNING: '正在运行 (STATUS_RUNNING: 1)',
+        ArmStatus.STATUS_COMPLETED: '执行成功 (STATUS_COMPLETED: 2)',
+        ArmStatus.STATUS_FAILED: '执行失败 (STATUS_FAILED: 3)',
+        ArmStatus.STATUS_EMERGENCY: '急停锁定 (STATUS_EMERGENCY: 4)',
+    }
+    return status_map.get(task_status, f'未知状态 ({task_status})')
+
+
+def format_error_code_cn(error_code: int) -> str:
+    code_map = {
+        ArmStatus.ERROR_NONE: '正常无故障 (ERROR_NONE: 0)',
+        ArmStatus.ERROR_TIMEOUT: '任务超时 (ERROR_TIMEOUT: 1001) [机械臂未在时限内到位或路点未完整装载]',
+        ArmStatus.ERROR_LIMIT_EXCEEDED: '关节超限 (ERROR_LIMIT_EXCEEDED: 1002) [超出关节软限位]',
+        ArmStatus.ERROR_ESTOP_TRIGGERED: '急停触发 (ERROR_ESTOP_TRIGGERED: 1003) [硬件急停保护启动]',
+    }
+    return code_map.get(error_code, f'固件错误码 ({error_code})')
+
+
+def translate_planner_message(msg: str) -> str:
+    if not msg:
+        return '未知错误'
+    m = HARDWARE_FAILURE_RE.search(msg)
+    if m:
+        ts = int(m.group(1))
+        ec = int(m.group(2))
+        return f'下位机报错：状态={format_task_status_cn(ts)}，故障={format_error_code_cn(ec)}'
+
+    translations = {
+        'arm_endpoints_not_ready': '机械臂通信端点未就绪 (arm_endpoints_not_ready)',
+        'arm_pose_unavailable': '机械臂未停稳或位姿不可用 (arm_pose_unavailable)',
+        'planner returned no response': '规划节点无响应 (planner returned no response)',
+        'Target XYZ is out of reachable workspace': '目标位置超出机械臂可达工作空间 (workspace exceeded)',
+        'IK failed to find a valid solution': '逆运动学求解无有效解 (IK failed)',
+        'Joint limits exceeded': '目标关节角度超出软限位 (Joint limits exceeded)',
+        'Arm is busy executing another motion': '机械臂正忙于执行其他动作 (arm busy)',
+        'Arm status is stale or missing': '未收到有效四轴状态反馈 (feedback missing)',
+        'Motion interrupted by STOP': '运动被停止指令中断 (STOP)',
+        'Motion interrupted by ESTOP': '运动被急停指令中断 (ESTOP)',
+        'Invalid Cartesian target': '笛卡尔目标参数无效 (invalid cartesian target)',
+    }
+    for eng, cn in translations.items():
+        if eng in msg:
+            return cn
+    return msg
 
 
 class CameraTargetPlannerClient:
@@ -283,25 +337,27 @@ class CameraTargetPlannerClient:
 
     def finish_motion(self, future, wait_until):
         if future is None:
-            return False, 'arm_endpoints_not_ready'
+            return False, '机械臂通信端点未就绪 (arm_endpoints_not_ready)'
         try:
             if not wait_until(lambda: future.done() or future.cancelled()):
                 future.cancel()
                 self.request_stop()
-                return False, 'arm_callback_failed'
+                return False, '等待规划结果超时，已下发停止 (timeout)'
             if future.cancelled():
-                return False, 'arm_callback_failed'
+                return False, '规划请求已取消 (cancelled)'
             response = future.result()
             if response is None:
                 raise RuntimeError('planner returned no response')
         except Exception as error:
             self.node.get_logger().warning(f'Planner request failed: {error}')
             self.request_stop()
-            return False, 'arm_callback_failed'
+            return False, f'规划服务调用异常 ({error})'
         if response.success:
             self.node.get_logger().info(
                 f'Planner trajectory_id={response.trajectory_id}: {response.message}')
+            return True, 'completed'
         else:
+            translated = translate_planner_message(response.message)
             self.node.get_logger().warning(
-                f'Planner trajectory_id={response.trajectory_id} failed: {response.message}')
-        return bool(response.success), 'completed' if response.success else 'arm_callback_failed'
+                f'Planner trajectory_id={response.trajectory_id} failed: {translated}')
+            return False, translated

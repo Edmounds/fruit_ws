@@ -234,6 +234,41 @@ class CameraArmTargetClient(Node):
                     return target
         return None
 
+    def safe_recover_home(self) -> bool:
+        """安全恢复：下发 STOP，等待停稳空闲，按 zero -> home 顺序安全归位。"""
+        if self._camera_planner is None:
+            return False
+        self.get_logger().warn('触发安全恢复流程：下发 STOP 指令并等待机械臂停稳...')
+        self._camera_planner.request_stop()
+        stopped_after = time.monotonic()
+        stationary_rps = 0.05
+
+        # 1. 确认停稳并且回到 IDLE
+        if not self.wait_until(
+            lambda: self._camera_planner.is_stationary(
+                stationary_rps, stopped_after, require_idle=True),
+            timeout_sec=5.0
+        ):
+            self.get_logger().error('机械臂未确认停稳或未恢复空闲 (IDLE)，中止自动归位以策安全')
+            return False
+
+        # 2. 执行 zero 预设 (大臂朝天垂直抬起)
+        self.get_logger().info('安全复位第 1 步：执行 zero 预设 (垂直抬起)...')
+        zero_completed, zero_reason = self._camera_planner.execute_preset('zero', self.wait_until)
+        if not zero_completed:
+            self.get_logger().error(f'安全复位 zero 预设执行失败: {zero_reason}，跳过后续 home 复位')
+            return False
+
+        # 3. 执行 home 预设 (收纳归位)
+        self.get_logger().info('安全复位第 2 步：执行 home 预设 (收纳复位)...')
+        home_completed, home_reason = self._camera_planner.execute_preset('home', self.wait_until)
+        if not home_completed:
+            self.get_logger().error(f'安全复位 home 预设执行失败: {home_reason}')
+            return False
+
+        self.get_logger().info('安全恢复完成：机械臂已按 zero -> home 顺序安全复位')
+        return True
+
     def run_sequence(self, zone: str, direction: str) -> int:
         if zone not in ('A', 'B', 'C') or direction not in ('left', 'right'):
             raise ValueError('Expected zone A/B/C and direction left/right')
@@ -274,7 +309,8 @@ class CameraArmTargetClient(Node):
         self.get_logger().info('Moving arm to home preset...')
         completed, reason = self._camera_planner.execute_preset('home', self.wait_until)
         if not completed:
-            self.get_logger().error(f'Failed to execute preset home: {reason}')
+            self.get_logger().error(f'执行初始预设 home 失败: {reason}')
+            self.safe_recover_home()
             return 1
         self.get_logger().info('Arm reached home position')
 
@@ -282,7 +318,8 @@ class CameraArmTargetClient(Node):
         self.get_logger().info(f'Moving arm to {look_preset}...')
         completed, reason = self._camera_planner.execute_preset(look_preset, self.wait_until)
         if not completed:
-            self.get_logger().error(f'Failed to execute preset {look_preset}: {reason}')
+            self.get_logger().error(f'执行观察预设 {look_preset} 失败: {reason}')
+            self.safe_recover_home()
             return 1
         self.get_logger().info(f'Arm reached {look_preset}')
 
@@ -291,7 +328,8 @@ class CameraArmTargetClient(Node):
         self.get_logger().info('Opening gripper at the measured observation pose...')
         completed, reason = self._camera_planner.open_gripper(self.wait_until, stationary_rps)
         if not completed:
-            self.get_logger().error(f'Gripper OPEN failed: {reason}')
+            self.get_logger().error(f'张开夹爪动作失败: {reason}')
+            self.safe_recover_home()
             return 1
 
         # 7. Open observation window and collect target
@@ -305,7 +343,8 @@ class CameraArmTargetClient(Node):
             self.close_observation_window()
 
         if target_point is None:
-            self.get_logger().error('No target acquired within timeout')
+            self.get_logger().error('未在超时时间内采集到有效目标 (No target acquired within timeout)')
+            self.safe_recover_home()
             return 1
 
         # 8. Transform optical target to arm base coordinates
@@ -313,7 +352,8 @@ class CameraArmTargetClient(Node):
         try:
             req = self._camera_planner.target_request(target_point, zone)
         except ValueError as err:
-            self.get_logger().error(f'Target transform failed: {err}')
+            self.get_logger().error(f'目标坐标转换失败 (Target transform failed): {err}')
+            self.safe_recover_home()
             return 1
 
         # 11. Move arm to target point and grasp (CLOSE + dwell HOLD)
@@ -323,7 +363,8 @@ class CameraArmTargetClient(Node):
         completed, reason = self._camera_planner.move_to_base_target(
             req, self.wait_until, stationary_rps)
         if not completed:
-            self.get_logger().error(f'Grasp motion failed: {reason}')
+            self.get_logger().error(f'抓取动作执行失败 (Grasp motion failed): {reason}')
+            self.safe_recover_home()
             return 1
 
         # 12. Move arm to store preset and release fruit
@@ -331,14 +372,17 @@ class CameraArmTargetClient(Node):
         self.get_logger().info(f'Moving arm to {store_preset} and releasing fruit...')
         completed, reason = self._camera_planner.execute_preset(store_preset, self.wait_until)
         if not completed:
-            self.get_logger().error(f'Failed to execute preset {store_preset}: {reason}')
+            self.get_logger().error(
+                f'放果预设执行失败 (Failed to execute preset {store_preset}): {reason}')
+            self.safe_recover_home()
             return 1
 
         # 13. Return arm to home position
         self.get_logger().info('Returning arm to home...')
         completed, reason = self._camera_planner.execute_preset('home', self.wait_until)
         if not completed:
-            self.get_logger().error(f'Failed to return home: {reason}')
+            self.get_logger().error(f'返回 home 初始位姿失败: {reason}')
+            self.safe_recover_home()
             return 1
 
         self.get_logger().info(

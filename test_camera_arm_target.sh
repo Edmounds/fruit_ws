@@ -241,7 +241,7 @@ main()
     2>&1 | /usr/bin/python3 "${filter_script}" --output-file "${client_log}" --component "client" $( (( DEBUG != 0 )) && echo "--debug" ); then
     log "Task sequence completed"
   else
-    log "Task sequence stopped at the failed step; processes remain available for inspection"
+    log "Task sequence stopped at the failed step (arm safe recovery completed); processes remain available for inspection"
     show_failure_logs
   fi
   keep_running
