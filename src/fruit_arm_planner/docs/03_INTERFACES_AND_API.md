@@ -141,6 +141,12 @@ presets:
 ```
 
 ### 2. 底层插值与时间片无缝拼接机制
+航点内的 `linear: true` 选择 LIN，`false` 或省略选择 PTP。
+该字段控制上一位置到该航点的运动段；第一个航点从当前实测姿态开始。
+LIN 只支持 `coordinate_frame: cartesian`；不要把 `linear` 放在预设层与 `coordinate_frame` 并列。
+源码 YAML 的 `pick_sequence` 四个航点均已设置 `linear: true`，坐标、时长与夹爪动作保持不变。
+修改后，在机械臂不运动时调用 `reload_presets` 或使用控制台 `reload`，并检查重载结果。
+
 当调用方触发 `ExecuteArmPreset("pick_sequence")` 时：
 1. **自动提取起点**：解算节点实时提取下位机当前物理角度 $Q_{\text{current}}$；
 2. **引导段插值（当前位置 $\to$ 阶段 0）**：根据阶段 0 的 `duration_ms` 和配置的 `interpolation_step_ms` 生成五次多项式过渡点；

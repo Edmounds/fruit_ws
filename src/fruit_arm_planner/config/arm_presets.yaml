@@ -79,14 +79,15 @@ arm_planner_node:
         description: "标准苹果采摘多动作工序 (以笛卡尔空间坐标定义)测试用"
         coordinate_frame: "cartesian"
         waypoints:
+          # linear 写在每个航点内，控制上一位置到该目标的运动段；true=LIN，false/省略=PTP
           # 段 0: 移至果树前方 5cm 悬停准备位，耗时 1500ms，到位后张开夹爪 (停顿 400ms)
-          - { target: [0.20, 0.0, 0.25, 0.0], duration_ms: 1500, gripper: 1, dwell_ms: 400 }
+          - { target: [0.20, 0.0, 0.25, 0.0], duration_ms: 1500, gripper: 1, dwell_ms: 400, linear: true }
           # 段 1: 探入 8cm 包裹果实，耗时 1000ms，到位后闭合夹紧 (停顿 600ms)
-          - { target: [0.40, 0.0, 0.25, 0.0], duration_ms: 1000, gripper: 2, dwell_ms: 600 }
+          - { target: [0.40, 0.0, 0.25, 0.0], duration_ms: 1000, gripper: 2, dwell_ms: 600, linear: true }
           # 段 2: 垂直向上提拉 6cm 脱离果柄，耗时 1000ms，保持夹紧
-          - { target: [0.40, 0.0, 0.40, 0.0], duration_ms: 1000, gripper: 0, dwell_ms: 0 }
+          - { target: [0.40, 0.0, 0.40, 0.0], duration_ms: 1000, gripper: 0, dwell_ms: 0, linear: true }
           # 段 3: 带着果实收回到安全悬停高度，耗时 1500ms，保持夹紧
-          - { target: [0.20, 0.0, 0.25, 0.0], duration_ms: 1500, gripper: 0, dwell_ms: 0 }
+          - { target: [0.20, 0.0, 0.25, 0.0], duration_ms: 1500, gripper: 0, dwell_ms: 0, linear: true }
 
       home:
         description: "返回运动初始位置"
