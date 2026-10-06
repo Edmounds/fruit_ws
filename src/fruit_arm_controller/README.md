@@ -32,6 +32,7 @@ flowchart LR
 | [01_ARCHITECTURE.md](docs/01_ARCHITECTURE.md) | 职责、运行流程、到位判断、预设复用、上层兼容 |
 | [02_LOWER_CONTROLLER_DATA.md](docs/02_LOWER_CONTROLLER_DATA.md) | 下发命令、回传反馈、单位、顺序、停止及失联语义 |
 | [03_IMPLEMENTATION_PLAN.md](docs/03_IMPLEMENTATION_PLAN.md) | 最小实施步骤、配置迁移、验收、待确认事项 |
+| [04_DESIGN_REVIEW.md](docs/04_DESIGN_REVIEW.md) | 分轮设计访谈、已确认决定和未解决分支 |
 
 ## 已确定的设计范围
 
@@ -40,7 +41,8 @@ flowchart LR
 - 保持原 `ArmTelemetry` 类型、四轴角度语义和真实 TCP 定义。
 - 复用现有 FK/IK、`JointTransformer` 和 PTP/LIN 数学实现。
 - 复用现有 `presets`，保留坐标、时长、夹爪动作和航点 `linear`。
-- 不设置运动到位的业务超时，不自动重试或恢复抓取。
+- 非硬件失败不永久锁止后续操作，不自动重试或恢复抓取。
+- 完成等待策略正在访谈中确认，不能让一次异常无限占用运动服务。
 - 保留输入验证、反馈新鲜度、STOP、ESTOP 和本地失联保护。
 
 ## 已确认的硬件结构
