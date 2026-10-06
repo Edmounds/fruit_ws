@@ -37,13 +37,14 @@ flowchart LR
 ## 已确定的设计范围
 
 - 保持 `MoveArmCartesian`、`MoveArmJoints`、`ExecuteArmPreset` 的类型和端点。
-- 保持 Home、STOP、ESTOP、预设重载和现有调试输入。
+- 保持 Home、STOP、预设重载和现有调试输入，原 emergency_stop 端点作为 STOP 别名。
 - 保持原 `ArmTelemetry` 类型、四轴角度语义和真实 TCP 定义。
 - 复用现有 FK/IK、`JointTransformer` 和 PTP/LIN 数学实现。
 - 复用现有 `presets`，保留坐标、时长、夹爪动作和航点 `linear`。
 - 非硬件失败不永久锁止后续操作，不自动重试或恢复抓取。
 - 到位等待采用独立有限窗口，未达标返回业务失败并释放服务占用。
-- 保留输入验证、反馈新鲜度、STOP、ESTOP 和本地失联保护。
+- 保留输入验证、反馈新鲜度、统一 STOP 和本地失联保护。
+- 硬件故障条件消失且反馈有效、实测停稳后自动放行新请求，不重放失败动作。
 
 ## 已确认的硬件结构
 
