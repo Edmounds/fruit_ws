@@ -44,7 +44,7 @@ arm_planner_node:
       interpolation_step_ms: 200   # 约5Hz 插值周期 (ms)
       default_dwell_ms: 500       # 夹爪动作路点未写 dwell_ms 时的驻留时间 (ms)
       status_max_age_sec: 0.25    # 接受四轴实测反馈的最大接收时延 (s)
-      mode_start_delay_ms: 100    # 调试缓冲：路点发布后等待再发送启动 Mode (ms)
+      mode_start_delay_ms: 300    # 调试缓冲：路点发布后等待再发送启动 Mode (ms)
       hover_height_m: 0.06        # 安全悬停提升高度 (m)
 
     # ------------------------------------------------------------------------
@@ -196,6 +196,41 @@ arm_planner_node:
         coordinate_frame: "cartesian"
         waypoints:
           - { target: [0.0203, 0.0703, 0.303, -46.7], duration_ms: 1000, gripper: 0 }
-      #right_look_b:
-      #left_store_b:
-      #right_store_b
+
+      right_look_b:
+        description: "机械臂右侧观察位姿"
+        coordinate_frame: "cartesian"
+        waypoints:
+          - { target: [0.0203, -0.0703, 0.303, 46.7], duration_ms: 1000, gripper: 0 }
+
+      left_store_b:
+        description: "左方抓取完毕后存储并回到原位"
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.0417
+          - 0.137
+          - 0.176
+          - -0.0
+          duration_ms: 1500
+          gripper: 0
+          linear: true
+        - {duration_ms: 1000, gripper: 1, target: [-0.1962624798929228, 0.00965640213802654, 0.2506981509144537, -5.973156743762218], linear: true }
+        - {duration_ms: 1000, gripper: 0, target: [0.042288450212795675, 0.15905864173713108, 0.3536682379281416, -4.166016328536959], linear: true }
+        - { target: [0.1202, 0.0000, 0.550, 0.0], duration_ms: 1000, gripper: 0 , linear: true }
+
+      right_store_b:
+        description: "右方抓取完毕后存储并回到原位"
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.0417
+          - -0.137
+          - 0.176
+          - -0.0
+          duration_ms: 500
+          gripper: 0
+          linear: true
+        - {duration_ms: 1000, gripper: 1, target: [-0.1962624798929228, -0.00965640213802654, 0.2506981509144537, -5.973156743762218], linear: true }
+        - {duration_ms: 1000, gripper: 0, target: [0.042288450212795675, -0.15905864173713108, 0.3536682379281416, -4.166016328536959], linear: true }
+        - { target: [0.1202, -0.0000, 0.550, 0.0], duration_ms: 1000, gripper: 0 , linear: true }
