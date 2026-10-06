@@ -23,11 +23,15 @@ DEFAULT_DISPLAY = ':0'
 
 def display_from_argv(argv: list[str]) -> str:
     for index, argument in enumerate(argv):
-        if argument == '--display' and index + 1 < len(argv):
+        if argument in ('--x11-display', '--x-display') and index + 1 < len(argv):
             return argv[index + 1]
-        if argument.startswith('--display='):
+        if argument.startswith(('--x11-display=', '--x-display=')):
             return argument.split('=', maxsplit=1)[1]
-    return DEFAULT_DISPLAY
+        if argument == '--display' and index + 1 < len(argv) and argv[index + 1].startswith(':'):
+            return argv[index + 1]
+        if argument.startswith('--display=:'):
+            return argument.split('=', maxsplit=1)[1]
+    return os.environ.get('DISPLAY', DEFAULT_DISPLAY)
 
 
 def configure_desktop_display(display: str) -> None:
@@ -256,8 +260,28 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         '--display',
-        default=DEFAULT_DISPLAY,
-        help=f'desktop display for the GUI window (default: {DEFAULT_DISPLAY})',
+        choices=('both', 'rgb', 'depth'),
+        default='rgb',
+        help='preview window display mode: rgb (default), depth, or both',
+    )
+    parser.add_argument(
+        '--scale',
+        type=float,
+        default=0.5,
+        metavar='SCALE',
+        help='preview window display scaling factor (default: 0.5 for lightweight view)',
+    )
+    parser.add_argument(
+        '--gui-fps',
+        type=float,
+        default=15.0,
+        metavar='FPS',
+        help='maximum GUI rendering refresh rate in FPS (default: 15.0)',
+    )
+    parser.add_argument(
+        '--x11-display',
+        default=os.environ.get('DISPLAY', DEFAULT_DISPLAY),
+        help=f'desktop X11 display for GUI window (default: {DEFAULT_DISPLAY})',
     )
     parser.add_argument(
         '--controls',
@@ -823,11 +847,16 @@ def draw_annotations(
     fps: float,
     model_name: str,
     ripeness_classifier: RipenessClassifier | None = None,
+    scale: float = 1.0,
 ) -> np.ndarray:
     annotated = frame_rgb.copy()
     h, w = annotated.shape[:2]
 
     center_color = (0, 220, 255)
+    f_main = 0.55 if scale < 0.75 else 0.48
+    f_sub = 0.48 if scale < 0.75 else 0.42
+    f_banner = 0.60 if scale < 0.75 else 0.55
+    f_mouse = 0.48 if scale < 0.75 else 0.44
 
     for detection in detections:
         bx, by, bw, bh = to_original_box(detection, transform)
@@ -890,7 +919,7 @@ def draw_annotations(
                     )
 
         # Main label
-        ts_main, bl_main = cv2.getTextSize(main_label, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
+        ts_main, bl_main = cv2.getTextSize(main_label, cv2.FONT_HERSHEY_SIMPLEX, f_main, 1)
         tx = min(max(bx, 0), max(0, w - ts_main[0] - 6))
         ty = max(by - 6, ts_main[1] + 4)
         cv2.rectangle(
@@ -903,11 +932,11 @@ def draw_annotations(
         text_color = (255, 255, 255) if is_bad else (0, 0, 0)
         cv2.putText(
             annotated, main_label, (tx + 3, ty),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.48, text_color, 1, cv2.LINE_AA,
+            cv2.FONT_HERSHEY_SIMPLEX, f_main, text_color, 1, cv2.LINE_AA,
         )
 
         # Sub label below box
-        ts_sub, bl_sub = cv2.getTextSize(sub_label, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        ts_sub, bl_sub = cv2.getTextSize(sub_label, cv2.FONT_HERSHEY_SIMPLEX, f_sub, 1)
         sub_y = min(by + bh + ts_sub[1] + 6, h - 35)
         sub_x = min(max(bx, 0), max(0, w - ts_sub[0] - 6))
         cv2.rectangle(
@@ -919,7 +948,7 @@ def draw_annotations(
         )
         cv2.putText(
             annotated, sub_label, (sub_x + 2, sub_y),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1, cv2.LINE_AA,
+            cv2.FONT_HERSHEY_SIMPLEX, f_sub, (0, 255, 255), 1, cv2.LINE_AA,
         )
 
     # Mouse inspection crosshair & coordinates
@@ -967,14 +996,14 @@ def draw_annotations(
     cv2.rectangle(annotated, (0, 0), (w, 30), (20, 20, 20), cv2.FILLED)
     cv2.putText(
         annotated, top_banner, (10, 21),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 120), 1, cv2.LINE_AA,
+        cv2.FONT_HERSHEY_SIMPLEX, f_banner, (0, 255, 120), 1, cv2.LINE_AA,
     )
 
     # Bottom status bar (mouse probe + hotkey hints)
     cv2.rectangle(annotated, (0, h - 32), (w, h), (15, 15, 15), cv2.FILLED)
     cv2.putText(
         annotated, mouse_text, (10, h - 18),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.44, (255, 255, 255), 1, cv2.LINE_AA,
+        cv2.FONT_HERSHEY_SIMPLEX, f_mouse, (255, 255, 255), 1, cv2.LINE_AA,
     )
     hints = '[s]Save [m]Model [q]Quit'
     th, _ = cv2.getTextSize(hints, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
@@ -1014,53 +1043,67 @@ def colorize_depth_image(depth: np.ndarray) -> np.ndarray:
     return colored
 
 
-def draw_depth_view(raw_depth: np.ndarray | None, fps: float) -> np.ndarray:
-    """Render the native 848x480 depth visualization with distance legend and FPS."""
+def draw_depth_view(
+    raw_depth: np.ndarray | None,
+    fps: float,
+    downsample: int = 1,
+) -> np.ndarray:
+    """Render the native depth visualization with distance legend and FPS."""
     if raw_depth is None:
-        view = np.zeros((480, 848, 3), dtype=np.uint8)
+        ph_w = 848 // downsample if downsample > 1 else 848
+        ph_h = 480 // downsample if downsample > 1 else 480
+        view = np.zeros((ph_h, ph_w, 3), dtype=np.uint8)
         cv2.putText(
             view,
-            'Waiting for native depth frames (848x480)...',
-            (40, 240),
+            f'Waiting for depth frames ({ph_w}x{ph_h})...',
+            (20, ph_h // 2),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
+            0.5 if downsample > 1 else 0.7,
             (0, 255, 255),
-            2,
+            1 if downsample > 1 else 2,
             cv2.LINE_AA,
         )
         return view
 
-    h, w = raw_depth.shape[:2]
-    colored = colorize_depth_image(raw_depth)
-    valid = raw_depth[raw_depth > 0]
+    if downsample > 1:
+        sampled_depth = raw_depth[::downsample, ::downsample]
+    else:
+        sampled_depth = raw_depth
+
+    h, w = sampled_depth.shape[:2]
+    colored = colorize_depth_image(sampled_depth)
+    valid = sampled_depth[sampled_depth > 0]
     if len(valid) == 0:
         cv2.putText(
             colored,
             'No valid depth',
-            (max(10, w // 2 - 120), h // 2),
+            (max(10, w // 2 - 80), h // 2),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
+            0.6 if downsample > 1 else 0.8,
             (0, 0, 255),
-            2,
+            1 if downsample > 1 else 2,
             cv2.LINE_AA,
         )
-        legend_text = f'Native Depth ({w}x{h}) | No valid depth pixels'
+        legend_text = f'Depth ({w}x{h}) | No valid depth pixels'
     else:
         min_m = float(np.min(valid)) * 0.001
         max_m = float(np.max(valid)) * 0.001
         coverage = (len(valid) / (h * w)) * 100.0
         legend_text = (
-            f'Native Depth ({w}x{h}) | Near: {min_m:.3f}m  Far: {max_m:.3f}m | '
-            f'Valid: {coverage:.1f}% | FPS: {fps:.1f}'
+            f'Depth ({w}x{h}) | {min_m:.2f}~{max_m:.2f}m | '
+            f'{coverage:.0f}% | FPS: {fps:.1f}'
         )
 
-    cv2.rectangle(colored, (0, 0), (w, 30), (20, 20, 20), cv2.FILLED)
+    banner_h = 24 if downsample > 1 else 30
+    cv2.rectangle(colored, (0, 0), (w, banner_h), (20, 20, 20), cv2.FILLED)
+    font_sc = 0.42 if downsample > 1 else 0.52
+    text_y = 17 if downsample > 1 else 21
     cv2.putText(
         colored,
         legend_text,
-        (10, 21),
+        (8, text_y),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.52,
+        font_sc,
         (0, 255, 120),
         1,
         cv2.LINE_AA,
@@ -2031,6 +2074,11 @@ def run() -> int:
         if not math.isfinite(value) or not 0.0 <= value <= 1.0:
             raise ValueError(f'{name} must be between 0 and 1, got {value}')
 
+    if args.scale <= 0.0 or args.scale > 2.0:
+        raise ValueError(f'scale must be between 0.0 and 2.0, got {args.scale}')
+    if args.gui_fps <= 0.0:
+        raise ValueError(f'gui_fps must be positive, got {args.gui_fps}')
+
     detector = Detector(model_path)
     extrinsic = load_extrinsic_transform()
     model_root = Path(perception['model_root'])
@@ -2112,39 +2160,80 @@ def run() -> int:
         control_service = CameraControlService(node)
         apply_camera_yaml_configuration(control_service, config, node)
 
+        show_rgb = args.display in ('rgb', 'both')
+        show_depth = args.display in ('depth', 'both')
+        scale = float(args.scale)
+        gui_fps = float(args.gui_fps)
+        min_gui_interval = 1.0 / gui_fps if gui_fps > 0 else 0.0
+        depth_downsample = max(1, int(round(1.0 / scale))) if scale < 1.0 else 1
+
         window_rgb_name = 'RealSense 3D Detector & Depth Inspector'
-        window_depth_name = 'RealSense Native Depth (848x480)'
+        window_depth_name = 'RealSense Native Depth'
 
-        cv2.namedWindow(window_rgb_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(window_rgb_name, 1280, 720)
-        cv2.moveWindow(window_rgb_name, 20, 40)
+        active_windows: list[str] = []
+        rgb_w = max(160, int(round(1280 * scale)))
+        rgb_h = max(90, int(round(720 * scale)))
+        depth_w = max(160, int(round(848 * scale)))
+        depth_h = max(90, int(round(480 * scale)))
 
-        cv2.namedWindow(window_depth_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(window_depth_name, 848, 480)
-        cv2.moveWindow(window_depth_name, 20, 800)
+        if show_rgb:
+            active_windows.append(window_rgb_name)
+            cv2.namedWindow(window_rgb_name, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(window_rgb_name, rgb_w, rgb_h)
+            cv2.moveWindow(window_rgb_name, 20, 40)
+
+        if show_depth:
+            active_windows.append(window_depth_name)
+            cv2.namedWindow(window_depth_name, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(window_depth_name, depth_w, depth_h)
+            if show_rgb:
+                cv2.moveWindow(window_depth_name, 20 + rgb_w + 10, 40)
+            else:
+                cv2.moveWindow(window_depth_name, 20, 40)
 
         mouse_coords = [-1, -1]
 
         def on_mouse(event: int, x: int, y: int, _flags: int, _param: Any) -> None:
-            mouse_coords[0] = x
-            mouse_coords[1] = y
+            if scale > 0.0 and scale != 1.0:
+                mouse_coords[0] = int(round(x / scale))
+                mouse_coords[1] = int(round(y / scale))
+            else:
+                mouse_coords[0] = x
+                mouse_coords[1] = y
 
-        cv2.setMouseCallback(window_rgb_name, on_mouse)
+        if show_rgb:
+            cv2.setMouseCallback(window_rgb_name, on_mouse)
 
-        # Show initial placeholder frames on both windows
-        init_rgb = np.zeros((720, 1280, 3), dtype=np.uint8)
-        cv2.putText(
-            init_rgb,
-            'Waiting for camera frames...',
-            (40, 360),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.0,
-            (0, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-        cv2.imshow(window_rgb_name, init_rgb)
-        cv2.imshow(window_depth_name, draw_depth_view(None, 0.0))
+        # Show initial placeholder frames on active windows
+        if show_rgb:
+            init_rgb = np.zeros((720, 1280, 3), dtype=np.uint8)
+            cv2.putText(
+                init_rgb,
+                'Waiting for camera frames...',
+                (40, 360),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            disp_init = (
+                cv2.resize(init_rgb, (rgb_w, rgb_h), interpolation=cv2.INTER_AREA)
+                if scale != 1.0
+                else init_rgb
+            )
+            cv2.imshow(window_rgb_name, disp_init)
+
+        if show_depth:
+            init_depth = draw_depth_view(None, 0.0, downsample=depth_downsample)
+            if init_depth.shape[:2] != (depth_h, depth_w):
+                init_depth = cv2.resize(
+                    init_depth,
+                    (depth_w, depth_h),
+                    interpolation=cv2.INTER_AREA,
+                )
+            cv2.imshow(window_depth_name, init_depth)
+
         cv2.waitKey(1)
 
         if args.controls:
@@ -2157,19 +2246,26 @@ def run() -> int:
                 ),
             )
 
+        last_render_time = 0.0
         last_frame_time = 0.0
         displayed_fps = 0.0
         last_wait_message = 0.0
         announced_first_frame = False
         current_raw_depth: np.ndarray | None = None
+        latest_annotated_bgr: np.ndarray | None = None
+        latest_depth_view: np.ndarray | None = None
 
         print('\n=== RealSense 3D Inspector Controls ===')
+        print(
+            f'  Mode: --display {args.display} | Scale: {scale:.2f} ({rgb_w}x{rgb_h}) | '
+            f'Max GUI FPS: {gui_fps:.0f}'
+        )
         print('  [Hover Mouse] : Probe depth and 3D camera / arm base coordinates')
         print('  [Key s]       : Save current annotated snapshot image to disk')
         print('  [Key m]       : Toggle model between A (vegetables) and B (fruits)')
         print('  [Key q / ESC] : Quit viewer\n')
 
-        window_opened = {window_rgb_name: False, window_depth_name: False}
+        window_opened = {wname: False for wname in active_windows}
 
         while rclpy.ok():
             check_camera_process(camera_process, log_path)
@@ -2179,7 +2275,7 @@ def run() -> int:
 
             # Check if any OpenCV window was mapped and then closed by user
             window_closed = False
-            for wname in (window_rgb_name, window_depth_name):
+            for wname in active_windows:
                 if is_window_open(wname):
                     window_opened[wname] = True
                 elif window_opened[wname]:
@@ -2192,6 +2288,29 @@ def run() -> int:
             if control_panel is not None and not control_panel.is_open():
                 print('Camera controls panel closed by user; exiting.', flush=True)
                 break
+
+            now = time.monotonic()
+            if min_gui_interval > 0.0 and (now - last_render_time) < min_gui_interval:
+                key = cv2.waitKey(1)
+                if key in (27, ord('q'), ord('Q')):
+                    break
+                elif key in (ord('s'), ord('S')):
+                    target_img = (
+                        latest_annotated_bgr
+                        if latest_annotated_bgr is not None
+                        else latest_depth_view
+                    )
+                    if target_img is not None:
+                        timestamp = time.strftime('%Y%m%d_%H%M%S')
+                        save_path = WORKSPACE / f'snapshot_{timestamp}.jpg'
+                        cv2.imwrite(str(save_path), target_img)
+                        print(f'>>> Saved snapshot to {save_path}', flush=True)
+                elif key in (ord('m'), ord('M')):
+                    current_model = 'B' if current_model in ('A', 'C') else 'A'
+                    model_path = model_path_for(current_model, config)
+                    detector = Detector(model_path)
+                    print(f'>>> Switched to Model {current_model}: {model_path.name}', flush=True)
+                continue
 
             frame, depth_frame, raw_depth = node.take_latest()
             if raw_depth is not None:
@@ -2206,6 +2325,8 @@ def run() -> int:
                 if key in (27, ord('q'), ord('Q')):
                     break
                 continue
+
+            last_render_time = now
 
             if not announced_first_frame:
                 print(
@@ -2224,16 +2345,16 @@ def run() -> int:
                 detector.labels,
             )
 
-            now = time.monotonic()
+            now_frame = time.monotonic()
             if last_frame_time > 0.0:
-                interval = now - last_frame_time
+                interval = now_frame - last_frame_time
                 instantaneous_fps = 1.0 / interval if interval > 0.0 else 0.0
                 displayed_fps = (
                     instantaneous_fps
                     if displayed_fps == 0.0
                     else 0.8 * displayed_fps + 0.2 * instantaneous_fps
                 )
-            last_frame_time = now
+            last_frame_time = now_frame
 
             h_img, w_img = frame.shape[:2]
             if depth_frame is not None and depth_frame.shape[:2] != (h_img, w_img):
@@ -2242,35 +2363,64 @@ def run() -> int:
             intrinsics = validate_camera_info(node.camera_info, w_img, h_img)
             tcp_pose = node.get_fresh_tcp_pose()
 
-            annotated_rgb = draw_annotations(
-                frame,
-                depth_frame,
-                detections,
-                transform,
-                intrinsics,
-                extrinsic,
-                tcp_pose,
-                mouse_coords[0],
-                mouse_coords[1],
-                displayed_fps,
-                f'{current_model} ({"fruit" if current_model in ("B", "D") else "vegetable"})',
-                ripeness_classifier=ripeness_classifier,
-            )
-            annotated_bgr = cv2.cvtColor(annotated_rgb, cv2.COLOR_RGB2BGR)
-            cv2.imshow(window_rgb_name, annotated_bgr)
+            if show_rgb:
+                annotated_rgb = draw_annotations(
+                    frame,
+                    depth_frame,
+                    detections,
+                    transform,
+                    intrinsics,
+                    extrinsic,
+                    tcp_pose,
+                    mouse_coords[0],
+                    mouse_coords[1],
+                    displayed_fps,
+                    f'{current_model} ({"fruit" if current_model in ("B", "D") else "vegetable"})',
+                    ripeness_classifier=ripeness_classifier,
+                    scale=scale,
+                )
+                latest_annotated_bgr = cv2.cvtColor(annotated_rgb, cv2.COLOR_RGB2BGR)
+                if scale != 1.0:
+                    disp_bgr = cv2.resize(
+                        latest_annotated_bgr,
+                        (rgb_w, rgb_h),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                else:
+                    disp_bgr = latest_annotated_bgr
+                cv2.imshow(window_rgb_name, disp_bgr)
 
             # Native depth preview window
-            depth_view = draw_depth_view(current_raw_depth, displayed_fps)
-            cv2.imshow(window_depth_name, depth_view)
+            if show_depth:
+                latest_depth_view = draw_depth_view(
+                    current_raw_depth,
+                    displayed_fps,
+                    downsample=depth_downsample,
+                )
+                if latest_depth_view.shape[:2] != (depth_h, depth_w):
+                    depth_disp = cv2.resize(
+                        latest_depth_view,
+                        (depth_w, depth_h),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                else:
+                    depth_disp = latest_depth_view
+                cv2.imshow(window_depth_name, depth_disp)
 
             key = cv2.waitKey(1)
             if key in (27, ord('q'), ord('Q')):
                 break
             elif key in (ord('s'), ord('S')):
-                timestamp = time.strftime('%Y%m%d_%H%M%S')
-                save_path = WORKSPACE / f'snapshot_{timestamp}.jpg'
-                cv2.imwrite(str(save_path), annotated_bgr)
-                print(f'>>> Saved snapshot to {save_path}', flush=True)
+                target_img = (
+                    latest_annotated_bgr
+                    if latest_annotated_bgr is not None
+                    else latest_depth_view
+                )
+                if target_img is not None:
+                    timestamp = time.strftime('%Y%m%d_%H%M%S')
+                    save_path = WORKSPACE / f'snapshot_{timestamp}.jpg'
+                    cv2.imwrite(str(save_path), target_img)
+                    print(f'>>> Saved snapshot to {save_path}', flush=True)
             elif key in (ord('m'), ord('M')):
                 current_model = 'B' if current_model in ('A', 'C') else 'A'
                 model_path = model_path_for(current_model, config)
