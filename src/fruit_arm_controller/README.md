@@ -33,6 +33,7 @@ flowchart LR
 | [02_LOWER_CONTROLLER_DATA.md](docs/02_LOWER_CONTROLLER_DATA.md) | 下发命令、回传反馈、单位、顺序、停止及失联语义 |
 | [03_IMPLEMENTATION_PLAN.md](docs/03_IMPLEMENTATION_PLAN.md) | 最小实施步骤、配置迁移、验收、待确认事项 |
 | [04_DESIGN_REVIEW.md](docs/04_DESIGN_REVIEW.md) | 分轮设计访谈、已确认决定和未解决分支 |
+| [05_ACTUATOR_PARAMETERS.md](docs/05_ACTUATOR_PARAMETERS.md) | 三台 DM、两台 FTS 的换算、控制、反馈和夹爪参数 |
 
 ## 已确定的设计范围
 
@@ -45,6 +46,8 @@ flowchart LR
 - 到位等待采用独立有限窗口，未达标返回业务失败并释放服务占用。
 - 保留输入验证、反馈新鲜度、统一 STOP 和本地失联保护。
 - 硬件故障条件消失且反馈有效、实测停稳后自动放行新请求，不重放失败动作。
+- 自动恢复条件须连续满足 200 ms，参数可配置。
+- 首版 Python/rclpy，命令和反馈目标频率各 20 Hz，实际能力需验证。
 
 ## 已确认的硬件结构
 
