@@ -79,6 +79,7 @@ colcon build --base-paths src --packages-select fruit_navigation
 ```
 - 无需选择建图或里程计模式，也无需传配置路径；参数由 source 目录中的 launch 和 YAML 加载。
 - 入口统一为 `start_navigation.sh`，不再保留独立的里程计 shell 入口。
+- 启动前检测 `livox_ros_driver2`、`laserMapping`、`loam_interface`、`axis_waypoint_action_server` 等残留节点，避免重复启动造成 UDP 端口绑定冲突与 TF 冲突。
 - 自动检测 `/aft_mapped_to_init` 话题及 `odom -> base_link` 5 秒内的稳定 TF 输出。
 - RViz 默认 Fixed Frame 为 `odom`。
 - 可直接通过 RViz 交互或发送 Action 目标控制底盘。

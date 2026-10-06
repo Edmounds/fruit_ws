@@ -143,6 +143,13 @@ for required_file in "${required_files[@]}"; do
   fi
 done
 
+if ros2 node list 2>/dev/null | grep -Eq \
+  '^/(livox_ros_driver2|laserMapping|loam_interface|axis_waypoint_action_server|fruit_waypoint_recorder)$'; then
+  printf '[navigation] an odometry or navigation node is already running.\n' >&2
+  printf '[navigation] stop the existing stack before starting this script.\n' >&2
+  exit 1
+fi
+
 if [[ ! -r "$DESKTOP_XAUTHORITY" ]]; then
   printf '[navigation] desktop Xauthority is unavailable: %s\n' "$DESKTOP_XAUTHORITY" >&2
   printf '[navigation] log in to the local desktop before starting navigation.\n' >&2
