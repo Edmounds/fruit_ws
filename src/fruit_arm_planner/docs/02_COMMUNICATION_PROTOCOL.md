@@ -29,14 +29,14 @@ auto_serial_bridge  --传输业务数据--  下位机
 | --- | --- | --- |
 | `TrajectoryHeader` `/fruit_hardware_bridge/arm/trajectory_header` | `trajectory_id: uint32`、`point_num: uint16` | 声明新机械臂轨迹的 ID 和路点总数。 |
 | `TrajectoryPoint` `/fruit_hardware_bridge/arm/trajectory_point` | `trajectory_id: uint32`、`point_id: uint16`、`time_from_start: uint32`、`joint_1..4: float32`、`gripper_action: uint8`、`is_via_point: uint8` | 按时间排列的四轴目标；时间单位 ms，角度单位 rad。`0` 为精确点，`1` 为途经点。 |
-| `ArmControlMode` `/fruit_hardware_bridge/arm/control_mode` | `control_mode: uint8` | 启动轨迹、受控停止或急停。此消息**不包含 `trajectory_id`**。 |
+| `ArmControlMode` `/fruit_hardware_bridge/arm/control_mode` | `control_mode: uint8` | 受控停止或急停。下位机收到完整点位后自动启动轨迹。此消息**不包含 `trajectory_id`**。 |
 | `ChassisVelocity` `/cmd_vel` | `linear_x: float32`、`angular_z: float32` | 底盘线速度 m/s 和角速度 rad/s；桥在下发时对 ROS `angular.z` 取反以匹配下位机方向。 |
 
 `TrajectoryPoint.gripper_action`：`0` 保持当前开度（HOLD），`1` 张开（OPEN），`2` 闭合（CLOSE）。这是**命令**，不等于已完成的夹爪状态反馈。
 
 `TrajectoryPoint.is_via_point`：`0` 表示精确到达点，`1` 表示途经点。该字段只改变下位机的点到位容差选择，不改变关节限位、急停、STOP、时间轴或通信保护。预设 waypoint 未配置该字段时默认为 `0`；PTP/LIN 自动生成的中间插值点默认为 `1`。service 接口暂不开放该字段，因此 service 的最终目标点默认为 `0`。
 
-`ArmControlMode.control_mode`：`0` 启动已提交轨迹（TRAJECTORY），`1` 请求受控停止（STOP），`2` 请求急停（ESTOP）。STOP/急停服务返回成功只表示规划器已发布命令，不能据此确认下位机已停稳。由于 Mode 不带轨迹 ID，同一时刻只应存在一条待启动或执行中的机械臂轨迹。
+`ArmControlMode.control_mode`：`1` 请求受控停止（STOP），`2` 请求急停（ESTOP）。下位机收到完整点位后自动启动轨迹，规划器当前不发送 `control_mode=0`。STOP/急停服务返回成功只表示规划器已发布命令，不能据此确认下位机已停稳。
 
 ## 3. 轨迹数据顺序与时间轴
 
@@ -45,14 +45,14 @@ auto_serial_bridge  --传输业务数据--  下位机
 TrajectoryHeader(id, N)                  声明本次轨迹
 TrajectoryPoint(id, 0, t=0, 当前实测角)     起点
 TrajectoryPoint(id, 1 ... N-1)           后续目标与插值点
-ArmControlMode(TRAJECTORY=0)              启动已提交轨迹
+下位机收到 N 个点后自动启动轨迹
                      <--- ArmStatus 周期上报执行状态
 ```
 
 1. `point_num=N` 对应本轨迹实际下发的 N 个路点；规划器要求至少两个点。所有路点使用相同的 `trajectory_id`，`point_id` 按 `0..N-1` 连续编号。
 2. 第 0 点必须是规划开始时冻结的、**新鲜且有效的四轴实测角**：`time_from_start=0 ms`、`gripper_action=0`、`is_via_point=0`。缺失、过期、非有限数或超出配置限位的反馈不能用零或历史值代替。不能只发送一个时间为 `15000 ms` 的目标点。
 3. 后续路点的 `time_from_start` 是相对于本次轨迹起点的累计时间，必须严格递增；末点时间为整条轨迹的计划时长。预设各段配置的 `duration_ms` 是逐段时长，规划器累加后下发。四轴目标先由上位机完成 IK、关节映射和限位检查。插值点默认是途经点，显式 waypoint 目标点使用其 `is_via_point` 配置。
-4. 业务要求在所有路点提交后再启动轨迹。当前规划器按此顺序发布三个话题，但**话题发布顺序本身不能证明不同类型数据已按顺序到达并被下位机装载**；固件实际缓存容量及装载确认方式仍待确认。
+4. 下位机收到 Header 声明的全部 N 个点后自动启动轨迹。规划器发送 Header 和全部 Point 后等待下位机状态，不发送 `TRAJECTORY` 启动 Mode。
 
 例如 15 秒的单目标动作至少有：`Point 0 = (当前实测角, 0 ms, HOLD)`，`Point 1 = (目标硬件角, 15000 ms, 指定夹爪动作)`；规划器也可能生成更多中间插值点。笛卡尔 LIN 根据实测角做 FK 得到路径起点，但下发的首点仍是**原始实测关节角**。
 
@@ -84,7 +84,7 @@ ROS 接口定义的 `error_code` 包括：`0` 无故障、`1001` 超时、`1002`
 
 ## 5. 任务结果与异常处理
 
-- 规划器从启动 Mode 发布后开始等待新的 `ArmStatus`。只有状态的 `trajectory_id` 等于本次请求 ID 且 `task_status=COMPLETED(2)`，运动 service 才返回 `success=true`；发布轨迹或收到 `RUNNING` 都不表示动作完成。
+- 规划器从发送全部 Point 后开始等待新的 `ArmStatus`。只有状态的 `trajectory_id` 等于本次请求 ID 且 `task_status=COMPLETED(2)`，运动 service 才返回 `success=true`；发布轨迹或收到 `RUNNING` 都不表示动作完成。
 - 匹配的 `FAILED(3)`、`EMERGENCY(4)` 或显式停止使本次运动返回失败。硬件报错由下位机自然上报；**发布 STOP 不证明实机已经停稳**。
 - planner 与 mission 均没有运动执行期限或超时看门狗；等待本次下位机结果，缺少结果时由操作人员主动 STOP/ESTOP 或退出。端点发现和反馈新鲜度仍独立检查，不因无限等待放宽运动起点校验。
 - 规划器在一次运动期间拒绝新的普通运动请求；没有新鲜有效的四轴状态、目标不可达、越限或轨迹格式无效时，拒绝下发。STOP/急停不依赖有效的运动起点。

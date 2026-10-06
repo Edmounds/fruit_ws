@@ -175,7 +175,7 @@ service 请求不开放该字段，`move_cartesian` 和 `move_joints` 的最终�
   - `success` (`bool`): 是否成功执行完毕
   - `message` (`string`): 执行状态描述或报错原因
   - `trajectory_id` (`uint32`): 任务流水号
-- **执行结果**：节点从发布启动 Mode 起，等待下位机上报本次轨迹 ID 的新状态。收到 `COMPLETED` 返回成功；下位机报错（`FAILED`、`EMERGENCY`）或外部主动调用 STOP 返回失败。发布 STOP 成功不代表硬件已停稳。
+- **执行结果**：节点从发布全部轨迹点后，等待下位机上报本次轨迹 ID 的新状态。下位机收到完整点位后自动启动。收到 `COMPLETED` 返回成功；下位机报错（`FAILED`、`EMERGENCY`）或外部主动调用 STOP 返回失败。发布 STOP 成功不代表硬件已停稳。
 - **统一抓取点模型**：`arm_presets.yaml` 的 `geometry.a4` 定义腕轴沿末端局部 X 的伸出长度，`geometry.tool_z_offset_m` 定义真实抓取点相对伸出段末端的局部 Z 偏移（米，下方为负，当前 `-0.03`）。偏移随腕部旋转，FK/IK、PTP/LIN、`cmd_cartesian` 和 Cartesian preset 共用，不再额外加减输入坐标。`pitch_deg=0°` 时 a4 段水平，真实抓取点比腕轴低 3 cm，并到达请求 XYZ。关节角命令/预设保持原角度语义，不额外转 IK；其 FK 输出同样为 TCP。旧 `planning.cartesian_offset_m` 已移除。现有预设航点数值不自动迁移，由操作者按新 TCP 定义核对；几何修改后须重启 planner、控制台和 mission，不能仅 reload presets。
 
 ---

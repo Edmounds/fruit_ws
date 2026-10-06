@@ -448,18 +448,17 @@ class ArmPlannerNode(Node):
                     return False, traj_id, self._interrupt_reason
                 self._point_pub.publish(hw_pt)
 
-        # 3. 后台自动点火启动 (Mode=0)
-        mode = ArmControlMode()
-        mode.control_mode = ArmControlMode.MODE_TRAJECTORY
-        if self.mode_start_delay_ms:
-            self.get_logger().info(
-                f'Waiting {self.mode_start_delay_ms}ms before publishing TRAJECTORY mode'
-            )
-            time.sleep(self.mode_start_delay_ms / 1000.0)
+        # 3. 下位机收到完整点位后自动启动，暂不发送 MODE_TRAJECTORY。
+        # mode = ArmControlMode()
+        # mode.control_mode = ArmControlMode.MODE_TRAJECTORY
+        # if self.mode_start_delay_ms:
+        #     self.get_logger().info(
+        #         f'Waiting {self.mode_start_delay_ms}ms before publishing TRAJECTORY mode'
+        #     )
+        #     time.sleep(self.mode_start_delay_ms / 1000.0)
         with self._state_lock:
             if self._interrupt_reason:
                 return False, traj_id, self._interrupt_reason
-            self._mode_pub.publish(mode)
             dispatched_at = time.monotonic()
 
         # 4. 同步监视硬件状态，等待执行完成或下位机报错
