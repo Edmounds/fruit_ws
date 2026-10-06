@@ -1,5 +1,6 @@
 """Repeated competition procedures; ROS dispatch and safety stay in MissionContext."""
 
+from fruit_mission.camera_target_planner_client import store_preset_name
 from fruit_mission.decisions import PickExecutionResult
 from fruit_mission.decisions import decide_b_tree_targets
 from fruit_mission.decisions import expected_ripe_type
@@ -110,23 +111,22 @@ def observe_and_pick(ctx, *, side, expected_type):
         return PickExecutionResult(
             False, selection.reason_code, selection.matched_type)
     try:
-        request = ctx.camera_target_request(selection.target.point)
+        request, layer = ctx.camera_target_request(selection.target.point)
     except ValueError as error:
         ctx.node.get_logger().warning(str(error))
         ctx.recover_home()
         return PickExecutionResult(
             False, "camera_target_invalid", selection.matched_type)
-    return _grasp_and_collect(ctx, request, side=side, matched_type=selection.matched_type)
+    store_preset = store_preset_name(side, area, layer)
+    return _grasp_and_collect(
+        ctx, request, store_preset=store_preset, matched_type=selection.matched_type)
 
 
-def _grasp_and_collect(ctx, request, *, side, matched_type=None):
+def _grasp_and_collect(ctx, request, *, store_preset, matched_type=None):
     """One CLOSE/dwell -> side Store/OPEN -> Home; failure recovers once."""
-    area = ctx._current_area
-    if area not in ('A', 'B', 'C'):
-        raise ValueError('Store requires an A/B/C area')
     motion = ctx.move_to_base_target(request)
     if motion.completed:
-        motion = ctx.execute_arm_preset(f"{side}_store_{area.lower()}")
+        motion = ctx.execute_arm_preset(store_preset)
     if not motion.completed:
         ctx.recover_home()
         return PickExecutionResult(False, motion.reason_code, matched_type)
@@ -161,16 +161,18 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
     requests = []
     for item in selected:
         try:
-            req = ctx.camera_target_request(item.point)
-            requests.append((req, item.model_type))
+            req, layer = ctx.camera_target_request(item.point)
+            store_preset = store_preset_name(side, "B", layer)
+            requests.append((req, store_preset, item.model_type))
         except ValueError as error:
             ctx.node.get_logger().warning(f"Skipping invalid B target: {error}")
     if not requests:
         ctx.recover_home()
         return False
     success = True
-    for request, model_type in requests:
-        result = _grasp_and_collect(ctx, request, side=side, matched_type=model_type)
+    for request, store_preset, model_type in requests:
+        result = _grasp_and_collect(
+            ctx, request, store_preset=store_preset, matched_type=model_type)
         success = result.success and success
         if not result.success:
             reason = _b_arm_failure_text(result.reason_code)

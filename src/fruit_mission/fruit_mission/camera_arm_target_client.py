@@ -20,6 +20,7 @@ from fruit_perception.msg import FruitDecision
 from fruit_mission.camera_target_planner_client import (
     CameraTargetPlannerClient,
     DEFAULT_EXTRINSIC_CONFIG,
+    store_preset_name,
 )
 from fruit_mission.config import load_target_offsets
 from fruit_mission.script_hardware_client import latched_qos, reliable_qos
@@ -247,7 +248,7 @@ class CameraArmTargetClient(Node):
         if not self.wait_until(
             lambda: self._camera_planner.is_stationary(
                 stationary_rps, stopped_after, require_idle=True),
-            timeout_sec=5.0
+            timeout=5.0
         ):
             self.get_logger().error('机械臂未确认停稳或未恢复空闲 (IDLE)，中止自动归位以策安全')
             return False
@@ -289,15 +290,18 @@ class CameraArmTargetClient(Node):
         # 2. Initialize CameraTargetPlannerClient
         extrinsic_cfg = self.get_parameter('camera_extrinsic_config').value
         config_path = self.get_parameter('config_path').value
-        target_offset_ac_m, target_offset_b_m = load_target_offsets(config_path)
+        target_offset_ac_m, target_offset_b_up_m, target_offset_b_down_m = (
+            load_target_offsets(config_path))
         self.get_logger().debug(
             f'Loaded target_offset_ac_m={target_offset_ac_m}, '
-            f'target_offset_b_m={target_offset_b_m} from {config_path}')
+            f'target_offset_b_up_m={target_offset_b_up_m}, '
+            f'target_offset_b_down_m={target_offset_b_down_m} from {config_path}')
         self._camera_planner = CameraTargetPlannerClient(
             self,
             extrinsic_cfg,
             target_offset_ac_m=target_offset_ac_m,
-            target_offset_b_m=target_offset_b_m,
+            target_offset_b_up_m=target_offset_b_up_m,
+            target_offset_b_down_m=target_offset_b_down_m,
         )
 
         # 3. Publish current area so fruit_perception_node loads the correct model
@@ -350,7 +354,7 @@ class CameraArmTargetClient(Node):
         # 8. Transform optical target to arm base coordinates
         self.get_logger().debug('Transforming target to arm base coordinates...')
         try:
-            req = self._camera_planner.target_request(target_point, zone)
+            req, layer = self._camera_planner.target_request(target_point, zone)
         except ValueError as err:
             self.get_logger().error(f'目标坐标转换失败 (Target transform failed): {err}')
             self.safe_recover_home()
@@ -368,7 +372,7 @@ class CameraArmTargetClient(Node):
             return 1
 
         # 12. Move arm to store preset and release fruit
-        store_preset = f'{direction}_store_{zone.lower()}'
+        store_preset = store_preset_name(direction, zone, layer)
         self.get_logger().info(f'Moving arm to {store_preset} and releasing fruit...')
         completed, reason = self._camera_planner.execute_preset(store_preset, self.wait_until)
         if not completed:

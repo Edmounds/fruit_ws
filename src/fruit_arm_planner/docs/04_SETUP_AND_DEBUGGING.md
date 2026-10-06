@@ -80,7 +80,7 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 | `move X Y Z PITCH_DEG [DURATION_MS] [ptp|lin] [hold|open|close]` | 笛卡尔目标（m、绝对俯仰角度）；例如 `move 0.20 0 0.25 0 2500 ptp hold` |
 | `joints Q1 Q2 Q3 Q4 [DURATION_MS] [hold|open|close]` | 连杆目标角度（度）：Q2 相对竖直（后仰为正），Q3 为小臂相对水平面的绝对角，Q4 为末端相对水平面的绝对俯仰角。控制台按 YAML 偏置换算后下发；例如 `joints 0 20 -40 0 2500 hold` |
 | `motors Q1 Q2 Q3 Q4 [DURATION_MS] [hold|open|close]` | 直接输入四个原始电机硬件角（度），不再叠加偏置；沿用旧版 `joints` 的语义 |
-| `preset NAME` | 执行源码 YAML 中存在的预设，例如 `preset zero`；当前名称为 `zero`、`left_look`、`right_look`、`pick_sequence`、`home`、`left_store`、`right_store`，现场可调 |
+| `preset NAME` | 执行源码 YAML 中存在的预设，例如 `preset zero`；当前预设包含 `zero`、`left_look`、`right_look`、`pick_sequence`、`home`、`left_store_a/c`、`right_store_a/c`、`left_store_b_up/down`、`right_store_b_up/down` 等，现场可调 |
 | `status` | 显示同一帧原始电机角、逆映射模型角、连杆角，以及真实 TCP 的 XYZ（m）和绝对 pitch（度） |
 | `jog` | 进入终端内键盘微调和示教打点界面，按键直接执行运动 |
 | `reload` | 调用 `/arm_planner_node/reload_presets`，重新加载源码 YAML 的全部 presets |
@@ -113,7 +113,7 @@ python3 /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py
 
 点动显示及记录的是统一 FK 模型的真实夹爪抓取点 TCP 坐标；提交服务和保存 Cartesian preset 使用同一坐标，不再加减输入偏置。终端弹窗期间不执行运动键；Esc 取消和保存均不会执行该 preset。
 
-`reload` 只刷新全部 presets，运动期间或校验失败时保留旧内存内容，不修改几何、关节映射及 planning。调整默认时长、偏置或机械参数后重启 Planner 和控制台，保证双方使用同一份配置；升级本次 Python 代码也需构建并重启 Planner。点动时长是计划运动时间，不含通信及启动等待，不代表固定按键执行频率。
+`reload` 只刷新全部 presets，运动期间或校验失败时保留旧内存内容，不修改几何、关节映射及 planning；任务客户端的抓取 pitch、高度与偏置配置修改亦需重启客户端。调整默认时长、偏置或机械参数后重启 Planner 和控制台，保证双方使用同一份配置；升级本次 Python 代码也需构建并重启 Planner。点动时长是计划运动时间，不含通信及启动等待，不代表固定按键执行频率。
 
 可直接用 ROS CLI 重载预设（不会驱动机械臂）：
 

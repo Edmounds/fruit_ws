@@ -97,7 +97,7 @@ ros2 topic pub --once /arm_planner_node/cmd_cartesian geometry_msgs/msg/PointSta
 - **完整话题名**：`/arm_planner_node/cmd_preset`
 - **消息类型**：`std_msgs/msg/String`
 - **通信语义**：异步非阻塞下发。通过名称索引触发 `arm_presets.yaml` 中配置的固定姿态；当前关节预设使用 `link_angles`（大臂相对竖直、小臂相对水平、末端绝对俯仰），其中末端设为 `0°` 时会按小臂角度和偏置换算腕电机目标。若预设改为 `coordinate_frame: joints`，四项则是原始硬件角。
-- **支持名称**：以源码 `config/arm_presets.yaml` 的 `presets` 为准。比赛客户端引用 `<side>_look_<zone>`、`<side>_store_<zone>`（left/right，a/b/c）、`qr_scan`、`shenzhi`、`home`。操作者须检查并补齐所用预设；已有坐标保持不变，不存在的名称返回失败，不提供旧名称别名或假姿态。
+- **支持名称**：以源码 `config/arm_presets.yaml` 的 `presets` 为准。比赛客户端引用 `<side>_look_<zone>`、`<side>_store_<zone>`（left/right，a/c；B 区细分为 `<side>_store_b_up` 与 `<side>_store_b_down`）、`qr_scan`、`shenzhi`、`home`。操作者须检查并补齐所用预设；已有坐标保持不变，不存在的名称返回失败，不提供旧名称别名或假姿态。
 
 - **命令行测试示例**：
 ```bash
@@ -261,7 +261,7 @@ ros2 topic echo --once /arm_planner_node/joint_states fruit_arm_interfaces/msg/A
 4. future 完成后先处理 service 异常，再判断 `response.success`。仅 `success=true` 表示对应轨迹已由下位机报告完成；`trajectory_id` 用于诊断关联，`message` 记录失败原因。请求异常时结果未知，应取消并请求 STOP，不能推断机械臂已停止。
 5. 若任务中途需中断，调用独立的 STOP 或急停入口。它们当前的 `Trigger.success=true` 只表示规划器已发布控制 Mode；下位机是否停稳应观察后续状态。详细时序和残余风险见[通信架构文档](02_COMMUNICATION_PROTOCOL.md)。
 6. 正式 mission 的观察、二维码、放果与恢复均调用 `execute_preset`，名称直接遵循
-   `arm_presets.yaml` 姿态定义：`<side>_look_<zone>`、`<side>_store_<zone>`（side 为 left/right，zone 为小写 a/b/c）、`qr_scan`、`shenzhi`、`home`，不使用中间映射字典。
+   `arm_presets.yaml` 姿态定义：`<side>_look_<zone>`、`<side>_store_<zone>`（side 为 left/right，A/C 为小写 a/c，B 区细分为 `<side>_store_b_up` 与 `<side>_store_b_down`）、`qr_scan`、`shenzhi`、`home`，不使用中间映射字典。
    预设缺失/失败不能视为动作完成。导航可与 Look 并行，其余运动仍受有效反馈、
    导航终态和 planner 占用保护。恢复只尝试一次 Home，不设独立停稳循环，
    未取得有效低速反馈则跳过；不因 STOP 已发布而放行。旧正常 retract 边界改为 shenzhi，重合出口不重复执行；失败仍只恢复 Home，不能将 Home 冒充所需保护姿态后放行转场。区域通知只供感知模型选择，不走下位机旧 task/callback 协议；扫码区域由 QR 窗口指定，无 B→C 状态推进。

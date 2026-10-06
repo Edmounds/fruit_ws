@@ -30,6 +30,21 @@ HARDWARE_FAILURE_RE = re.compile(
 )
 
 
+def store_preset_name(side: str, area: str, layer: str | None = None) -> str:
+    """Generate canonical store preset name from side, area, and optional layer."""
+    if side not in ('left', 'right'):
+        raise ValueError(f"side must be 'left' or 'right', got {side!r}")
+    if area not in ('A', 'B', 'C'):
+        raise ValueError(f"area must be 'A', 'B', or 'C', got {area!r}")
+    if area == 'B':
+        if layer not in ('up', 'down'):
+            raise ValueError(f"layer must be 'up' or 'down' for area B, got {layer!r}")
+        return f'{side}_store_b_{layer}'
+    if layer is not None:
+        raise ValueError(f"layer must be None for area {area}, got {layer!r}")
+    return f'{side}_store_{area.lower()}'
+
+
 def format_task_status_cn(task_status: int) -> str:
     status_map = {
         ArmStatus.STATUS_IDLE: '空闲 (STATUS_IDLE: 0)',
@@ -91,13 +106,16 @@ class CameraTargetPlannerClient:
         node,
         config_path=DEFAULT_EXTRINSIC_CONFIG,
         target_offset_ac_m=(0.0, 0.0, 0.0),
-        target_offset_b_m=(0.0, 0.0, 0.0),
+        target_offset_b_up_m=(0.0, 0.0, 0.0),
+        target_offset_b_down_m=(0.0, 0.0, 0.0),
     ):
         self.node = node
         self.target_offset_ac_m = validate_target_offset(
             target_offset_ac_m, 'target_offset_ac_m')
-        self.target_offset_b_m = validate_target_offset(
-            target_offset_b_m, 'target_offset_b_m')
+        self.target_offset_b_up_m = validate_target_offset(
+            target_offset_b_up_m, 'target_offset_b_up_m')
+        self.target_offset_b_down_m = validate_target_offset(
+            target_offset_b_down_m, 'target_offset_b_down_m')
         with Path(config_path).open(encoding='utf-8') as stream:
             self.config = yaml.safe_load(stream)
         self.rotation, self.translation_mm = load_camera_extrinsic(config_path)
@@ -127,12 +145,34 @@ class CameraTargetPlannerClient:
             raise ValueError('duration_ms must be uint32')
         if type(motion['linear_path']) is not bool:
             raise ValueError('linear_path must be boolean')
-        for name in ('pitch_deg', 'pitch_b_deg'):
+        for name in ('pitch_deg', 'pitch_b_up_deg', 'pitch_b_down_deg'):
+            if name not in motion:
+                raise ValueError(f'{name} missing in motion configuration')
             pitch = motion[name]
             if pitch is not None and (isinstance(pitch, bool)
                                       or not isinstance(pitch, (int, float))
                                       or not math.isfinite(pitch)):
                 raise ValueError(f'{name} must be null or a finite number')
+        b_height = self.config.get('b_height')
+        if not isinstance(b_height, dict):
+            raise ValueError('b_height must be a mapping')
+        for name in ('min_m', 'split_m', 'max_m'):
+            if name not in b_height:
+                raise ValueError(f'{name} missing in b_height configuration')
+            val = b_height[name]
+            if (isinstance(val, bool) or not isinstance(val, (int, float))
+                    or not math.isfinite(val)):
+                raise ValueError(f'b_height.{name} must be a finite number')
+        min_m = float(b_height['min_m'])
+        split_m = float(b_height['split_m'])
+        max_m = float(b_height['max_m'])
+        if not (min_m < split_m < max_m):
+            raise ValueError(
+                f'b_height bounds must strictly satisfy min_m < split_m < max_m, got '
+                f'{min_m} < {split_m} < {max_m}')
+        self.b_height_min_m = min_m
+        self.b_height_split_m = split_m
+        self.b_height_max_m = max_m
         self._pose = None
         self._latest_received_at = 0.0
         self._status = None
@@ -207,8 +247,6 @@ class CameraTargetPlannerClient:
         """Freeze an optical target into base coordinates before any arm motion."""
         if area not in ('A', 'B', 'C'):
             raise ValueError("area must be 'A', 'B', or 'C'")
-        offset_m = self.target_offset_b_m if area == 'B' else self.target_offset_ac_m
-        config_key = 'target_offset_b_m' if area == 'B' else 'target_offset_ac_m'
 
         stamp_ns = self._stamp_ns(target)
         point_m = (target.point.x, target.point.y, target.point.z)
@@ -226,11 +264,32 @@ class CameraTargetPlannerClient:
             base_mm = transform_end_to_base_mm(
                 end_mm, (end_x * 1000.0, end_y * 1000.0, end_z * 1000.0), yaw, pitch)
 
-            pitch_key = 'pitch_b_deg' if area == 'B' else 'pitch_deg'
+            raw_base_z_m = base_mm[2] / 1000.0
+            layer = None
+            if area == 'B':
+                if raw_base_z_m < self.b_height_min_m or raw_base_z_m > self.b_height_max_m:
+                    raise ValueError(
+                        f'Target base Z ({raw_base_z_m:.4f}m) out of B area height bounds '
+                        f'[{self.b_height_min_m:.4f}, {self.b_height_max_m:.4f}]m')
+                if raw_base_z_m >= self.b_height_split_m:
+                    layer = 'up'
+                    offset_m = self.target_offset_b_up_m
+                    config_key = 'target_offset_b_up_m'
+                    pitch_key = 'pitch_b_up_deg'
+                else:
+                    layer = 'down'
+                    offset_m = self.target_offset_b_down_m
+                    config_key = 'target_offset_b_down_m'
+                    pitch_key = 'pitch_b_down_deg'
+            else:
+                offset_m = self.target_offset_ac_m
+                config_key = 'target_offset_ac_m'
+                pitch_key = 'pitch_deg'
+
             desired_pitch = self.config['motion'][pitch_key]
             request_pitch_deg = float(
                 pitch_deg if desired_pitch is None else desired_pitch)
-            # B retains its historical horizontal offset reference, independent of grasp pitch.
+            # B retains its horizontal offset reference (0 deg), independent of grasp pitch.
             offset_pitch_deg = 0.0 if area == 'B' else request_pitch_deg
 
             adjusted_base_mm = apply_target_offset_mm(
@@ -246,14 +305,15 @@ class CameraTargetPlannerClient:
         yaw_offset_deg = math.degrees(math.atan2(base_mm[1], base_mm[0]))
         req_xyz = [round(request.x, 4), round(request.y, 4), round(request.z, 4)]
         self.node.get_logger().debug(
-            f'area={area} key={config_key} offset(m)={offset_m} '
+            f'area={area} layer={layer} key={config_key} pitch_key={pitch_key} '
+            f'raw_base_z={raw_base_z_m:.4f}m offset(m)={offset_m} '
             f'ref_yaw={yaw_offset_deg:.2f}deg ref_pitch={offset_pitch_deg:.2f}deg; '
             f'Camera(m)={point_m} -> end(mm)={end_mm} -> arm base(mm)={base_mm} '
             f'-> req(m)={req_xyz}; '
             f'tcp(m)={[round(end_x, 4), round(end_y, 4), round(end_z, 4)]}, '
             f'obs_pitch={pitch_deg:.2f}deg, obs_yaw={math.degrees(yaw):.2f}deg, '
             f'move_cartesian pitch={request.pitch_deg:.3f}deg, gripper=CLOSE')
-        return request
+        return request, layer
 
     def move_to_base_target(self, request, wait_until, max_joint_speed):
         """Execute a frozen base-frame request (also used for B's second fruit)."""

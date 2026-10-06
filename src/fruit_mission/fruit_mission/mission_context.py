@@ -138,7 +138,8 @@ class MissionContext:
             node,
             config.get("camera_extrinsic_config", DEFAULT_EXTRINSIC_CONFIG),
             target_offset_ac_m=config.get("target_offset_ac_m", (0.0, 0.0, 0.0)),
-            target_offset_b_m=config.get("target_offset_b_m", (0.0, 0.0, 0.0)),
+            target_offset_b_up_m=config.get("target_offset_b_up_m", (0.0, 0.0, 0.0)),
+            target_offset_b_down_m=config.get("target_offset_b_down_m", (0.0, 0.0, 0.0)),
         )
         self._follow_waypoints_client = ActionClient(
             node,

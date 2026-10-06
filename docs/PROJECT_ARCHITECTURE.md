@@ -317,7 +317,7 @@ USE_SAVED_B_PLAN
 - 无效中心深度的检测保留二维证据，但不得生成三维抓取点。
 - B 区机械臂目标由 mission 转为固定基座坐标，调用 `move_cartesian` 并等待服务执行结果，不再发送 `ArmTarget(0x13)` 或等待目标 `callback_id=3`。
 - B 区 camera 固定采集 50 帧，按 3D 轨迹输出最多两个稳定目标；原始类型、检测框和标注图保留误识别证据。二维码期望类型不传入感知节点，mission 做品种匹配、成熟筛选。
-- 成熟且匹配目标按既有原像素 `score = abs(pixel_x - image_width / 2) - pixel_y` 排序，同分保留原顺序，最多取两个。首次观察姿态下将两个目标一次性转换为基座坐标/绝对 pitch，后续直接用冻结请求，不重新观察/换算。每抓一次都完成 `left_store_b` / `right_store_b` 和 Home。
+- 成熟且匹配目标按既有原像素 `score = abs(pixel_x - image_width / 2) - pixel_y` 排序，同分保留原顺序，最多取两个。首次观察姿态下将两个目标一次性转换为基座坐标/绝对 pitch，并根据未补偿 Base Z 判定 Up/Down 层级与对应的 `left_store_b_up/down` 或 `right_store_b_up/down` 预设，后续直接用冻结请求与 Store 名称，不重新观察/换算。越界目标跳过。每抓一次都完成对应 Store 和 Home。
 - 第一抓失败也推进第二个冻结目标，未获有效反馈时该次物理动作被拒绝，不重试抓取或重新观察。
 - `test_camera_arm_target.sh --zone A|B|C --left|--right [--debug]` 专用于单点联调，旧 `--model` 删除：先可靠交付区域，Home→区域 Look→新鲜静止角 OPEN/HOLD→识别→CLOSE/HOLD→区域 Store。A/C 用蔬菜模型，B 用水果模型且只选成熟目标；不调用跨区 `shenzhi`。端点与识别独立限时，运动等待下位机结果。脚本会驱动硬件，不是自动验证工具。
 

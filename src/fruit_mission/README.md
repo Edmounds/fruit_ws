@@ -37,7 +37,7 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 
 `MissionContext` 只保留 ROS 反馈、导航发送、感知窗口、planner 原语及安全交接；
 品种判断和语音格式在 `decisions.py`，C 路线数学继续在 `waypoint_route.py`。
-独立单点调试入口 `test_camera_arm_target.sh`（`camera_arm_target_client`）不依赖导航，只接受 `--zone A|B|C --left|--right`（可加 `--debug`），不再接受 `--model`。区域同时选择模型（A/C 蔬菜、B 水果）和 `<side>_look_<zone>` / `<side>_store_<zone>`；例如 `--zone C --left` 使用 `left_look_c`、`left_store_c`。工序为 Home→区域 Look→OPEN/HOLD→识别→CLOSE/HOLD→区域 Store，不加入跨区保护动作。它是人工硬件工具，不能作为自动测试运行。
+独立单点调试入口 `test_camera_arm_target.sh`（`camera_arm_target_client`）不依赖导航，只接受 `--zone A|B|C --left|--right`（可加 `--debug`），不再接受 `--model`。区域同时选择模型（A/C 蔬菜、B 水果）和 `<side>_look_<zone>` / `<side>_store_<zone>`（B 根据目标基座高度自动选择 `_store_b_up` 或 `_store_b_down`）；例如 `--zone C --left` 使用 `left_look_c`、`left_store_c`。工序为 Home→区域 Look→OPEN/HOLD→识别→CLOSE/HOLD→区域 Store，不加入跨区保护动作。它是人工硬件工具，不能作为自动测试运行。
 原 `mission_flow.py` 和作为判断帮助文件的 `logic.py` 已移除，避免两个主流程来源。
 
 调用处只显示比赛参数。超时在 `config/fruit_mission.yaml`；预设名称直接遵循
@@ -57,18 +57,21 @@ planner YAML，姿态、速度、标定在对应 planner/相机源码 YAML，
 B 树收到 `targets_ready=true` 的空列表表示完成但无果实，立即按空树跳过；仅未收到完成结果才算识别超时。关闭窗口保留开启时上下文。
 
 正式任务和相机单点调试共用 `fruit_mission.yaml` 的末端相对偏置配置：
-`target_offset_ac_m` 与 `target_offset_b_m`（米），数值以源码配置为准。
+`target_offset_ac_m`、`target_offset_b_up_m` 与 `target_offset_b_down_m`（米），数值以源码配置为准。
 局部 +X 沿夹爪正前方深入，+Y 沿夹爪左侧，+Z 沿夹爪上方。
 偏置使用补偿前目标方向 yaw（`atan2(base_y, base_x)`）进行旋转叠加。
-A/C 使用最终请求 pitch，B 固定使用 0° 作为偏置旋转参考，不随 B 抓取 pitch 改变 XYZ。
+A/C 使用最终请求 pitch，B 两层固定使用 0° 作为偏置旋转参考，不随 B 抓取 pitch 改变 XYZ。
 不根据 Base Y 自动翻转符号。A/C 保留原数值但物理含义变为局部坐标，非零局部 Y 不保证最终 yaw 一致；
-B 采用局部深入与下移。正式任务按当前区域自动选择，调试客户端按 `--zone` 选择，
+B 采用局部深入与下移。正式任务按当前区域与高度自动选择，调试客户端按 `--zone` 与高度选择，
 入口统一验证各配置项三个有限数，不回退、不叠加 planner 工具几何偏移。
 
-正式任务和 `test_camera_arm_target.sh` 共用 `config/camera_extrinsic.yaml` 的抓取参数：
-`motion.pitch_deg: 0.0` 用于 A/C，`motion.pitch_b_deg: -30.0` 用于 B。
-B 左右侧及两个冻结目标均使用 -30°。这些参数只影响视觉目标抓取，不覆盖任何 preset。
-相机到基座的换算仍使用实测观察姿态。修改参数后重启 mission 或调试客户端。
+正式任务和 `test_camera_arm_target.sh` 共用 `config/camera_extrinsic.yaml` 的抓取与高度参数：
+`motion.pitch_deg: 0.0` 用于 A/C，`motion.pitch_b_up_deg: 0.0` 与 `motion.pitch_b_down_deg: -30.0` 用于 B 的 Up/Down 分层。
+`b_height` 配置 `min_m: -0.01`、`split_m: 0.12`、`max_m: 0.30`，目标在未补偿 Base Z 下进行分类：
+`[-0.01, 0.12)` 为 Down 层，`[0.12, 0.30]` 为 Up 层，越界目标跳过且不发运动/Store 指令。
+B 放果预设按抓取时的分层动态选用 `<side>_store_b_up` 或 `<side>_store_b_down`。
+这些参数只影响视觉目标抓取，不覆盖任何 preset。
+相机到基座的换算仍使用实测观察姿态。修改参数后重启 mission 或调试客户端。预设重载仅更新 presets，不改变客户端配置。
 
 ## 比赛和单区调试共用同一套函数
 

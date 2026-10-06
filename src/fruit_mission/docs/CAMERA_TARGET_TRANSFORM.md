@@ -74,25 +74,28 @@ P_B_mm = R_B_E * P_E_mm + 1000 * planner_TCP_position_m
 所以相机到夹爪的固定矩阵本身并不足以提交 planner；必须加上观测姿态的第二步。
 
 第三步由 mission 的 `fruit_mission.yaml` 分区域配置末端相对偏置（米）：
-A/C 采用 `target_offset_ac_m`，B 采用 `target_offset_b_m`，数值以源码配置为准。
+A/C 采用 `target_offset_ac_m`；B 区分 Up/Down 采用 `target_offset_b_up_m` 与 `target_offset_b_down_m`，数值以源码配置为准。
 局部坐标系定义：+X 为夹爪正前方深入，+Y 为夹爪左侧，+Z 为夹爪上方，各分量保留输入符号，不再根据 Base Y 自动变号。
-偏置计算使用补偿前目标方向 yaw。A/C 使用最终抓取请求 pitch，B 固定使用 0° 构建偏置旋转矩阵：
+B 根据未叠加偏置的目标基座高度 $Z$ 划分层级（配置于 `b_height`: `min_m: -0.01`, `split_m: 0.12`, `max_m: 0.30`）：
+$[-0.01, 0.12)$ m 为 Down 层，$[0.12, 0.30]$ m 为 Up 层；越界目标直接跳过，不发运动及 Store 指令。
+偏置计算使用补偿前目标方向 yaw。A/C 使用最终抓取请求 pitch，B 两层固定使用 0° 构建偏置旋转矩阵：
 
 ```text
 yaw_offset = atan2(base_y, base_x)
-pitch_request = motion.pitch_b_deg（B）或 motion.pitch_deg（A/C），null 时使用观测 pitch
+pitch_request = motion.pitch_b_up_deg / motion.pitch_b_down_deg（B 按层确定）或 motion.pitch_deg（A/C），null 时使用观测 pitch
 pitch_offset = 0°（B）或 pitch_request（A/C）
 R_offset = Rz(yaw_offset) * Ry(-pitch_offset)
 P_request_mm = P_B_mm + R_offset * (1000 * offset_local_m)
 ```
 
 A/C 沿用历史数值但物理含义调整为末端局部坐标（局部左移 3 cm、局部下移 1.5 cm），非零局部 Y 在偏置后会导致最终 yaw 发生微调；
-B 采用水平参考下的深入与下移，不随 `motion.pitch_b_deg` 旋转。因此对同一视觉点和实测姿态，修改 B 抓取 pitch 不改变补偿后的 XYZ。
+B 采用水平参考下的深入与下移，不随抓取 pitch 旋转。因此对同一视觉点和实测姿态，修改 B 抓取 pitch 不改变补偿后的 XYZ。
 正式任务使用 `MissionContext._current_area`，单点调试客户端使用 `--zone` 参数。
-两套配置均须存在并独立验证三个有限数，缺失或非法直接报错，不跨区回退。
+各项配置均须存在并独立验证三个有限数，缺失或非法直接报错，不跨区跨层回退。
 这是视觉表面点到抓取点的末端相对补偿，不能用它代替或重复应用 planner 的刚性 `geometry.tool_z_offset_m`。
-日志同时保留区域、配置键、局部偏置、偏置参考 yaw/pitch、偏置前 Base 坐标和最终请求点。
+日志同时保留区域、层（B 为 up/down）、配置键、局部偏置、偏置参考 yaw/pitch、偏置前 Base 坐标和最终请求点。
 源码修改后需重新构建 `fruit_mission` 并重启 `fruit_mission_node` 或 `camera_arm_target_client`。
+预设重载服务只重载 `arm_presets.yaml` 中的 presets，不刷新客户端参数。
 
 此次修正了 E -> S 的局部 Z 符号。原值 `-66.726 mm` 把螺纹孔放在了抓取中心下方；
 末端俯仰约 -91.45°、偏航约 90° 时，局部 Z 几乎沿基座 +Y，符号错误造成约
@@ -111,8 +114,10 @@ B 采用水平参考下的深入与下移，不随 `motion.pitch_b_deg` 旋转�
 - `camera_frame`：只接受该 RGB 光学 frame 的点；不通过改标签伪造坐标转换。
 - `joint_state_topic`：原字段名保留，指向现有 ArmTelemetry 话题；缺失、过期、frame 不是 `arm_base_link`、原始/模型角或 TCP 非有限、关节名称错误或硬件角越限时不提交请求。不得把消息内模型角再减一次偏置。
 - `motion.pitch_deg: 0.0`：A/C 抓取的绝对俯仰角（度），0° 表示末端 a4 段水平。
-- `motion.pitch_b_deg: -30.0`：B 抓取的绝对俯仰角（度），左右侧和两个冻结目标均使用 -30°。
-- 两项 pitch 均要求有限数或 null；null 使用实测观察 pitch。只影响视觉目标抓取，不修改 Look、Store、Home 或其他 preset。
+- `motion.pitch_b_up_deg: 0.0`：B 上层抓取的绝对俯仰角（度）。
+- `motion.pitch_b_down_deg: -30.0`：B 下层抓取的绝对俯仰角（度）。
+- `b_height`：B 区分层边界（米），`min_m: -0.01`、`split_m: 0.12`、`max_m: 0.30`。
+- 各项 pitch 均要求有限数或 null；null 使用实测观察 pitch。只影响视觉目标抓取，不修改 Look、Store、Home 或其他 preset。
 - `motion.duration_ms: 1500`：抓取探出耗时 1500ms。
 - `motion.linear_path: false`：关节空间 PTP 平滑规划（false 为 PTP，true 为笛卡尔 LIN）。
 - 视觉目标末点使用 CLOSE，保留转换出的 XYZ，不沿用旧固件的 Z=-100mm、pitch=-90°，不编造接近或提拉坐标。
