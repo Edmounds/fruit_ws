@@ -12,23 +12,19 @@ from fruit_mission.decisions import format_b_tree_name
 
 
 def main(ctx):
-    """Full competition: A -> B QR -> C QR -> C -> B."""
+    """Full competition: A -> B QR and work -> C QR and work."""
     run_a(ctx)
 
     arrived = navigate(ctx, ["to_B_QR_waypoint", "B_QR"])
     b_plan = scan_b_qr(ctx, arrived=arrived)
+    run_b(ctx, b_plan)
 
     arrived = navigate(ctx, [
         "to_C_waypoint_1", "to_C_waypoint_2", "to_C_waypoint_3", "C_QR",
     ])
     c_plan = scan_c_qr(ctx, arrived=arrived)
     run_c(ctx, c_plan)
-
-    navigate(ctx, [
-        "C_entrance_waypoint_2", "to_B_waypoint_1", "to_B_waypoint_2",
-        "toB_waypoint_3", "B1",
-    ])
-    run_b(ctx, b_plan)
+    # TODO: append the verified return-to-start waypoint after field testing.
 
 
 def run_a(ctx):

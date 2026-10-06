@@ -94,7 +94,8 @@ colcon build --base-paths src --packages-select fruit_navigation
 
 ### 3.3 启动全流程采摘比赛 (`start_fruit_mission.sh`)
 `--flow` 现在选择 `Logic.py` 中的入口函数，完整比赛函数不再混入模式分支。
-固定 A 导航点和区间通道点在调用处可见；B/C 单区调试仍先扫描对应二维码，
+固定 A 导航点和区间通道点在调用处可见；完整流程按 A → B → C 执行，
+B 区固定访问 1～8 号树，C 区按二维码顺序访问。B/C 单区调试仍先扫描对应二维码，
 失败则用 mission 自有兜底计划。路线坐标、C 几何规划与停稳/取消门控不变。
 编排和重复动作的文件边界见 [fruit_mission README](../src/fruit_mission/README.md)。
 
