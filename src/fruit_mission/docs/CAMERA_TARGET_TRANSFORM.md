@@ -233,7 +233,7 @@ source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 planner 的 `arm_presets.yaml` 中定义与维护。不补假姿态。缺失、越限或硬件执行失败均返回失败。
 真实姿态及已定义名称以源码 YAML 为准；操作者须检查并补齐所用预设。客户端不覆盖已有坐标，不补空轨迹或回退到 A 区姿态。区域话题供感知模型选择；QR 区域由窗口指定，不发送下位机区域命令。
 
-独立 `camera_arm_target_client` 与 `test_camera_arm_target.sh` 不依赖导航，只接受 `--zone A|B|C --left|--right`（可加 `--debug`），旧 `--model` 删除。区域同时决定模型（A/C 蔬菜、B 水果）和 Look/Store 后缀（a/b/c）。每次先 Home，再区域 Look、实测静止 OPEN/HOLD、harvest 窗口、基座解算、CLOSE/HOLD、区域 Store、Home，不加入跨区 shenzhi。任何工序失败不报整个流程成功。该脚本会驱动硬件，不是自动测试。
+独立 `camera_arm_target_client` 与 `test_camera_arm_target.sh` 不依赖导航，只接受 `--zone A|B|C --left|--right`（可加 `--debug`），旧 `--model` 删除。区域同时决定模型（A/C 蔬菜、B 水果）和 Look/Store 后缀（a/b/c）。每次先 Home，再区域 Look、实测静止 OPEN/HOLD、harvest 窗口、基座解算、CLOSE/HOLD、区域 Store，不加入跨区 shenzhi。任何工序失败不报整个流程成功。该脚本会驱动硬件，不是自动测试。
 
 - 模型选择使用可靠、持久区域发布端，先等待 `fruit_perception_node` 的实际区域订阅端，再发布一次并等待 DDS acknowledgment；仅扫码节点订阅或串口桥就绪不能视为感知区域端就绪。DDS 确认是传输层交付，不是推理就绪回执。
 - 不再支持品种过滤参数。B 等待 `targets_ready`，只从有限置信度、有效正深度的 `*_ripe` 目标中选最高置信度者；无成熟目标时等待超时，不回退到无类型信息的 `target_point` 或未成熟目标。

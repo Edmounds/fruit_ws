@@ -29,7 +29,7 @@ Usage: ./test_camera_arm_target.sh --zone A|B|C --left|--right [--debug]
 Test camera and arm coordination.
 Arm returns to the home position first, executes observation and grasp,
 then executes the zone-specific store preset (e.g. left_store_a or right_store_c)
-to release the fruit, then explicitly executes home and waits for completion.
+to release the fruit.
   --zone A|B|C   Competition zone; A/C use vegetable model, B uses fruit model
   --left|--right  Arm side; presets are <side>_look_<zone> and <side>_store_<zone>
   --debug         Print per-frame camera detections and coordinates

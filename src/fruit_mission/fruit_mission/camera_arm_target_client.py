@@ -377,16 +377,8 @@ class CameraArmTargetClient(Node):
             self.safe_recover_home()
             return 1
 
-        # 13. Return arm to home position
-        self.get_logger().info('Returning arm to home...')
-        completed, reason = self._camera_planner.execute_preset('home', self.wait_until)
-        if not completed:
-            self.get_logger().error(f'返回 home 初始位姿失败: {reason}')
-            self.safe_recover_home()
-            return 1
-
         self.get_logger().info(
-            f'Grasp, {store_preset}, and return home sequence completed successfully!')
+            f'Grasp and {store_preset} sequence completed successfully!')
         return 0
 
     def destroy_node(self):
