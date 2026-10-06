@@ -137,13 +137,17 @@ presets:
     waypoints:
       - { target: [0.0, 20.0, -40.0, 0.0], duration_ms: 1500, gripper: 1, dwell_ms: 400 }
       - { target: [0.0, 10.0, -60.0, 0.0], duration_ms: 1000, gripper: 2, dwell_ms: 600 }
-      - { target: [0.0, 20.0, -100.0, 0.0], duration_ms: 2000, gripper: 0 }
+      - { target: [0.0, 20.0, -100.0, 0.0], duration_ms: 2000, gripper: 0, is_via_point: true }
 ```
 
 ### 2. 底层插值与时间片无缝拼接机制
 航点内的 `linear: true` 选择 LIN，`false` 或省略选择 PTP。
 该字段控制上一位置到该航点的运动段；第一个航点从当前实测姿态开始。
 LIN 只支持 `coordinate_frame: cartesian`；不要把 `linear` 放在预设层与 `coordinate_frame` 并列。
+waypoint 可选 `is_via_point: true`，表示该 waypoint 目标是途经点；省略或写 `false` 表示精确到达点。
+PTP/LIN 自动生成的中间插值点默认标记为途经点，轨迹第 0 个实测起点始终标记为精确点。
+service 请求不开放该字段，`move_cartesian` 和 `move_joints` 的最终目标默认是精确点。
+带 OPEN/CLOSE 或 `dwell_ms` 的 waypoint 也可以配置为途经点；驻留点继承该 waypoint 的标记。
 源码 YAML 的 `pick_sequence` 四个航点均已设置 `linear: true`，坐标、时长与夹爪动作保持不变。
 修改后，在机械臂不运动时调用 `reload_presets` 或使用控制台 `reload`，并检查重载结果。
 

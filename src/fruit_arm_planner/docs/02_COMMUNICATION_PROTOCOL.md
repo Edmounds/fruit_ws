@@ -28,11 +28,13 @@ auto_serial_bridge  --传输业务数据--  下位机
 | 数据及 ROS 话题 | 字段 | 用途 |
 | --- | --- | --- |
 | `TrajectoryHeader` `/fruit_hardware_bridge/arm/trajectory_header` | `trajectory_id: uint32`、`point_num: uint16` | 声明新机械臂轨迹的 ID 和路点总数。 |
-| `TrajectoryPoint` `/fruit_hardware_bridge/arm/trajectory_point` | `trajectory_id: uint32`、`point_id: uint16`、`time_from_start: uint32`、`joint_1..4: float32`、`gripper_action: uint8` | 按时间排列的四轴目标；时间单位 ms，角度单位 rad。 |
+| `TrajectoryPoint` `/fruit_hardware_bridge/arm/trajectory_point` | `trajectory_id: uint32`、`point_id: uint16`、`time_from_start: uint32`、`joint_1..4: float32`、`gripper_action: uint8`、`is_via_point: uint8` | 按时间排列的四轴目标；时间单位 ms，角度单位 rad。`0` 为精确点，`1` 为途经点。 |
 | `ArmControlMode` `/fruit_hardware_bridge/arm/control_mode` | `control_mode: uint8` | 启动轨迹、受控停止或急停。此消息**不包含 `trajectory_id`**。 |
 | `ChassisVelocity` `/cmd_vel` | `linear_x: float32`、`angular_z: float32` | 底盘线速度 m/s 和角速度 rad/s；桥在下发时对 ROS `angular.z` 取反以匹配下位机方向。 |
 
 `TrajectoryPoint.gripper_action`：`0` 保持当前开度（HOLD），`1` 张开（OPEN），`2` 闭合（CLOSE）。这是**命令**，不等于已完成的夹爪状态反馈。
+
+`TrajectoryPoint.is_via_point`：`0` 表示精确到达点，`1` 表示途经点。该字段只改变下位机的点到位容差选择，不改变关节限位、急停、STOP、时间轴或通信保护。预设 waypoint 未配置该字段时默认为 `0`；PTP/LIN 自动生成的中间插值点默认为 `1`。service 接口暂不开放该字段，因此 service 的最终目标点默认为 `0`。
 
 `ArmControlMode.control_mode`：`0` 启动已提交轨迹（TRAJECTORY），`1` 请求受控停止（STOP），`2` 请求急停（ESTOP）。STOP/急停服务返回成功只表示规划器已发布命令，不能据此确认下位机已停稳。由于 Mode 不带轨迹 ID，同一时刻只应存在一条待启动或执行中的机械臂轨迹。
 
@@ -48,8 +50,8 @@ ArmControlMode(TRAJECTORY=0)              启动已提交轨迹
 ```
 
 1. `point_num=N` 对应本轨迹实际下发的 N 个路点；规划器要求至少两个点。所有路点使用相同的 `trajectory_id`，`point_id` 按 `0..N-1` 连续编号。
-2. 第 0 点必须是规划开始时冻结的、**新鲜且有效的四轴实测角**：`time_from_start=0 ms`、`gripper_action=0`。缺失、过期、非有限数或超出配置限位的反馈不能用零或历史值代替。不能只发送一个时间为 `15000 ms` 的目标点。
-3. 后续路点的 `time_from_start` 是相对于本次轨迹起点的累计时间，必须严格递增；末点时间为整条轨迹的计划时长。预设各段配置的 `duration_ms` 是逐段时长，规划器累加后下发。四轴目标先由上位机完成 IK、关节映射和限位检查。
+2. 第 0 点必须是规划开始时冻结的、**新鲜且有效的四轴实测角**：`time_from_start=0 ms`、`gripper_action=0`、`is_via_point=0`。缺失、过期、非有限数或超出配置限位的反馈不能用零或历史值代替。不能只发送一个时间为 `15000 ms` 的目标点。
+3. 后续路点的 `time_from_start` 是相对于本次轨迹起点的累计时间，必须严格递增；末点时间为整条轨迹的计划时长。预设各段配置的 `duration_ms` 是逐段时长，规划器累加后下发。四轴目标先由上位机完成 IK、关节映射和限位检查。插值点默认是途经点，显式 waypoint 目标点使用其 `is_via_point` 配置。
 4. 业务要求在所有路点提交后再启动轨迹。当前规划器按此顺序发布三个话题，但**话题发布顺序本身不能证明不同类型数据已按顺序到达并被下位机装载**；固件实际缓存容量及装载确认方式仍待确认。
 
 例如 15 秒的单目标动作至少有：`Point 0 = (当前实测角, 0 ms, HOLD)`，`Point 1 = (目标硬件角, 15000 ms, 指定夹爪动作)`；规划器也可能生成更多中间插值点。笛卡尔 LIN 根据实测角做 FK 得到路径起点，但下发的首点仍是**原始实测关节角**。

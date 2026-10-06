@@ -58,16 +58,21 @@ def validate_presets(presets: dict) -> None:
             if not isinstance(wp, dict):
                 raise ValueError(f'Invalid waypoint in preset {name}')
             target = wp.get('target')
+            gripper = wp.get('gripper', 0)
+            dwell_ms = wp.get('dwell_ms', 0)
+            is_via_point = wp.get('is_via_point', False)
             if (not isinstance(target, list) or len(target) < 4
                     or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
                                and math.isfinite(v) for v in target)
                     or not isinstance(wp.get('duration_ms'), int)
                     or isinstance(wp['duration_ms'], bool)
                     or not 0 < wp['duration_ms'] <= 0xFFFFFFFF
-                    or not isinstance(wp.get('dwell_ms', 0), int)
-                    or wp.get('dwell_ms', 0) < 0
-                    or wp.get('gripper', 0) not in (0, 1, 2)
-                    or not isinstance(wp.get('linear', False), bool)):
+                    or not isinstance(dwell_ms, int)
+                    or isinstance(dwell_ms, bool)
+                    or dwell_ms < 0
+                    or gripper not in (0, 1, 2)
+                    or not isinstance(wp.get('linear', False), bool)
+                    or not isinstance(is_via_point, bool)):
                 raise ValueError(f'Invalid waypoint in preset {name}')
 
 
@@ -371,7 +376,9 @@ class ArmPlannerNode(Node):
     ) -> Optional[str]:
         if not 2 <= len(points) <= 0xFFFF:
             return 'Trajectory point count must be 2..65535'
-        if points[0].joints != start or points[0].gripper_action != GripperAction.HOLD:
+        if (points[0].joints != start
+                or points[0].gripper_action != GripperAction.HOLD
+                or points[0].is_via_point != 0):
             return 'Trajectory first point must be measured joints with HOLD'
         previous_time = -1
         for index, point in enumerate(points):
@@ -384,6 +391,8 @@ class ArmPlannerNode(Node):
                 return f'Point {index}: {message}'
             if point.gripper_action not in (0, 1, 2):
                 return f'Invalid gripper action at point {index}'
+            if point.is_via_point not in (0, 1):
+                return f'Invalid via-point flag at point {index}'
             previous_time = point.time_from_start
         if points[0].time_from_start != 0:
             return 'Trajectory must start at 0 ms'
@@ -433,6 +442,7 @@ class ArmPlannerNode(Node):
             hw_pt.joint_3 = float(pt.joint_3)
             hw_pt.joint_4 = float(pt.joint_4)
             hw_pt.gripper_action = int(pt.gripper_action)
+            hw_pt.is_via_point = int(pt.is_via_point)
             with self._state_lock:
                 if self._interrupt_reason:
                     return False, traj_id, self._interrupt_reason
@@ -516,6 +526,7 @@ class ArmPlannerNode(Node):
                     transformer=self.transformer,
                     start_q_hw=start,
                     gripper_action=gripper,
+                    target_is_via_point=0,
                 )
             ok, q_algo, ik_msg = self.kinematics.inverse_kinematics(
                 target_xyz[0], target_xyz[1], target_xyz[2], pitch=pitch_rad, force_elbow_up=True
@@ -534,6 +545,7 @@ class ArmPlannerNode(Node):
                 duration_ms=duration_ms,
                 num_points=num_pts,
                 gripper_action=gripper,
+                target_is_via_point=0,
             )
             return True, points, ''
 

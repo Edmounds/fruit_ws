@@ -72,7 +72,9 @@ YAML 的 link_angles 预设 / 控制台 joints
   -> 预设在规划器内生成轨迹；控制台通过 MoveArmJoints 服务执行
 ```
 
-源码位置：`kinematics.py` 的 `forward_kinematics` / `inverse_kinematics`，`joint_transformer.py` 的双向映射，`trajectory_planner.py` 的 PTP/LIN，`arm_planner_node.py` 的两个运动服务和状态回调。串口协议只规定四个 `float32` 关节角字段（rad），没有固件零位换算的实现证据。
+每个 `TrajectoryPoint` 还携带 `is_via_point`。上位机对实测起点和 service 最终目标发送 `0`，对自动生成的中间插值点发送 `1`；该标记不改变关节映射或标定偏置。
+
+源码位置：`kinematics.py` 的 `forward_kinematics` / `inverse_kinematics`，`joint_transformer.py` 的双向映射，`trajectory_planner.py` 的 PTP/LIN，`arm_planner_node.py` 的两个运动服务和状态回调。串口协议下发四个 `float32` 关节角字段（rad）、夹爪动作和 `is_via_point`，没有固件零位换算的实现证据。
 
 ## 3. 核查结果
 

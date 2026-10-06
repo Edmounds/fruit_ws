@@ -28,6 +28,7 @@ class TrajectoryPoint:
     joint_4: float = 0.0  # rad
     time_from_start: int = 0  # ms
     gripper_action: int = GripperAction.HOLD
+    is_via_point: int = 0  # 0=exact arrival, 1=via point
 
     @property
     def joints(self) -> Tuple[float, float, float, float]:
@@ -66,6 +67,7 @@ class TrajectoryPlanner:
         start_time_offset_ms: int = 0,
         start_point_id: int = 0,
         gripper_action: int = GripperAction.HOLD,
+        target_is_via_point: int = 0,
     ) -> List[TrajectoryPoint]:
         """关节空间点到点平滑规划 (PTP，五次多项式 S-Curve)."""
         if duration_ms <= 0 or duration_ms > 0xFFFFFFFF or num_points > duration_ms + 1:
@@ -85,6 +87,10 @@ class TrajectoryPlanner:
 
             t = start_time_offset_ms + int(duration_ms * ratio)
             action = gripper_action if i == num_points - 1 else GripperAction.HOLD
+            is_via_point = (
+                0 if i == 0 else
+                target_is_via_point if i == num_points - 1 else 1
+            )
 
             points.append(
                 TrajectoryPoint(
@@ -95,6 +101,7 @@ class TrajectoryPlanner:
                     joint_4=q4,
                     time_from_start=t,
                     gripper_action=action,
+                    is_via_point=is_via_point,
                 )
             )
         return points
@@ -112,6 +119,7 @@ class TrajectoryPlanner:
         start_time_offset_ms: int = 0,
         start_point_id: int = 0,
         gripper_action: int = GripperAction.HOLD,
+        target_is_via_point: int = 0,
     ) -> Tuple[bool, List[TrajectoryPoint], str]:
         """笛卡尔空间严格三维直线轨迹规划 (LIN).
 
@@ -150,6 +158,10 @@ class TrajectoryPlanner:
 
             t = start_time_offset_ms + int(duration_ms * ratio)
             action = gripper_action if i == num_points - 1 else GripperAction.HOLD
+            is_via_point = (
+                0 if i == 0 else
+                target_is_via_point if i == num_points - 1 else 1
+            )
 
             points.append(
                 TrajectoryPoint(
@@ -160,6 +172,7 @@ class TrajectoryPlanner:
                     joint_4=q_final[3],
                     time_from_start=t,
                     gripper_action=action,
+                    is_via_point=is_via_point,
                 )
             )
 
@@ -198,6 +211,7 @@ class TrajectoryPlanner:
             gripper = int(wp.get("gripper", GripperAction.HOLD))
             linear = bool(wp.get("linear", False))
             dwell_ms = int(wp.get("dwell_ms", default_dwell_ms if gripper != GripperAction.HOLD else 0))
+            is_via_point = int(bool(wp.get('is_via_point', False)))
             if duration_ms <= 0 or dwell_ms < 0 or gripper not in (0, 1, 2):
                 return False, [], f'Waypoint {idx} has invalid duration, dwell or gripper action'
             if cur_time_ms + duration_ms + dwell_ms > 0xFFFFFFFF:
@@ -249,6 +263,7 @@ class TrajectoryPlanner:
                     start_q_hw=cur_q_hw,
                     start_time_offset_ms=cur_time_ms,
                     gripper_action=GripperAction.HOLD,
+                    target_is_via_point=is_via_point,
                 )
                 if not ok:
                     return False, [], f"Waypoint {idx}: {msg}"
@@ -261,6 +276,7 @@ class TrajectoryPlanner:
                     num_points=num_pts,
                     start_time_offset_ms=cur_time_ms,
                     gripper_action=GripperAction.HOLD if dwell_ms > 0 else gripper,
+                    target_is_via_point=is_via_point,
                 )
             if dwell_ms == 0 and gripper != GripperAction.HOLD:
                 move_pts[-1].gripper_action = gripper
@@ -287,6 +303,7 @@ class TrajectoryPlanner:
                             joint_4=cur_q_hw[3],
                             time_from_start=d_t,
                             gripper_action=gripper if d_i == 1 else GripperAction.HOLD,
+                            is_via_point=is_via_point,
                         )
                     )
                     point_id += 1

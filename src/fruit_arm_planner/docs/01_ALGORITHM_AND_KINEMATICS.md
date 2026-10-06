@@ -213,6 +213,8 @@ $$q(t) = q_{\text{start}} + S\left(\frac{t}{T}\right) \cdot (q_{\text{target}} -
 
 按 YAML 的 `planning.interpolation_step_ms` 采样生成包含时间戳与 4 关节弧度值的 `TrajectoryPoint` 序列；当前配置为 200ms。
 
+每个 `TrajectoryPoint` 还带有 `is_via_point`：轨迹第 0 个实测起点和最终目标点默认为精确点（`0`），自动生成的中间插值点为途经点（`1`）。预设 waypoint 可显式设置该标记；它只供下位机选择到位容差，不改变上位机的插值、IK、映射或限位检查。
+
 `duration_ms` 描述计划轨迹时间，不是服务执行期限。planner 和 mission 均等待下位机
 报告完成/失败或主动停止，`planning.execution_timeout_buffer_sec` 已删除；此变更不影响
 插补、几何、标定或预设航点，反馈新鲜度与限位校验仍保留。修改代码后构建并重启 planner

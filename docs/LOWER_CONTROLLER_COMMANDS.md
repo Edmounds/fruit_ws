@@ -32,7 +32,8 @@
 
 1. Header：`trajectory_id:uint32`、`point_num:uint16`。
 2. Points：同一轨迹 ID，`point_id:uint16` 从 0 连续递增；`time_from_start:uint32` 为毫秒；
-   四个原始硬件关节角为 float32 弧度，夹爪动作 0=HOLD、1=OPEN、2=CLOSE。
+   四个原始硬件关节角为 float32 弧度，夹爪动作 0=HOLD、1=OPEN、2=CLOSE；
+   `is_via_point:uint8` 为 0=精确到达、1=途经点。
 3. 轨迹从 `t=0` 新鲜实测四轴角开始（HOLD），至少两点，时间严格递增。
 4. 完整装载后才可用 Mode=0 启动；新鲜 `ArmStatus` 的轨迹 ID 匹配且状态为 COMPLETED 才表示执行完成。
 

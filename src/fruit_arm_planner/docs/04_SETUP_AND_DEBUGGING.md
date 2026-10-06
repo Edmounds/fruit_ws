@@ -132,7 +132,7 @@ ros2 service call /arm_planner_node/reload_presets std_srvs/srv/Trigger '{}'
 | --- | --- |
 | `info`（默认） | 请求结果、状态变化、轨迹 ID 和错误码 |
 | `debug` | `info` 加每帧 20 Hz 状态、轨迹 Header 和控制 Mode |
-| `trace` | `debug` 加每个轨迹路点的 ID、时间、四轴弧度和夹爪动作 |
+| `trace` | `debug` 加每个轨迹路点的 ID、时间、四轴弧度、夹爪动作和途经点标记 |
 
 `ROS TX` 日志来自控制台对规划器输出话题的订阅，表示**观测到 ROS 消息**，
 不表示通信桥已获得 ACK 或下位机已装载路点；不同话题的日志先后顺序也不是串口到达顺序。
@@ -215,7 +215,8 @@ PY
 - 运动执行无限等待匹配轨迹 ID 的下位机完成/报错；主动 STOP/ESTOP 或节点退出可中断。`execution_timeout_buffer_sec` 已从配置与加载校验删除，mission 也不再设置前端运动超时。端点发现和反馈新鲜度仍独立校验。
 - `interpolation_step_ms`：路点时间间隔目标值。每条轨迹均从最新实测角的 0 ms 路点开始；预设 `duration_ms` 为逐段时长。
 - `default_dwell_ms`：预设夹爪动作路点未指定 `dwell_ms` 时的默认驻留时间。
-- `mode_start_delay_ms`：发布全部路点后、发布 `Mode=TRAJECTORY` 前的调试等待时间，默认 100 ms。它只是时间缓冲，不能证明通信桥已经完成逐点发送或下位机已经装载全部路点；正式修复仍应由通信桥提供跨消息发送屏障。
+- `mode_start_delay_ms`：发布全部路点后、发布 `Mode=TRAJECTORY` 前的调试等待时间，当前配置为 300 ms。它只是时间缓冲，不能证明通信桥已经完成逐点发送或下位机已经装载全部路点；正式修复仍应由通信桥提供跨消息发送屏障。
+- `is_via_point`：预设 waypoint 可设为 `true`，表示途经点并使用下位机的较大到位容差。省略或设为 `false` 表示精确点。插值点自动标记为途经点，夹爪动作和驻留点继承 waypoint 的标记。
 
 节点启动时从源码目录的 `arm_presets.yaml` 读取几何、四轴偏置/方向/限位、规划时间参数与预设；缺少必需项或基本结构无效时启动失败，不回退到 Python 中的机械参数。修改限位前应核实四轴实测角仍在新范围内，否则规划器会拒绝运动。
 
