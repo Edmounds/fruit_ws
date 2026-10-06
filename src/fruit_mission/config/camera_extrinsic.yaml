@@ -25,6 +25,7 @@ endpoint_timeout_sec: 10.0
 
 # mission 在目标末点闭爪，后续 Harvest/Home 由上位机调用预设。
 motion:
-  pitch_deg: 0.0  # 指定对地绝对俯仰角（度），0.0 为相对于 base 严格水平抓取
+  pitch_deg: 0.0  # A/C 抓取绝对俯仰角（度）；null 保持观测俯仰角
+  pitch_b_deg: -30.0  # B 抓取绝对俯仰角；B 偏置仍按 0 度旋转，独立于抓取俯仰角
   duration_ms: 1500  # 1500ms 平滑探出抓取
   linear_path: false  # false: 关节空间 PTP 平滑规划

@@ -127,11 +127,12 @@ class CameraTargetPlannerClient:
             raise ValueError('duration_ms must be uint32')
         if type(motion['linear_path']) is not bool:
             raise ValueError('linear_path must be boolean')
-        pitch = motion['pitch_deg']
-        if pitch is not None and (isinstance(pitch, bool)
-                                  or not isinstance(pitch, (int, float))
-                                  or not math.isfinite(pitch)):
-            raise ValueError('pitch_deg must be null or a finite number')
+        for name in ('pitch_deg', 'pitch_b_deg'):
+            pitch = motion[name]
+            if pitch is not None and (isinstance(pitch, bool)
+                                      or not isinstance(pitch, (int, float))
+                                      or not math.isfinite(pitch)):
+                raise ValueError(f'{name} must be null or a finite number')
         self._pose = None
         self._latest_received_at = 0.0
         self._status = None
@@ -225,12 +226,15 @@ class CameraTargetPlannerClient:
             base_mm = transform_end_to_base_mm(
                 end_mm, (end_x * 1000.0, end_y * 1000.0, end_z * 1000.0), yaw, pitch)
 
-            desired_pitch = self.config['motion']['pitch_deg']
+            pitch_key = 'pitch_b_deg' if area == 'B' else 'pitch_deg'
+            desired_pitch = self.config['motion'][pitch_key]
             request_pitch_deg = float(
                 pitch_deg if desired_pitch is None else desired_pitch)
-            request_pitch_rad = math.radians(request_pitch_deg)
+            # B retains its historical horizontal offset reference, independent of grasp pitch.
+            offset_pitch_deg = 0.0 if area == 'B' else request_pitch_deg
 
-            adjusted_base_mm = apply_target_offset_mm(base_mm, offset_m, request_pitch_rad)
+            adjusted_base_mm = apply_target_offset_mm(
+                base_mm, offset_m, math.radians(offset_pitch_deg))
             request = MoveArmCartesian.Request()
             request.x, request.y, request.z = (v / 1000.0 for v in adjusted_base_mm)
             request.pitch_deg = request_pitch_deg
@@ -243,7 +247,7 @@ class CameraTargetPlannerClient:
         req_xyz = [round(request.x, 4), round(request.y, 4), round(request.z, 4)]
         self.node.get_logger().debug(
             f'area={area} key={config_key} offset(m)={offset_m} '
-            f'ref_yaw={yaw_offset_deg:.2f}deg ref_pitch={request.pitch_deg:.2f}deg; '
+            f'ref_yaw={yaw_offset_deg:.2f}deg ref_pitch={offset_pitch_deg:.2f}deg; '
             f'Camera(m)={point_m} -> end(mm)={end_mm} -> arm base(mm)={base_mm} '
             f'-> req(m)={req_xyz}; '
             f'tcp(m)={[round(end_x, 4), round(end_y, 4), round(end_z, 4)]}, '
