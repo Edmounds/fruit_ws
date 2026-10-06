@@ -45,6 +45,9 @@ from fruit_arm_planner.trajectory_planner import (
 )
 
 
+MAX_TRAJECTORY_POINTS = 64  # FT lower-controller trajectory buffer capacity.
+
+
 def validate_presets(presets: dict) -> None:
     """Validate a complete preset replacement before installing or saving it."""
     if not isinstance(presets, dict):
@@ -118,7 +121,7 @@ class ArmPlannerNode(Node):
         # 3. 对接底层硬件通信 (fruit_hardware_bridge / auto_serial_bridge)
         # --------------------------------------------------------------------
         hardware_qos = QoSProfile(
-            depth=10,
+            depth=MAX_TRAJECTORY_POINTS,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
@@ -374,8 +377,11 @@ class ArmPlannerNode(Node):
     def _validate_trajectory(
         self, points: List[PlannerTrajectoryPoint], start: Tuple[float, float, float, float]
     ) -> Optional[str]:
-        if not 2 <= len(points) <= 0xFFFF:
-            return 'Trajectory point count must be 2..65535'
+        if not 2 <= len(points) <= MAX_TRAJECTORY_POINTS:
+            return (
+                f'Trajectory point count must be 2..{MAX_TRAJECTORY_POINTS} '
+                f'(MCU capacity, got {len(points)})'
+            )
         if (points[0].joints != start
                 or points[0].gripper_action != GripperAction.HOLD
                 or points[0].is_via_point != 0):
