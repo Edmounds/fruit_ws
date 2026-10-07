@@ -3,12 +3,13 @@
 <package format="3">
   <name>fruit_waypoint_recorder</name>
   <version>0.1.0</version>
-  <description>Record and exercise configured waypoints from the RViz panel.</description>
+  <description>Record and exercise configured waypoints from RobViz Waypoints Maker.</description>
   <maintainer email="fruit-ws@example.com">fruit_ws team</maintainer>
   <license>Apache-2.0</license>
 
   <depend>action_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>nav2_msgs</depend>
   <depend>rcl_interfaces</depend>
   <depend>rclpy</depend>

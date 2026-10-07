@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from http import HTTPStatus
@@ -16,13 +17,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 import math
+import mimetypes
 import os
 from pathlib import Path
 import shutil
 import stat
 import tempfile
+import threading
 from typing import Any, Dict, List, Mapping, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import yaml
 
@@ -35,6 +38,25 @@ DEFAULT_CONFIG = Path(
 )
 VALID_POINT_TYPES = ("waypoint", "goal")
 MAX_POINT_COUNT = 5000
+DEFAULT_IMAGE_SETTINGS = {
+    "version": 1,
+    "rgb": {
+        "bandwidth_mbps": 1.5,
+        "auto_quality": True,
+        "quality": 70,
+        "width": 640,
+        "height": 360,
+        "max_fps": 10.0,
+    },
+    "depth": {
+        "bandwidth_mbps": 0.8,
+        "auto_quality": True,
+        "quality": 70,
+        "width": 424,
+        "height": 240,
+        "max_fps": 10.0,
+    },
+}
 
 
 class RequestError(Exception):
@@ -46,15 +68,25 @@ class RequestError(Exception):
         self.message = message
 
 
+class VersionConflict(RequestError):
+    """The client edited a document that changed after it was loaded."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(HTTPStatus.CONFLICT, message)
+
+
 @dataclass(frozen=True)
 class EditorConfig:
     """Runtime configuration loaded from the source workspace."""
 
     host: str
     port: int
+    static_dir: Path | None
     html_file: Path
     waypoint_file: Path
+    debug_waypoint_file: Path
     template_file: Path
+    image_settings_file: Path
     backup_dir: Path
     max_request_bytes: int
 
@@ -70,10 +102,50 @@ class EditorFile:
     waypoint_file: Path
     template_file: Path
     reference_file: Path
+    formal: bool
 
     @property
     def label(self) -> str:
         return f"里程计 / {self.waypoint_file.name}"
+
+
+@dataclass
+class ImageSettingsStore:
+    """Thread-safe in-memory image settings owned by the HTTP server."""
+
+    path: Path
+    settings: dict
+
+    def __post_init__(self) -> None:
+        self._lock = threading.RLock()
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return copy.deepcopy(self.settings)
+
+    def apply(self, payload: Mapping[str, Any]) -> dict:
+        validated = validate_image_settings(payload)
+        with self._lock:
+            current_version = int(self.settings["version"])
+            expected_version = payload.get("version")
+            if expected_version is not None:
+                if (
+                    isinstance(expected_version, bool)
+                    or not isinstance(expected_version, int)
+                    or expected_version != current_version
+                ):
+                    raise VersionConflict("图像配置版本已变化，请重新加载")
+            validated["version"] = current_version + 1
+            self.settings = validated
+            return copy.deepcopy(validated)
+
+    def save_defaults(self, backup_root: Path) -> Path | None:
+        with self._lock:
+            return _atomic_save_json(
+                self.path,
+                self.settings,
+                backup_root / "image-settings",
+            )
 
 
 def _required_mapping(document: Any, label: str) -> Mapping[str, Any]:
@@ -86,6 +158,12 @@ def _configured_path(value: Any, label: str) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"缺少配置项 {label}")
     return Path(value).expanduser().resolve()
+
+
+def _optional_configured_path(value: Any, label: str) -> Path | None:
+    if value is None or value == "":
+        return None
+    return _configured_path(value, label)
 
 
 def load_editor_config(path: Path) -> EditorConfig:
@@ -108,12 +186,21 @@ def load_editor_config(path: Path) -> EditorConfig:
     return EditorConfig(
         host=host,
         port=port,
+        static_dir=_optional_configured_path(
+            document.get("static_dir"), "static_dir"
+        ),
         html_file=_configured_path(document.get("html_file"), "html_file"),
         waypoint_file=_configured_path(
             document.get("waypoint_file"), "waypoint_file"
         ),
+        debug_waypoint_file=_configured_path(
+            document.get("debug_waypoint_file"), "debug_waypoint_file"
+        ),
         template_file=_configured_path(
             document.get("template_file"), "template_file"
+        ),
+        image_settings_file=_configured_path(
+            document.get("image_settings_file"), "image_settings_file"
         ),
         backup_dir=_configured_path(document.get("backup_dir"), "backup_dir"),
         max_request_bytes=max_request_bytes,
@@ -121,20 +208,167 @@ def load_editor_config(path: Path) -> EditorConfig:
 
 
 def load_file_catalog(config: EditorConfig) -> Dict[str, EditorFile]:
-    """Resolve the single odom waypoint file exposed by the editor."""
-    file_id = "odom"
+    """Resolve the formal and free-form waypoint files exposed by the editor."""
     return {
-        file_id: EditorFile(
-            file_id=file_id,
+        "odom": EditorFile(
+            file_id="odom",
             profile="odom",
             mode="odometry",
             frame_id="odom",
             waypoint_file=config.waypoint_file,
             template_file=config.template_file,
             reference_file=config.waypoint_file,
-        )
+            formal=True,
+        ),
+        "debug": EditorFile(
+            file_id="debug",
+            profile="debug",
+            mode="freeform",
+            frame_id="odom",
+            waypoint_file=config.debug_waypoint_file,
+            template_file=config.template_file,
+            reference_file=config.debug_waypoint_file,
+            formal=False,
+        ),
     }
 
+
+def document_version(path: Path) -> str:
+    """Return a content version that changes for every external edit."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _default_image_settings() -> dict:
+    return copy.deepcopy(DEFAULT_IMAGE_SETTINGS)
+
+
+def _strict_bool(value: Any, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{label} 必须是布尔值")
+    return value
+
+
+def _strict_int(value: Any, label: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label} 必须是整数")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{label} 必须在 {minimum}..{maximum}")
+    return value
+
+
+def _strict_positive(value: Any, label: str, maximum: float) -> float:
+    parsed = _finite_number(value, label)
+    if not 0.0 < parsed <= maximum:
+        raise ValueError(f"{label} 必须大于 0 且不超过 {maximum}")
+    return parsed
+
+
+def validate_image_settings(payload: Mapping[str, Any]) -> dict:
+    """Validate the stable JSON contract shared by RobViz and ROS."""
+    if not isinstance(payload, Mapping):
+        raise ValueError("图像配置根节点必须是对象")
+    normalized = {"version": 1}
+    for stream_name in ("rgb", "depth"):
+        stream = payload.get(stream_name)
+        if not isinstance(stream, Mapping):
+            raise ValueError(f"图像配置缺少 {stream_name} 对象")
+        normalized[stream_name] = {
+            "bandwidth_mbps": _strict_positive(
+                stream.get("bandwidth_mbps"),
+                f"{stream_name}.bandwidth_mbps",
+                1000.0,
+            ),
+            "auto_quality": _strict_bool(
+                stream.get("auto_quality"),
+                f"{stream_name}.auto_quality",
+            ),
+            "quality": _strict_int(
+                stream.get("quality"),
+                f"{stream_name}.quality",
+                30,
+                95,
+            ),
+            "width": _strict_int(
+                stream.get("width"), f"{stream_name}.width", 64, 3840
+            ),
+            "height": _strict_int(
+                stream.get("height"), f"{stream_name}.height", 48, 2160
+            ),
+            "max_fps": _strict_positive(
+                stream.get("max_fps"), f"{stream_name}.max_fps", 60.0
+            ),
+        }
+    return normalized
+
+
+def load_image_settings(path: Path) -> dict:
+    """Load and validate persisted image settings, or use safe defaults."""
+    if not path.is_file():
+        return _default_image_settings()
+    with path.open(encoding="utf-8") as stream:
+        payload = json.load(stream, parse_constant=_reject_json_constant)
+    settings = validate_image_settings(payload)
+    version = payload.get("version", 1)
+    settings["version"] = _strict_int(version, "version", 1, 2**31 - 1)
+    return settings
+
+
+def _reject_json_constant(value: str):
+    raise ValueError(f"JSON 不允许 {value}")
+
+
+def _atomic_save_json(path: Path, payload: Mapping[str, Any], backup_root: Path) -> Path | None:
+    """Back up and atomically save one JSON document."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path = None
+    if path.is_file():
+        backup_root.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
+        backup_path = backup_root / f"{path.stem}_{stamp}{path.suffix}"
+        shutil.copy2(path, backup_path)
+    file_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as output:
+            json.dump(payload, output, ensure_ascii=False, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        temporary_path.chmod(file_mode)
+        os.replace(temporary_path, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return backup_path
+
+
+@contextmanager
+def _document_lock(path: Path):
+    """Serialize editor and recorder writes on Linux."""
+    import fcntl
+
+    lock_path = path.with_name(f".{path.name}.lock")
+    lock_path.touch(exist_ok=True)
+    with lock_path.open("r+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _finite_number(value: Any, label: str) -> float:
@@ -221,7 +455,9 @@ def load_waypoint_document(editor_file: EditorFile) -> Tuple[dict, List[dict]]:
 def load_template_geometry(
     editor_file: EditorFile,
 ) -> List[dict]:
-    """Load formal order and geometry relative to A1."""
+    """Load formal order and optional geometry relative to A1."""
+    if not editor_file.formal:
+        return []
     with editor_file.template_file.open(encoding="utf-8") as stream:
         template_document = _required_mapping(
             yaml.safe_load(stream), "waypoint template"
@@ -240,14 +476,16 @@ def load_template_geometry(
         waypoint_file=editor_file.reference_file,
         template_file=editor_file.template_file,
         reference_file=editor_file.reference_file,
+        formal=True,
     )
-    _, reference_points = load_waypoint_document(reference_file)
+    if editor_file.reference_file.is_file():
+        _, reference_points = load_waypoint_document(reference_file)
+    else:
+        reference_points = []
     reference_by_name = {
         point["name"]: point for point in reference_points
     }
     reference_a1 = reference_by_name.get("A1")
-    if reference_a1 is None:
-        raise ValueError("正式 waypoint YAML 缺少参考点 A1")
 
     result: List[dict] = []
     seen = set()
@@ -264,17 +502,28 @@ def load_template_geometry(
                 f"template 点 {name} 的 type 必须是 waypoint 或 goal"
             )
         reference = reference_by_name.get(name)
-        if reference is None:
-            raise ValueError(f"正式 waypoint YAML 缺少 template 点 {name}")
+        has_geometry = reference is not None and reference_a1 is not None
         result.append(
             {
                 "index": index,
                 "name": name,
                 "type": point_type,
-                "dx": reference["x"] - reference_a1["x"],
-                "dy": reference["y"] - reference_a1["y"],
-                "dz": reference["z"] - reference_a1["z"],
-                "yaw_deg": reference["yaw_deg"],
+                "dx": (
+                    reference["x"] - reference_a1["x"]
+                    if has_geometry
+                    else None
+                ),
+                "dy": (
+                    reference["y"] - reference_a1["y"]
+                    if has_geometry
+                    else None
+                ),
+                "dz": (
+                    reference["z"] - reference_a1["z"]
+                    if has_geometry
+                    else None
+                ),
+                "yaw_deg": reference["yaw_deg"] if has_geometry else None,
             }
         )
         seen.add(name)
@@ -286,11 +535,12 @@ def load_template_geometry(
     return result
 
 
-
 def order_actual_points(
-    points: List[dict], template: List[dict]
+    points: List[dict], template: List[dict], formal: bool = True
 ) -> List[dict]:
-    """Reject non-template names and return actual points in formal order."""
+    """Validate formal names or preserve user order for debug documents."""
+    if not formal:
+        return list(points)
     order = {point["name"]: index for index, point in enumerate(template)}
     unknown = [point["name"] for point in points if point["name"] not in order]
     if unknown:
@@ -306,6 +556,7 @@ def _normalize_degrees(value: float) -> float:
 def _serialize_points(
     raw_points: Any,
     template: List[dict],
+    formal: bool,
 ) -> List[dict]:
     if not isinstance(raw_points, list):
         raise ValueError("points 必须是列表")
@@ -315,6 +566,7 @@ def _serialize_points(
     template_order = {
         point["name"]: index for index, point in enumerate(template)
     }
+    template_types = {point["name"]: point["type"] for point in template}
     serialized: List[dict] = []
     names = set()
     for index, raw_item in enumerate(raw_points, start=1):
@@ -327,10 +579,12 @@ def _serialize_points(
             raise ValueError(f"点 {name[:40]} 的名称不能超过 200 个字符")
         if name in names:
             raise ValueError(f"点名称重复: {name}")
-        if name not in template_order:
+        if formal and name not in template_order:
             raise ValueError(f"点名称不在 template 中: {name}")
         if point_type not in VALID_POINT_TYPES:
             raise ValueError(f"点 {name} 的 type 必须是 waypoint 或 goal")
+        if formal and template_types[name] != point_type:
+            raise ValueError(f"点 {name} 的 type 与 template 不一致")
 
         x = _finite_number(item.get("x"), f"点 {name} 的 x")
         y = _finite_number(item.get("y"), f"点 {name} 的 y")
@@ -360,56 +614,70 @@ def _serialize_points(
         point["type"] = point_type
         serialized.append(point)
         names.add(name)
-    return sorted(
-        serialized,
-        key=lambda point: template_order[point["name"]],
-    )
+    if formal:
+        return sorted(
+            serialized,
+            key=lambda point: template_order[point["name"]],
+        )
+    return serialized
 
 
 def save_waypoint_document(
     editor_file: EditorFile,
     backup_root: Path,
     raw_points: Any,
-) -> Path:
+    expected_version: str | None = None,
+) -> Tuple[Path | None, str]:
     """Validate, back up, and atomically replace one waypoint YAML."""
-    document, _ = load_waypoint_document(editor_file)
-    template = load_template_geometry(editor_file)
-    document["points"] = _serialize_points(raw_points, template)
+    with _document_lock(editor_file.waypoint_file):
+        document, _ = load_waypoint_document(editor_file)
+        current_version = document_version(editor_file.waypoint_file)
+        if expected_version is not None and expected_version != current_version:
+            raise VersionConflict("waypoint 文件已被其他进程修改，请重新加载")
+        template = load_template_geometry(editor_file)
+        document["points"] = _serialize_points(
+            raw_points, template, editor_file.formal
+        )
 
-    profile_backup_dir = backup_root / editor_file.profile
-    profile_backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
-    backup_path = profile_backup_dir / (
-        f"{editor_file.waypoint_file.stem}_{stamp}"
-        f"{editor_file.waypoint_file.suffix}"
-    )
-    shutil.copy2(editor_file.waypoint_file, backup_path)
+        profile_backup_dir = backup_root / editor_file.profile
+        profile_backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
+        backup_path = profile_backup_dir / (
+            f"{editor_file.waypoint_file.stem}_{stamp}"
+            f"{editor_file.waypoint_file.suffix}"
+        )
+        shutil.copy2(editor_file.waypoint_file, backup_path)
 
-    target_dir = editor_file.waypoint_file.parent
-    file_mode = stat.S_IMODE(editor_file.waypoint_file.stat().st_mode)
-    file_descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{editor_file.waypoint_file.name}.",
-        suffix=".tmp",
-        dir=target_dir,
-        text=True,
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(file_descriptor, "w", encoding="utf-8") as output:
-            yaml.safe_dump(
-                document,
-                output,
-                allow_unicode=True,
-                sort_keys=False,
-            )
-            output.flush()
-            os.fsync(output.fileno())
-        temporary_path.chmod(file_mode)
-        os.replace(temporary_path, editor_file.waypoint_file)
-    except Exception:
-        temporary_path.unlink(missing_ok=True)
-        raise
-    return backup_path
+        target_dir = editor_file.waypoint_file.parent
+        file_mode = stat.S_IMODE(editor_file.waypoint_file.stat().st_mode)
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{editor_file.waypoint_file.name}.",
+            suffix=".tmp",
+            dir=target_dir,
+            text=True,
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(file_descriptor, "w", encoding="utf-8") as output:
+                yaml.safe_dump(
+                    document,
+                    output,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
+                output.flush()
+                os.fsync(output.fileno())
+            temporary_path.chmod(file_mode)
+            os.replace(temporary_path, editor_file.waypoint_file)
+            directory_fd = os.open(target_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except Exception:
+            temporary_path.unlink(missing_ok=True)
+            raise
+        return backup_path, document_version(editor_file.waypoint_file)
 
 
 def load_map_info(editor_file: EditorFile) -> dict:
@@ -427,6 +695,10 @@ class WaypointEditorHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, config: EditorConfig) -> None:
         self.editor_config = config
+        self.image_settings = ImageSettingsStore(
+            config.image_settings_file,
+            load_image_settings(config.image_settings_file),
+        )
         super().__init__(
             (config.host, config.port), WaypointEditorRequestHandler
         )
@@ -442,7 +714,8 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", (
             "default-src 'self'; base-uri 'none'; object-src 'none'; "
             "frame-ancestors 'none'; img-src 'self' data: blob:; "
-            "connect-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "connect-src 'self' ws://127.0.0.1:* ws://localhost:*; "
+            "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; "
             "style-src 'self' 'unsafe-inline'"
         ))
         self.send_header("Referrer-Policy", "no-referrer")
@@ -476,6 +749,38 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
     def _send_error(self, error: RequestError) -> None:
         self._send_json(error.status, {"error": error.message})
 
+    def _send_file(self, path: Path) -> None:
+        content_type = mimetypes.guess_type(path.name)[0]
+        if content_type is None:
+            content_type = "application/octet-stream"
+        self._send_bytes(HTTPStatus.OK, content_type, path.read_bytes())
+
+    def _static_file(self, request_path: str) -> Path | None:
+        root = self.server.editor_config.static_dir
+        if root is None:
+            return None
+        root = root.resolve()
+        relative = unquote(request_path).lstrip("/")
+        if "\x00" in relative:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "静态路径无效")
+        candidate = (root / relative).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as error:
+            raise RequestError(HTTPStatus.FORBIDDEN, "禁止访问静态目录之外的文件") from error
+        if candidate.is_file():
+            return candidate
+        return None
+
+    def _check_same_origin(self) -> None:
+        origin = self.headers.get("Origin")
+        if not origin:
+            return
+        parsed_origin = urlparse(origin)
+        host = self.headers.get("Host", "")
+        if parsed_origin.scheme not in ("http", "https") or parsed_origin.netloc != host:
+            raise RequestError(HTTPStatus.FORBIDDEN, "请求来源不是当前编辑器")
+
     def _catalog_file(self, query: Mapping[str, List[str]]) -> EditorFile:
         file_id = query.get("id", [""])[0]
         catalog = load_file_catalog(self.server.editor_config)
@@ -484,7 +789,7 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
             raise RequestError(HTTPStatus.NOT_FOUND, "未知的 waypoint 文件 ID")
         return editor_file
 
-    def _read_json_body(self) -> Mapping[str, Any]:
+    def _read_json_body(self, allow_empty: bool = False) -> Mapping[str, Any]:
         content_type = self.headers.get_content_type()
         if content_type != "application/json":
             raise RequestError(
@@ -502,9 +807,14 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
             ) from error
         if length < 0 or length > self.server.editor_config.max_request_bytes:
             raise RequestError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "请求内容过大")
+        if length == 0 and allow_empty:
+            return {}
         try:
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            payload = json.loads(
+                self.rfile.read(length).decode("utf-8"),
+                parse_constant=_reject_json_constant,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
             raise RequestError(
                 HTTPStatus.BAD_REQUEST, "JSON 请求格式无效"
             ) from error
@@ -516,14 +826,17 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query, keep_blank_values=True)
         try:
-            if parsed.path == "/":
-                body = self.server.editor_config.html_file.read_bytes()
-                self._send_bytes(
-                    HTTPStatus.OK, "text/html; charset=utf-8", body
-                )
-                return
             if parsed.path == "/health":
                 self._send_json(HTTPStatus.OK, {"status": "ok"})
+                return
+            if parsed.path == "/api/image-settings":
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "settings": self.server.image_settings.snapshot(),
+                        "version": self.server.image_settings.snapshot()["version"],
+                    },
+                )
                 return
             if parsed.path == "/api/files":
                 catalog = load_file_catalog(self.server.editor_config)
@@ -540,6 +853,12 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                             "file_available": (
                                 editor_file.waypoint_file.is_file()
                             ),
+                            "formal": editor_file.formal,
+                            "version": (
+                                document_version(editor_file.waypoint_file)
+                                if editor_file.waypoint_file.is_file()
+                                else None
+                            ),
                             "map": load_map_info(editor_file),
                         }
                     )
@@ -549,7 +868,9 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                 editor_file = self._catalog_file(query)
                 document, points = load_waypoint_document(editor_file)
                 template = load_template_geometry(editor_file)
-                points = order_actual_points(points, template)
+                points = order_actual_points(
+                    points, template, editor_file.formal
+                )
                 self._send_json(
                     HTTPStatus.OK,
                     {
@@ -559,9 +880,33 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                         "frame_id": document["frame_id"],
                         "points": points,
                         "template": template,
+                        "formal": editor_file.formal,
+                        "version": document_version(editor_file.waypoint_file),
                         "map": load_map_info(editor_file),
                     },
                 )
+                return
+            static_file = self._static_file(parsed.path)
+            if static_file is None and (
+                parsed.path == "/" or parsed.path == "/index.html"
+            ):
+                root = self.server.editor_config.static_dir
+                static_index = root / "index.html" if root is not None else None
+                if static_index is not None and static_index.is_file():
+                    static_file = static_index.resolve()
+                else:
+                    fallback = self.server.editor_config.html_file
+                    if fallback.is_file():
+                        static_file = fallback
+            if static_file is None and (
+                "text/html" in self.headers.get("Accept", "")
+                or "." not in Path(parsed.path).name
+            ):
+                root = self.server.editor_config.static_dir
+                if root is not None and (root / "index.html").is_file():
+                    static_file = (root / "index.html").resolve()
+            if static_file is not None:
+                self._send_file(static_file)
                 return
             raise RequestError(HTTPStatus.NOT_FOUND, "接口不存在")
         except RequestError as error:
@@ -581,6 +926,20 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
+            self._check_same_origin()
+            if parsed.path == "/api/image-settings":
+                payload = self._read_json_body()
+                settings = self.server.image_settings.apply(payload)
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "applied": True,
+                        "status": "pending_ros_reload",
+                        "settings": settings,
+                        "version": settings["version"],
+                    },
+                )
+                return
             if parsed.path != "/api/document":
                 raise RequestError(HTTPStatus.NOT_FOUND, "接口不存在")
             payload = self._read_json_body()
@@ -591,10 +950,17 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
             editor_file = catalog.get(file_id)
             if editor_file is None:
                 raise RequestError(HTTPStatus.NOT_FOUND, "未知的 waypoint 文件 ID")
-            backup_path = save_waypoint_document(
+            version = payload.get("version")
+            if not isinstance(version, str) or not version:
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST,
+                    "缺少 waypoint 文件版本，请重新加载",
+                )
+            backup_path, new_version = save_waypoint_document(
                 editor_file,
                 self.server.editor_config.backup_dir,
                 payload.get("points"),
+                version,
             )
             logging.info(
                 "Saved %s with backup %s",
@@ -607,6 +973,7 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                     "saved": True,
                     "file": str(editor_file.waypoint_file),
                     "backup": str(backup_path),
+                    "version": new_version,
                 },
             )
         except RequestError as error:
@@ -624,9 +991,41 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
             )
 
     def do_POST(self) -> None:  # noqa: N802
-        self._send_error(
-            RequestError(HTTPStatus.METHOD_NOT_ALLOWED, "不支持该请求方法")
-        )
+        parsed = urlparse(self.path)
+        try:
+            self._check_same_origin()
+            if parsed.path != "/api/image-settings/defaults":
+                raise RequestError(HTTPStatus.NOT_FOUND, "接口不存在")
+            payload = self._read_json_body(allow_empty=True)
+            if payload:
+                self.server.image_settings.apply(payload)
+            backup_path = self.server.image_settings.save_defaults(
+                self.server.editor_config.backup_dir
+            )
+            settings = self.server.image_settings.snapshot()
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "saved": True,
+                    "status": "pending_ros_reload",
+                    "backup": str(backup_path) if backup_path else None,
+                    "settings": settings,
+                    "version": settings["version"],
+                },
+            )
+        except RequestError as error:
+            self._send_error(error)
+        except (OSError, TypeError, ValueError, yaml.YAMLError) as error:
+            self._send_error(
+                RequestError(HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
+            )
+        except Exception:
+            logging.exception("Unhandled waypoint editor POST error")
+            self._send_error(
+                RequestError(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, "服务器内部错误"
+                )
+            )
 
     def do_DELETE(self) -> None:  # noqa: N802
         self._send_error(
@@ -658,8 +1057,17 @@ def main() -> int:
     )
     try:
         config = load_editor_config(args.config)
-        if not config.html_file.is_file():
-            raise ValueError(f"HTML 文件不存在: {config.html_file}")
+        static_index = (
+            config.static_dir / "index.html"
+            if config.static_dir is not None
+            else None
+        )
+        if not config.html_file.is_file() and (
+            static_index is None or not static_index.is_file()
+        ):
+            raise ValueError(
+                f"HTML 文件不存在: {config.html_file}，且静态目录没有 index.html"
+            )
         load_file_catalog(config)
         server = WaypointEditorHTTPServer(config)
     except Exception as error:

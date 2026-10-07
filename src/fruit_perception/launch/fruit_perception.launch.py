@@ -25,6 +25,9 @@ def generate_launch_description():
     serial_config_path = (
         '/home/rc4/fruit_ws/src/auto_serial_bridge/config/protocol.yaml'
     )
+    robviz_config_path = (
+        '/home/rc4/fruit_ws/src/fruit_robviz_bridge/config/robviz_bridge.yaml'
+    )
     with open(serial_config_path, encoding='utf-8') as config_file:
         serial_config = yaml.safe_load(config_file)
     serial_parameters = dict(
@@ -56,6 +59,12 @@ def generate_launch_description():
         'plugin': 'fruit_perception::FruitPerceptionNode',
         'name': 'fruit_perception_node',
         'parameters': [perception_node_parameters],
+    })
+    nodes_to_launch.append({
+        'package': 'fruit_robviz_bridge',
+        'plugin': 'fruit_robviz_bridge::ImageBridgeComponent',
+        'name': 'fruit_robviz_image_bridge',
+        'parameters': [robviz_config_path],
     })
 
     # ========================================================================
@@ -166,6 +175,14 @@ def generate_launch_description():
         ],
         condition=IfCondition(serial_debug_raw_frame),
     )
+    robviz_config_client = Node(
+        package='fruit_robviz_bridge',
+        executable='robviz_config_client.py',
+        name='fruit_robviz_config_client',
+        output='screen',
+        emulate_tty=True,
+        parameters=[robviz_config_path, {'use_sim_time': use_sim_time}],
+    )
 
     return LaunchDescription([
         declare_use_sim_time,
@@ -175,6 +192,7 @@ def generate_launch_description():
         declare_performance_hint,
         declare_perception_log_level,
         container,
+        robviz_config_client,
         qr_planner,
         GroupAction(
             actions=[serial_bridge, serial_bridge_debug],

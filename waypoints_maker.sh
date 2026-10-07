@@ -7,14 +7,8 @@ NAV_LAUNCH="$WORKSPACE/src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.
 HARDWARE_LAUNCH="$WORKSPACE/src/fruit_hardware_bridge/launch/fruit_hardware_bridge.launch.py"
 RECORDER_LAUNCH="$WORKSPACE/src/fruit_waypoint_recorder/launch/waypoint_recorder.launch.py"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
-WAYPOINT_FILE="$WORKSPACE/src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml"
-WAYPOINT_TEMPLATE_FILE="$WORKSPACE/src/fruit_waypoint_recorder/waypoints/template.yaml"
-WAYPOINT_FRAME="odom"
-RVIZ_CONFIG="$WORKSPACE/src/navigation/fruit_nav_bringup/rviz/waypoints_maker.rviz"
 MONITOR_SCRIPT="$WORKSPACE/scripts/robot_debug_monitor.sh"
-DESKTOP_RUNTIME_DIR="/run/user/$(id -u)"
-DESKTOP_DISPLAY=:0
-DESKTOP_XAUTHORITY="$DESKTOP_RUNTIME_DIR/gdm/Xauthority"
+WEB_URL="http://127.0.0.1:8000/"
 USE_TELEOP=false
 DEBUG=0
 
@@ -26,8 +20,8 @@ usage() {
   cat <<'EOF'
 Usage: ./waypoints_maker.sh [--tele] [--debug]
 
-Start Point-LIO odometry navigation, RViz, and the waypoint recorder in the
-startup-relative odom frame.
+Start Point-LIO odometry navigation and the waypoint recorder in the
+startup-relative odom frame. Use RobViz at http://127.0.0.1:8000/ for editing.
 Use --tele when joystick teleop is needed.
 EOF
 }
@@ -93,11 +87,11 @@ wait_for_odom_tf() {
   printf '[waypoints-maker] waiting for odometry nodes\n'
   ros2 run fruit_mission stack_readiness_client \
     nodes --node /laserMapping --node /loam_interface \
-    --timeout 60 \
+    --timeout 10 \
     --ros-args --params-file "$SCRIPT_CLIENT_CONFIG"
   printf '[waypoints-maker] waiting for the first valid Point-LIO odometry sample\n'
   ros2 run fruit_mission stack_readiness_client \
-    odometry --topic /aft_mapped_to_init --timeout 60 \
+    odometry --topic /aft_mapped_to_init --timeout 10 \
     --ros-args --params-file "$SCRIPT_CLIENT_CONFIG"
   printf '[waypoints-maker] waiting up to 5s for stable odom -> base_link TF\n'
   if ros2 run fruit_mission stack_readiness_client \
@@ -143,11 +137,8 @@ required_files=(
   "$NAV_LAUNCH" \
   "$HARDWARE_LAUNCH" \
   "$RECORDER_LAUNCH" \
-  "$WAYPOINT_FILE" \
-  "$WAYPOINT_TEMPLATE_FILE" \
   "$SCRIPT_CLIENT_CONFIG" \
-  "$MONITOR_SCRIPT" \
-  "$RVIZ_CONFIG"
+  "$MONITOR_SCRIPT"
 )
 for required_file in "${required_files[@]}"; do
   if [[ ! -r "$required_file" ]]; then
@@ -160,12 +151,6 @@ if ros2 node list 2>/dev/null | grep -Eq \
   '^/(livox_ros_driver2|laserMapping|loam_interface|axis_waypoint_action_server|fruit_waypoint_recorder)$'; then
   printf '[waypoints-maker] an odometry or waypoint node is already running.\n' >&2
   printf '[waypoints-maker] stop the existing stack before starting this script.\n' >&2
-  exit 1
-fi
-
-if [[ ! -r "$DESKTOP_XAUTHORITY" ]]; then
-  printf '[waypoints-maker] desktop Xauthority is unavailable: %s\n' "$DESKTOP_XAUTHORITY" >&2
-  printf '[waypoints-maker] log in to the local desktop before starting waypoint recording.\n' >&2
   exit 1
 fi
 
@@ -190,26 +175,18 @@ start_process "$nav_process_name" \
 
 start_debug_monitor
 
-start_process "rviz2 waypoint maker" \
-  env \
-    "DISPLAY=$DESKTOP_DISPLAY" \
-    "XAUTHORITY=$DESKTOP_XAUTHORITY" \
-    "XDG_RUNTIME_DIR=$DESKTOP_RUNTIME_DIR" \
-    "DBUS_SESSION_BUS_ADDRESS=unix:path=$DESKTOP_RUNTIME_DIR/bus" \
-    rviz2 -d "$RVIZ_CONFIG" -f "$WAYPOINT_FRAME"
-
 wait_for_odom_tf
 
 start_process "waypoint recorder" \
   ros2 launch "$RECORDER_LAUNCH"
 
 if [[ "$USE_TELEOP" == true ]]; then
-  printf '[waypoints-maker] odometry, teleop, RViz, and waypoint recorder started.\n'
+  printf '[waypoints-maker] odometry, teleop, and waypoint recorder started.\n'
 else
-  printf '[waypoints-maker] odometry, RViz, and waypoint recorder started.\n'
+  printf '[waypoints-maker] odometry and waypoint recorder started.\n'
 fi
-printf '[waypoints-maker] frame=%s; waypoint_file=%s\n' "$WAYPOINT_FRAME" "$WAYPOINT_FILE"
-printf '[waypoints-maker] use the RViz Waypoint Maker panel to record, save, undo, and run the next goal. Press Ctrl-C to stop.\n'
+printf '[waypoints-maker] use RobViz at %s to record, save, undo, and run the next goal.\n' "$WEB_URL"
+printf '[waypoints-maker] Press Ctrl-C to stop.\n'
 
 if wait -n "${pids[@]}"; then
   status=0

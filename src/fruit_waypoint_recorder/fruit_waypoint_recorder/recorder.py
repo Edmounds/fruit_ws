@@ -121,6 +121,7 @@ class TestPointStore:
             raise ValueError("waypoint frame_id must be map or odom")
         self._points: List[TestPoint] = []
         self._cursor = 0
+        self._undo_snapshots: List[Tuple[List[TestPoint], int]] = []
 
     @property
     def points(self) -> List[TestPoint]:
@@ -142,6 +143,7 @@ class TestPointStore:
             raise ValueError("point_type must be waypoint or goal")
         if any(point.name == cleaned_name for point in self._points):
             raise ValueError(f"test point already exists: {cleaned_name}")
+        self._remember()
         point = TestPoint(
             name=cleaned_name,
             point_type=cleaned_type,
@@ -149,6 +151,56 @@ class TestPointStore:
         )
         self._points.append(point)
         return point
+
+    def upsert(
+        self,
+        name: str,
+        point_type: str,
+        pose: PoseData,
+        overwrite: bool = False,
+        order: Optional[Sequence[str]] = None,
+    ) -> TestPoint:
+        """Append a point or replace one after explicit overwrite confirmation."""
+        cleaned_name = name.strip()
+        cleaned_type = point_type.strip()
+        if not cleaned_name:
+            raise ValueError("test point name must not be empty")
+        if cleaned_type not in VALID_TEST_POINT_TYPES:
+            raise ValueError("point_type must be waypoint or goal")
+        rank = {item: index for index, item in enumerate(order or ())}
+        if order is not None:
+            if cleaned_name not in rank:
+                raise ValueError(f"test point name is not in order: {cleaned_name}")
+        replacement = TestPoint(
+            name=cleaned_name,
+            point_type=cleaned_type,
+            pose=pose.renamed(cleaned_name),
+        )
+        for index, current in enumerate(self._points):
+            if current.name != cleaned_name:
+                continue
+            if not overwrite:
+                raise ValueError(
+                    f"test point already exists: {cleaned_name}; "
+                    "confirm_overwrite=true is required"
+                )
+            self._remember()
+            self._points[index] = replacement
+            return replacement
+        self._remember()
+        if order is None:
+            self._points.append(replacement)
+            return replacement
+        insert_at = next(
+            (
+                index
+                for index, current in enumerate(self._points)
+                if rank.get(current.name, len(rank)) > rank[cleaned_name]
+            ),
+            len(self._points),
+        )
+        self._points.insert(insert_at, replacement)
+        return replacement
 
     def next_auto_name(self, prefix: str) -> str:
         """Return the next name after the highest recorded profile index."""
@@ -164,6 +216,46 @@ class TestPointStore:
 
     def undo(self) -> Optional[TestPoint]:
         """Undo the latest test point and keep the cursor valid."""
+        if self._undo_snapshots:
+            previous_points, previous_cursor = self._undo_snapshots.pop()
+            current_names = {point.name for point in self._points}
+            previous_names = {point.name for point in previous_points}
+            changed = next(
+                (
+                    point
+                    for point in self._points
+                    if point.name not in previous_names
+                ),
+                None,
+            )
+            if changed is None and current_names == previous_names:
+                changed = next(
+                    (
+                        point
+                        for point in self._points
+                        if next(
+                            (
+                                old
+                                for old in previous_points
+                                if old.name == point.name
+                            ),
+                            None,
+                        ) != point
+                    ),
+                    None,
+                )
+            if changed is None:
+                changed = next(
+                    (
+                        point
+                        for point in previous_points
+                        if point.name not in current_names
+                    ),
+                    None,
+                )
+            self._points = list(previous_points)
+            self._cursor = min(previous_cursor, len(self._points))
+            return changed
         if not self._points:
             return None
         removed = self._points.pop()
@@ -242,6 +334,7 @@ class TestPointStore:
         self.output_path = input_path
         self._points = loaded
         self._cursor = 0
+        self._undo_snapshots = []
 
     def next_test_segment(self) -> Tuple[List[PoseData], int]:
         """Return waypoints through the next goal pose and the success cursor."""
@@ -252,9 +345,9 @@ class TestPointStore:
                 return segment, index + 1
         raise ValueError("no next goal point to test")
 
-    def save(self) -> None:
+    def save(self, allow_empty: bool = False) -> None:
         """Write the test waypoint YAML."""
-        if not self._points:
+        if not self._points and not allow_empty:
             raise ValueError("no test points to save")
         document = {
             "schema_version": 1,
@@ -265,3 +358,8 @@ class TestPointStore:
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         with self.output_path.open("w", encoding="utf-8") as output:
             yaml.safe_dump(document, output, allow_unicode=True, sort_keys=False)
+
+    def _remember(self) -> None:
+        self._undo_snapshots.append((list(self._points), self._cursor))
+        if len(self._undo_snapshots) > 100:
+            self._undo_snapshots.pop(0)

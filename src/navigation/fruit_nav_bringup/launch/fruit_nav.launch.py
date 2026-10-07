@@ -36,7 +36,6 @@ def generate_launch_description():
     lidar_config = LaunchConfiguration("lidar_config")
     use_sim_time = LaunchConfiguration("use_sim_time")
     use_teleop = LaunchConfiguration("use_teleop")
-    use_rviz = LaunchConfiguration("use_rviz")
 
     joy_config = "/home/rc4/fruit_ws/src/joy_linux/config/joy_config.yaml"
 
@@ -73,11 +72,6 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("use_sim_time", default_value="false"),
             DeclareLaunchArgument("use_teleop", default_value="false"),
-            DeclareLaunchArgument("use_rviz", default_value="false"),
-            DeclareLaunchArgument(
-                "rviz_config",
-                default_value=os.path.join(SOURCE_SHARE, "rviz", "navigation.rviz"),
-            ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(POINTLIO_ODOMETRY_LAUNCH),
                 launch_arguments={
@@ -127,18 +121,6 @@ def generate_launch_description():
                 condition=IfCondition(use_teleop),
                 parameters=[joy_config, {"use_sim_time": use_sim_time}],
                 remappings=[("cmd_vel", "cmd_vel_teleop")],
-            ),
-            Node(
-                package="rviz2",
-                executable="rviz2",
-                name="rviz2",
-                condition=IfCondition(use_rviz),
-                arguments=[
-                    "-d",
-                    LaunchConfiguration("rviz_config"),
-                    "-f",
-                    "odom",
-                ],
             ),
         ]
     )

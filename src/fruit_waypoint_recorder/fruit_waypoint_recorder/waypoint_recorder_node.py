@@ -3,10 +3,12 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 
-"""ROS 2 node backing the waypoint-maker RViz panel."""
+"""ROS 2 node backing the RobViz Waypoints Maker plugin."""
 
 import json
+import math
 import time
+from collections import deque
 from functools import partial
 from pathlib import Path
 
@@ -14,6 +16,7 @@ import rclpy
 import yaml
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
 from nav2_msgs.action import FollowWaypoints
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
@@ -21,6 +24,7 @@ from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
@@ -39,6 +43,13 @@ from fruit_waypoint_recorder.recorder import (
     VALID_TEST_POINT_TYPES,
     mean_pose,
     yaw_from_quaternion,
+)
+from fruit_waypoint_recorder.waypoint_editor_server import (
+    EditorFile,
+    RequestError,
+    document_version,
+    load_waypoint_document,
+    save_waypoint_document,
 )
 
 
@@ -63,8 +74,18 @@ class WaypointRecorderNode(Node):
         self.declare_parameter("frame_id", "map")
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("waypoint_file", "")
+        self.declare_parameter("debug_waypoint_file", "")
+        self.declare_parameter("template_file", "")
+        self.declare_parameter("backup_dir", "")
         self.declare_parameter("sample_duration_sec", 1.0)
         self.declare_parameter("sample_period_sec", 0.05)
+        self.declare_parameter("max_tf_age_sec", 1.5)
+        self.declare_parameter("odometry_topic", "/odometry")
+        self.declare_parameter("odometry_max_age_sec", 0.5)
+        self.declare_parameter("standstill_linear_speed_mps", 0.03)
+        self.declare_parameter("standstill_angular_speed_rps", 0.08)
+        self.declare_parameter("standstill_confirm_duration_sec", 0.3)
+        self.declare_parameter("standstill_timeout_sec", 5.0)
         self.declare_parameter("command_topic", "/fruit/waypoint_maker/command")
         self.declare_parameter("state_topic", "/fruit/waypoint_maker/state")
         self.declare_parameter("marker_topic", "/fruit/waypoint_maker/markers")
@@ -87,6 +108,40 @@ class WaypointRecorderNode(Node):
         self._sample_period_sec = float(
             self.get_parameter("sample_period_sec").value
         )
+        self._max_tf_age_sec = float(
+            self.get_parameter("max_tf_age_sec").value
+        )
+        self._odometry_max_age_sec = float(
+            self.get_parameter("odometry_max_age_sec").value
+        )
+        self._standstill_linear_speed_mps = float(
+            self.get_parameter("standstill_linear_speed_mps").value
+        )
+        self._standstill_angular_speed_rps = float(
+            self.get_parameter("standstill_angular_speed_rps").value
+        )
+        self._standstill_confirm_duration_sec = float(
+            self.get_parameter("standstill_confirm_duration_sec").value
+        )
+        self._standstill_timeout_sec = float(
+            self.get_parameter("standstill_timeout_sec").value
+        )
+        positive_values = (
+            self._sample_duration_sec,
+            self._sample_period_sec,
+            self._max_tf_age_sec,
+            self._odometry_max_age_sec,
+            self._standstill_confirm_duration_sec,
+            self._standstill_timeout_sec,
+        )
+        if not all(math.isfinite(value) and value > 0 for value in positive_values):
+            raise ValueError("sampling durations and freshness limits must be finite and positive")
+        velocity_limits = (
+            self._standstill_linear_speed_mps,
+            self._standstill_angular_speed_rps,
+        )
+        if not all(math.isfinite(value) and value >= 0 for value in velocity_limits):
+            raise ValueError("standstill velocity limits must be finite and nonnegative")
         self._current_final_yaw_mode = str(
             self.get_parameter("default_final_yaw_mode").value
         )
@@ -97,8 +152,49 @@ class WaypointRecorderNode(Node):
         waypoint_path = self._resolve_src_yaml_path(
             str(self.get_parameter("waypoint_file").value)
         )
+        debug_waypoint_path = self._resolve_src_yaml_path(
+            str(self.get_parameter("debug_waypoint_file").value)
+        )
+        template_path = self._resolve_src_yaml_path(
+            str(self.get_parameter("template_file").value)
+        )
+        backup_dir_value = str(self.get_parameter("backup_dir").value).strip()
+        if not backup_dir_value:
+            raise ValueError("backup_dir must be configured")
+        backup_dir = Path(backup_dir_value).expanduser().resolve()
+        self._file_catalog = {
+            "odom": EditorFile(
+                file_id="odom",
+                profile="odom",
+                mode="odometry",
+                frame_id=self._frame_id,
+                waypoint_file=waypoint_path,
+                template_file=template_path,
+                reference_file=waypoint_path,
+                formal=True,
+            ),
+            "debug": EditorFile(
+                file_id="debug",
+                profile="debug",
+                mode="freeform",
+                frame_id=self._frame_id,
+                waypoint_file=debug_waypoint_path,
+                template_file=template_path,
+                reference_file=debug_waypoint_path,
+                formal=False,
+            ),
+        }
+        self._backup_dir = backup_dir
+        self._template_types = self._load_template_types(template_path)
+        self._template_order = list(self._template_types)
         self._test_store = TestPointStore(waypoint_path, self._frame_id)
+        load_waypoint_document(self._file_catalog["odom"])
         self._test_store.load(waypoint_path)
+        self._file_id = "odom"
+        self._formal = True
+        self._document_version = document_version(waypoint_path)
+        self._loaded_fingerprint = self._points_fingerprint()
+        self._validate_formal_store()
         self._configured_auto_name_prefix = str(
             self.get_parameter("auto_name_prefix").value
         ).strip()
@@ -108,8 +204,17 @@ class WaypointRecorderNode(Node):
         self._auto_name_sequence = self._load_auto_name_sequence(auto_name_file)
         self._sampling = False
         self._active_test_goal = False
+        self._active_goal_handle = None
+        self._cancel_requested = False
+        self._waiting_standstill = False
+        self._standstill_timer = None
+        self._standstill_deadline = 0.0
         self._pending_test_cursor = None
         self._last_message = f"Loaded waypoint file {waypoint_path}"
+        self._last_odom_velocity = None
+        self._last_odom_wall_time = 0.0
+        self._standstill_samples = deque(maxlen=3)
+        self._last_backup_path = ""
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -148,10 +253,20 @@ class WaypointRecorderNode(Node):
             self.get_parameter("command_topic").value,
             self._on_command,
             10,
+            callback_group=ReentrantCallbackGroup(),
+        )
+        self._odometry_subscription = self.create_subscription(
+            Odometry,
+            str(self.get_parameter("odometry_topic").value),
+            self._on_odometry,
+            10,
         )
         self._undo_service = self.create_service(Trigger, "~/undo", self._on_undo)
         self._clear_service = self.create_service(Trigger, "~/clear", self._on_clear)
         self._save_service = self.create_service(Trigger, "~/save", self._on_save)
+        self._cancel_service = self.create_service(
+            Trigger, "~/cancel", self._on_cancel
+        )
         self._publish_state()
         self.get_logger().info(f"Editing waypoint file {waypoint_path}")
 
@@ -166,23 +281,47 @@ class WaypointRecorderNode(Node):
             return
 
         command = payload.get("command")
+        if not isinstance(command, str):
+            self._reject_command("command must be a string")
+            return
         if command == "record":
             self._record_from_current_pose(payload)
         elif command == "undo":
             self._undo_waypoint()
+        elif command == "clear":
+            if self._sampling or self._active_test_goal:
+                self._reject_command("Cannot clear while busy")
+                return
+            self._test_store.clear()
+            self._publish_state("Cleared waypoint file in memory")
         elif command == "save":
-            self._save_waypoints()
+            try:
+                self._save_waypoints()
+            except (OSError, TypeError, ValueError, RequestError) as error:
+                self._reject_command(str(error))
         elif command in ("run_next_test", "run_next_goal"):
             self._run_next_test_segment(payload)
+        elif command in ("cancel", "cancel_navigation"):
+            self._request_cancel()
         elif command in ("reset_test_cursor", "reset_run_cursor"):
+            if self._active_test_goal or self._sampling:
+                self._reject_command("Cannot reset route cursor while busy")
+                return
             self._test_store.reset_cursor()
             self._publish_state("Reset route run cursor")
         elif command in ("load_test_file", "load_waypoint_file"):
             self._load_test_file(payload)
+        elif command == "set_final_yaw_mode":
+            self._set_final_yaw_mode(payload)
         else:
             self._reject_command(f"Unknown waypoint-maker command: {command}")
 
     def _on_undo(self, _request, response):
+        if self._sampling or self._active_test_goal:
+            response.success = False
+            response.message = "Cannot undo while busy"
+            self._publish_state(response.message)
+            return response
         removed = self._test_store.undo()
         response.success = removed is not None
         response.message = (
@@ -194,6 +333,11 @@ class WaypointRecorderNode(Node):
         return response
 
     def _on_clear(self, _request, response):
+        if self._sampling or self._active_test_goal:
+            response.success = False
+            response.message = "Cannot clear while busy"
+            self._publish_state(response.message)
+            return response
         self._test_store.clear()
         response.success = True
         response.message = "Cleared waypoint file in memory"
@@ -201,9 +345,14 @@ class WaypointRecorderNode(Node):
         return response
 
     def _on_save(self, _request, response):
+        if self._sampling or self._active_test_goal:
+            response.success = False
+            response.message = "Cannot save while busy"
+            self._publish_state(response.message)
+            return response
         try:
-            self._test_store.save()
-        except ValueError as error:
+            self._save_waypoints()
+        except (OSError, TypeError, ValueError, RequestError) as error:
             response.success = False
             response.message = str(error)
         else:
@@ -213,29 +362,59 @@ class WaypointRecorderNode(Node):
         return response
 
     def _record_from_current_pose(self, payload) -> None:
-        if self._sampling:
-            self._reject_command("Already sampling current pose")
+        if self._sampling or self._active_test_goal:
+            self._reject_command("Cannot record while busy")
             return
-        mode = str(payload.get("mode", "waypoints"))
+        mode = payload.get("mode", "waypoints")
+        if not isinstance(mode, str):
+            self._reject_command("mode must be a string")
+            return
         if mode not in ("test", "waypoints"):
             self._reject_command(f"Unknown record mode: {mode}")
             return
-        name = str(payload.get("name", "")).strip()
-        if not name and bool(payload.get("auto_name", False)):
+        name_value = payload.get("name", "")
+        if not isinstance(name_value, str):
+            self._reject_command("name must be a string")
+            return
+        name = name_value.strip()
+        auto_name = payload.get("auto_name", False)
+        if not isinstance(auto_name, bool):
+            self._reject_command("auto_name must be a boolean")
+            return
+        confirm_overwrite = payload.get("confirm_overwrite", False)
+        if not isinstance(confirm_overwrite, bool):
+            self._reject_command("confirm_overwrite must be a boolean")
+            return
+        if not name and auto_name:
             try:
                 name = self._next_auto_name()
             except ValueError as error:
                 self._reject_command(str(error))
                 return
-        point_type = str(payload.get("point_type", "")).strip()
-        if not self._can_record_test_point(name, point_type):
+        point_type_value = payload.get("point_type", "")
+        if not isinstance(point_type_value, str):
+            self._reject_command("point_type must be a string")
+            return
+        point_type = point_type_value.strip()
+        if self._formal and not point_type and name in self._template_types:
+            point_type = self._template_types[name]
+        if not self._can_record_test_point(
+            name, point_type, confirm_overwrite
+        ):
             return
 
         self._sampling = True
         self._publish_state("Sampling current pose")
+        message = "Waypoint recording failed"
         try:
             pose = self._sample_current_pose(name)
-            point = self._test_store.append(name, point_type, pose)
+            point = self._test_store.upsert(
+                name,
+                point_type,
+                pose,
+                overwrite=confirm_overwrite,
+                order=self._template_order if self._formal else None,
+            )
             message = f"Recorded {point.point_type} {point.name}"
             self.get_logger().info(message)
         except (RuntimeError, ValueError) as error:
@@ -245,22 +424,37 @@ class WaypointRecorderNode(Node):
             self._sampling = False
             self._publish_state(message)
 
-    def _can_record_test_point(self, name: str, point_type: str) -> bool:
+    def _can_record_test_point(
+        self, name: str, point_type: str, confirm_overwrite: bool
+    ) -> bool:
         if not name:
             self._reject_command("waypoint name must not be empty")
             return False
         if point_type not in VALID_TEST_POINT_TYPES:
             self._reject_command("point_type must be waypoint or goal")
             return False
-        if any(point.name == name for point in self._test_store.points):
-            self._reject_command(f"waypoint already exists: {name}")
+        if self._formal and name not in self._template_types:
+            self._reject_command(f"waypoint name is not in template: {name}")
             return False
+        if self._formal and self._template_types[name] != point_type:
+            self._reject_command(f"point_type does not match template: {name}")
+            return False
+        if any(point.name == name for point in self._test_store.points):
+            if not confirm_overwrite:
+                self._reject_command(
+                    f"waypoint already exists: {name}; "
+                    "confirm_overwrite=true is required"
+                )
+                return False
         return True
 
     def _sample_current_pose(self, name: str) -> PoseData:
         samples = []
         deadline = time.monotonic() + self._sample_duration_sec
         last_error = None
+        previous = None
+        started = False
+        interrupted = False
         while rclpy.ok() and time.monotonic() < deadline:
             try:
                 transform = self._tf_buffer.lookup_transform(
@@ -269,39 +463,137 @@ class WaypointRecorderNode(Node):
                     Time(),
                     timeout=Duration(seconds=0.05),
                 )
-                samples.append(self._pose_from_transform(name, transform))
+                stamp = transform.header.stamp
+                stamp_sec = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+                now_sec = self.get_clock().now().nanoseconds * 1e-9
+                if stamp_sec <= 0 or (now_sec > 0 and now_sec - stamp_sec > self._max_tf_age_sec):
+                    raise RuntimeError(
+                        "TF sample is stale or has no timestamp"
+                    )
+                if not self._is_standstill():
+                    raise RuntimeError("robot is moving; waypoint recording rejected")
+                current = self._pose_from_transform(name, transform)
+                if previous is not None:
+                    moved = math.hypot(
+                        current.x - previous.x,
+                        current.y - previous.y,
+                    )
+                    yaw_delta = abs(
+                        (current.yaw - previous.yaw + math.pi) % (2 * math.pi)
+                        - math.pi
+                    )
+                    if moved > 0.03 or yaw_delta > math.radians(5.0):
+                        raise RuntimeError(
+                            "robot moved during waypoint recording"
+                        )
+                samples.append(current)
+                previous = current
+                started = True
             except TransformException as error:
                 last_error = error
+                if started:
+                    interrupted = True
+                    break
+            except RuntimeError as error:
+                last_error = error
+                interrupted = True
+                break
             time.sleep(self._sample_period_sec)
         if not samples:
             detail = f": {last_error}" if last_error else ""
             raise RuntimeError(
                 f"No valid TF samples for {self._frame_id}->{self._base_frame}{detail}"
             )
+        if interrupted or len(samples) < 2:
+            detail = f": {last_error}" if last_error else ""
+            raise RuntimeError(f"Continuous pose sampling was not completed{detail}")
         return mean_pose(name, samples)
 
     @staticmethod
     def _pose_from_transform(name: str, transform) -> PoseData:
         translation = transform.transform.translation
         rotation = transform.transform.rotation
+        values = (
+            translation.x,
+            translation.y,
+            translation.z,
+            rotation.x,
+            rotation.y,
+            rotation.z,
+            rotation.w,
+        )
+        if not all(math.isfinite(float(value)) for value in values):
+            raise RuntimeError("TF sample contains a non-finite value")
+        norm = math.hypot(
+            math.hypot(rotation.x, rotation.y),
+            math.hypot(rotation.z, rotation.w),
+        )
+        if norm <= 1e-6:
+            raise RuntimeError("TF sample contains a zero-length quaternion")
+        qx = rotation.x / norm
+        qy = rotation.y / norm
+        qz = rotation.z / norm
+        qw = rotation.w / norm
         return PoseData(
             name=name,
             x=float(translation.x),
             y=float(translation.y),
             z=float(translation.z),
-            qx=float(rotation.x),
-            qy=float(rotation.y),
-            qz=float(rotation.z),
-            qw=float(rotation.w),
+            qx=float(qx),
+            qy=float(qy),
+            qz=float(qz),
+            qw=float(qw),
             yaw=yaw_from_quaternion(
-                rotation.x,
-                rotation.y,
-                rotation.z,
-                rotation.w,
+                qx,
+                qy,
+                qz,
+                qw,
             ),
         )
 
+    def _on_odometry(self, message: Odometry) -> None:
+        linear = message.twist.twist.linear
+        angular = message.twist.twist.angular
+        values = (linear.x, linear.y, linear.z, angular.x, angular.y, angular.z)
+        if not all(math.isfinite(float(value)) for value in values):
+            self._last_odom_velocity = None
+            self._last_odom_wall_time = time.monotonic()
+            self._standstill_samples.clear()
+            return
+        velocity = (
+            math.sqrt(linear.x * linear.x + linear.y * linear.y + linear.z * linear.z),
+            math.sqrt(angular.x * angular.x + angular.y * angular.y + angular.z * angular.z),
+        )
+        self._last_odom_velocity = velocity
+        self._last_odom_wall_time = time.monotonic()
+        if (
+            velocity[0] <= self._standstill_linear_speed_mps
+            and velocity[1] <= self._standstill_angular_speed_rps
+        ):
+            self._standstill_samples.append(self._last_odom_wall_time)
+        else:
+            self._standstill_samples.clear()
+
+    def _is_standstill(self) -> bool:
+        if self._last_odom_velocity is None:
+            return False
+        if time.monotonic() - self._last_odom_wall_time > self._odometry_max_age_sec:
+            return False
+        linear, angular = self._last_odom_velocity
+        if not (
+            linear <= self._standstill_linear_speed_mps
+            and angular <= self._standstill_angular_speed_rps
+        ):
+            return False
+        return bool(self._standstill_samples) and (
+            time.monotonic() - self._standstill_samples[0]
+            >= self._standstill_confirm_duration_sec
+        )
+
     def _undo_waypoint(self) -> None:
+        if self._sampling or self._active_test_goal:
+            self._reject_command("Cannot undo while busy")
+            return
         removed = self._test_store.undo()
         message = (
             f"Removed waypoint {removed.name}"
@@ -309,6 +601,19 @@ class WaypointRecorderNode(Node):
             else "No waypoint to undo"
         )
         self._publish_state(message)
+
+    def _set_final_yaw_mode(self, payload) -> None:
+        if self._active_test_goal:
+            self._reject_command("Cannot change final_yaw_mode while navigating")
+            return
+        value = payload.get("final_yaw_mode")
+        if not isinstance(value, str) or value.strip() not in FINAL_YAW_MODES:
+            self._reject_command(
+                "final_yaw_mode must be blend_on_path or rotate_at_goal"
+            )
+            return
+        self._current_final_yaw_mode = value.strip()
+        self._publish_state(f"Set final_yaw_mode to {self._current_final_yaw_mode}")
 
     def _auto_name_prefix(self) -> str:
         """Return the explicit profile prefix or infer A/B from the file path."""
@@ -343,6 +648,56 @@ class WaypointRecorderNode(Node):
             seen.add(name)
         return names
 
+    @staticmethod
+    def _load_template_types(path: Path) -> dict[str, str]:
+        with path.open("r", encoding="utf-8") as stream:
+            document = yaml.safe_load(stream) or {}
+        if not isinstance(document, dict) or document.get("schema_version") != 1:
+            raise ValueError(f"template YAML is invalid: {path}")
+        raw_points = document.get("points")
+        if not isinstance(raw_points, list):
+            raise ValueError(f"template points must be a list: {path}")
+        result = {}
+        for index, item in enumerate(raw_points, start=1):
+            if not isinstance(item, dict):
+                raise ValueError(f"template point {index} must be a mapping")
+            name = item.get("name")
+            point_type = item.get("type")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"template point {index} name must not be empty")
+            if point_type not in VALID_TEST_POINT_TYPES:
+                raise ValueError(f"template point {name} has an invalid type")
+            if name.strip() in result:
+                raise ValueError(f"template contains duplicate name: {name}")
+            result[name.strip()] = point_type
+        return result
+
+    def _points_fingerprint(self) -> str:
+        return json.dumps(
+            [
+                {
+                    "name": point.name,
+                    "type": point.point_type,
+                    "pose": point.pose.to_dict(),
+                }
+                for point in self._test_store.points
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def _validate_formal_store(self) -> None:
+        if not self._formal:
+            return
+        for point in self._test_store.points:
+            expected_type = self._template_types.get(point.name)
+            if expected_type is None:
+                raise ValueError(f"waypoint name is not in template: {point.name}")
+            if expected_type != point.point_type:
+                raise ValueError(
+                    f"point_type does not match template: {point.name}"
+                )
+
     def _next_auto_name(self) -> str:
         """Return the first formal name that is not already recorded."""
         recorded_names = {point.name for point in self._test_store.points}
@@ -363,11 +718,33 @@ class WaypointRecorderNode(Node):
             return ""
 
     def _save_waypoints(self) -> None:
-        try:
-            self._test_store.save()
-        except ValueError as error:
-            self._publish_state(str(error))
-            return
+        editor_file = self._file_catalog[self._file_id]
+        _, disk_points = load_waypoint_document(editor_file)
+        extras_by_name = {
+            point["name"]: point.get("extra", {}) for point in disk_points
+        }
+        raw_points = []
+        for point in self._test_store.points:
+            raw_points.append(
+                {
+                    "name": point.name,
+                    "type": point.point_type,
+                    "x": point.pose.x,
+                    "y": point.pose.y,
+                    "z": point.pose.z,
+                    "yaw_deg": math.degrees(point.pose.yaw),
+                    "extra": extras_by_name.get(point.name, {}),
+                }
+            )
+        backup_path, version = save_waypoint_document(
+            editor_file,
+            self._backup_dir,
+            raw_points,
+            self._document_version,
+        )
+        self._document_version = version
+        self._loaded_fingerprint = self._points_fingerprint()
+        self._last_backup_path = str(backup_path) if backup_path else ""
         self._publish_state(f"Saved waypoints to {self._test_store.output_path}")
 
     def _load_test_file(self, payload) -> None:
@@ -375,8 +752,16 @@ class WaypointRecorderNode(Node):
             self._reject_command("Cannot load waypoints while busy")
             return
         try:
-            path = self._resolve_src_yaml_path(str(payload.get("path", "")))
-            self._test_store.load(path)
+            file_id = payload.get("file_id", payload.get("id"))
+            if not isinstance(file_id, str) or file_id not in self._file_catalog:
+                raise ValueError("file_id must be odom or debug")
+            editor_file = self._file_catalog[file_id]
+            self._test_store.load(editor_file.waypoint_file)
+            self._file_id = file_id
+            self._formal = editor_file.formal
+            self._validate_formal_store()
+            self._document_version = document_version(editor_file.waypoint_file)
+            self._loaded_fingerprint = self._points_fingerprint()
         except (OSError, ValueError) as error:
             self._reject_command(str(error))
             return
@@ -403,9 +788,13 @@ class WaypointRecorderNode(Node):
         if self._active_test_goal:
             self._reject_command("A route segment is already running")
             return
-        final_yaw_mode = str(
-            payload.get("final_yaw_mode", self._current_final_yaw_mode)
-        ).strip()
+        final_yaw_value = payload.get(
+            "final_yaw_mode", self._current_final_yaw_mode
+        )
+        if not isinstance(final_yaw_value, str):
+            self._reject_command("final_yaw_mode must be a string")
+            return
+        final_yaw_mode = final_yaw_value.strip()
         if final_yaw_mode not in FINAL_YAW_MODES:
             self._reject_command(
                 "final_yaw_mode must be blend_on_path or rotate_at_goal"
@@ -426,6 +815,9 @@ class WaypointRecorderNode(Node):
         goal = FollowWaypoints.Goal()
         goal.poses = [self._pose_stamped(pose) for pose in segment]
         self._active_test_goal = True
+        self._active_goal_handle = None
+        self._cancel_requested = False
+        self._waiting_standstill = False
         self._pending_test_cursor = after_cursor
         self._publish_state(
             f"Running route segment to {segment[-1].name} with {final_yaw_mode}"
@@ -450,6 +842,11 @@ class WaypointRecorderNode(Node):
         )
 
     def _on_final_yaw_mode_set(self, future, goal, final_yaw_mode: str) -> None:
+        if not self._active_test_goal:
+            return
+        if self._cancel_requested:
+            self._finish_test_goal("Route segment cancelled before dispatch", False)
+            return
         try:
             response = future.result()
         except Exception as error:
@@ -467,6 +864,8 @@ class WaypointRecorderNode(Node):
         future.add_done_callback(self._on_test_goal_response)
 
     def _on_test_goal_response(self, future) -> None:
+        if not self._active_test_goal:
+            return
         try:
             goal_handle = future.result()
         except Exception as error:
@@ -475,10 +874,17 @@ class WaypointRecorderNode(Node):
         if not goal_handle.accepted:
             self._finish_test_goal("Route segment was rejected", False)
             return
+        self._active_goal_handle = goal_handle
+        if self._cancel_requested:
+            cancel_future = goal_handle.cancel_goal_async()
+            cancel_future.add_done_callback(self._on_cancel_response)
+            return
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self._on_test_result)
 
     def _on_test_result(self, future) -> None:
+        if not self._active_test_goal:
+            return
         try:
             wrapped = future.result()
         except Exception as error:
@@ -486,6 +892,9 @@ class WaypointRecorderNode(Node):
             return
         missed = list(wrapped.result.missed_waypoints)
         success = wrapped.status == GoalStatus.STATUS_SUCCEEDED and not missed
+        if self._cancel_requested:
+            self._start_standstill_wait("Route segment cancellation received")
+            return
         if success:
             self._test_store.advance_cursor(int(self._pending_test_cursor))
             self._finish_test_goal("Route segment reached next goal", True)
@@ -494,8 +903,73 @@ class WaypointRecorderNode(Node):
 
     def _finish_test_goal(self, message: str, _success: bool) -> None:
         self._active_test_goal = False
+        self._active_goal_handle = None
+        self._cancel_requested = False
+        self._waiting_standstill = False
         self._pending_test_cursor = None
         self._publish_state(message)
+
+    def _on_cancel(self, _request, response):
+        if not self._active_test_goal:
+            response.success = False
+            response.message = "No route segment is running"
+            self._publish_state(response.message)
+            return response
+        self._request_cancel()
+        response.success = True
+        response.message = "Route cancellation requested"
+        return response
+
+    def _request_cancel(self) -> None:
+        if not self._active_test_goal:
+            self._reject_command("No route segment is running")
+            return
+        if self._cancel_requested:
+            self._publish_state("Route cancellation already requested")
+            return
+        self._cancel_requested = True
+        self._publish_state("Cancelling route segment")
+        goal_handle = self._active_goal_handle
+        if goal_handle is None:
+            self._finish_test_goal("Route cancelled before dispatch", False)
+            return
+        cancel_future = goal_handle.cancel_goal_async()
+        cancel_future.add_done_callback(self._on_cancel_response)
+
+    def _on_cancel_response(self, future) -> None:
+        try:
+            future.result()
+        except Exception as error:
+            self.get_logger().error(f"Route cancellation request failed: {error}")
+        self._start_standstill_wait("Route cancellation sent; waiting for standstill")
+
+    def _start_standstill_wait(self, message: str) -> None:
+        if not self._active_test_goal or self._waiting_standstill:
+            return
+        if self._is_standstill():
+            self._finish_test_goal("Route cancelled and standstill confirmed", False)
+            return
+        self._waiting_standstill = True
+        self._standstill_deadline = time.monotonic() + self._standstill_timeout_sec
+        self._publish_state(message)
+        self._standstill_timer = self.create_timer(
+            0.1, self._poll_standstill
+        )
+
+    def _poll_standstill(self) -> None:
+        if not self._waiting_standstill:
+            return
+        if self._is_standstill():
+            if self._standstill_timer is not None:
+                self._standstill_timer.cancel()
+                self._standstill_timer = None
+            self._finish_test_goal("Route cancelled and standstill confirmed", False)
+            return
+        if time.monotonic() >= self._standstill_deadline:
+            self._publish_state(
+                "Route cancelled, but standstill is not confirmed; "
+                "next segment remains blocked"
+            )
 
     def _reject_command(self, message: str) -> None:
         self.get_logger().error(message)
@@ -513,6 +987,18 @@ class WaypointRecorderNode(Node):
         self._marker_publisher.publish(self._markers())
 
     def _state(self) -> dict:
+        points = [point.to_dict() for point in self._test_store.points]
+        recorded = {point["name"]: point for point in points}
+        template = [
+            {
+                "name": name,
+                "type": point_type,
+                "recorded": name in recorded,
+                "point": recorded.get(name),
+            }
+            for name, point_type in self._template_types.items()
+        ]
+        dirty = self._points_fingerprint() != self._loaded_fingerprint
         waypoint_state = {
             "count": len(self._test_store.points),
             "cursor": self._test_store.cursor,
@@ -521,17 +1007,40 @@ class WaypointRecorderNode(Node):
             "output_path": str(self._test_store.output_path),
             "auto_name_prefix": self._auto_name_prefix(),
             "next_name": self._next_auto_name_for_state(),
+            "file_id": self._file_id,
+            "formal": self._formal,
+            "version": self._document_version,
+            "dirty": dirty,
+            "points": points,
+            "template": template if self._formal else [],
+            "last_backup_path": self._last_backup_path,
         }
         return {
             "status": self._status(),
             "message": self._last_message,
             "waypoints": waypoint_state,
             "test": waypoint_state,
+            "file_id": self._file_id,
+            "formal": self._formal,
+            "version": self._document_version,
+            "dirty": dirty,
+            "points": points,
+            "last_backup_path": self._last_backup_path,
+            "navigation": {
+                "active": self._active_test_goal,
+                "goal_accepted": self._active_goal_handle is not None,
+                "cancel_requested": self._cancel_requested,
+                "awaiting_standstill": self._waiting_standstill,
+                "cursor": self._test_store.cursor,
+                "next_goal": self._next_test_goal_name(),
+            },
         }
 
     def _status(self) -> str:
         if self._sampling:
             return "sampling"
+        if self._waiting_standstill or self._cancel_requested:
+            return "cancelling"
         if self._active_test_goal:
             return "running_test"
         return "idle"

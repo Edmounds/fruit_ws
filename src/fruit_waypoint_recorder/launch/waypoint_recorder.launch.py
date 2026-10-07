@@ -31,6 +31,7 @@ def generate_launch_description():
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     waypoint_file = LaunchConfiguration("waypoint_file")
+    debug_waypoint_file = LaunchConfiguration("debug_waypoint_file")
     frame_id = LaunchConfiguration("frame_id")
     auto_name_prefix = LaunchConfiguration("auto_name_prefix")
     auto_name_file = LaunchConfiguration("auto_name_file")
@@ -48,6 +49,14 @@ def generate_launch_description():
         "frame_id",
         default_value="odom",
         description="Coordinate frame stored in the waypoint YAML",
+    )
+    declare_debug_waypoint_file = DeclareLaunchArgument(
+        "debug_waypoint_file",
+        default_value=(
+            "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/"
+            "debug_waypoints.yaml"
+        ),
+        description="Free-form debug waypoint YAML file",
     )
 
     declare_auto_name_prefix = DeclareLaunchArgument(
@@ -70,6 +79,7 @@ def generate_launch_description():
         declare_use_sim_time,
         declare_waypoint_file,
         declare_frame_id,
+        declare_debug_waypoint_file,
         declare_auto_name_prefix,
         declare_auto_name_file,
         declare_log_level,
@@ -80,6 +90,7 @@ def generate_launch_description():
             {
                 "use_sim_time": use_sim_time,
                 "waypoint_file": waypoint_file,
+                "debug_waypoint_file": debug_waypoint_file,
                 "frame_id": frame_id,
                 "auto_name_prefix": auto_name_prefix,
                 "auto_name_file": auto_name_file,

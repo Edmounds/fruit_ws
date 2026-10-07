@@ -91,7 +91,7 @@ fruit_ws/src/
 ├── fruit_perception/             # 单 camera、观察窗口与两阶段 OpenVINO
 ├── fruit_qr_planner/             # camera 彩色图扫码并持久发布 B/C 计划
 ├── fruit_waypoint_recorder/      # 航点录制与 Web 航点编辑器
-├── fruit_waypoint_rviz_plugin/   # RViz Waypoint Maker 面板
+├── fruit_waypoint_rviz_plugin/   # 保留的旧 RViz Waypoint Maker 面板
 ├── fruit_mission/                # A/B/C 比赛编排
 └── joy_linux/                    # 手柄遥控节点
 ```
@@ -107,7 +107,7 @@ fruit_ws/src/
 - 坐标系拓扑简化为 `odom -> base_link -> sensors/arm`，不再使用 `map` 全局坐标系。
 - Point-LIO 在开机时以静止状态建立初始参考系，`loam_interface` 在接收到稳定里程计后开始发布 `odom -> base_link` TF。
 - 航点文件（`src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml`）中的坐标全部基于 `odom` 坐标系。
-- 导航入口为 `start_navigation.sh`，不提供建图/地图定位模式选择；脚本直接使用 launch 的 source YAML 默认配置。
+ - 导航入口为 `start_navigation.sh`，不提供建图/地图定位模式选择；脚本直接使用 launch 的 source YAML 默认配置，RobViz 提供 Web 可视化。
 
 ### 4.2 轴向定点导航控制器 (`fruit_navigation`)
 

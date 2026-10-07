@@ -30,7 +30,7 @@ points:
 启动打点工具：
 
 ```bash
-# 启动基础录制（包含雷达、Point-LIO、RViz 与 Waypoint Maker 面板）
+# 启动基础录制（包含雷达、Point-LIO、recorder 与 RobViz Web 面板）
 ./waypoints_maker.sh
 
 # 若需配合手柄遥控移动车体打点：
@@ -45,8 +45,8 @@ source scripts/setup_fruit_runtime.bash
 
 启动后：
 1. 保持机器人静止，等待 Point-LIO 稳定并发布 `odom -> base_link` TF（约 2-3 秒）。
-2. 在 RViz 界面中通过 **Waypoint Maker** 面板进行航点添加、保存、撤回或前往下一个航点。
-3. 录制完成点击保存，数据将直接写入 `src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml`。
+2. 在 RobViz 的 **Waypoints Maker** 面板中进行航点添加、保存、撤回或前往下一个航点。
+3. 录制完成点击保存，数据将写入当前选择的正式或调试文件。
 
 ---
 
@@ -55,7 +55,8 @@ source scripts/setup_fruit_runtime.bash
 系统提供 Web 航点编辑服务，支持通过浏览器拖拽调整与微调航点：
 - 默认监听端口：`http://<机器人IP>:8000`
 - 配置文件：`src/fruit_waypoint_recorder/config/waypoint_editor.yaml`
-- 服务单元：`waypoint-editor.service`
+- 服务源文件：`services/waypoint-editor.service`
+- 静态产物：`/home/rc4/robviz/dist/index.html`
 
 ---
 
@@ -134,15 +135,26 @@ B 树位: B1 -> B2 -> B3 -> B4 -> B5 -> B6 -> B7 -> B8
 再到 `to_C_waypoint_2 -> to_C_waypoint_3` 结束，`c` 在 `C_QR` 扫码并完成 C 后结束。
 B 区观察方向按车辆视角交替：B1、B3、B5、B7 使用 `right`，B2、B4、B6、B8 使用 `left`。
 
-## 7. RViz 录点流程
+## 7. Waypoint Maker 录点流程
 
 1. 使用 `./waypoints_maker.sh`（需要手柄时加 `--tele`），启动后保持机器人静止，脚本确认稳定 `odom -> base_link` 后才启动录点器。
-2. 面板启动后自动显示录点器配置的 `waypoint_file`；自动命名读取统一的 `waypoints/template.yaml`。
-3. 将机器人移动到实际停车位置，面板会按模板和录点顺序显示下一个名称，选择 `waypoint` 或 `goal` 后记录。无需手动填写名称。
-4. 点击保存后，点位按统一 `waypoints/template.yaml` 的正式名称顺序写入 `odom_waypoints.yaml`；如果文件里已经有半套点位，面板会从模板中找到下一个尚未记录的名称，不会自行猜测编号。
-5. 使用 Undo 撤销内存中的最后一点，使用 Save 写回当前加载的 YAML。
-6. 使用 Run Next Goal 按 YAML 顺序执行到下一个 `goal`；该调试功能会使用 YAML yaw。
-7. 需要编辑另一份路线时使用 Load Waypoint YAML，保存目标随加载文件一起切换。
+2. 在 RobViz 的 **航点 Maker** 区块中选择正式或调试文件。状态从 recorder 的本地话题恢复，不从浏览器缓存重放命令。
+3. 录点前节点检查 TF 新鲜度、非零四元数、连续采样和里程计停稳。运动、过期 TF 或无效样本会拒绝录点。
+4. 正式文件的名称和类型只能来自 `waypoints/template.yaml`。调试文件允许自由名称，但不能通过命令切换到任意路径。
+5. 覆盖已有点需要界面确认和 `confirm_overwrite: true`。Undo 会恢复被覆盖的旧点，而不是删除列表末尾的其他点。
+6. Save 使用当前文件版本、文件锁、备份和原子替换。磁盘被其他进程修改时保存失败，必须重新加载。
+7. Run Next Goal 保留 `next_test_segment()` 的分段逻辑。只有 action 成功才推进游标。
+8. Cancel 只取消当前 action goal。取消期间到达的旧 future 不会启动新目标，节点在实测停稳前保持忙状态。
+9. 浏览器关闭不会自动取消已经接受的导航。现场必须保留显式取消和硬件急停。
+
+recorder 话题：
+
+```text
+/fruit/waypoint_maker/command   std_msgs/msg/String
+/fruit/waypoint_maker/state     std_msgs/msg/String
+/fruit_waypoint_recorder/prompt std_msgs/msg/String
+/fruit/waypoint_maker/markers   visualization_msgs/msg/MarkerArray
+```
 
 ## 8. 网页编辑器
 
@@ -154,33 +166,32 @@ http://<机器人局域网 IP>:8000/
 ```
 
 网页不读取 PGM 地图。航点显示在 odom 坐标系的 XY 网格上，
-并标出原点、顺序连线和每个点的朝向。文件下拉框只提供以下一项，网页和服务端均不接受
+并标出已有点、机器人当前位置和每个点的朝向。文件下拉框只提供正式和调试两项，网页和服务端均不接受
 任意文件路径：
 
 ```text
 里程计 / odom_waypoints.yaml  (frame_id: odom)
+调试 / debug_waypoints.yaml   (frame_id: odom)
 ```
 
-点表和选中点表单都显示 `x`、`y`、`yaw`。网页中的 yaw 单位固定为度；保存时服务端自动
-规范到 `[-180, 180)`，转换成 YAML 使用的弧度，并同步生成平面四元数。已有点的 `z` 和
-额外 YAML 字段保持不变。
+点表和选中点表单都显示 `x`、`y`、`z`、`yaw`。网页中的 yaw 单位固定为度；保存时服务端自动
+规范到 `[-180, 180)`，转换成 YAML 使用的弧度，并同步生成平面四元数。已有点的额外 YAML
+字段保持不变。
 
-点位名称和列表顺序以 `waypoints/template.yaml` 为准，页面始终显示模板中的全部 33 个点；
-模板中的类型作为缺失点补充时的默认类型，补充后仍可编辑。当前 YAML 已有的点正常显示；
-缺少的点在列表中显示为灰色，在 XY 网格中显示为浅色
-占位点。占位坐标来自当前 `odom_waypoints.yaml`：服务端按同名点计算其相对
-`A1` 的 XY/Z 偏移。当前文件已有 `A1` 时，以该点平移整套缺失点预览；当前文件也缺少 `A1`
-时，临时以 `(0, 0, 0)` 作为 A1 预览位置。占位点只用于编辑提示，不会在保存时写进 YAML。
+正式文件的点位名称和列表顺序以 `waypoints/template.yaml` 为准，页面始终显示模板中的全部 33 个点；
+当前 YAML 已有的点正常显示；缺少的点只在列表中显示为缺失状态，不进入 XY 网格，也不会获得
+虚假的坐标。正式点的名称和类型不能在网页中改动。调试文件保留 YAML 中已有点的自由名称和顺序。
 
 使用流程：
 
-1. 从下拉框选择文件，在表格或网格中按模板名称选择点；名称固定为只读，不能创建模板外名称。
-2. 已有点可直接修改类型、X、Y 或 Yaw；也可在网格中拖动点，拖动选中点的朝向手柄修改 yaw。
-3. 选中灰色缺失点后点击 `+`，网页按浅色预览的坐标和模板名称补充该点，并立即用实际点替换占位点；若当前选中点已存在，`+` 会选择并补充其后的第一个缺失点。
-4. 使用 `×` 确认后删除已有点；该模板名称会立即恢复为灰色占位点。
-5. 保存只写入实际点，并强制按模板顺序排列；灰色占位点不会写入 YAML。
-6. 页面显示“未保存”时，点击“保存”才会写回 YAML；重新加载、切换文件或关闭页面前会提示放弃未保存修改。
-7. 每次保存前，旧文件备份到 `tmp/waypoint_editor_backups/odom/`，然后原子替换正式 YAML。
+1. 从下拉框选择正式或调试文件。调试文件必须先由 recorder 创建并写入。
+2. 选择已有点，直接修改 X、Y、Z 或 Yaw；调试文件还可以修改点类型。
+3. 在 XY 网格中拖动已有点，只修改当前草稿的 X/Y。
+4. 使用 Waypoints Maker 录制正式缺失点或新的调试点。网页编辑器不为缺失点生成坐标。
+5. 页面显示“草稿已修改”时，点击“保存”并确认覆盖，才会写回 YAML。
+6. 保存只写入实际点。正式文件强制按模板顺序排列，调试文件保留用户顺序。
+7. 每次保存前，旧文件备份到 `tmp/waypoint_editor_backups/<profile>/`，然后原子替换目标 YAML。
+8. 页面加载的文件版本与磁盘版本不一致时，保存会被拒绝，必须重新加载后再编辑。
 
 该页面按可信局域网工具设计，不提供登录；任何能够访问机器人 `8000` 端口的设备都可以修改
 上述航点文件，不要把该端口暴露到公网。默认按单客户端使用，多个页面同时编辑时后保存者会覆盖
@@ -198,6 +209,9 @@ curl http://127.0.0.1:8000/health
 服务启动会复用 `/home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash`。修改网页服务端、launch 或
 package 入口后先重新构建 `fruit_waypoint_recorder`，再重启服务；只修改根目录 HTML 时直接
 刷新浏览器即可。
+
+`start_navigation.sh` 和 `waypoints_maker.sh` 不启动 RViz、HTTP 服务或 Foxglove bridge。
+它们只启动自身需要的导航、里程计、recorder 和调试进程，并输出 RobViz URL。
 
 ## 9. 现场检查
 

@@ -64,18 +64,28 @@ actual rates without subscribing to the RGBD message outside the container.
 
 ## Runtime
 
-The project launch starts the camera component, OpenVINO detector, and serial
-bridge together. Perception results remain on ROS topics for the mission
-node and are not forwarded directly to the lower controller. The serial device
-is fixed to `/dev/ttyACM0`.
+The project launch starts the camera component, OpenVINO detector, RobViz image
+bridge, and serial bridge together. Perception results remain on ROS topics for
+the mission node and are not forwarded directly to the lower controller. The
+serial device is fixed to `/dev/ttyACM0`.
 
 ```bash
 source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 
-colcon build --packages-select fruit_perception \
+colcon build --packages-up-to fruit_robviz_bridge \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 ros2 launch fruit_perception fruit_perception.launch.py
 ```
+
+The RobViz bridge component runs in the same composable container as the camera
+and detector. Do not launch `fruit_robviz_bridge.launch.py` separately when this
+perception launch is active.
+
+It publishes JPEG previews on `/fruit_perception/camera/annotated_image/compressed`
+and `/fruit_perception/camera/native_depth/compressed`. RGB annotations include
+valid measured coordinates. Invalid, stale, moving, or unavailable base
+coordinates are rendered as `N/A`. Image settings come from RobViz over the
+explicit `/fruit_robviz_bridge/reload_image_settings` service.
 
 For normal operation, use the workspace entry point:
 

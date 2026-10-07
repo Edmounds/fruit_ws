@@ -32,6 +32,7 @@
 #include "fruit_perception/detection_parser.hpp"
 #include "fruit_perception/image_processing.hpp"
 #include "fruit_perception/msg/fruit_decision.hpp"
+#include "fruit_perception/msg/fruit_detections.hpp"
 #include "fruit_perception/msg/fruit_detection.hpp"
 #include "fruit_perception/msg/fruit_target.hpp"
 #include "fruit_perception/ripeness_classifier.hpp"
@@ -273,6 +274,10 @@ public:
     const auto decision_topic = declare_parameter(
       "decision_topic", "/fruit_perception/decision");
     decision_publisher_ = create_publisher<msg::FruitDecision>(decision_topic, rclcpp::QoS(10));
+    const auto preview_detections_topic = declare_parameter(
+      "preview_detections_topic", "/fruit_perception/camera/preview_detections");
+    preview_detections_publisher_ = create_publisher<msg::FruitDetections>(
+      preview_detections_topic, rclcpp::SensorDataQoS().keep_last(1));
 
     const bool enable_camera = declare_parameter("enable_camera", true);
     if (!enable_camera) {
@@ -682,6 +687,11 @@ private:
         result.detections.push_back(std::move(item));
       }
 
+      msg::FruitDetections preview_detections;
+      preview_detections.header = stream.header;
+      preview_detections.detections = result.detections;
+      preview_detections_publisher_->publish(preview_detections);
+
       const bool in_window = context.is_harvest_window &&
         !context.window_id.empty() &&
         (stream.submitted_target_selection_generation == target_selection_generation_.load()) &&
@@ -982,6 +992,7 @@ private:
   std::mutex window_mutex_;
 
   rclcpp::Publisher<msg::FruitDecision>::SharedPtr decision_publisher_;
+  rclcpp::Publisher<msg::FruitDetections>::SharedPtr preview_detections_publisher_;
   rclcpp::Publisher<std_msgs::msg::Header>::SharedPtr rgbd_heartbeat_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr observation_window_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr current_area_subscription_;

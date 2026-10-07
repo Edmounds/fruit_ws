@@ -73,7 +73,7 @@ colcon build --base-paths src --packages-select fruit_navigation
 ## 3. 核心脚本与使用方法
 
 ### 3.1 导航入口 (`start_navigation.sh`)
-启动底层串口通讯、Point-LIO 里程计、轴向导航服务以及 RViz 界面：
+启动底层串口通讯、Point-LIO 里程计和轴向导航服务。可通过 RobViz 查看状态和发送导航目标：
 ```bash
 ./start_navigation.sh
 ```
@@ -81,8 +81,8 @@ colcon build --base-paths src --packages-select fruit_navigation
 - 入口统一为 `start_navigation.sh`，不再保留独立的里程计 shell 入口。
 - 启动前检测 `livox_ros_driver2`、`laserMapping`、`loam_interface`、`axis_waypoint_action_server` 等残留节点，避免重复启动造成 UDP 端口绑定冲突与 TF 冲突。
 - 自动检测 `/aft_mapped_to_init` 话题及 `odom -> base_link` 5 秒内的稳定 TF 输出。
-- RViz 默认 Fixed Frame 为 `odom`。
-- 可直接通过 RViz 交互或发送 Action 目标控制底盘。
+- RobViz 的 Fixed Frame 使用 `odom`。
+- 可通过 RobViz 交互或发送 Action 目标控制底盘。
 
 ### 3.2 录制与编辑航点 (`waypoints_maker.sh`)
 用于现场采集或示教目标航点：

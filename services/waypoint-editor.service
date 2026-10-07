@@ -10,7 +10,7 @@ Group=rc4
 WorkingDirectory=/home/rc4/fruit_ws
 Environment=HOME=/home/rc4
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/bin/bash -lc 'set -eo pipefail; source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash; set -u; exec ros2 launch fruit_waypoint_recorder waypoint_editor.launch.py'
+ExecStart=/bin/bash -lc 'set -eo pipefail; test -r /home/rc4/robviz/dist/index.html; source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash; set -u; exec ros2 launch fruit_waypoint_recorder waypoint_editor.launch.py'
 
 Restart=on-failure
 RestartSec=3

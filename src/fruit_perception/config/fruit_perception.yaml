@@ -45,6 +45,7 @@ fruit_perception_node:
     camera_rgbd_heartbeat_topic: "/fruit_perception/camera/rgbd_heartbeat"
     decision_topic: "/fruit_perception/decision"
     camera_annotated_topic: "/fruit_perception/camera/annotated_image"
+    preview_detections_topic: "/fruit_perception/camera/preview_detections"
     observation_window_topic: "/fruit_mission/observation_window"
     current_area_topic: "/fruit_mission/current_area"
     expected_fruit_type_topic: "/fruit_mission/expected_fruit_type"

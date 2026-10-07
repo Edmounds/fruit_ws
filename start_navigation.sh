@@ -6,11 +6,7 @@ WORKSPACE=/home/rc4/fruit_ws
 NAV_LAUNCH="$WORKSPACE/src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.py"
 HARDWARE_LAUNCH="$WORKSPACE/src/fruit_hardware_bridge/launch/fruit_hardware_bridge.launch.py"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
-RVIZ_CONFIG="$WORKSPACE/src/navigation/fruit_nav_bringup/rviz/navigation.rviz"
 MONITOR_SCRIPT="$WORKSPACE/scripts/robot_debug_monitor.sh"
-DESKTOP_RUNTIME_DIR="/run/user/$(id -u)"
-DESKTOP_DISPLAY=:0
-DESKTOP_XAUTHORITY="$DESKTOP_RUNTIME_DIR/gdm/Xauthority"
 
 pids=()
 debug_pids=()
@@ -21,8 +17,8 @@ usage() {
   cat <<'EOF'
 Usage: ./start_navigation.sh [--debug]
 
-Start Point-LIO navigation, serial bridge, and RViz in the startup-relative
-odom frame.
+Start Point-LIO navigation and the serial bridge in the startup-relative odom
+frame. Use RobViz for visualization and control.
 EOF
 }
 
@@ -104,11 +100,11 @@ wait_for_odom_tf() {
   printf '[navigation] waiting for odometry nodes\n'
   ros2 run fruit_mission stack_readiness_client \
     nodes --node /laserMapping --node /loam_interface \
-    --timeout 60 \
+    --timeout 10 \
     --ros-args --params-file "$SCRIPT_CLIENT_CONFIG"
   printf '[navigation] waiting for the first valid Point-LIO odometry sample\n'
   ros2 run fruit_mission stack_readiness_client \
-    odometry --topic /aft_mapped_to_init --timeout 60 \
+    odometry --topic /aft_mapped_to_init --timeout 10 \
     --ros-args --params-file "$SCRIPT_CLIENT_CONFIG"
   printf '[navigation] waiting up to 5s for stable odom -> base_link TF\n'
   if ros2 run fruit_mission stack_readiness_client \
@@ -133,8 +129,7 @@ required_files=(
   "$NAV_LAUNCH" \
   "$HARDWARE_LAUNCH" \
   "$SCRIPT_CLIENT_CONFIG" \
-  "$MONITOR_SCRIPT" \
-  "$RVIZ_CONFIG"
+  "$MONITOR_SCRIPT"
 )
 for required_file in "${required_files[@]}"; do
   if [[ ! -r "$required_file" ]]; then
@@ -147,12 +142,6 @@ if ros2 node list 2>/dev/null | grep -Eq \
   '^/(livox_ros_driver2|laserMapping|loam_interface|axis_waypoint_action_server|fruit_waypoint_recorder)$'; then
   printf '[navigation] an odometry or navigation node is already running.\n' >&2
   printf '[navigation] stop the existing stack before starting this script.\n' >&2
-  exit 1
-fi
-
-if [[ ! -r "$DESKTOP_XAUTHORITY" ]]; then
-  printf '[navigation] desktop Xauthority is unavailable: %s\n' "$DESKTOP_XAUTHORITY" >&2
-  printf '[navigation] log in to the local desktop before starting navigation.\n' >&2
   exit 1
 fi
 
@@ -172,15 +161,7 @@ start_debug_monitor
 
 wait_for_odom_tf
 
-start_process "rviz2" \
-  env \
-    "DISPLAY=$DESKTOP_DISPLAY" \
-    "XAUTHORITY=$DESKTOP_XAUTHORITY" \
-    "XDG_RUNTIME_DIR=$DESKTOP_RUNTIME_DIR" \
-    "DBUS_SESSION_BUS_ADDRESS=unix:path=$DESKTOP_RUNTIME_DIR/bus" \
-    rviz2 -d "$RVIZ_CONFIG" -f "odom"
-
-printf '[navigation] axis odometry navigation, serial bridge, and RViz ready (frame=odom). Press Ctrl-C to stop launched processes.\n'
+printf '[navigation] axis odometry navigation and serial bridge ready (frame=odom). Use RobViz for visualization. Press Ctrl-C to stop launched processes.\n'
 
 if wait -n "${pids[@]}"; then
   status=0
