@@ -14,6 +14,7 @@
   <depend>cv_bridge</depend>
   <depend>geometry_msgs</depend>
   <depend>rclcpp</depend>
+  <depend>rcl_interfaces</depend>
   <depend>rclcpp_components</depend>
   <depend>realsense2_camera_msgs</depend>
   <depend>sensor_msgs</depend>

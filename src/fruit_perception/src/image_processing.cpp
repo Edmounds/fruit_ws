@@ -85,17 +85,35 @@ void draw_annotations(
   const LetterboxTransform & transform,
   double frames_per_second)
 {
-  // Green and black are symmetric between RGB and BGR channel orders.
+  // The annotated image is RGB8, not OpenCV's usual BGR.
   const cv::Scalar color(0, 255, 0);
   for (const auto & detection : detections) {
     const auto box = to_original_box(detection, transform);
     if (box.empty()) {
       continue;
     }
-    cv::rectangle(image, box, color, 2);
+    const cv::Scalar box_color = detection.maturity == "unripe" ?
+      cv::Scalar(255, 165, 0) : color;
+    cv::rectangle(image, box, box_color, 2);
+    const cv::Point center(box.x + box.width / 2, box.y + box.height / 2);
+    const cv::Scalar center_color(255, 220, 0);
+    cv::circle(image, center, 4, center_color, -1);
+    cv::line(image, center + cv::Point(-8, 0), center + cv::Point(8, 0), center_color, 1);
+    cv::line(image, center + cv::Point(0, -8), center + cv::Point(0, 8), center_color, 1);
 
     std::ostringstream label;
-    label << detection.type << ' ' << std::fixed << std::setprecision(2) << detection.score;
+    label << (detection.species.empty() ? detection.type : detection.species);
+    if (!detection.maturity.empty()) {
+      label << " [" << (detection.maturity == "ripe" ? "RIPE" : "UNRIPE") << ' '
+            << std::fixed << std::setprecision(0) << detection.maturity_confidence * 100.0
+            << "%]";
+    }
+    label << ' ' << std::fixed << std::setprecision(2) << detection.score;
+    if (std::isfinite(detection.depth_m) && detection.depth_m > 0.0) {
+      label << " | D=" << std::setprecision(3) << detection.depth_m << 'm';
+    } else {
+      label << " | D: NoDepth";
+    }
     int baseline = 0;
     const auto text_size = cv::getTextSize(
       label.str(), cv::FONT_HERSHEY_SIMPLEX, 0.55, 1, &baseline);
@@ -106,7 +124,7 @@ void draw_annotations(
       cv::Rect(
         text_x, text_y - text_size.height - 4,
         text_size.width + 6, text_size.height + baseline + 6),
-      color, cv::FILLED);
+      box_color, cv::FILLED);
     cv::putText(
       image, label.str(), cv::Point(text_x + 3, text_y),
       cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 0, 0), 1, cv::LINE_AA);

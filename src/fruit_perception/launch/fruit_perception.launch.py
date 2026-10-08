@@ -52,6 +52,7 @@ def generate_launch_description():
             ],
         })
     perception_node_parameters = dict(perception_parameters)
+    perception_node_parameters['zone'] = LaunchConfiguration('zone')
     perception_node_parameters['ripeness_model'] = LaunchConfiguration('ripeness_model')
     perception_node_parameters['performance_hint'] = LaunchConfiguration('performance_hint')
     nodes_to_launch.append({
@@ -93,6 +94,12 @@ def generate_launch_description():
         default_value='edge',
         choices=['edge', 'yolo'],
         description='Startup choice of ripeness classifier',
+    )
+    declare_zone = DeclareLaunchArgument(
+        'zone',
+        default_value=perception_parameters.get('zone', 'A'),
+        choices=['A', 'B', 'C'],
+        description='Initial perception zone; runtime changes use the zone ROS parameter',
     )
     declare_performance_hint = DeclareLaunchArgument(
         'performance_hint',
@@ -189,6 +196,7 @@ def generate_launch_description():
         declare_serial_debug_raw_frame,
         declare_start_serial_bridge,
         declare_ripeness_model,
+        declare_zone,
         declare_performance_hint,
         declare_perception_log_level,
         container,

@@ -25,6 +25,10 @@ struct Detection
   float y2;
   float score;
   std::string type;
+  std::string species{};
+  std::string maturity{};
+  double maturity_confidence{0.0};
+  double depth_m{0.0};
 };
 
 const char * detection_label_set_name(DetectionLabelSet label_set);

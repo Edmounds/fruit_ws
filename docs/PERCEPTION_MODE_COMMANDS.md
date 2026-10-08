@@ -13,6 +13,17 @@ source scripts/setup_fruit_runtime.bash
 
 ## 观察窗口契约 (/fruit_mission/observation_window)
 
+感知模型由动态字符串参数 `zone` 选择，仅接受 A/B/C。
+A/C 使用蔬菜模型，B 使用水果模型。`/fruit_mission/current_area` 仅记录任务状态，不再切换感知模型。
+观察窗口也不切换模型。harvest 窗口的 `area` 必须匹配 `zone`。
+切区会关闭旧窗口并丢弃旧证据。参数设置成功后再开新窗口。
+
+```bash
+./start_fruit_perception.sh --zone A
+# 另一个已加载运行环境的终端：
+ros2 param set /fruit_perception_node zone B
+```
+
 观察窗口命令以严格 JSON 格式发布在 `/fruit_mission/observation_window`（话题类型为 `std_msgs/msg/String`，QoS 为 Reliable / Volatile / Depth 10）。
 
 ### 1. 开启观察窗口 (valid=1)
@@ -81,7 +92,7 @@ RGB 和 Native Depth 的 JPEG 预算相互独立。
 
 ```bash
 # 启动感知与扫码（不启动串口桥与任务）
-ros2 launch fruit_perception fruit_perception.launch.py start_serial_bridge:=false
+ros2 launch fruit_perception fruit_perception.launch.py zone:=A start_serial_bridge:=false
 
 # 打印当前决策消息
 ros2 topic echo /fruit_perception/decision

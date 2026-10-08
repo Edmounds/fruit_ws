@@ -87,17 +87,27 @@ valid measured coordinates. Invalid, stale, moving, or unavailable base
 coordinates are rendered as `N/A`. Image settings come from RobViz over the
 explicit `/fruit_robviz_bridge/reload_image_settings` service.
 
-For normal operation, use the workspace entry point:
+For headless debugging, specify the initial zone explicitly:
 
 ```bash
-/home/rc4/fruit_ws/start_fruit_perception.sh
+/home/rc4/fruit_ws/start_fruit_perception.sh --zone A
+# Use --zone B for fruit, --zone C for vegetables.
+# Runtime switch, without restarting the camera:
+ros2 param set /fruit_perception_node zone B
 ```
 
-The installed `fruit-perception.service` invokes this script automatically at
-boot.
+The service template supplies `--zone A`. Update an existing installed unit before
+using the new script. Do not restart camera services during an active mission.
+`start_fruit_mission.sh` launches `fruit_perception.launch.py` directly, not this
+debug script. Mission clients set `zone` through `SetParametersAtomically` and
+check the response before observation. The mission area topic remains state only.
 
-The detector chooses its model and candidate selection from the current
-`/fruit_mission/current_area` string:
+The validated string parameter `zone` selects the model and candidate selection.
+Launch accepts `zone:=A|B|C`, defaulting to the source YAML value (`A`).
+Perception no longer subscribes to `/fruit_mission/current_area`.
+Observation windows do not select models. A harvest window must match `zone`.
+Changing `zone` closes the active window and discards old in-flight evidence.
+Open a new matching window after a successful parameter response.
 
 - Area `A`: `vegetable_type/best.onnx` plus ripeness classification; publishes
   bare `ripe/unripe` labels. Only `ripe` enters single-target locking.
@@ -108,7 +118,9 @@ The detector chooses its model and candidate selection from the current
   publishes species/maturity labels and locks mature targets matching the expected
   type. Model-internal `pepper` is normalized to business label `chili` **after**
   selecting and running the pepper ripeness classifier.
-- Area `D`: reuses B's detector, ripeness classification and multi-target selection.
+
+Camera startup uses `initial_reset: true`. This resets device state, but does not
+guarantee recovery from a physical MIPI, cable, or USB fault.
 
 The species detectors were updated from workspace `models/` exports dated 2026-10-08.
 Fruit species indices are `0=apple`, `1=pear`, `2=bad`.
@@ -132,8 +144,8 @@ The decision stream on `/fruit_perception/decision` contains:
 - `observation_window_id`: active harvest window ID, or empty string when outside window
 - detected fruit `types` in confidence order
 - all detections in confidence order (`detections`), including ROI and optional 3D points
-- `has_target` and `target_point` when single-target lock is acquired within a valid window (Areas A/C), or when targets are ready (Area B/D)
-- B/D zone `targets_ready` and up to two aggregated `targets`
+- `has_target` and `target_point` when single-target lock is acquired within a valid window (Areas A/C), or when targets are ready (Area B)
+- B zone `targets_ready` and up to two aggregated `targets`
 - annotated RGB8 image on `/fruit_perception/camera/annotated_image`
 
 The target point is the `target_point` field in the decision message and uses
@@ -142,8 +154,12 @@ points down, and `z` points forward.
 
 The annotated image keeps the camera's original aspect ratio. Inference uses a
 centered 640x640 letterbox with value 114, so no source pixels are cropped. Each
-detection is mapped back to the source image and drawn with its model class and
-confidence.
+detection retains its model species even in A. Labels show separate detector and
+ripeness confidence, for example `apple [RIPE 92%] 0.85 | D=0.450m`.
+Ripe boxes are green, unripe boxes are orange, and centers have a crosshair.
+The image encoding is RGB8, so orange uses `(255, 165, 0)` in the drawing buffer.
+Depth reuses the existing aligned center pixel. Missing depth displays `D: NoDepth`
+and never supplies a grasp point. ROS business labels and confidence semantics stay unchanged.
 
 ## Short-window target confirmation
 

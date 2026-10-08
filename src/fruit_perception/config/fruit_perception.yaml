@@ -1,6 +1,7 @@
 camera:
   ros__parameters:
     serial_no: "243322073779"
+    initial_reset: true
     enable_color: true
     rgb_camera.color_profile: "1280x720x30"
     rgb_camera.color_format: "RGB8"
@@ -47,7 +48,7 @@ fruit_perception_node:
     camera_annotated_topic: "/fruit_perception/camera/annotated_image"
     preview_detections_topic: "/fruit_perception/camera/preview_detections"
     observation_window_topic: "/fruit_mission/observation_window"
-    current_area_topic: "/fruit_mission/current_area"
+    zone: "A"
     expected_fruit_type_topic: "/fruit_mission/expected_fruit_type"
     model_root: "/home/rc4/fruit_ws/src/fruit_perception/model"
     ripeness_model: "edge"

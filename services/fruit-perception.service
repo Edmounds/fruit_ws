@@ -7,7 +7,7 @@ Type=simple
 User=rc4
 WorkingDirectory=/home/rc4/fruit_ws
 Environment=HOME=/home/rc4
-ExecStart=/home/rc4/fruit_ws/start_fruit_perception.sh
+ExecStart=/home/rc4/fruit_ws/start_fruit_perception.sh --zone A
 Restart=on-failure
 RestartSec=3
 

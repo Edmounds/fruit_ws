@@ -14,6 +14,7 @@ import uuid
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PointStamped, PoseStamped
 from nav2_msgs.action import FollowWaypoints
+from rcl_interfaces.srv import SetParametersAtomically
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -31,6 +32,7 @@ from fruit_mission.camera_target_planner_client import CameraTargetPlannerClient
 from fruit_mission.camera_target_planner_client import DEFAULT_EXTRINSIC_CONFIG
 from fruit_mission.config import _validate_qr_fallbacks
 from fruit_mission.decisions import format_produce_count, merge_seen_types, spoken_produce_name
+from fruit_mission.script_hardware_client import set_perception_zone
 from fruit_mission.tts import RecordedSpeaker
 from fruit_mission.waypoint_route import MissionWaypointRoute
 from fruit_mission.waypoint_route import WaypointPose
@@ -134,6 +136,8 @@ class MissionContext:
             config["current_area_topic"],
             _latched_qos(),
         )
+        self._perception_zone_client = node.create_client(
+            SetParametersAtomically, '/fruit_perception_node/set_parameters_atomically')
         self._camera_planner = CameraTargetPlannerClient(
             node,
             config.get("camera_extrinsic_config", DEFAULT_EXTRINSIC_CONFIG),
@@ -766,14 +770,15 @@ class MissionContext:
         return self.send_return_initial_pose()
 
     def report_current_area(self, area: str) -> bool:
-        """Publish mission area for perception/QR; no lower-controller policy."""
+        """Publish mission state and set perception zone without MCU policy."""
         if area not in {"A", "B", "C"}:
             raise ValueError("area must be A, B or C")
         self._current_area = area
         message = String()
         message.data = area
         self._current_area_publisher.publish(message)
-        return True
+        return set_perception_zone(
+            self.node, self._perception_zone_client, area, self._wait_until)
 
     def record_pick(self, matched_type: Optional[str]) -> None:
         """Record one confirmed harvested produce target."""

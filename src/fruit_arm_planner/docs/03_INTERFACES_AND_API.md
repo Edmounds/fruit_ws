@@ -266,4 +266,7 @@ ros2 topic echo --once /arm_planner_node/joint_states fruit_interfaces/msg/ArmTe
    `arm_presets.yaml` 姿态定义：`<side>_look_<zone>`、`<side>_store_<zone>`（side 为 left/right，A/C 为小写 a/c，B 区细分为 `<side>_store_b_up` 与 `<side>_store_b_down`）、`qr_scan`、`shenzhi`、`home`，不使用中间映射字典。
    预设缺失/失败不能视为动作完成。导航可与 Look 并行，其余运动仍受有效反馈、
    导航终态和 planner 占用保护。恢复只尝试一次 Home，不设独立停稳循环，
-   未取得有效低速反馈则跳过；不因 STOP 已发布而放行。旧正常 retract 边界改为 shenzhi，重合出口不重复执行；失败仍只恢复 Home，不能将 Home 冒充所需保护姿态后放行转场。区域通知只供感知模型选择，不走下位机旧 task/callback 协议；扫码区域由 QR 窗口指定，无 B→C 状态推进。
+   未取得有效低速反馈则跳过；不因 STOP 已发布而放行。旧正常 retract 边界改为 shenzhi，重合出口不重复执行；失败仍只恢复 Home，不能将 Home 冒充所需保护姿态后放行转场。
+   区域话题仅发布任务状态。感知模型由 `fruit_perception_node` 的动态参数 `zone` 选择。
+   mission 和单点客户端核对参数服务结果，harvest 窗口区域必须匹配 `zone`。
+   不走下位机旧 task/callback 协议；扫码区域由 QR 窗口指定，无 B→C 状态推进。

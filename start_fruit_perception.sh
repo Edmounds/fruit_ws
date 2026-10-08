@@ -4,17 +4,51 @@ set -eo pipefail
 
 WORKSPACE=/home/rc4/fruit_ws
 DEBUG_MODE=0
+ZONE=""
 
-# Parse --debug flag if present
-FILTERED_ARGS=()
-for arg in "$@"; do
-  if [[ "$arg" == "--debug" ]]; then
-    DEBUG_MODE=1
-  else
-    FILTERED_ARGS+=("$arg")
-  fi
+usage()
+{
+  printf 'Usage: ./start_fruit_perception.sh --zone A|B|C [--debug] [launch_argument:=value ...]\n'
+}
+
+LAUNCH_ARGS=()
+while (($# > 0)); do
+  case "$1" in
+    --zone)
+      if (($# < 2)) || [[ -n "$ZONE" ]] || [[ "$2" != A && "$2" != B && "$2" != C ]]; then
+        usage >&2
+        exit 2
+      fi
+      ZONE=$2
+      shift 2
+      ;;
+    --debug)
+      DEBUG_MODE=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    zone:=*)
+      printf 'Use --zone A|B|C, not zone:=value\n' >&2
+      exit 2
+      ;;
+    *:=*)
+      LAUNCH_ARGS+=("$1")
+      shift
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
 done
-set -- "${FILTERED_ARGS[@]}"
+if [[ -z "$ZONE" ]]; then
+  usage >&2
+  exit 2
+fi
+set -- "${LAUNCH_ARGS[@]}" "zone:=$ZONE"
 
 cleanup()
 {

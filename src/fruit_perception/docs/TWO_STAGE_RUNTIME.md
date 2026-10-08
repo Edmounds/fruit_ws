@@ -9,17 +9,17 @@
 `src/fruit_perception/model`，必须是绝对路径。已清理旧的未归档或未使用权重，不自动回退旧权重或 CPU。
 
 - A/C：`vegetable_type/best.onnx`，类别为 bad、onion、pepper、pumpkin、tomato。
-- B/D：`fruit_type/best.onnx`，类别索引为 0=apple、1=pear、2=bad。
+- B：`fruit_type/best.onnx`，类别索引为 0=apple、1=pear、2=bad。
 - 两个品种检测器使用工作区 `models/` 中 2026-10-08 导出的新权重。七个熟度分类权重未变。
 - 检测：640×640 letterbox，RGB /255，按品种 NMS。
 - 两个检测器的 `bad` 均不做熟度分类。标注图、预览检测及 `FruitDecision.types/detections` 发布裸标签 `bad`，A 区也保留该标签。
-- `bad` 的框和可选深度点仅供诊断。A/C 与 B/D 采摘候选均排除 `bad`，`targets` 不包含它。不增加坏果摘除流程。
+- `bad` 的框和可选深度点仅供诊断。A/C 与 B 采摘候选均排除 `bad`，`targets` 不包含它。不增加坏果摘除流程。
 - 分类：原始 RGB 框向外扩展每边 10%，裁到图像范围，任一边小于 8 像素则丢弃。
 - `ripeness_model=edge`（默认）：六个 `ripeness_edge/<crop>/best.onnx`，224 方形拉伸、ImageNet 归一化，logits 使用稳定 Softmax。
 - `ripeness_model=yolo`：`ripeness/unified/best.onnx`，短边缩放到 224、中心裁剪、/255；输出已经有 Softmax。
 - YOLO 的缩放使用 OpenCV 线性插值，并非 PIL/torchvision 抗锯齿缩放的逐像素复刻；相同真实 ROI 的跨端概率一致性和准确率留待后续识别验收，当前仅证明运行契约与性能。
 - 分类器 reshape 为静态 batch=1，逐 ROI 推理；不限制检测数，不为了帧率跳过分类。
-- 内部结果按模型品种组成熟度标签；对外 A 区保留 `ripe/unripe`，C 区辣椒映射为 `chili_ripe/chili_unripe`，其他品种使用 `<crop>_ripe/unripe`（斜杠表示两个字符串）。检测置信度仍作为 ROS confidence，分类概率保存在内部结果/DEBUG 日志。GUI 物种检测标签如 `pepper` 不等于正式 ROS 标签。
+- 内部结果按模型品种组成熟度标签；对外 A 区保留 `ripe/unripe`，C 区辣椒映射为 `chili_ripe/chili_unripe`，其他品种使用 `<crop>_ripe/unripe`（斜杠表示两个字符串）。ROS confidence 仍为检测分数。标注图独立显示原始品种、熟度百分比、检测分数与中心深度。
 - 分类失败丢弃该 ROI，不假造 unripe。开窗/关窗及区域切换后旧在途帧不累积为当前窗口证据。
 
 模型固定 `GPU.0` 和 FP16 推理提示，检测使用可调 `performance_hint=latency|throughput`，分类使用 LATENCY；不使用含 CPU 的 AUTO/HETERO/MULTI。保留输入 f32 契约，内部 FP16 不重写原 ONNX。
@@ -28,7 +28,11 @@ GPU 的 `COMPILATION_NUM_THREADS` 固定为 1，避免本机新检测器与 Edge
 本机设置 GPU `queue_throttle=LOW`，减少驱动在 CPU 上的忙轮询；离线基准中检测+2 ROI 的进程 CPU 从约 104% 降到约 25%，吞吐约下降 3%。不是把模型切到 CPU，也不是降低输入尺寸。
 检测器和统一分类器检查 ONNX 中的类别元数据；Edge ONNX 没有类别元数据，其类别方向依据原归档契约（0=ripe、1=unripe），更换权重时必须重新核实，不能仅凭形状认定类别方向。
 
-深度几何和目标选择器复用：A/C 单目标，B/D 最多两个稳定候选。当前 mission 使用 A 裸熟度、C `chili_*` 契约，视觉目标已调用 planner；D 只有感知路由，没有 D 区任务。左右 USB 相机代码、配置和旧 SIDES/TREE 模式已删除。
+深度几何和目标选择器复用：A/C 单目标，B 最多两个稳定候选。动态字符串参数 `zone` 只接受 A/B/C。
+当前 mission 使用 A 裸熟度、C `chili_*` 契约，视觉目标已调用 planner。
+感知不再订阅 `/fruit_mission/current_area`，也不按观察窗口切换模型。
+切区关闭旧窗口并清除旧证据。新的 harvest 窗口区域必须匹配 `zone`，否则不采纳。
+左右 USB 相机代码、配置和旧 SIDES/TREE 模式已删除。
 
 ## 快速一致性确认
 
@@ -57,11 +61,16 @@ colcon build --packages-select fruit_perception --symlink-install \
   --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 source scripts/setup_fruit_runtime.bash
 ros2 launch fruit_perception fruit_perception.launch.py \
-  ripeness_model:=edge start_serial_bridge:=false perception_log_level:=info
+  zone:=A ripeness_model:=edge start_serial_bridge:=false perception_log_level:=info
+ros2 param set /fruit_perception_node zone B
 # 比较统一分类器：停掉上一次 launch 后使用 ripeness_model:=yolo
 ```
 
-模型选择只在启动时生效。相机视频流与模型推理常开并持续运行；根据 `/fruit_mission/observation_window` 观察窗口采纳与累积证据，窗口外不输出采摘目标。
+`ripeness_model` 只在启动时生效。`zone` 支持运行时参数切换，无需重启相机或重新编译模型。
+相机视频流与模型推理常开并持续运行；观察窗口只控制证据采纳，窗口外不输出采摘目标。
+无桌面调试使用 `./start_fruit_perception.sh --zone A|B|C`，在 RobViz 查看标注 JPEG。
+未提供 `--zone` 时脚本退出。C++ 标注显示熟度框颜色、百分比、检测分数、中心深度和准星。
+相机默认 `initial_reset: true`，启动重置设备状态，但不能保证修复硬件 MIPI 故障。
 相机和感知 component 在同一容器并启用进程内通信。仅感知验收时禁止启动任务或串口桥。
 窗口接口及操作见[观察窗口参考](../../../docs/PERCEPTION_MODE_COMMANDS.md)。
 

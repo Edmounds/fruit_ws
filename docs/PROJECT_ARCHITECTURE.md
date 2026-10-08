@@ -136,12 +136,15 @@ camera 的固定原生流开启同步、深度对齐与 RGBD（Color 为 `1280x7
 2. B/C 计划使用 Reliable、Transient Local、深度 1 发布，计划中附带窗口 ID 及帧时间戳。
    QR 直接按窗口区域选择 B/C 解析，不再维护 B→C→COMPLETED 顺序状态机；新窗口重置候选及连续帧确认，当前区域通知不推进扫码阶段。
 3. camera RGBD 持续执行水果/蔬菜推理，整帧 letterbox 到 640x640，不做分块。
-   根据 `/fruit_mission/current_area` 选择两阶段链路：A/C 用 `vegetable_type/best.onnx`，
-   B/D 用 `fruit_type/best.onnx`，再做熟度分类。`model_root` 来自源码 YAML；
-   默认 Edge，启动可选 YOLO，固定 Intel `GPU.0`。D 只是感知路由，不新增比赛任务。
+   根据动态字符串参数 `zone` 选择两阶段链路：A/C 用 `vegetable_type/best.onnx`，
+   B 用 `fruit_type/best.onnx`，再做熟度分类。`model_root` 来自源码 YAML；
+   默认 Edge，启动可选 YOLO，固定 Intel `GPU.0`。`zone` 只接受 A/B/C。
+   mission 通过参数服务切区并检查应答，区域话题仅保留任务状态。
+   观察窗口不切模型，harvest 区域必须匹配 `zone`，切区清除旧窗口和证据。
+   C++ 标注保留品种，并显示熟度百分比、检测分数、中心深度和准星。
 4. `/fruit_perception/decision` 发布单相机决策消息，携带 `observation_window_id`、一帧内的全部目标及原图 ROI，中心深度无效时保留二维结果。窗口外 `observation_window_id` 为空且不输出抓取目标。
 5. A/C 区使用单目标锁定器（8 帧短窗口，A 区只锁定成熟 ripe 目标，C 区按期望品种过滤成熟目标），在有效 harvest 窗口内锁定后发布 `has_target=true` 和 `target_point`。
-6. B/D 区使用多候选选择器（8 帧短窗口，最多输出 2 个稳定候选），在有效 harvest 窗口内发布 `targets_ready=true` 和 `targets` 列表。
+6. B 区使用多候选选择器（8 帧短窗口，最多输出 2 个稳定候选），在有效 harvest 窗口内发布 `targets_ready=true` 和 `targets` 列表。
 7. 任务节点等待携带当前 `observation_window_id` 的有效 `decision`，在 mission 内将 RGB 光学点转换到夹爪系，再用 planner 的新鲜实测 TCP/模型偏航转到机械臂固定基座系，应用 `target_offset_m` 后调用 `/arm_planner_node/move_cartesian` 并检查执行结果。偏置单位为米，当前 `[0.0, 0.03, -0.015]`；X/Z 直接相加，Y 幅值按原 Base Y 正负自动变号，为零则不加。正式任务与单点调试共用校验和调用链，不重复应用工具几何偏移。观测及提交前由现场物理保证机构静止；CLOSE/HOLD、Harvest、Home 均完成才记录工序成功。外参毫米/ROS 米边界及剩余集成限制见 [mission 坐标换算文档](../src/fruit_mission/docs/CAMERA_TARGET_TRANSFORM.md)。
 
 4DOF 机械臂不按通用 6DOF 位姿设计。现有解析 FK/IK、PTP/LIN 与限位检查在
@@ -340,6 +343,9 @@ USE_SAVED_B_PLAN
 - 当前导航、感知、扫码、航点和 planner 均已有实现，不再按“建包骨架、等待机械尺寸、双侧相机”的旧阶段计划开发。
 - 所有运行终端加载 `scripts/setup_fruit_runtime.bash`；构建与 CLI 方法见根 `AGENTS.md`。
 - `start_fruit_mission.sh` 自动启动唯一串口桥与 planner-only launch；检查当前服务/端点，超时告警，外围进程退出不结束 mission。真实预设仍由用户补齐，不能视为已验收整机。
+- mission 直接启动 `fruit_perception.launch.py`，不调用调试脚本。
+  调试入口 `start_fruit_perception.sh` 必须提供 `--zone A|B|C`，无需桌面即可从 RobViz 查看。
+  相机启动启用 `initial_reset`，这不是硬件 MIPI 故障修复保证。
 - 验证轨迹跨消息类型的装载顺序、ACK 和匹配终态；ROS 发布先后或固定延时不等于下位机完整装载。
 - camera 坐标换算要求观测姿态静止、新鲜实测四轴角及正确外参；服务确认工序完成不是视觉证明果实入筐。
 - 断联、STOP/ESTOP、底盘与机械臂互锁必须以实际硬件反馈验收，不能把协议意图或静态检查写成实测结果。

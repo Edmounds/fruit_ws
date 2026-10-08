@@ -220,7 +220,7 @@ main()
   local client_log="${FRUIT_RUNTIME_SESSION_DIR}/client.log"
 
   local filter_script="${WORKSPACE_DIR}/scripts/runtime_log_filter.py"
-  local -a perception_cmd=("${START_SCRIPT}")
+  local -a perception_cmd=("${START_SCRIPT}" --zone "${ZONE}")
   if (( DEBUG != 0 )); then
     perception_cmd+=(--debug)
   fi

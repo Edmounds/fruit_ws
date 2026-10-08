@@ -4,13 +4,12 @@
     config_path: "/home/rc4/fruit_ws/src/fruit_mission/config/fruit_mission.yaml"
     camera_extrinsic_config: "/home/rc4/fruit_ws/src/fruit_mission/config/camera_extrinsic.yaml"
     observation_window_topic: "/fruit_mission/observation_window"
-    current_area_topic: "/fruit_mission/current_area"
     decision_topic: "/fruit_perception/decision"
 
     bridge_ready_timeout_sec: 10.0
     endpoint_timeout_sec: 10.0
     detection_timeout_sec: 10.0
-    current_area_delivery_timeout_sec: 1.0
+    perception_zone_delivery_timeout_sec: 1.0
     graph_discovery_timeout_sec: 1.0
     camera_conflicting_nodes:
       - "/fruit_perception_container"

@@ -11,6 +11,12 @@
 
 ## RobViz 只读预览
 
+无桌面调试使用 `./start_fruit_perception.sh --zone A|B|C`。
+脚本必须显式指定区域。运行中使用 `ros2 param set /fruit_perception_node zone B` 切区。
+C++ 标注显示原始品种、熟度百分比、检测置信度、中心深度与准星。
+成熟框为绿色，未成熟框为橙色，无深度时显示 `D: NoDepth`。
+相机启动配置 `initial_reset: true`，重置设备状态，但不能保证修复硬件 MIPI 故障。
+
 日常预览使用两个 JPEG `CompressedImage` 话题：
 
 - `/fruit_perception/camera/annotated_image/compressed`：RGB、D、Cam XYZ 和有效 Base XYZ。
@@ -53,8 +59,8 @@ python3 test_camera_detector.py --model D
 `fruit_type/best.onnx`，类别名称读取模型自身元数据，不再依赖旧的
 `a_model_path/b_model_path/c_model_path` 或按类别数量猜标签。
 
-此 GUI 用于**物种检测与相机调参**，显示模型内部标签（如 `pepper`），不执行
-成熟度分类、深度锁定或采摘。完整两阶段结果请查看正式感知节点的
+此 GUI 用于**物种检测、熟度检查与相机调参**，显示模型内部标签（如 `pepper`）及熟度置信度，
+不执行深度锁定或采摘。正式任务的两阶段结果请查看感知节点的
 `/fruit_perception/camera/annotated_image` 与 `/fruit_perception/decision`；
 正式输出 A 区为 `ripe/unripe`，C 区辣椒为 `chili_ripe/chili_unripe`。
 

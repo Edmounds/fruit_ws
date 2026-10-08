@@ -4,6 +4,7 @@
 #include <openvino/runtime/intel_gpu/properties.hpp>
 #include <openvino/runtime/properties.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <realsense2_camera_msgs/msg/rgbd.hpp>
 #include <sensor_msgs/image_encodings.hpp>
@@ -237,22 +238,38 @@ public:
         on_observation_window(message);
       });
 
-    const auto current_area_topic = declare_parameter(
-      "current_area_topic", "/fruit_mission/current_area");
-    current_area_subscription_ = create_subscription<std_msgs::msg::String>(
-      current_area_topic, rclcpp::QoS(1).reliable(),
-      [this](std_msgs::msg::String::ConstSharedPtr message) {
-        if (message->data == "A" || message->data == "B" ||
-        message->data == "C" || message->data == "D")
-        {
-          const char previous = current_area_.exchange(message->data.front());
-          if (previous != message->data.front()) {
-            target_selection_generation_.fetch_add(1U);
+    const auto zone = declare_parameter("zone", "A");
+    if (zone != "A" && zone != "B" && zone != "C") {
+      throw std::invalid_argument("zone must be A, B or C");
+    }
+    zone_.store(zone.front());
+    zone_parameter_callback_ = add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> & parameters) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        char next_zone = zone_.load();
+        for (const auto & parameter : parameters) {
+          if (parameter.get_name() != "zone") {
+            continue;
           }
-          return;
+          if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_STRING ||
+          (parameter.as_string() != "A" && parameter.as_string() != "B" &&
+          parameter.as_string() != "C"))
+          {
+            result.successful = false;
+            result.reason = "zone must be A, B or C";
+            return result;
+          }
+          next_zone = parameter.as_string().front();
         }
-        RCLCPP_WARN(
-          get_logger(), "Ignoring invalid current area '%s'", message->data.c_str());
+        std::lock_guard<std::mutex> lock(window_mutex_);
+        if (zone_.load() != next_zone) {
+          zone_.store(next_zone);
+          current_window_.valid = false;
+          target_selection_generation_.fetch_add(1U);
+          RCLCPP_INFO(get_logger(), "Perception zone changed to %c; observation closed", next_zone);
+        }
+        return result;
       });
 
     const auto expected_fruit_type_topic = declare_parameter(
@@ -316,7 +333,7 @@ public:
       "A/C vegetable", DetectionLabelSet::kVegetableSpecies);
     initialize_model(
       fruit_model_, model_root + "/fruit_type/best.onnx", 1U,
-      "B/D fruit", DetectionLabelSet::kFruitSpecies);
+      "B fruit", DetectionLabelSet::kFruitSpecies);
     ripeness_classifier_.initialize(core_, model_root, ripeness_model_);
 
     rgbd_heartbeat_publisher_ = create_publisher<std_msgs::msg::Header>(
@@ -563,14 +580,13 @@ private:
           context.is_harvest_window = true;
           context.start_sec = current_window_.start_sec;
           context.start_nanosec = current_window_.start_nanosec;
-          context.area = current_window_.area;
           context.expected_type = current_window_.expected_type;
         } else {
           context.window_id = "";
           context.is_harvest_window = false;
-          context.area = current_area_.load();
           context.expected_type = expected_fruit_type();
         }
+        context.area = zone_.load();
       }
       context.rgb_stamp = rgbd->rgb.header.stamp;
       context.depth_stamp = rgbd->depth.header.stamp;
@@ -614,8 +630,6 @@ private:
       const char area = context.area;
       std::vector<Detection> classified;
       classified.reserve(detections.size());
-      std::vector<double> maturity_confidences;
-      maturity_confidences.reserve(detections.size());
       std::size_t roi_count = 0U;
       for (auto detection : detections) {
         const auto box = to_original_box(detection, stream.transform);
@@ -623,7 +637,6 @@ private:
           continue;
         }
         if (detection.type == "bad") {
-          maturity_confidences.push_back(0.0);
           classified.push_back(std::move(detection));
           continue;
         }
@@ -645,12 +658,14 @@ private:
           RCLCPP_DEBUG(
             get_logger(), "%s: %s probability=%.4f", detection.type.c_str(),
             maturity.maturity.c_str(), maturity.confidence);
+          detection.species = detection.type;
+          detection.maturity = maturity.maturity;
+          detection.maturity_confidence = maturity.confidence;
           // Retain species internally even in A, so species flips count as conflicts.
           if (detection.type == "pepper") {
             detection.type = "chili";
           }
           detection.type += "_" + maturity.maturity;
-          maturity_confidences.push_back(maturity.confidence);
           classified.push_back(std::move(detection));
         } catch (const std::exception & classification_error) {
           RCLCPP_ERROR_THROTTLE(
@@ -673,6 +688,11 @@ private:
       const auto outputs = make_detection_outputs(
         detections, stream.transform, stream.aligned_depth->image,
         stream.depth_camera_info);
+      for (std::size_t index = 0U; index < outputs.size(); ++index) {
+        if (outputs[index].has_point) {
+          detections[index].depth_m = outputs[index].point.z;
+        }
+      }
       result.detections.reserve(outputs.size());
       for (const auto & output : outputs) {
         msg::FruitDetection item;
@@ -704,7 +724,7 @@ private:
 
       if (in_window) {
         result.observation_window_id = context.window_id;
-        if (area == 'B' || area == 'D') {
+        if (area == 'B') {
           std::vector<BTargetCandidate> candidates;
           candidates.reserve(outputs.size());
           for (std::size_t index = 0U; index < outputs.size(); ++index) {
@@ -726,7 +746,7 @@ private:
                   static_cast<double>(output.roi.y) +
                   static_cast<double>(output.roi.height) * 0.5},
                 static_cast<std::size_t>(stream.transform.original_width),
-                static_cast<double>(output.confidence), maturity_confidences[index]});
+                static_cast<double>(output.confidence), detections[index].maturity_confidence});
           }
 
           const auto target_update = stream.b_target_selector->update(candidates);
@@ -772,7 +792,7 @@ private:
             candidates.push_back(
               CameraTargetCandidate{
                 output.point, static_cast<double>(output.confidence), 1.0 - horizontal_offset,
-                output.type, maturity_confidences[index]});
+                output.type, detections[index].maturity_confidence});
           }
 
           const auto target_update = stream.target_selector->update(candidates, expected_type);
@@ -847,7 +867,7 @@ private:
         RCLCPP_INFO(
           get_logger(), "camera performance: engine=%s area=%c fps=%.2f "
           "processing_ms=%.2f detector_ms=%.2f classification_ms=%.2f rois_per_frame=%.2f",
-          ripeness_model_.c_str(), current_area_.load(), frames / statistics_seconds,
+          ripeness_model_.c_str(), area, frames / statistics_seconds,
           stream.total_processing_ms / frames, stream.total_detection_ms / frames,
           stream.total_classification_ms / frames, stream.classified_rois / frames);
         stream.statistics_started = now;
@@ -857,11 +877,6 @@ private:
       }
 
       if (stream.image_publisher->get_subscription_count() > 0U) {
-        if (area == 'A') {
-          for (auto & detection : detections) {
-            detection.type = business_type(detection.type);
-          }
-        }
         cv::Mat annotated = stream.frame->image.clone();
         draw_annotations(annotated, detections, stream.transform, stream.displayed_fps);
         const auto annotated_message = cv_bridge::CvImage(
@@ -923,7 +938,7 @@ private:
     if (area == 'A' || area == 'C') {
       return stream.vegetable_request;
     }
-    if (area == 'B' || area == 'D') {
+    if (area == 'B') {
       return stream.fruit_request;
     }
     return nullptr;
@@ -937,6 +952,14 @@ private:
     }
     std::lock_guard<std::mutex> lock(window_mutex_);
     if (cmd->valid == 1) {
+      if (cmd->purpose == "harvest" && cmd->area != zone_.load()) {
+        current_window_.valid = false;
+        target_selection_generation_.fetch_add(1U);
+        RCLCPP_WARN(
+          get_logger(), "Ignoring harvest window for area %c; zone parameter is %c",
+          cmd->area, zone_.load());
+        return;
+      }
       current_window_.window_id = cmd->window_id;
       current_window_.valid = true;
       current_window_.start_sec = cmd->start_sec;
@@ -980,7 +1003,8 @@ private:
   BTargetSelectorConfig b_target_selector_config_{8U, 2U, 0.03, 2.0};
   std::atomic<std::uint64_t> target_selection_generation_{0U};
   std::atomic<bool> stopping_{false};
-  std::atomic<char> current_area_{'A'};
+  std::atomic<char> zone_{'A'};
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr zone_parameter_callback_;
 
   struct ActiveWindow
   {
@@ -999,7 +1023,6 @@ private:
   rclcpp::Publisher<msg::FruitDetections>::SharedPtr preview_detections_publisher_;
   rclcpp::Publisher<std_msgs::msg::Header>::SharedPtr rgbd_heartbeat_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr observation_window_subscription_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr current_area_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr expected_fruit_type_subscription_;
   mutable std::mutex expected_fruit_type_mutex_;
   std::string expected_fruit_type_;

@@ -11,7 +11,7 @@ import uuid
 
 from geometry_msgs.msg import PointStamped
 import rclpy
-from rclpy.duration import Duration
+from rcl_interfaces.srv import SetParametersAtomically
 from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
 from std_msgs.msg import Bool, String
@@ -23,7 +23,7 @@ from fruit_mission.camera_target_planner_client import (
     store_preset_name,
 )
 from fruit_mission.config import load_target_offsets
-from fruit_mission.script_hardware_client import latched_qos, reliable_qos
+from fruit_mission.script_hardware_client import latched_qos, reliable_qos, set_perception_zone
 
 
 def _bounded_timeout(value):
@@ -45,14 +45,13 @@ class CameraArmTargetClient(Node):
         )
         self.declare_parameter('camera_extrinsic_config', DEFAULT_EXTRINSIC_CONFIG)
         self.declare_parameter('observation_window_topic', '/fruit_mission/observation_window')
-        self.declare_parameter('current_area_topic', '/fruit_mission/current_area')
         self.declare_parameter('decision_topic', '/fruit_perception/decision')
         self.declare_parameter('bridge_ready_topic', '/auto_serial_bridge/ready')
         self.declare_parameter('detection_timeout_sec', 10.0)
         self.declare_parameter('endpoint_timeout_sec', 10.0)
-        self.declare_parameter('current_area_delivery_timeout_sec', 1.0)
+        self.declare_parameter('perception_zone_delivery_timeout_sec', 1.0)
         for name in ('detection_timeout_sec',
-                     'endpoint_timeout_sec', 'current_area_delivery_timeout_sec'):
+                     'endpoint_timeout_sec', 'perception_zone_delivery_timeout_sec'):
             _bounded_timeout(self.get_parameter(name).value)
 
         self._active_window_id = None
@@ -67,8 +66,8 @@ class CameraArmTargetClient(Node):
 
         self._window_pub = self.create_publisher(
             String, self.get_parameter('observation_window_topic').value, reliable_qos(10))
-        self._area_pub = self.create_publisher(
-            String, self.get_parameter('current_area_topic').value, latched_qos())
+        self._perception_zone_client = self.create_client(
+            SetParametersAtomically, '/fruit_perception_node/set_parameters_atomically')
 
         self.create_subscription(
             Bool, self.get_parameter('bridge_ready_topic').value,
@@ -175,23 +174,11 @@ class CameraArmTargetClient(Node):
         self.get_logger().debug(f"Observation window closed: id='{window_id}'")
 
     def report_current_area(self, zone):
-        """Deliver zone selection only after the perception subscriber is discovered."""
-        if zone not in ('A', 'B', 'C'):
-            raise ValueError('Zone must be A, B or C')
-        topic = self._area_pub.topic_name
-        if not self.wait_until(
-            lambda: any(info.node_name == 'fruit_perception_node'
-                        for info in self.get_subscriptions_info_by_topic(topic)),
-            self.get_parameter('endpoint_timeout_sec').value,
-        ):
-            self.get_logger().error('Perception area subscriber discovery timed out')
-            return False
-        self._area_pub.publish(String(data=zone))
-        if not self._area_pub.wait_for_all_acked(Duration(seconds=_bounded_timeout(
-                self.get_parameter('current_area_delivery_timeout_sec').value))):
-            self.get_logger().error('Perception area delivery acknowledgment timed out')
-            return False
-        return True
+        """Require acknowledgment of the perception zone parameter."""
+        return set_perception_zone(
+            self, self._perception_zone_client, zone, self.wait_until,
+            _bounded_timeout(self.get_parameter('endpoint_timeout_sec').value),
+            _bounded_timeout(self.get_parameter('perception_zone_delivery_timeout_sec').value))
 
     def _wait_for_target(self, zone: str, window_id: str, timeout: float = 10.0):
         deadline = time.monotonic() + _bounded_timeout(timeout)
@@ -304,10 +291,10 @@ class CameraArmTargetClient(Node):
             target_offset_b_down_m=target_offset_b_down_m,
         )
 
-        # 3. Publish current area so fruit_perception_node loads the correct model
+        # 3. Set the perception zone parameter before observing
         if not self.report_current_area(zone):
             return 1
-        self.get_logger().info(f'Delivered current area: {zone}')
+        self.get_logger().info(f'Confirmed perception zone: {zone}')
 
         # 4. Move arm to home preset first
         self.get_logger().info('Moving arm to home preset...')
