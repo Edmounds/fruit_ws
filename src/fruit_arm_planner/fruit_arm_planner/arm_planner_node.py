@@ -118,7 +118,7 @@ class ArmPlannerNode(Node):
         self.current_joints: Optional[Tuple[float, float, float, float]] = None
 
         # --------------------------------------------------------------------
-        # 3. 对接底层硬件通信 (fruit_hardware_bridge / auto_serial_bridge)
+        # 3. 对接底层硬件通信 (auto_serial_bridge)
         # --------------------------------------------------------------------
         hardware_qos = QoSProfile(
             depth=MAX_TRAJECTORY_POINTS,

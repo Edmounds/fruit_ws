@@ -11,7 +11,7 @@
 - 设备与波特率从 source YAML 读取，当前为 `/dev/ttyACM0`、115200，不应假定所有入口都用 `/dev/stm32`。
 - 新协议不含旧 `ArmTarget`、`StateMachineCommand`、`ExecutionCallback`。
   mission 视觉目标、观察、二维码、Harvest 和 Home 均通过 `fruit_arm_planner` 服务；区域状态只通过 ROS 话题通知感知/扫码节点。
-- `fruit_hardware_bridge` 当前仅提供串口 launch；`auto_serial_bridge` 负责帧、CRC、ACK、重传和心跳，不实现任务或 IK。
+- `auto_serial_bridge` 负责串口帧、CRC、ACK、重传和心跳，不实现任务或 IK。
 
 ## 消息概览
 

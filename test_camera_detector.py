@@ -531,15 +531,15 @@ def ensure_arm_communication(
         else:  # not has_bridge and has_planner
             print(
                 'Arm planner detected, serial bridge missing; '
-                'launching fruit_hardware_bridge.launch.py...',
+                'launching auto_serial_bridge.launch.py...',
                 flush=True,
             )
             bridge_proc, log_p = launch_background_process(
-                ['ros2', 'launch', 'fruit_hardware_bridge', 'fruit_hardware_bridge.launch.py',
+                ['ros2', 'launch', 'auto_serial_bridge', 'auto_serial_bridge.launch.py',
                  'log_level:=info'],
                 'test_camera_detector_serial.log',
             )
-            print(f'Started fruit_hardware_bridge launch; log={log_p}', flush=True)
+            print(f'Started auto_serial_bridge launch; log={log_p}', flush=True)
 
         if debug_proc is not None or planner_proc is not None or bridge_proc is not None:
             print('Waiting up to 10s for arm telemetry...', flush=True)

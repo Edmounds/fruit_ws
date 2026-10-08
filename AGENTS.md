@@ -19,7 +19,6 @@ This ROS 2 robot competes in the Agricultural Robot / Fruit-Picking Robot event 
 | `src/fruit_perception/` | Single-camera detection, depth targets and C++ components; no arm actuation. |
 | `src/fruit_qr_planner/` | B/C QR plans from camera images; no harvesting sequence execution. |
 | `src/navigation/` | Point-LIO odometry, `loam_interface` TF, `fruit_navigation` waypoint action and `fruit_nav_bringup` integration. Current navigation uses `odom`, not map localization. |
-| `src/fruit_hardware_bridge/` | Hardware/serial bringup; do not move IK or competition decisions here. |
 | `src/auto_serial_bridge/` | Independently cloned, parent-Git-ignored package: protocol generation, framing, ACK/retries and heartbeat only. Changes here are not captured by parent commits. |
 | `src/driver/` | Vendor drivers; `realsense-ros` is an SSH Git submodule. Livox source currently has `COLCON_IGNORE`; do not remove it casually. |
 | `src/joy_linux/` | Ordinary in-repository ROS 2 package; never turn it into a submodule or nested Git repository. |

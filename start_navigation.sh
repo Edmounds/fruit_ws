@@ -4,7 +4,7 @@ set -eo pipefail
 
 WORKSPACE=/home/rc4/fruit_ws
 NAV_LAUNCH="$WORKSPACE/src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.py"
-HARDWARE_LAUNCH="$WORKSPACE/src/fruit_hardware_bridge/launch/fruit_hardware_bridge.launch.py"
+HARDWARE_LAUNCH="$WORKSPACE/src/auto_serial_bridge/launch/auto_serial_bridge.launch.py"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
 MONITOR_SCRIPT="$WORKSPACE/scripts/robot_debug_monitor.sh"
 

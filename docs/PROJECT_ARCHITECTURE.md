@@ -53,7 +53,7 @@ camera 识别/深度目标 ->| 顺序、播报、日志、决策  |
 必须保持以下边界：
 
 1. 比赛业务节点不直接读写串口字段，只调用有明确语义的 ROS 2 topic、service 或 action。
-2. 机械臂客户端按 [planner API](../src/fruit_arm_planner/docs/03_INTERFACES_AND_API.md) 调用服务，不直接发送轨迹或串口字段；`fruit_hardware_bridge` 当前只提供串口启动入口，没有实现语义或 task/callback 映射节点。
+2. 机械臂客户端按 [planner API](../src/fruit_arm_planner/docs/03_INTERFACES_AND_API.md) 调用服务，不直接发送轨迹或串口字段；串口通信由 `auto_serial_bridge` 统一承载。
 3. `auto_serial_bridge` 只处理串口帧、代码生成、握手、心跳、校验和可靠传输，不承载比赛流程。
 4. 下位机不决定 A/B/C 顺序，不承担笛卡尔 IK；planner 下发硬件关节轨迹，并以匹配 `trajectory_id` 的新 `ArmStatus` 终态判断执行结果。正式 mission 姿态调用 `execute_preset`，不再调用旧方向/恢复接口。
 5. 只有速度仲裁节点能向串口通信层发布最终底盘速度，禁止导航和任务节点同时直接控制底盘。
@@ -85,7 +85,6 @@ fruit_ws/src/
 │   └── fruit_nav_bringup/        # 纯里程计导航集成 bringup
 ├── auto_serial_bridge/           # 串口协议生成与传输
 ├── fruit_hardware_interfaces/    # 轨迹、控制模式和状态 msg
-├── fruit_hardware_bridge/        # 串口启动入口（未实现语义映射）
 ├── fruit_arm_interfaces/         # planner 三类运动 service 定义
 ├── fruit_arm_planner/            # 4-DOF 机械臂运动学解算、关节偏置映射与轨迹规划
 ├── fruit_perception/             # 单 camera、观察窗口与两阶段 OpenVINO

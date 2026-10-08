@@ -13,8 +13,8 @@ def generate_launch_description():
     with open(serial_config, encoding='utf-8') as config_file:
         default_port = yaml.safe_load(config_file)['serial_controller']['ros__parameters']['port']
     bridge_launch = (
-        '/home/rc4/fruit_ws/src/fruit_hardware_bridge/launch/'
-        'fruit_hardware_bridge.launch.py'
+        '/home/rc4/fruit_ws/src/auto_serial_bridge/launch/'
+        'auto_serial_bridge.launch.py'
     )
     planner_launch = (
         '/home/rc4/fruit_ws/src/fruit_arm_planner/launch/'
