@@ -70,6 +70,14 @@ Mission 和单点客户端在缓存结果前检查当前窗口 ID 及合法窗�
 
 ## 常用调试命令
 
+RobViz 预览复用 `/fruit_perception/camera/preview_detections` 的同戳光学检测。
+Python 节点发布同戳 `/fruit_perception/camera/base_preview_detections`。
+这两路元数据均不是抓取授权，不改变观察窗口或 `/fruit_perception/decision`。
+Base 要求采集时连续实测停稳，无效时为 N/A。
+图像组件保持同容器 intra-process raw 数据路径。
+RGB 和 Native Depth 的 JPEG 预算相互独立。
+配置重载成功消息精确确认版本和 HTTP 启动会话。
+
 ```bash
 # 启动感知与扫码（不启动串口桥与任务）
 ros2 launch fruit_perception fruit_perception.launch.py start_serial_bridge:=false

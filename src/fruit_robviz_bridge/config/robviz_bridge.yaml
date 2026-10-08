@@ -1,37 +1,25 @@
 fruit_robviz_image_bridge:
   ros__parameters:
-    camera_extrinsic_config: "/home/rc4/fruit_ws/src/fruit_mission/config/camera_extrinsic.yaml"
-    arm_presets_config: "/home/rc4/fruit_ws/src/fruit_arm_planner/config/arm_presets.yaml"
     camera_frame_id: "camera_color_optical_frame"
     arm_frame_id: "arm_base_link"
     annotated_topic: "/fruit_perception/camera/annotated_image"
     depth_topic: "/camera/depth/image_rect_raw"
     detections_topic: "/fruit_perception/camera/preview_detections"
+    base_detections_topic: "/fruit_perception/camera/base_preview_detections"
     rgb_output_topic: "/fruit_perception/camera/annotated_image/compressed"
     depth_output_topic: "/fruit_perception/camera/native_depth/compressed"
-    arm_telemetry_topic: "/arm_planner_node/joint_states"
-    arm_status_topic: "/fruit_hardware_bridge/arm/status"
-    odometry_topic: "/odometry"
-    odom_frame: "odom"
-    base_linear_speed_threshold_mps: 0.03
-    base_angular_speed_threshold_rps: 0.08
-    arm_joint_speed_threshold_rps: 0.05
-    status_max_age_sec: 0.25
-    rgb.bandwidth_mbps: 1.5
-    rgb.auto_quality: true
-    rgb.quality: 70
-    rgb.width: 640
-    rgb.height: 360
-    rgb.max_fps: 10.0
-    depth.bandwidth_mbps: 0.8
-    depth.auto_quality: true
-    depth.quality: 70
-    depth.width: 424
-    depth.height: 240
-    depth.max_fps: 10.0
 
 fruit_robviz_config_client:
   ros__parameters:
     config_url: "http://127.0.0.1:8000/api/image-settings"
     image_node: "/fruit_robviz_image_bridge"
     request_timeout_sec: 5.0
+    camera_extrinsic_config: "/home/rc4/fruit_ws/src/fruit_mission/config/camera_extrinsic.yaml"
+    arm_presets_config: "/home/rc4/fruit_ws/src/fruit_arm_planner/config/arm_presets.yaml"
+    mission_config: "/home/rc4/fruit_ws/src/fruit_mission/config/fruit_mission.yaml"
+    navigation_config: "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/config/reality/pointlio_params.yaml"
+    recorder_config: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/config/waypoint_recorder.yaml"
+    camera_frame_id: "camera_color_optical_frame"
+    arm_frame_id: "arm_base_link"
+    odom_frame: "odom"
+    base_frame_id: "base_link"

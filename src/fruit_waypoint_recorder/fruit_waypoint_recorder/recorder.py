@@ -279,6 +279,10 @@ class TestPointStore:
         """Load test points from a waypoint-maker YAML file."""
         with input_path.open("r", encoding="utf-8") as stream:
             document = yaml.safe_load(stream)
+        self.load_document(document, input_path)
+
+    def load_document(self, document: dict, input_path: Path) -> None:
+        """Validate a complete snapshot before replacing points or undo history."""
         if not isinstance(document, dict):
             raise ValueError("test waypoint YAML must be a mapping")
         if document.get("schema_version") != 1:
@@ -328,6 +332,12 @@ class TestPointStore:
                 qw=float(orientation["w"]),
                 yaw=yaw,
             )
+            if not all(math.isfinite(value) for value in (
+                pose.x, pose.y, pose.z, pose.qx, pose.qy, pose.qz, pose.qw, pose.yaw
+            )):
+                raise ValueError(f"test point {name} contains a non-finite pose")
+            if math.hypot(pose.qx, pose.qy, pose.qz, pose.qw) <= 1e-6:
+                raise ValueError(f"test point {name} contains a zero-length quaternion")
             loaded.append(TestPoint(name=name, point_type=point_type, pose=pose))
             seen.add(name)
 

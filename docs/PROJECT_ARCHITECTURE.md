@@ -111,6 +111,15 @@ fruit_ws/src/
 
 ### 4.2 轴向定点导航控制器 (`fruit_navigation`)
 
+RobViz 的 Maker 沿用 recorder 的 Action 客户端，不添加导航控制器。
+未知 Action 结果保持目标所有权，并阻止下一段。
+取消终态后的实际里程计样本必须覆盖连续停稳窗口。
+MarkerArray 锁存完整航点快照，晚连接无需新的编辑操作。
+
+Web RGB 和 Native Depth 采用 `fruit_robviz_bridge` 的同容器 JPEG 组件。
+Python 配置节点只读检测与遥测，复用 mission 变换生成同戳 Base 元数据。
+它不接收 raw image，不执行 IK、机械臂控制或比赛编排。
+
 - `axis_waypoint_action_server` 提供 `/follow_waypoints` Action 接口。
 - 支持按轴行走、自动倒车判定，以及 `final_yaw_mode=rotate_at_goal|blend_on_path`；没有逐点 `yaw_mode` 或 `reverse` 模式。
 - 速度输出经由 `twist_mux` 输出至串口控制器。

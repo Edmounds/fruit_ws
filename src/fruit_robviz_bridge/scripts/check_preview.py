@@ -12,6 +12,7 @@ import numpy as np
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage
 
 
@@ -27,13 +28,13 @@ class PreviewCheck(Node):
                 CompressedImage,
                 "/fruit_perception/camera/annotated_image/compressed",
                 lambda message: self._on_image("rgb", message),
-                1,
+                qos_profile_sensor_data,
             ),
             self.create_subscription(
                 CompressedImage,
                 "/fruit_perception/camera/native_depth/compressed",
                 lambda message: self._on_image("depth", message),
-                1,
+                qos_profile_sensor_data,
             ),
         ]
 
@@ -73,12 +74,8 @@ def main(args=None) -> int:
     elapsed = max(time.monotonic() - node.started, 1e-6)
     for name in ("rgb", "depth"):
         node.get_logger().info(
-            "%s frames=%d fps=%.2f jpeg_bytes=%d decoded=%s",
-            name,
-            node.frames[name],
-            node.frames[name] / elapsed,
-            node.bytes[name],
-            node.first_decode[name],
+            f"{name} frames={node.frames[name]} fps={node.frames[name] / elapsed:.2f} "
+            f"jpeg_bytes={node.bytes[name]} decoded={node.first_decode[name]}",
         )
     return 0 if all(node.first_decode.values()) else 1
 

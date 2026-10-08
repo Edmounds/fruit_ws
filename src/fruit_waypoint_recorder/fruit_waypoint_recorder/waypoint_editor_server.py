@@ -15,15 +15,18 @@ from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import hashlib
 import logging
 import math
 import mimetypes
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import tempfile
 import threading
+import uuid
 from typing import Any, Dict, List, Mapping, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -118,6 +121,7 @@ class ImageSettingsStore:
 
     def __post_init__(self) -> None:
         self._lock = threading.RLock()
+        self.settings["session"] = uuid.uuid4().hex
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -127,6 +131,8 @@ class ImageSettingsStore:
         validated = validate_image_settings(payload)
         with self._lock:
             current_version = int(self.settings["version"])
+            if payload.get("session") != self.settings["session"]:
+                raise VersionConflict("图像配置服务已重启，请重新加载")
             expected_version = payload.get("version")
             if expected_version is not None:
                 if (
@@ -136,6 +142,7 @@ class ImageSettingsStore:
                 ):
                     raise VersionConflict("图像配置版本已变化，请重新加载")
             validated["version"] = current_version + 1
+            validated["session"] = self.settings["session"]
             self.settings = validated
             return copy.deepcopy(validated)
 
@@ -143,7 +150,7 @@ class ImageSettingsStore:
         with self._lock:
             return _atomic_save_json(
                 self.path,
-                self.settings,
+                {key: value for key, value in self.settings.items() if key != "session"},
                 backup_root / "image-settings",
             )
 
@@ -235,8 +242,6 @@ def load_file_catalog(config: EditorConfig) -> Dict[str, EditorFile]:
 
 def document_version(path: Path) -> str:
     """Return a content version that changes for every external edit."""
-    import hashlib
-
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -397,12 +402,15 @@ def _point_yaw(item: Mapping[str, Any], name: str) -> float:
     )
 
 
-def load_waypoint_document(editor_file: EditorFile) -> Tuple[dict, List[dict]]:
+def load_waypoint_document(
+    editor_file: EditorFile, content: bytes | None = None
+) -> Tuple[dict, List[dict]]:
     """Parse one allowlisted waypoint YAML into browser-facing point data."""
-    with editor_file.waypoint_file.open(encoding="utf-8") as stream:
-        document = _required_mapping(
-            yaml.safe_load(stream), f"{editor_file.waypoint_file.name}"
-        )
+    if content is None:
+        content = editor_file.waypoint_file.read_bytes()
+    document = _required_mapping(
+        yaml.safe_load(content), f"{editor_file.waypoint_file.name}"
+    )
     if document.get("schema_version") != 1:
         raise ValueError("waypoint YAML 的 schema_version 必须为 1")
     if document.get("frame_id") != editor_file.frame_id:
@@ -450,6 +458,13 @@ def load_waypoint_document(editor_file: EditorFile) -> Tuple[dict, List[dict]]:
         )
         names.add(name)
     return dict(document), points
+
+
+def load_waypoint_snapshot(editor_file: EditorFile) -> Tuple[dict, List[dict], str]:
+    """Bind parsed points and their version to the same opened byte snapshot."""
+    content = editor_file.waypoint_file.read_bytes()
+    document, points = load_waypoint_document(editor_file, content)
+    return document, points, hashlib.sha256(content).hexdigest()
 
 
 def load_template_geometry(
@@ -630,8 +645,7 @@ def save_waypoint_document(
 ) -> Tuple[Path | None, str]:
     """Validate, back up, and atomically replace one waypoint YAML."""
     with _document_lock(editor_file.waypoint_file):
-        document, _ = load_waypoint_document(editor_file)
-        current_version = document_version(editor_file.waypoint_file)
+        document, _, current_version = load_waypoint_snapshot(editor_file)
         if expected_version is not None and expected_version != current_version:
             raise VersionConflict("waypoint 文件已被其他进程修改，请重新加载")
         template = load_template_geometry(editor_file)
@@ -711,10 +725,18 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
 
     def _security_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
+        host = self.headers.get("Host", "")
+        host_name = host.split(":")[0].strip()
+        remote_ws = ""
+        if host_name and re.match(r"^[a-zA-Z0-9.\-_\[\]]+$", host_name):
+            remote_ws = (
+                f" ws://{host_name}:8765 wss://{host_name}:8765 "
+                f"ws://{host_name}:8000 wss://{host_name}:8000"
+            )
         self.send_header("Content-Security-Policy", (
             "default-src 'self'; base-uri 'none'; object-src 'none'; "
             "frame-ancestors 'none'; img-src 'self' data: blob:; "
-            "connect-src 'self' ws://127.0.0.1:* ws://localhost:*; "
+            f"connect-src 'self' ws://127.0.0.1:* ws://localhost:*{remote_ws}; "
             "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; "
             "style-src 'self' 'unsafe-inline'"
         ))
@@ -830,11 +852,12 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, {"status": "ok"})
                 return
             if parsed.path == "/api/image-settings":
+                snapshot = self.server.image_settings.snapshot()
                 self._send_json(
                     HTTPStatus.OK,
                     {
-                        "settings": self.server.image_settings.snapshot(),
-                        "version": self.server.image_settings.snapshot()["version"],
+                        "settings": snapshot,
+                        "version": snapshot["version"],
                     },
                 )
                 return
@@ -866,7 +889,7 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/document":
                 editor_file = self._catalog_file(query)
-                document, points = load_waypoint_document(editor_file)
+                document, points, version = load_waypoint_snapshot(editor_file)
                 template = load_template_geometry(editor_file)
                 points = order_actual_points(
                     points, template, editor_file.formal
@@ -881,7 +904,7 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                         "points": points,
                         "template": template,
                         "formal": editor_file.formal,
-                        "version": document_version(editor_file.waypoint_file),
+                        "version": version,
                         "map": load_map_info(editor_file),
                     },
                 )

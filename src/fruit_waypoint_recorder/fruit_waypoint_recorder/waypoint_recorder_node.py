@@ -7,8 +7,8 @@
 
 import json
 import math
+import threading
 import time
-from collections import deque
 from functools import partial
 from pathlib import Path
 
@@ -49,6 +49,7 @@ from fruit_waypoint_recorder.waypoint_editor_server import (
     RequestError,
     document_version,
     load_waypoint_document,
+    load_waypoint_snapshot,
     save_waypoint_document,
 )
 
@@ -69,8 +70,8 @@ def latched_qos() -> QoSProfile:
 class WaypointRecorderNode(Node):
     """Edit and exercise named points in the configured waypoint file."""
 
-    def __init__(self) -> None:
-        super().__init__("fruit_waypoint_recorder")
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__("fruit_waypoint_recorder", *args, **kwargs)
         self.declare_parameter("frame_id", "map")
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("waypoint_file", "")
@@ -187,14 +188,12 @@ class WaypointRecorderNode(Node):
         self._backup_dir = backup_dir
         self._template_types = self._load_template_types(template_path)
         self._template_order = list(self._template_types)
-        self._test_store = TestPointStore(waypoint_path, self._frame_id)
-        load_waypoint_document(self._file_catalog["odom"])
-        self._test_store.load(waypoint_path)
+        self._test_store, self._document_version = self._load_store_snapshot(
+            self._file_catalog["odom"]
+        )
         self._file_id = "odom"
         self._formal = True
-        self._document_version = document_version(waypoint_path)
         self._loaded_fingerprint = self._points_fingerprint()
-        self._validate_formal_store()
         self._configured_auto_name_prefix = str(
             self.get_parameter("auto_name_prefix").value
         ).strip()
@@ -202,10 +201,14 @@ class WaypointRecorderNode(Node):
             self.get_parameter("auto_name_file").value
         ).strip()
         self._auto_name_sequence = self._load_auto_name_sequence(auto_name_file)
+        self._lock = threading.RLock()
+        self._nav_run_id = 0
         self._sampling = False
         self._active_test_goal = False
         self._active_goal_handle = None
         self._cancel_requested = False
+        self._cancel_request_time = None
+        self._navigation_unknown = False
         self._waiting_standstill = False
         self._standstill_timer = None
         self._standstill_deadline = 0.0
@@ -213,7 +216,8 @@ class WaypointRecorderNode(Node):
         self._last_message = f"Loaded waypoint file {waypoint_path}"
         self._last_odom_velocity = None
         self._last_odom_wall_time = 0.0
-        self._standstill_samples = deque(maxlen=3)
+        self._last_odom_stamp_sec = 0.0
+        self._standstill_start_wall_time = None
         self._last_backup_path = ""
 
         self._tf_buffer = Buffer()
@@ -246,7 +250,7 @@ class WaypointRecorderNode(Node):
         self._marker_publisher = self.create_publisher(
             MarkerArray,
             self.get_parameter("marker_topic").value,
-            1,
+            latched_qos(),
         )
         self._command_subscription = self.create_subscription(
             String,
@@ -270,6 +274,9 @@ class WaypointRecorderNode(Node):
         self._publish_state()
         self.get_logger().info(f"Editing waypoint file {waypoint_path}")
 
+    def _is_busy(self) -> bool:
+        return self._sampling or self._active_test_goal
+
     def _on_command(self, message: String) -> None:
         try:
             payload = json.loads(message.data)
@@ -284,84 +291,94 @@ class WaypointRecorderNode(Node):
         if not isinstance(command, str):
             self._reject_command("command must be a string")
             return
+
+        if command in ("cancel", "cancel_navigation"):
+            with self._lock:
+                self._request_cancel()
+            return
+
         if command == "record":
             self._record_from_current_pose(payload)
-        elif command == "undo":
-            self._undo_waypoint()
-        elif command == "clear":
-            if self._sampling or self._active_test_goal:
-                self._reject_command("Cannot clear while busy")
+            return
+
+        with self._lock:
+            if self._is_busy():
+                self._reject_command(f"Cannot execute {command} while busy")
                 return
+
+            if command == "undo":
+                self._undo_waypoint()
+            elif command == "clear":
+                self._test_store.clear()
+                self._publish_state("Cleared waypoint file in memory")
+            elif command == "save":
+                try:
+                    self._save_waypoints()
+                except (OSError, TypeError, ValueError, RequestError) as error:
+                    self._reject_command(str(error))
+            elif command in ("run_next_test", "run_next_goal"):
+                self._run_next_test_segment(payload)
+            elif command in ("reset_test_cursor", "reset_run_cursor"):
+                self._test_store.reset_cursor()
+                self._publish_state("Reset route run cursor")
+            elif command in ("load_test_file", "load_waypoint_file"):
+                self._load_test_file(payload)
+            elif command in ("reload", "reload_file"):
+                self._reload_current_file(payload)
+            elif command == "set_final_yaw_mode":
+                self._set_final_yaw_mode(payload)
+            else:
+                self._reject_command(f"Unknown waypoint-maker command: {command}")
+
+    def _on_undo(self, _request, response):
+        with self._lock:
+            if self._is_busy():
+                response.success = False
+                response.message = "Cannot undo while busy"
+                self._publish_state(response.message)
+                return response
+            removed = self._test_store.undo()
+            response.success = removed is not None
+            response.message = (
+                f"Removed waypoint {removed.name}"
+                if removed is not None
+                else "No waypoint to undo"
+            )
+            self._publish_state(response.message)
+            return response
+
+    def _on_clear(self, _request, response):
+        with self._lock:
+            if self._is_busy():
+                response.success = False
+                response.message = "Cannot clear while busy"
+                self._publish_state(response.message)
+                return response
             self._test_store.clear()
-            self._publish_state("Cleared waypoint file in memory")
-        elif command == "save":
+            response.success = True
+            response.message = "Cleared waypoint file in memory"
+            self._publish_state(response.message)
+            return response
+
+    def _on_save(self, _request, response):
+        with self._lock:
+            if self._is_busy():
+                response.success = False
+                response.message = "Cannot save while busy"
+                self._publish_state(response.message)
+                return response
             try:
                 self._save_waypoints()
             except (OSError, TypeError, ValueError, RequestError) as error:
-                self._reject_command(str(error))
-        elif command in ("run_next_test", "run_next_goal"):
-            self._run_next_test_segment(payload)
-        elif command in ("cancel", "cancel_navigation"):
-            self._request_cancel()
-        elif command in ("reset_test_cursor", "reset_run_cursor"):
-            if self._active_test_goal or self._sampling:
-                self._reject_command("Cannot reset route cursor while busy")
-                return
-            self._test_store.reset_cursor()
-            self._publish_state("Reset route run cursor")
-        elif command in ("load_test_file", "load_waypoint_file"):
-            self._load_test_file(payload)
-        elif command == "set_final_yaw_mode":
-            self._set_final_yaw_mode(payload)
-        else:
-            self._reject_command(f"Unknown waypoint-maker command: {command}")
-
-    def _on_undo(self, _request, response):
-        if self._sampling or self._active_test_goal:
-            response.success = False
-            response.message = "Cannot undo while busy"
+                response.success = False
+                response.message = str(error)
+            else:
+                response.success = True
+                response.message = f"Saved waypoints to {self._test_store.output_path}"
             self._publish_state(response.message)
             return response
-        removed = self._test_store.undo()
-        response.success = removed is not None
-        response.message = (
-            f"Removed waypoint {removed.name}"
-            if removed is not None
-            else "No waypoint to undo"
-        )
-        self._publish_state(response.message)
-        return response
 
-    def _on_clear(self, _request, response):
-        if self._sampling or self._active_test_goal:
-            response.success = False
-            response.message = "Cannot clear while busy"
-            self._publish_state(response.message)
-            return response
-        self._test_store.clear()
-        response.success = True
-        response.message = "Cleared waypoint file in memory"
-        self._publish_state(response.message)
-        return response
-
-    def _on_save(self, _request, response):
-        if self._sampling or self._active_test_goal:
-            response.success = False
-            response.message = "Cannot save while busy"
-            self._publish_state(response.message)
-            return response
-        try:
-            self._save_waypoints()
-        except (OSError, TypeError, ValueError, RequestError) as error:
-            response.success = False
-            response.message = str(error)
-        else:
-            response.success = True
-            response.message = f"Saved waypoints to {self._test_store.output_path}"
-        self._publish_state(response.message)
-        return response
-
-    def _record_from_current_pose(self, payload) -> None:
+    def _prepare_record(self, payload):
         if self._sampling or self._active_test_goal:
             self._reject_command("Cannot record while busy")
             return
@@ -403,26 +420,36 @@ class WaypointRecorderNode(Node):
         ):
             return
 
-        self._sampling = True
-        self._publish_state("Sampling current pose")
+        return name, point_type, confirm_overwrite
+
+    def _record_from_current_pose(self, payload) -> None:
+        with self._lock:
+            prepared = self._prepare_record(payload)
+            if prepared is None:
+                return
+            name, point_type, confirm_overwrite = prepared
+            self._sampling = True
+            self._publish_state("Sampling current pose")
         message = "Waypoint recording failed"
         try:
             pose = self._sample_current_pose(name)
-            point = self._test_store.upsert(
-                name,
-                point_type,
-                pose,
-                overwrite=confirm_overwrite,
-                order=self._template_order if self._formal else None,
-            )
+            with self._lock:
+                point = self._test_store.upsert(
+                    name,
+                    point_type,
+                    pose,
+                    overwrite=confirm_overwrite,
+                    order=self._template_order if self._formal else None,
+                )
             message = f"Recorded {point.point_type} {point.name}"
             self.get_logger().info(message)
         except (RuntimeError, ValueError) as error:
             message = str(error)
             self.get_logger().error(message)
         finally:
-            self._sampling = False
-            self._publish_state(message)
+            with self._lock:
+                self._sampling = False
+                self._publish_state(message)
 
     def _can_record_test_point(
         self, name: str, point_type: str, confirm_overwrite: bool
@@ -552,43 +579,70 @@ class WaypointRecorderNode(Node):
         )
 
     def _on_odometry(self, message: Odometry) -> None:
+        now = time.monotonic()
         linear = message.twist.twist.linear
         angular = message.twist.twist.angular
         values = (linear.x, linear.y, linear.z, angular.x, angular.y, angular.z)
-        if not all(math.isfinite(float(value)) for value in values):
-            self._last_odom_velocity = None
-            self._last_odom_wall_time = time.monotonic()
-            self._standstill_samples.clear()
-            return
-        velocity = (
-            math.sqrt(linear.x * linear.x + linear.y * linear.y + linear.z * linear.z),
-            math.sqrt(angular.x * angular.x + angular.y * angular.y + angular.z * angular.z),
-        )
-        self._last_odom_velocity = velocity
-        self._last_odom_wall_time = time.monotonic()
-        if (
-            velocity[0] <= self._standstill_linear_speed_mps
-            and velocity[1] <= self._standstill_angular_speed_rps
-        ):
-            self._standstill_samples.append(self._last_odom_wall_time)
-        else:
-            self._standstill_samples.clear()
+        with self._lock:
+            stamp_sec = message.header.stamp.sec + message.header.stamp.nanosec * 1e-9
+            age = self.get_clock().now().nanoseconds * 1e-9 - stamp_sec
+            if (
+                message.header.frame_id != self._frame_id
+                or message.child_frame_id != self._base_frame
+                or stamp_sec <= 0 or age < 0 or age > self._odometry_max_age_sec
+                or stamp_sec <= self._last_odom_stamp_sec
+                or not all(math.isfinite(float(value)) for value in values)
+            ):
+                self._last_odom_velocity = None
+                self._last_odom_wall_time = now
+                self._standstill_start_wall_time = None
+                return
+            sample_time = now - age
+            velocity = (
+                math.sqrt(linear.x * linear.x + linear.y * linear.y + linear.z * linear.z),
+                math.sqrt(angular.x * angular.x + angular.y * angular.y + angular.z * angular.z),
+            )
+            if (
+                self._last_odom_wall_time > 0
+                and (sample_time - self._last_odom_wall_time) > self._odometry_max_age_sec
+            ):
+                self._standstill_start_wall_time = None
+            self._last_odom_velocity = velocity
+            self._last_odom_wall_time = sample_time
+            self._last_odom_stamp_sec = stamp_sec
+            if (
+                velocity[0] <= self._standstill_linear_speed_mps
+                and velocity[1] <= self._standstill_angular_speed_rps
+            ):
+                if self._standstill_start_wall_time is None:
+                    self._standstill_start_wall_time = sample_time
+            else:
+                self._standstill_start_wall_time = None
 
-    def _is_standstill(self) -> bool:
-        if self._last_odom_velocity is None:
-            return False
-        if time.monotonic() - self._last_odom_wall_time > self._odometry_max_age_sec:
-            return False
-        linear, angular = self._last_odom_velocity
-        if not (
-            linear <= self._standstill_linear_speed_mps
-            and angular <= self._standstill_angular_speed_rps
-        ):
-            return False
-        return bool(self._standstill_samples) and (
-            time.monotonic() - self._standstill_samples[0]
-            >= self._standstill_confirm_duration_sec
-        )
+    def _is_standstill(self, since_time: float | None = None) -> bool:
+        with self._lock:
+            now = time.monotonic()
+            if self._last_odom_velocity is None:
+                return False
+            if (now - self._last_odom_wall_time) > self._odometry_max_age_sec:
+                return False
+            linear, angular = self._last_odom_velocity
+            if (
+                linear > self._standstill_linear_speed_mps
+                or angular > self._standstill_angular_speed_rps
+            ):
+                return False
+            if self._standstill_start_wall_time is None:
+                return False
+            effective_start = self._standstill_start_wall_time
+            if since_time is not None:
+                if now < since_time:
+                    return False
+                effective_start = max(effective_start, since_time)
+            return (
+                self._last_odom_wall_time - effective_start
+                >= self._standstill_confirm_duration_sec
+            )
 
     def _undo_waypoint(self) -> None:
         if self._sampling or self._active_test_goal:
@@ -686,17 +740,23 @@ class WaypointRecorderNode(Node):
             sort_keys=True,
         )
 
-    def _validate_formal_store(self) -> None:
-        if not self._formal:
-            return
-        for point in self._test_store.points:
-            expected_type = self._template_types.get(point.name)
-            if expected_type is None:
-                raise ValueError(f"waypoint name is not in template: {point.name}")
-            if expected_type != point.point_type:
-                raise ValueError(
-                    f"point_type does not match template: {point.name}"
-                )
+    def _load_store_snapshot(self, editor_file):
+        document, _, version = load_waypoint_snapshot(editor_file)
+        candidate = TestPointStore(editor_file.waypoint_file, self._frame_id)
+        candidate.load_document(document, editor_file.waypoint_file)
+        if editor_file.formal:
+            for point in candidate.points:
+                if self._template_types.get(point.name) != point.point_type:
+                    raise ValueError(f"waypoint name/type does not match template: {point.name}")
+        return candidate, version
+
+    def _confirm_discard(self, payload):
+        confirm = payload.get("confirm_discard", False)
+        force = payload.get("force", False)
+        if not isinstance(confirm, bool) or not isinstance(force, bool):
+            raise ValueError("confirm_discard and force must be booleans")
+        if self._points_fingerprint() != self._loaded_fingerprint and not (confirm or force):
+            raise ValueError("Unsaved in-memory changes exist; confirm_discard=true required")
 
     def _next_auto_name(self) -> str:
         """Return the first formal name that is not already recorded."""
@@ -752,17 +812,18 @@ class WaypointRecorderNode(Node):
             self._reject_command("Cannot load waypoints while busy")
             return
         try:
+            self._confirm_discard(payload)
             file_id = payload.get("file_id", payload.get("id"))
             if not isinstance(file_id, str) or file_id not in self._file_catalog:
                 raise ValueError("file_id must be odom or debug")
             editor_file = self._file_catalog[file_id]
-            self._test_store.load(editor_file.waypoint_file)
+            candidate, version = self._load_store_snapshot(editor_file)
+            self._test_store = candidate
             self._file_id = file_id
             self._formal = editor_file.formal
-            self._validate_formal_store()
-            self._document_version = document_version(editor_file.waypoint_file)
+            self._document_version = version
             self._loaded_fingerprint = self._points_fingerprint()
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError) as error:
             self._reject_command(str(error))
             return
         self._publish_state(f"Loaded waypoints from {self._test_store.output_path}")
@@ -784,10 +845,35 @@ class WaypointRecorderNode(Node):
             raise ValueError(f"waypoint file does not exist: {resolved}")
         return resolved
 
-    def _run_next_test_segment(self, payload) -> None:
-        if self._active_test_goal:
-            self._reject_command("A route segment is already running")
+    def _reload_current_file(self, payload: dict) -> None:
+        if self._is_busy():
+            self._reject_command("Cannot reload waypoints while busy")
             return
+        editor_file = self._file_catalog[self._file_id]
+        try:
+            self._confirm_discard(payload)
+            candidate, version = self._load_store_snapshot(editor_file)
+            self._test_store = candidate
+            self._document_version = version
+            self._loaded_fingerprint = self._points_fingerprint()
+        except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError) as error:
+            self._reject_command(f"Failed to reload waypoints: {error}")
+            return
+        self._publish_state(f"Reloaded waypoints from {self._test_store.output_path}")
+
+    def _run_next_test_segment(self, payload) -> None:
+        if self._is_busy():
+            self._reject_command("A route segment or sampling is already running")
+            return
+        editor_file = self._file_catalog[self._file_id]
+        disk_ver = document_version(editor_file.waypoint_file)
+        if disk_ver != self._document_version:
+            self._reject_command(
+                f"Waypoint file was modified on disk (version {disk_ver[:8]} != "
+                f"loaded {self._document_version[:8]}); please reload waypoints first"
+            )
+            return
+
         final_yaw_value = payload.get(
             "final_yaw_mode", self._current_final_yaw_mode
         )
@@ -814,9 +900,13 @@ class WaypointRecorderNode(Node):
 
         goal = FollowWaypoints.Goal()
         goal.poses = [self._pose_stamped(pose) for pose in segment]
+        self._nav_run_id += 1
+        run_id = self._nav_run_id
         self._active_test_goal = True
         self._active_goal_handle = None
         self._cancel_requested = False
+        self._cancel_request_time = None
+        self._navigation_unknown = False
         self._waiting_standstill = False
         self._pending_test_cursor = after_cursor
         self._publish_state(
@@ -838,138 +928,201 @@ class WaypointRecorderNode(Node):
                 self._on_final_yaw_mode_set,
                 goal=goal,
                 final_yaw_mode=final_yaw_mode,
+                run_id=run_id,
             )
         )
 
-    def _on_final_yaw_mode_set(self, future, goal, final_yaw_mode: str) -> None:
-        if not self._active_test_goal:
-            return
-        if self._cancel_requested:
-            self._finish_test_goal("Route segment cancelled before dispatch", False)
-            return
-        try:
-            response = future.result()
-        except Exception as error:
-            self._finish_test_goal(f"Failed to set final_yaw_mode: {error}", False)
-            return
-        for result in response.results:
-            if not result.successful:
-                self._finish_test_goal(
-                    f"Failed to set final_yaw_mode: {result.reason}",
-                    False,
+    def _on_final_yaw_mode_set(self, future, goal, final_yaw_mode: str, run_id: int) -> None:
+        with self._lock:
+            if run_id != self._nav_run_id or not self._active_test_goal:
+                return
+            if self._cancel_requested:
+                self._finish_test_goal("Route segment cancelled before dispatch", False)
+                return
+            try:
+                response = future.result()
+                if response is None or len(response.results) != 1:
+                    raise ValueError("missing final_yaw_mode parameter result")
+            except Exception as error:
+                self._finish_test_goal(f"Failed to set final_yaw_mode: {error}", False)
+                return
+            for result in response.results:
+                if not result.successful:
+                    self._finish_test_goal(
+                        f"Failed to set final_yaw_mode: {result.reason}",
+                        False,
+                    )
+                    return
+            self._current_final_yaw_mode = final_yaw_mode
+            try:
+                send_goal_future = self._follow_waypoints_client.send_goal_async(goal)
+                send_goal_future.add_done_callback(
+                    partial(self._on_test_goal_response, run_id=run_id)
+                )
+            except Exception as error:
+                self._navigation_unknown = True
+                self._publish_state(f"Goal dispatch unknown; next segment blocked: {error}")
+
+    def _on_test_goal_response(self, future, run_id: int) -> None:
+        with self._lock:
+            if run_id != self._nav_run_id or not self._active_test_goal:
+                try:
+                    goal_handle = future.result()
+                    if goal_handle and goal_handle.accepted:
+                        goal_handle.cancel_goal_async()
+                except Exception:
+                    pass
+                return
+            try:
+                goal_handle = future.result()
+            except Exception as error:
+                self._navigation_unknown = True
+                self._publish_state(f"Goal acceptance unknown; next segment blocked: {error}")
+                return
+            if not goal_handle.accepted:
+                self._finish_test_goal("Route segment was rejected", False)
+                return
+            self._active_goal_handle = goal_handle
+            try:
+                result_future = goal_handle.get_result_async()
+                result_future.add_done_callback(
+                    partial(self._on_test_result, run_id=run_id)
+                )
+            except Exception as error:
+                self._navigation_unknown = True
+                self._publish_state(f"Route result unavailable; next segment blocked: {error}")
+            if self._cancel_requested:
+                cancel_future = goal_handle.cancel_goal_async()
+                cancel_future.add_done_callback(
+                    partial(self._on_cancel_response, run_id=run_id)
+                )
+
+    def _on_test_result(self, future, run_id: int) -> None:
+        with self._lock:
+            if run_id != self._nav_run_id or not self._active_test_goal:
+                return
+            try:
+                wrapped = future.result()
+                if wrapped.status not in (
+                    GoalStatus.STATUS_SUCCEEDED, GoalStatus.STATUS_ABORTED,
+                    GoalStatus.STATUS_CANCELED,
+                ):
+                    raise ValueError(f"non-terminal action status {wrapped.status}")
+                missed = list(wrapped.result.missed_waypoints)
+                status = wrapped.status
+            except Exception as error:
+                self._navigation_unknown = True
+                self._publish_state(f"Route result unavailable; next segment blocked: {error}")
+                return
+            if self._cancel_requested or status == GoalStatus.STATUS_CANCELED:
+                self._start_standstill_wait(
+                    "Route segment stopped by server; confirming standstill"
                 )
                 return
-        self._current_final_yaw_mode = final_yaw_mode
-        future = self._follow_waypoints_client.send_goal_async(goal)
-        future.add_done_callback(self._on_test_goal_response)
-
-    def _on_test_goal_response(self, future) -> None:
-        if not self._active_test_goal:
-            return
-        try:
-            goal_handle = future.result()
-        except Exception as error:
-            self._finish_test_goal(f"Failed to send route segment: {error}", False)
-            return
-        if not goal_handle.accepted:
-            self._finish_test_goal("Route segment was rejected", False)
-            return
-        self._active_goal_handle = goal_handle
-        if self._cancel_requested:
-            cancel_future = goal_handle.cancel_goal_async()
-            cancel_future.add_done_callback(self._on_cancel_response)
-            return
-        result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self._on_test_result)
-
-    def _on_test_result(self, future) -> None:
-        if not self._active_test_goal:
-            return
-        try:
-            wrapped = future.result()
-        except Exception as error:
-            self._finish_test_goal(f"Route segment failed: {error}", False)
-            return
-        missed = list(wrapped.result.missed_waypoints)
-        success = wrapped.status == GoalStatus.STATUS_SUCCEEDED and not missed
-        if self._cancel_requested:
-            self._start_standstill_wait("Route segment cancellation received")
-            return
-        if success:
-            self._test_store.advance_cursor(int(self._pending_test_cursor))
-            self._finish_test_goal("Route segment reached next goal", True)
-        else:
-            self._finish_test_goal(f"Route segment missed waypoints: {missed}", False)
+            if status == GoalStatus.STATUS_SUCCEEDED and not missed:
+                self._test_store.advance_cursor(int(self._pending_test_cursor))
+                self._finish_test_goal("Route segment reached next goal", True)
+            else:
+                self._finish_test_goal(
+                    f"Route segment finished with status {status}, missed: {missed}",
+                    False,
+                )
 
     def _finish_test_goal(self, message: str, _success: bool) -> None:
+        if self._standstill_timer is not None:
+            self._standstill_timer.cancel()
+            self._standstill_timer = None
         self._active_test_goal = False
         self._active_goal_handle = None
         self._cancel_requested = False
+        self._cancel_request_time = None
+        self._navigation_unknown = False
         self._waiting_standstill = False
         self._pending_test_cursor = None
         self._publish_state(message)
 
     def _on_cancel(self, _request, response):
-        if not self._active_test_goal:
-            response.success = False
-            response.message = "No route segment is running"
-            self._publish_state(response.message)
+        with self._lock:
+            if not self._active_test_goal:
+                response.success = False
+                response.message = "No route segment is running"
+                self._publish_state(response.message)
+                return response
+            self._request_cancel()
+            response.success = True
+            response.message = "Route cancellation requested"
             return response
-        self._request_cancel()
-        response.success = True
-        response.message = "Route cancellation requested"
-        return response
 
     def _request_cancel(self) -> None:
         if not self._active_test_goal:
             self._reject_command("No route segment is running")
             return
-        if self._cancel_requested:
+        if self._cancel_requested and not self._navigation_unknown:
             self._publish_state("Route cancellation already requested")
             return
         self._cancel_requested = True
+        self._cancel_request_time = time.monotonic()
         self._publish_state("Cancelling route segment")
         goal_handle = self._active_goal_handle
         if goal_handle is None:
-            self._finish_test_goal("Route cancelled before dispatch", False)
+            self.get_logger().info(
+                "Cancel requested before goal handle received; cancellation armed"
+            )
             return
+        if self._navigation_unknown:
+            result_future = goal_handle.get_result_async()
+            result_future.add_done_callback(
+                partial(self._on_test_result, run_id=self._nav_run_id)
+            )
         cancel_future = goal_handle.cancel_goal_async()
-        cancel_future.add_done_callback(self._on_cancel_response)
+        cancel_future.add_done_callback(
+            partial(self._on_cancel_response, run_id=self._nav_run_id)
+        )
 
-    def _on_cancel_response(self, future) -> None:
-        try:
-            future.result()
-        except Exception as error:
-            self.get_logger().error(f"Route cancellation request failed: {error}")
-        self._start_standstill_wait("Route cancellation sent; waiting for standstill")
+    def _on_cancel_response(self, future, run_id: int) -> None:
+        with self._lock:
+            if run_id != self._nav_run_id or not self._active_test_goal:
+                return
+            try:
+                response = future.result()
+                canceling = getattr(response, "goals_canceling", [])
+                if not canceling:
+                    self.get_logger().warn("Action server reported no goals canceling")
+            except Exception as error:
+                self.get_logger().error(f"Route cancellation request failed: {error}")
+            self._publish_state("Route cancellation sent; awaiting goal completion and standstill")
 
     def _start_standstill_wait(self, message: str) -> None:
         if not self._active_test_goal or self._waiting_standstill:
             return
-        if self._is_standstill():
+        self._cancel_request_time = time.monotonic()
+        if self._is_standstill(since_time=self._cancel_request_time):
             self._finish_test_goal("Route cancelled and standstill confirmed", False)
             return
         self._waiting_standstill = True
         self._standstill_deadline = time.monotonic() + self._standstill_timeout_sec
         self._publish_state(message)
+        if self._standstill_timer is not None:
+            self._standstill_timer.cancel()
         self._standstill_timer = self.create_timer(
             0.1, self._poll_standstill
         )
 
     def _poll_standstill(self) -> None:
-        if not self._waiting_standstill:
-            return
-        if self._is_standstill():
-            if self._standstill_timer is not None:
-                self._standstill_timer.cancel()
-                self._standstill_timer = None
-            self._finish_test_goal("Route cancelled and standstill confirmed", False)
-            return
-        if time.monotonic() >= self._standstill_deadline:
-            self._publish_state(
-                "Route cancelled, but standstill is not confirmed; "
-                "next segment remains blocked"
-            )
+        with self._lock:
+            if not self._waiting_standstill:
+                return
+            if self._is_standstill(since_time=self._cancel_request_time):
+                if self._standstill_timer is not None:
+                    self._standstill_timer.cancel()
+                    self._standstill_timer = None
+                self._finish_test_goal("Route cancelled and standstill confirmed", False)
+                return
+            if time.monotonic() >= self._standstill_deadline:
+                self._publish_state(
+                    "Route cancelled, but standstill is not confirmed; "
+                    "next segment remains blocked"
+                )
 
     def _reject_command(self, message: str) -> None:
         self.get_logger().error(message)
@@ -999,6 +1152,13 @@ class WaypointRecorderNode(Node):
             for name, point_type in self._template_types.items()
         ]
         dirty = self._points_fingerprint() != self._loaded_fingerprint
+        editor_file = self._file_catalog.get(self._file_id)
+        disk_ver = (
+            document_version(editor_file.waypoint_file)
+            if editor_file and editor_file.waypoint_file.is_file()
+            else ""
+        )
+        disk_synced = (disk_ver == self._document_version)
         waypoint_state = {
             "count": len(self._test_store.points),
             "cursor": self._test_store.cursor,
@@ -1010,6 +1170,8 @@ class WaypointRecorderNode(Node):
             "file_id": self._file_id,
             "formal": self._formal,
             "version": self._document_version,
+            "disk_version": disk_ver,
+            "disk_synced": disk_synced,
             "dirty": dirty,
             "points": points,
             "template": template if self._formal else [],
@@ -1023,6 +1185,8 @@ class WaypointRecorderNode(Node):
             "file_id": self._file_id,
             "formal": self._formal,
             "version": self._document_version,
+            "disk_version": disk_ver,
+            "disk_synced": disk_synced,
             "dirty": dirty,
             "points": points,
             "last_backup_path": self._last_backup_path,
@@ -1031,6 +1195,7 @@ class WaypointRecorderNode(Node):
                 "goal_accepted": self._active_goal_handle is not None,
                 "cancel_requested": self._cancel_requested,
                 "awaiting_standstill": self._waiting_standstill,
+                "unknown": self._navigation_unknown,
                 "cursor": self._test_store.cursor,
                 "next_goal": self._next_test_goal_name(),
             },

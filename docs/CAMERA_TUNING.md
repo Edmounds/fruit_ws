@@ -9,7 +9,21 @@
 
 （注：系统架构中深度相机硬件流保持常开，人工曝光调参针对底层 UVC/RGB 曝光与白平衡，以及深度传感器手动曝光与增益。原生深度伪彩色仅用于可视化观察，底层测距计算继续使用毫米级原始深度数据；正式任务运行时若检测到 `/fruit_mission`，调试工具拒绝启动。）
 
-## 启动
+## RobViz 只读预览
+
+日常预览使用两个 JPEG `CompressedImage` 话题：
+
+- `/fruit_perception/camera/annotated_image/compressed`：RGB、D、Cam XYZ 和有效 Base XYZ。
+- `/fruit_perception/camera/native_depth/compressed`：Native Depth JET、距离范围和有效像素比例。
+
+JPEG 深度图不能用于数值测距。
+Base 由 Python 节点复用现有变换函数，要求图像采集时已满足连续实测停稳窗口。
+无效、过期或冲突反馈显示 N/A，不将最新位姿用于旧图像。
+预览设置不改变相机曝光、模型或比赛测距。
+首次成功配置重载前不订阅 raw image，关闭全部面板后撤销对应 raw 订阅。
+详见 `src/fruit_robviz_bridge/README.md`。
+
+## GUI 启动
 
 所有命令都在工作空间根目录执行，并先加载 ROS 运行环境：
 
