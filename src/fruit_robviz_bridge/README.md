@@ -20,6 +20,7 @@ Python 配置节点复用 `fruit_mission.camera_target_transform`，生成同一
 Base 坐标要求采集时的 ArmTelemetry、ArmStatus 和 `/odometry` 已覆盖连续实测停稳窗口。
 图像处理时的新位姿不能替代图像采集时的位姿。
 无效或冲突的新反馈立即使 Base 无效。
+机械臂停稳速度阈值只作用于原始硬件速度，模型速度另做有限值检查。
 运动、过期、缺少反馈、坐标系不匹配或非有限值均显示 `N/A`。
 
 配置客户端提供：
@@ -65,6 +66,7 @@ ros2 launch fruit_robviz_bridge fruit_robviz_bridge.launch.py
 ```
 
 `check_preview.py` 只读统计压缩帧的 JPEG 可解码性、负载和 FPS：
+安装后的 ROS 可执行名称为 `check_preview`。
 
 ```bash
 ros2 run fruit_robviz_bridge check_preview --duration-sec 60

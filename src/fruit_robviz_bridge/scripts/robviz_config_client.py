@@ -182,8 +182,9 @@ class RobvizConfigClient(Node):
             valid = valid and list(joints.name) == names
             valid = valid and len(joints.position) == 4 and len(joints.velocity) == 4
             valid = valid and all(math.isfinite(v) for v in joints.position)
-            valid = valid and all(math.isfinite(v) and abs(v) <= self._arm_speed
-                                  for v in joints.velocity)
+            valid = valid and all(math.isfinite(v) for v in joints.velocity)
+        valid = valid and all(abs(v) <= self._arm_speed
+                              for v in message.hardware_joint_state.velocity)
         valid = valid and all(low <= value <= high for value, (low, high) in zip(
             message.hardware_joint_state.position, self._limits))
         tcp = message.tcp_position

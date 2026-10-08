@@ -53,7 +53,9 @@ install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
   scripts/robviz_config_client.py
-  scripts/check_preview.py
   DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/check_preview.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME check_preview)
 
 ament_package()
