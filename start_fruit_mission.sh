@@ -9,7 +9,6 @@ PERCEPTION_LAUNCH="$WORKSPACE/src/fruit_perception/launch/fruit_perception.launc
 MISSION_LAUNCH="$WORKSPACE/src/fruit_mission/launch/fruit_mission.launch.py"
 ARM_LAUNCH="$WORKSPACE/src/fruit_arm_planner/launch/fruit_arm_planner.launch.py"
 RECORD_SCRIPT="$WORKSPACE/record_rosbag.sh"
-MONITOR_SCRIPT="$WORKSPACE/scripts/robot_debug_monitor.sh"
 
 MISSION_CONFIG="$WORKSPACE/src/fruit_mission/config/fruit_mission.yaml"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
@@ -428,7 +427,6 @@ required_files=(
   "$PERCEPTION_LAUNCH" \
   "$MISSION_LAUNCH" \
   "$ARM_LAUNCH" \
-  "$MONITOR_SCRIPT" \
   "$MISSION_CONFIG" \
   "$SCRIPT_CLIENT_CONFIG"
 )
@@ -527,9 +525,6 @@ fi
 if [[ "$REUSE_NAVIGATION" != true ]]; then
   start_process "navigation" \
     ros2 launch "$NAV_LAUNCH"
-
-  start_debug_process "robot_debug" \
-    "$MONITOR_SCRIPT" fruit-mission
 fi
 
 START_SERIAL_BRIDGE=$(run_readiness_client bridge-start-required)
@@ -538,7 +533,7 @@ if [[ "$START_SERIAL_BRIDGE" == false ]]; then
 fi
 if [[ "$REUSE_NAVIGATION" == true ]]; then
   START_SERIAL_BRIDGE=false
-  log "RUN reuse: existing navigation, serial bridge, and debug monitor remain owned by start_navigation.sh"
+  log "RUN reuse: existing navigation and serial bridge remain owned by start_navigation.sh"
 fi
 
 wait_for_nodes "odometry navigation readiness" 10 \

@@ -126,7 +126,7 @@ B 区固定访问 1～8 号树，C 区按二维码顺序访问。B/C 单区调�
 
 ## 4. 故障排查与运行监视
 
-- **运行监视工具**: `scripts/robot_debug_monitor.sh` 监视导航状态、camera 彩色/深度流与 RGBD heartbeat、模式切换及异常告警。
+- **运行监视与日志**: 统一会话日志归档于 `log/runtime/<timestamp>_<entry>_<pid>/`（最新目录由 `log/runtime/latest` 链接）。核心节点日志包含 `axis_navigation_and_odometry.log`、`serial_bridge.log` 等。
 - **环境检查**: 启动前确保已 source `scripts/setup_fruit_runtime.bash`。
 - **底层里程计调试**: 仅需雷达和里程计时，可在加载运行环境后直接执行
   `ros2 launch /home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/launch/pointlio_odometry.launch.py`。

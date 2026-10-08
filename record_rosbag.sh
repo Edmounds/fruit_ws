@@ -5,8 +5,6 @@ set -eo pipefail
 WORKSPACE=/home/rc4/fruit_ws
 BAG_ROOT="$WORKSPACE/rosbags"
 MAX_BAGS=5
-DEBUG_MONITOR_PID=""
-START_MONITOR=1
 BAG_LABEL=""
 DEBUG_MODE=0
 
@@ -43,7 +41,7 @@ while (($# > 0)); do
       exit 0
       ;;
     --no-monitor)
-      START_MONITOR=0
+      # Retained for compatibility
       shift
       ;;
     --debug)
@@ -80,11 +78,6 @@ fruit_logging_init "record_rosbag" "${DEBUG_MODE}"
 cleanup()
 {
   local status=$?
-  if [[ -n "$DEBUG_MONITOR_PID" ]]; then
-    kill -INT "$DEBUG_MONITOR_PID" 2>/dev/null || true
-    wait "$DEBUG_MONITOR_PID" 2>/dev/null || true
-    DEBUG_MONITOR_PID=""
-  fi
   fruit_logging_close "${status}"
 }
 
@@ -138,19 +131,6 @@ printf '[rosbag] visual topics: Camera annotated image, aligned depth, and fruit
 printf '[rosbag] excluded topic regex: %s\n' "$RECORD_EXCLUDE_REGEX"
 printf '[rosbag] retaining the newest %s date-named bags\n' "$MAX_BAGS"
 printf '[rosbag] press Ctrl-C once when the failure has been captured\n'
-
-if ((START_MONITOR)); then
-  local_filter_script="$WORKSPACE/scripts/runtime_log_filter.py"
-  local_monitor_log="$FRUIT_RUNTIME_SESSION_DIR/monitor.log"
-  setsid env "DEBUG_OPT=$DEBUG_MODE" bash -c '
-    set -o pipefail
-    filter_args=(--output-file "'"${local_monitor_log}"'" --component "monitor")
-    [[ "$DEBUG_OPT" == "1" ]] && filter_args+=(--debug)
-    exec "$@" 2>&1 | /usr/bin/python3 "'"${local_filter_script}"'" "${filter_args[@]}"
-  ' runner "$WORKSPACE/scripts/robot_debug_monitor.sh" rosbag &
-  DEBUG_MONITOR_PID=$!
-fi
-
 
 ros2 bag record \
   --all \

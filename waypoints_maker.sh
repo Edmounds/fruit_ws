@@ -7,13 +7,11 @@ NAV_LAUNCH="$WORKSPACE/src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.
 HARDWARE_LAUNCH="$WORKSPACE/src/auto_serial_bridge/launch/auto_serial_bridge.launch.py"
 RECORDER_LAUNCH="$WORKSPACE/src/fruit_robviz_bridge/launch/waypoint_recorder.launch.py"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
-MONITOR_SCRIPT="$WORKSPACE/scripts/robot_debug_monitor.sh"
 WEB_URL="http://127.0.0.1:8000/"
 USE_TELEOP=false
 DEBUG=0
 
 pids=()
-debug_pids=()
 stopped=0
 
 usage() {
@@ -34,7 +32,7 @@ stop_children() {
   fi
   stopped=1
 
-  if ((${#pids[@]} == 0 && ${#debug_pids[@]} == 0)); then
+  if ((${#pids[@]} == 0)); then
     return
   fi
 
@@ -42,14 +40,9 @@ stop_children() {
   for pid in "${pids[@]}"; do
     kill -INT -- "-$pid" 2>/dev/null || true
   done
-  for pid in "${debug_pids[@]}"; do
-    kill -INT -- "-$pid" 2>/dev/null || true
-  done
   ((${#pids[@]} == 0)) || wait "${pids[@]}" 2>/dev/null || true
-  ((${#debug_pids[@]} == 0)) || wait "${debug_pids[@]}" 2>/dev/null || true
   fruit_logging_close "${status:-0}"
   pids=()
-  debug_pids=()
 }
 
 start_process() {
@@ -67,20 +60,6 @@ start_process() {
     exec "$@" 2>&1 | /usr/bin/python3 "'"${filter_script}"'" "${filter_args[@]}"
   ' runner "$@" &
   pids+=("$!")
-}
-
-start_debug_monitor() {
-  local log_file="${FRUIT_RUNTIME_SESSION_DIR}/monitor.log"
-  local filter_script="${WORKSPACE}/scripts/runtime_log_filter.py"
-
-  printf '[waypoints-maker] starting robot debug monitor\n'
-  setsid env "DEBUG_OPT=$DEBUG" bash -c '
-    set -o pipefail
-    filter_args=(--output-file "'"${log_file}"'" --component "monitor")
-    [[ "$DEBUG_OPT" == "1" ]] && filter_args+=(--debug)
-    exec "$@" 2>&1 | /usr/bin/python3 "'"${filter_script}"'" "${filter_args[@]}"
-  ' runner "$MONITOR_SCRIPT" waypoints-maker &
-  debug_pids+=("$!")
 }
 
 wait_for_odom_tf() {
@@ -137,8 +116,7 @@ required_files=(
   "$NAV_LAUNCH" \
   "$HARDWARE_LAUNCH" \
   "$RECORDER_LAUNCH" \
-  "$SCRIPT_CLIENT_CONFIG" \
-  "$MONITOR_SCRIPT"
+  "$SCRIPT_CLIENT_CONFIG"
 )
 for required_file in "${required_files[@]}"; do
   if [[ ! -r "$required_file" ]]; then
@@ -172,8 +150,6 @@ fi
 start_process "$nav_process_name" \
   ros2 launch "$NAV_LAUNCH" \
     "use_teleop:=$USE_TELEOP"
-
-start_debug_monitor
 
 wait_for_odom_tf
 
