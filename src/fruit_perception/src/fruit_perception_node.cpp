@@ -306,6 +306,8 @@ public:
     }
 
     core_.set_property(ov::cache_dir("/home/rc4/fruit_ws/tmp/openvino_cache"));
+    // Avoid the Intel OpenCL LLVM/SPIR-V crash during parallel kernel compilation.
+    core_.set_property("GPU.0", ov::compilation_num_threads(1));
     core_.set_property(
       "GPU.0", ov::intel_gpu::hint::queue_throttle(ov::intel_gpu::hint::ThrottleLevel::LOW));
 
@@ -433,7 +435,7 @@ private:
     }
     auto model = core_.read_model(model_path);
     const std::string expected_names = label_set == DetectionLabelSet::kFruitSpecies ?
-      "{0: 'apple', 1: 'pear'}" :
+      "{0: 'apple', 1: 'pear', 2: 'bad'}" :
       "{0: 'bad', 1: 'onion', 2: 'pepper', 3: 'pumpkin', 4: 'tomato'}";
     if (model->inputs().size() != 1 || model->outputs().size() != 1 ||
       !model->has_rt_info({"framework", "names"}) ||
@@ -616,11 +618,13 @@ private:
       maturity_confidences.reserve(detections.size());
       std::size_t roi_count = 0U;
       for (auto detection : detections) {
-        if (detection.type == "bad") {
-          continue;
-        }
         const auto box = to_original_box(detection, stream.transform);
         if (box.empty()) {
+          continue;
+        }
+        if (detection.type == "bad") {
+          maturity_confidences.push_back(0.0);
+          classified.push_back(std::move(detection));
           continue;
         }
         const int x1 = std::max(0, static_cast<int>(std::floor(box.x - box.width * 0.1)));
@@ -659,7 +663,7 @@ private:
 
       msg::FruitDecision result;
       const auto business_type = [area](const std::string & type) {
-          return area == 'A' ? type.substr(type.rfind('_') + 1U) : type;
+          return area == 'A' && type != "bad" ? type.substr(type.rfind('_') + 1U) : type;
         };
       result.header = stream.aligned_depth->header;
       result.types.reserve(detections.size());
@@ -705,7 +709,7 @@ private:
           candidates.reserve(outputs.size());
           for (std::size_t index = 0U; index < outputs.size(); ++index) {
             const auto & output = outputs[index];
-            if (!output.has_point ||
+            if (output.type == "bad" || !output.has_point ||
               !std::isfinite(output.point.x) ||
               !std::isfinite(output.point.y) ||
               !std::isfinite(output.point.z))
@@ -754,7 +758,7 @@ private:
           const double half_width = static_cast<double>(stream.frame->image.cols) * 0.5;
           for (std::size_t index = 0U; index < outputs.size(); ++index) {
             const auto & output = outputs[index];
-            if (!output.has_point ||
+            if (output.type == "bad" || !output.has_point ||
               !std::isfinite(output.point.x) ||
               !std::isfinite(output.point.y) ||
               !std::isfinite(output.point.z))

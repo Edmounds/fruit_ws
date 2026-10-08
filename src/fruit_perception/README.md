@@ -102,12 +102,26 @@ The detector chooses its model and candidate selection from the current
 - Area `A`: `vegetable_type/best.onnx` plus ripeness classification; publishes
   bare `ripe/unripe` labels. Only `ripe` enters single-target locking.
 - Area `B`: `fruit_type/best.onnx` plus ripeness classification; publishes
-  `apple_ripe/apple_unripe/pear_ripe/pear_unripe`, with up to 2 stable candidates.
+  `apple_ripe/apple_unripe/pear_ripe/pear_unripe` and diagnostic `bad`,
+  with up to 2 stable candidates.
 - Area `C`: the same vegetable detector as A, plus ripeness classification;
   publishes species/maturity labels and locks mature targets matching the expected
   type. Model-internal `pepper` is normalized to business label `chili` **after**
   selecting and running the pepper ripeness classifier.
 - Area `D`: reuses B's detector, ripeness classification and multi-target selection.
+
+The species detectors were updated from workspace `models/` exports dated 2026-10-08.
+Fruit species indices are `0=apple`, `1=pear`, `2=bad`.
+Vegetable species indices remain `0=bad`, `1=onion`, `2=pepper`, `3=pumpkin`, `4=tomato`.
+Ripeness models remain unchanged.
+GPU kernel compilation uses one thread to avoid the reproduced Intel OpenCL
+LLVM/SPIR-V startup crash with the updated detectors and Edge classifiers.
+This setting does not switch inference to CPU or limit inference threads.
+Both detectors publish `bad` in `types`, `detections`, preview detections and annotations,
+including Area A. `bad` has no ripeness suffix and bypasses ripeness classification.
+Its ROI and optional depth point are diagnostic only.
+Neither harvest selector receives `bad`, and `targets` never contains `bad`.
+This update does not add bad-produce removal or a new mission flow.
 
 The external debug monitor expects active camera streams whenever perception is running;
 missing streams are reported as `STALE`, not `IDLE`.
@@ -149,7 +163,7 @@ The last four parameters apply to both selectors. `min_observations` must fit bo
 windows; support ratio must be greater than 0.5 and at most 1, missing-frame count
 must be smaller than both windows, and maturity threshold must be in [0.5, 1].
 
-Association remains spatial using the existing radius. All localized classified
+Association remains spatial using the existing radius. All localized normal-produce
 candidates enter the evidence window, including wrong species, unripe and uncertain
 maturity observations. Species is retained internally even in A, while public A
 labels remain `ripe/unripe`. Low-confidence maturity observations count against

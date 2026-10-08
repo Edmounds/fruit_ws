@@ -51,6 +51,7 @@ Mission 和单点客户端在缓存结果前检查当前窗口 ID 及合法窗�
 ## 持续推理与窗外数据特性
 
 1. **持续推理与按需标注**：即便处于窗口之外，深度相机仍以固定帧率出流，OpenVINO 核显持续进行 2D/3D 检测与标注图生成，供监视器与调试工具观察。
+   - 水果与蔬菜检测器均可发布诊断标签 `bad`，包括 `types`、`detections`、预览检测和标注图。`bad` 不做熟度分类，不进入目标锁定或 `targets`。框和深度点不授权坏果摘除。
 2. **证据严格隔离**：
    - 处于窗口之外时，`/fruit_perception/decision` 发布的决策消息中 `observation_window_id` 为空（`""`），`has_target=false`，`targets_ready=false`，`targets` 列表为空。**窗外的原始检测绝不授权抓取**。
    - 只有在有效 harvest 窗口内且帧时间戳满足条件时，滑动窗口目标跟踪器（A/C 区 `CameraTargetSelector` 8 帧窗口，B 区 `BTargetSelector` 8 帧窗口）才累积证据；达到锁定条件后输出带有对应 `observation_window_id` 的可抓取目标。

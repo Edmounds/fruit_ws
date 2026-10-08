@@ -9,8 +9,11 @@
 `src/fruit_perception/model`，必须是绝对路径。已清理旧的未归档或未使用权重，不自动回退旧权重或 CPU。
 
 - A/C：`vegetable_type/best.onnx`，类别为 bad、onion、pepper、pumpkin、tomato。
-- B/D：`fruit_type/best.onnx`，类别为 apple、pear。
-- 检测：640×640 letterbox，RGB /255，按品种 NMS；bad 不分类、不发布。
+- B/D：`fruit_type/best.onnx`，类别索引为 0=apple、1=pear、2=bad。
+- 两个品种检测器使用工作区 `models/` 中 2026-10-08 导出的新权重。七个熟度分类权重未变。
+- 检测：640×640 letterbox，RGB /255，按品种 NMS。
+- 两个检测器的 `bad` 均不做熟度分类。标注图、预览检测及 `FruitDecision.types/detections` 发布裸标签 `bad`，A 区也保留该标签。
+- `bad` 的框和可选深度点仅供诊断。A/C 与 B/D 采摘候选均排除 `bad`，`targets` 不包含它。不增加坏果摘除流程。
 - 分类：原始 RGB 框向外扩展每边 10%，裁到图像范围，任一边小于 8 像素则丢弃。
 - `ripeness_model=edge`（默认）：六个 `ripeness_edge/<crop>/best.onnx`，224 方形拉伸、ImageNet 归一化，logits 使用稳定 Softmax。
 - `ripeness_model=yolo`：`ripeness/unified/best.onnx`，短边缩放到 224、中心裁剪、/255；输出已经有 Softmax。
@@ -20,6 +23,8 @@
 - 分类失败丢弃该 ROI，不假造 unripe。开窗/关窗及区域切换后旧在途帧不累积为当前窗口证据。
 
 模型固定 `GPU.0` 和 FP16 推理提示，检测使用可调 `performance_hint=latency|throughput`，分类使用 LATENCY；不使用含 CPU 的 AUTO/HETERO/MULTI。保留输入 f32 契约，内部 FP16 不重写原 ONNX。
+GPU 的 `COMPILATION_NUM_THREADS` 固定为 1，避免本机新检测器与 Edge 组合启动时复现的 Intel OpenCL LLVM/SPIR-V 编译崩溃。
+该设置只限制模型编译线程，不改变 GPU 推理设备或推理线程。默认仍使用 Edge，不修改系统驱动。
 本机设置 GPU `queue_throttle=LOW`，减少驱动在 CPU 上的忙轮询；离线基准中检测+2 ROI 的进程 CPU 从约 104% 降到约 25%，吞吐约下降 3%。不是把模型切到 CPU，也不是降低输入尺寸。
 检测器和统一分类器检查 ONNX 中的类别元数据；Edge ONNX 没有类别元数据，其类别方向依据原归档契约（0=ripe、1=unripe），更换权重时必须重新核实，不能仅凭形状认定类别方向。
 

@@ -22,7 +22,7 @@ const std::vector<std::string> kTreeFruitTypes = {
 const std::vector<std::string> kSideFruitTypes = {
   "chili_ripe", "chili_unripe", "pumpkin_ripe", "pumpkin_unripe",
   "onion_ripe", "onion_unripe", "tomato_ripe", "tomato_unripe"};
-const std::vector<std::string> kFruitSpecies = {"apple", "pear"};
+const std::vector<std::string> kFruitSpecies = {"apple", "pear", "bad"};
 const std::vector<std::string> kVegetableSpecies = {"bad", "onion", "pepper", "pumpkin", "tomato"};
 
 const std::vector<std::string> & labels_for_set(DetectionLabelSet label_set)
