@@ -79,7 +79,7 @@ launch 遵循 `template.launch.py`，包括 `use_sim_time` 和源码配置路径
 ## 4. 建立新下位机数据通路
 
 先定义 `ArmActuatorCommand`、`ArmActuatorFeedback` 和 `ArmActuatorControl` 的 ROS 消息。
-定义放在 `fruit_hardware_interfaces/msg/`，协议字段映射由桥管理。
+定义放在 `fruit_interfaces/msg/`，协议字段映射由桥管理。
 桥的 protocol.yaml 修改需要重新生成和构建，不能手改生成文件。
 下位机同步实现厂商单位换算、当前目标应用、反馈和本地保护。
 

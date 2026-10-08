@@ -2,7 +2,7 @@
 
 本文件只定义数据和行为，不定义字节布局、包头、CRC、ACK 或重发算法。
 以下消息名称、话题和字段为拟议契约，不是现有 ROS 接口。
-未来 ROS 定义放入 `fruit_hardware_interfaces`，不在控制包重复定义。
+未来 ROS 定义放入 `fruit_interfaces`，不在控制包重复定义。
 
 ## 1. 边界与统一单位
 

@@ -31,7 +31,7 @@
 上位机侧的权威源文件是：
 
 ```text
-src/fruit_hardware_interfaces/msg/TrajectoryPoint.msg
+src/fruit_interfaces/msg/TrajectoryPoint.msg
 src/auto_serial_bridge/config/protocol.yaml
 src/fruit_arm_planner/fruit_arm_planner/trajectory_planner.py
 src/fruit_arm_planner/fruit_arm_planner/arm_planner_node.py
@@ -317,7 +317,7 @@ require_handshake: false
 
 ```text
 上位机 auto_serial_bridge
-上位机 fruit_hardware_interfaces
+上位机 fruit_interfaces（原 fruit_hardware_interfaces）
 上位机 fruit_arm_planner
 下位机 protocol.h / protocol.c
 下位机 TrajectoryPoint 缓存结构

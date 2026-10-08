@@ -91,7 +91,7 @@ colcon build --base-paths src --packages-select fruit_navigation
 # 若需要配合手柄遥控底盘移动：
 ./waypoints_maker.sh --tele
 ```
-- 录制的航点保存至 `src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml`（`frame_id: odom`）。
+- 录制的航点保存至 `src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml`（`frame_id: odom`）。
 
 ### 3.3 启动全流程采摘比赛 (`start_fruit_mission.sh`)
 `--flow` 现在选择 `Logic.py` 中的入口函数，完整比赛函数不再混入模式分支。

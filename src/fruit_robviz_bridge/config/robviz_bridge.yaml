@@ -18,7 +18,7 @@ fruit_robviz_config_client:
     arm_presets_config: "/home/rc4/fruit_ws/src/fruit_arm_planner/config/arm_presets.yaml"
     mission_config: "/home/rc4/fruit_ws/src/fruit_mission/config/fruit_mission.yaml"
     navigation_config: "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/config/reality/pointlio_params.yaml"
-    recorder_config: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/config/waypoint_recorder.yaml"
+    recorder_config: "/home/rc4/fruit_ws/src/fruit_robviz_bridge/config/waypoint_recorder.yaml"
     camera_frame_id: "camera_color_optical_frame"
     arm_frame_id: "arm_base_link"
     odom_frame: "odom"

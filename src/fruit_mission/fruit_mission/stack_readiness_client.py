@@ -8,7 +8,7 @@ import time
 
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import FollowWaypoints
-from fruit_arm_interfaces.srv import ExecuteArmPreset, MoveArmCartesian, MoveArmJoints
+from fruit_interfaces.srv import ExecuteArmPreset, MoveArmCartesian, MoveArmJoints
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -222,7 +222,7 @@ class StackReadinessClient(Node):
         )
         ready_publishers = self.get_publishers_info_by_topic(self.bridge_ready_topic)
         for publishers, expected_type in (
-            (status_publishers, "fruit_hardware_interfaces/msg/ArmStatus"),
+            (status_publishers, "fruit_interfaces/msg/ArmStatus"),
             (ready_publishers, "std_msgs/msg/Bool"),
         ):
             if len(publishers) > 1 or any(

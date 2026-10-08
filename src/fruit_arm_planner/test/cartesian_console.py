@@ -45,11 +45,11 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
 from std_srvs.srv import Trigger
 
-from fruit_arm_interfaces.srv import ExecuteArmPreset, MoveArmCartesian, MoveArmJoints
-from fruit_arm_interfaces.msg import ArmTelemetry
+from fruit_interfaces.srv import ExecuteArmPreset, MoveArmCartesian, MoveArmJoints
+from fruit_interfaces.msg import ArmTelemetry
 from fruit_arm_planner.arm_planner_node import validate_presets
 from fruit_arm_planner.joint_transformer import JointTransformer
-from fruit_hardware_interfaces.msg import ArmControlMode, ArmStatus, TrajectoryHeader, TrajectoryPoint
+from fruit_interfaces.msg import ArmControlMode, ArmStatus, TrajectoryHeader, TrajectoryPoint
 
 
 STATUS_NAMES = {

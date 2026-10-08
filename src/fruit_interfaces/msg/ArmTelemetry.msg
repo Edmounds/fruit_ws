@@ -13,7 +13,7 @@ geometry_msgs/Point tcp_position
 # Absolute pitch of the a4 segment in degrees, not the wrist-to-TCP diagonal.
 float64 tcp_pitch_deg
 
-# Unchanged controller metadata; values follow fruit_hardware_interfaces/ArmStatus.
+# Unchanged controller metadata; values follow fruit_interfaces/ArmStatus.
 uint32 trajectory_id
 uint8 task_status
 float32 progress

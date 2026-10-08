@@ -1,6 +1,6 @@
 # 上下位机业务通信协议与数据流
 
-本文档只描述上位机需要下发的业务数据、下位机需要上报的状态，以及机械臂任务如何判断完成。串口帧格式、ACK、重传和心跳由 `auto_serial_bridge` 处理，不属于本篇范围。业务字段以 [`protocol.yaml`](../../auto_serial_bridge/config/protocol.yaml) 和 [`fruit_hardware_interfaces/msg`](../../fruit_hardware_interfaces/msg) 为准；下位机具体执行及错误码语义仍需以实机固件确认为准。
+本文档只描述上位机需要下发的业务数据、下位机需要上报的状态，以及机械臂任务如何判断完成。串口帧格式、ACK、重传和心跳由 `auto_serial_bridge` 处理，不属于本篇范围。业务字段以 [`protocol.yaml`](../../auto_serial_bridge/config/protocol.yaml) 和 [`fruit_interfaces/msg`](../../fruit_interfaces/msg) 为准（原 `fruit_hardware_interfaces` 已合并为 `fruit_interfaces`，线协议与 MCU 生成代码完全一致，固件无需重新烧录）；下位机具体执行及错误码语义仍需以实机固件确认为准。
 
 ## 1. 职责与数据方向
 
@@ -21,7 +21,7 @@ auto_serial_bridge  --传输业务数据--  下位机
 - `move_joints` 的目标单位是度；`move_cartesian` 的 XYZ 是真实夹爪抓取点 TCP 的基座坐标（米），`pitch_deg` 是末端 a4 伸出段俯仰角（度）。直接输入和笛卡尔预设共用 `geometry.tool_z_offset_m` 固定结构模型，不再叠加旧 `planning.cartesian_offset_m` 输入平移。下发给下位机的四轴角度统一为**硬件关节弧度 rad**，关节角速度回报单位为 rad/s。
 - 底盘速度是独立的下发路径，不经过机械臂规划器。
 
-业务遥测仍使用 `/arm_planner_node/joint_states`，类型已改为 `fruit_arm_interfaces/msg/ArmTelemetry`：同一帧原始电机角、逆映射模型角及 FK TCP。硬件 `/fruit_hardware_bridge/arm/status` 的 ArmStatus 与线协议保持不变；模型角不要再次逆 mapping。详见[遥测字段](03_INTERFACES_AND_API.md#六遥测广播接口-telemetry)。
+业务遥测仍使用 `/arm_planner_node/joint_states`，类型已改为 `fruit_interfaces/msg/ArmTelemetry`：同一帧原始电机角、逆映射模型角及 FK TCP。硬件 `/fruit_hardware_bridge/arm/status` 的 ArmStatus 与线协议保持不变；模型角不要再次逆 mapping。详见[遥测字段](03_INTERFACES_AND_API.md#六遥测广播接口-telemetry)。
 
 ## 2. 上位机下发的数据
 

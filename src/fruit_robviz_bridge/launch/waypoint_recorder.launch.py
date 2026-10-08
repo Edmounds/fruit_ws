@@ -7,13 +7,13 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    package_name = "fruit_waypoint_recorder"
+    package_name = "fruit_robviz_bridge"
     config_file = (
-        "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/config/"
+        "/home/rc4/fruit_ws/src/fruit_robviz_bridge/config/"
         "waypoint_recorder.yaml"
     )
     default_auto_name_file = (
-        "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/template.yaml"
+        "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/template.yaml"
     )
     with open(config_file, encoding="utf-8") as stream:
         default_waypoint_file = yaml.safe_load(stream)["fruit_waypoint_recorder"][
@@ -53,7 +53,7 @@ def generate_launch_description():
     declare_debug_waypoint_file = DeclareLaunchArgument(
         "debug_waypoint_file",
         default_value=(
-            "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/"
+            "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/"
             "debug_waypoints.yaml"
         ),
         description="Free-form debug waypoint YAML file",

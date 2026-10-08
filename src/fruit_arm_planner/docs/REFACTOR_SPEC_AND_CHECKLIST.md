@@ -9,7 +9,7 @@
 3. 不论单目标或预设，下位机收到的 `point_id=0` 必须是冻结的实测关节角、`time_from_start=0`、夹爪保持。预设 YAML 的 `duration_ms` 是逐段时长，第一段从这个自动补入的起点走到第一个 YAML 目标。
 4. 同时只允许一条运动轨迹。普通新请求在忙时明确失败；STOP/急停可发起打断。运动 service 必须等匹配本次轨迹的下位机 `COMPLETED` 才报告成功。
 5. 本轮保留现有 ROS 服务、串口话题、四种机械臂业务报文和下位机协议。通信桥和下位机已调通，但桥目前没有向规划器提供“N 个点已装载”的确认；跨消息类型送达顺序作为已知限制记录，不用固定延时假装已解决。
-6. 未来修改只在 `src/fruit_arm_planner/` 内实施。对 `fruit_arm_interfaces`、`fruit_hardware_interfaces`、`auto_serial_bridge`、`fruit_mission` 和下位机的需求只写为协作事项，不在本方案实施范围内。
+6. 未来修改只在 `src/fruit_arm_planner/` 内实施。对 `fruit_interfaces`（原 `fruit_arm_interfaces` 与 `fruit_hardware_interfaces` 已合并为统一包）、`auto_serial_bridge`、`fruit_mission` 和下位机的需求只写为协作事项，不在本方案实施范围内。
 
 ## 2. 架构判断与取舍
 

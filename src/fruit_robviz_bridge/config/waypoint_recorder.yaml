@@ -2,9 +2,9 @@ fruit_waypoint_recorder:
   ros__parameters:
     frame_id: "odom"
     base_frame: "base_link"
-    waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml"
-    debug_waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/debug_waypoints.yaml"
-    template_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/template.yaml"
+    waypoint_file: "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml"
+    debug_waypoint_file: "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/debug_waypoints.yaml"
+    template_file: "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/template.yaml"
     backup_dir: "/home/rc4/fruit_ws/tmp/waypoint_recorder_backups"
 
     sample_duration_sec: 1.0
@@ -22,5 +22,5 @@ fruit_waypoint_recorder:
     axis_waypoint_node: "/axis_waypoint_action_server"
     default_final_yaw_mode: "blend_on_path"
     auto_name_prefix: ""
-    auto_name_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/template.yaml"
+    auto_name_file: "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/template.yaml"
     source_root: "/home/rc4/fruit_ws/src"

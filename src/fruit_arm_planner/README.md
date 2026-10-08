@@ -16,7 +16,7 @@ mission 负责相机坐标转换、目标筛选和 A/B/C 顺序，本包负责 F
 
 笛卡尔 XYZ 统一指真实夹爪抓取点 TCP。`config/arm_presets.yaml` 的 `geometry.tool_z_offset_m` 配置随腕部旋转的固定下偏（当前 `-0.03 m`）；`pitch=0°` 表示 `a4` 伸出段水平，不是腕轴到 TCP 的斜线水平。直接输入和笛卡尔预设共用 FK/IK，不再额外平移输入。现有预设数值不自动迁移；几何调参后重启 planner、控制台和 mission。
 
-`/arm_planner_node/joint_states` 现为 `fruit_arm_interfaces/msg/ArmTelemetry`，原话题名不变：保留原始硬件角/速度，新增逆映射模型角/速度及真实 TCP XYZ（m）/pitch（度）。控制台 `status`、jog/示教与 mission 直接使用 planner 遥测，不重复减偏置或 FK。标准 JointState 订阅者需适配；接口、planner、mission 必须一起构建并重启。原始硬件 Status 和运动服务输入语义不变。
+`/arm_planner_node/joint_states` 现为 `fruit_interfaces/msg/ArmTelemetry`，原话题名不变：保留原始硬件角/速度，新增逆映射模型角/速度及真实 TCP XYZ（m）/pitch（度）。控制台 `status`、jog/示教与 mission 直接使用 planner 遥测，不重复减偏置或 FK。标准 JointState 订阅者需适配；接口、planner、mission 必须一起构建并重启。原始硬件 Status 和运动服务输入语义不变。
 
 ---
 
@@ -69,11 +69,11 @@ ros2 launch fruit_arm_planner fruit_arm_planner.launch.py
 `home` 快捷服务依赖同名预设存在，否则会返回失败。
 ```bash
 # 通过正式服务执行配置中存在的预设
-ros2 service call /arm_planner_node/execute_preset fruit_arm_interfaces/srv/ExecuteArmPreset \
+ros2 service call /arm_planner_node/execute_preset fruit_interfaces/srv/ExecuteArmPreset \
   "{preset_name: 'zero'}"
 
 # 固定机械臂基座坐标，夹爪保持；success 表示匹配轨迹已报告完成
-ros2 service call /arm_planner_node/move_cartesian fruit_arm_interfaces/srv/MoveArmCartesian \
+ros2 service call /arm_planner_node/move_cartesian fruit_interfaces/srv/MoveArmCartesian \
   "{x: 0.20, y: 0.0, z: 0.25, pitch_deg: 0.0, duration_ms: 2500, gripper_action: 0, linear_path: false}"
 
 # 监听当前实测物理角度 (20Hz)

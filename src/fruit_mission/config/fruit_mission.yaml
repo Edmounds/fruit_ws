@@ -6,7 +6,7 @@ fruit_mission:
     stationary:
       joint_speed_rps: 0.05
     c_distribution_output_dir: "/home/rc4/fruit_ws/tmp/fruit_mission"
-    waypoint_file: "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml"
+    waypoint_file: "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml"
     mission_flow: "full"
     follow_waypoints_action: "/follow_waypoints"
     navigation_action_server_timeout_sec: 5.0

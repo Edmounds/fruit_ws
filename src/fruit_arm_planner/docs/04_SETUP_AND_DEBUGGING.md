@@ -124,7 +124,7 @@ ros2 service call /arm_planner_node/reload_presets std_srvs/srv/Trigger '{}'
 `DURATION_MS=0` 或省略时使用规划器默认时间；两种关节命令默认夹爪保持。当前标定下，`joints 0 0 0 0` 会换算成约 `[0, 1, -13, -5]°` 的硬件目标；标定修改后以源码 YAML 实际数值为准。`motors 0 0 0 0` 则原样下发全零硬件角。`status` 显示原始电机角、planner 提供的逆映射模型角、由模型角换算的连杆角及真实 TCP。还支持 `stop`、`estop`、`level`、`help`、`quit`。
 预设的 `coordinate_frame: link_angles` 使用与 `joints` 相同的四项定义，末端目标为 `0°` 时腕部自动抵消小臂倾角；`coordinate_frame: joints` 保留原始电机角定义。折叠姿态也须校验腕部映射后是否超限，不能复制旧限位数值；`home` 快捷服务仅在同名预设存在时可用，以当前源码 YAML 为准。
 
-控制台现在订阅 `/arm_planner_node/joint_states` 的 `fruit_arm_interfaces/msg/ArmTelemetry`，不再以原始硬件 Status 自行计算 FK。debug 每帧显示 `motors_deg/model_deg/tcp_m/pitch_deg`，jog 和示教使用同一帧校正模型角及 TCP；原地夹爪和 `joints` 硬件角预设保存仍使用该帧原始硬件角，避免二次偏置。消息类型变更必须一起构建接口、planner 和 mission 并重启消费者；旧 standard JointState 订阅者不兼容，话题名称保持不变。
+控制台现在订阅 `/arm_planner_node/joint_states` 的 `fruit_interfaces/msg/ArmTelemetry`，不再以原始硬件 Status 自行计算 FK。debug 每帧显示 `motors_deg/model_deg/tcp_m/pitch_deg`，jog 和示教使用同一帧校正模型角及 TCP；原地夹爪和 `joints` 硬件角预设保存仍使用该帧原始硬件角，避免二次偏置。消息类型变更必须一起构建接口、planner 和 mission 并重启消费者；旧 standard JointState 订阅者不兼容，话题名称保持不变。
 
 运行中输入 `level info`、`level debug` 或 `level trace` 可立即切换，不需要重启：
 
@@ -237,7 +237,7 @@ source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 # 1. 基础服务调用（预设姿态触发）
 # ========================================================
 # 执行现有基准预设；home 快捷服务仅在配置了同名预设后可用
-ros2 service call /arm_planner_node/execute_preset fruit_arm_interfaces/srv/ExecuteArmPreset \
+ros2 service call /arm_planner_node/execute_preset fruit_interfaces/srv/ExecuteArmPreset \
   "{preset_name: 'zero'}"
 
 # 触发平滑减速停止 (mode=1)
@@ -255,11 +255,11 @@ ros2 topic pub --once /arm_planner_node/cmd_preset std_msgs/msg/String "{data: '
 # 3. 笛卡尔空间坐标采摘测试 (高精度直线 vs 快速过渡)
 # ========================================================
 # 【高精度直线模式】沿空间直线精准刺入果实 (linear_path: true)
-ros2 service call /arm_planner_node/move_cartesian fruit_arm_interfaces/srv/MoveArmCartesian \
+ros2 service call /arm_planner_node/move_cartesian fruit_interfaces/srv/MoveArmCartesian \
   "{x: 0.20, y: 0.0, z: 0.25, pitch_deg: 0.0, duration_ms: 2500, gripper_action: 1, linear_path: true}"
 
 # 【快速转移模式】关节平滑过渡到悬停位 (linear_path: false)
-ros2 service call /arm_planner_node/move_cartesian fruit_arm_interfaces/srv/MoveArmCartesian \
+ros2 service call /arm_planner_node/move_cartesian fruit_interfaces/srv/MoveArmCartesian \
   "{x: 0.20, y: 0.0, z: 0.25, pitch_deg: 0.0, duration_ms: 2000, gripper_action: 0, linear_path: false}"
 
 # 异步话题触发 (默认使用关节平滑过渡)
@@ -270,7 +270,7 @@ ros2 topic pub --once /arm_planner_node/cmd_cartesian geometry_msgs/msg/PointSta
 # 4. 多动作序列预设服务调用
 # ========================================================
 # 触发复合采摘工序 (从当前位置自动过渡 -> 执行序列)
-ros2 service call /arm_planner_node/execute_preset fruit_arm_interfaces/srv/ExecuteArmPreset \
+ros2 service call /arm_planner_node/execute_preset fruit_interfaces/srv/ExecuteArmPreset \
   "{preset_name: 'pick_sequence'}"
 
 # ========================================================

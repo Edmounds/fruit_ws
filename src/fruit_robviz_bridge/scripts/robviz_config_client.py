@@ -16,8 +16,8 @@ from urllib.request import Request, urlopen
 
 import rclpy
 import yaml
-from fruit_arm_interfaces.msg import ArmTelemetry
-from fruit_hardware_interfaces.msg import ArmStatus
+from fruit_interfaces.msg import ArmTelemetry
+from fruit_interfaces.msg import ArmStatus
 from fruit_mission.camera_target_transform import (
     load_camera_extrinsic,
     transform_camera_to_end_effector_mm,
@@ -103,7 +103,7 @@ class RobvizConfigClient(Node):
             "reality/pointlio_params.yaml", "loam_interface"
         )
         recorder = self._read_config(
-            "recorder_config", f"{source}/fruit_waypoint_recorder/config/waypoint_recorder.yaml",
+            "recorder_config", f"{source}/fruit_robviz_bridge/config/waypoint_recorder.yaml",
             "fruit_waypoint_recorder",
         )
         self._limits = [

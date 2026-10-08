@@ -5,9 +5,9 @@ from pathlib import Path
 import re
 import time
 
-from fruit_arm_interfaces.srv import ExecuteArmPreset, MoveArmCartesian, MoveArmJoints
-from fruit_arm_interfaces.msg import ArmTelemetry
-from fruit_hardware_interfaces.msg import ArmStatus
+from fruit_interfaces.srv import ExecuteArmPreset, MoveArmCartesian, MoveArmJoints
+from fruit_interfaces.msg import ArmTelemetry
+from fruit_interfaces.msg import ArmStatus
 from fruit_arm_planner.joint_transformer import JointTransformer
 from std_srvs.srv import Trigger
 import yaml

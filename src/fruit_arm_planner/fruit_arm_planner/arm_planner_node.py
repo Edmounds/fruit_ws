@@ -23,18 +23,18 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
-from fruit_hardware_interfaces.msg import (
+from fruit_interfaces.msg import (
     ArmControlMode,
     ArmStatus,
+    ArmTelemetry,
     TrajectoryHeader,
     TrajectoryPoint as HardwareTrajectoryPoint,
 )
-from fruit_arm_interfaces.srv import (
+from fruit_interfaces.srv import (
     ExecuteArmPreset,
     MoveArmCartesian,
     MoveArmJoints,
 )
-from fruit_arm_interfaces.msg import ArmTelemetry
 
 from fruit_arm_planner.joint_transformer import JointTransformer
 from fruit_arm_planner.kinematics import RobotKinematics

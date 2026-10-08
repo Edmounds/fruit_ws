@@ -22,7 +22,7 @@ FK 和反馈逆映射在 `fruit_arm_planner` 中完成，mission 直接读取遥
 
 用户确认观察窗口期间底盘与机械臂物理静止。**整个多帧观测窗口及观测结束到提交请求之间必须维持同一观测姿态**，才可用提交前的新鲜实测 TCP 遥测转换目标；不缓存/插值历史姿态。若以后改为运动中检测，需要重新设计同步，不能继续沿用此假设。
 
-`/arm_planner_node/joint_states` 的消息类型现为 `fruit_arm_interfaces/msg/ArmTelemetry`，话题名不变。`hardware_joint_state` 保留原始硬件角，`model_joint_state` 已消除 direction/offset 并还原相对肘角，单位 rad。mission 只用同一帧模型 Q1 和 `tcp_position/tcp_pitch_deg`（m、度）做 E -> B，不再自行逆 mapping 或 FK；输入校验仍要求原始角在硬件限位内，模型角/TCP 有限且反馈新鲜。原始 ArmStatus 订阅保留给停稳、安全恢复和硬件角驻留服务，不把其角度误当模型角。
+`/arm_planner_node/joint_states` 的消息类型现为 `fruit_interfaces/msg/ArmTelemetry`，话题名不变。`hardware_joint_state` 保留原始硬件角，`model_joint_state` 已消除 direction/offset 并还原相对肘角，单位 rad。mission 只用同一帧模型 Q1 和 `tcp_position/tcp_pitch_deg`（m、度）做 E -> B，不再自行逆 mapping 或 FK；输入校验仍要求原始角在硬件限位内，模型角/TCP 有限且反馈新鲜。原始 ArmStatus 订阅保留给停稳、安全恢复和硬件角驻留服务，不把其角度误当模型角。
 
 ## 新外参评估（单位 mm）
 
@@ -233,7 +233,7 @@ colcon build --base-paths src --packages-select fruit_mission
 source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 ```
 
-需要先构建/安装 `fruit_arm_interfaces`、`fruit_arm_planner`。`start_fruit_mission.sh`
+需要先构建/安装 `fruit_interfaces`、`fruit_arm_planner`。`start_fruit_mission.sh`
 现在启动 planner-only launch，不额外启动串口桥；已有 planner 时拒绝重复启动。
 启动检查覆盖 move_cartesian、move_joints、execute_preset、STOP 服务及轨迹 Header/Point/Mode 订阅、ArmStatus 发布端点，不再等待旧 task/callback 端点。每项启动等待不超过 10 秒；就绪超时告警，不因外围节点退出直接结束 mission。
 

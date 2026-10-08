@@ -32,9 +32,9 @@
 
 | 原端点 | 类型 | 新包行为 |
 | --- | --- | --- |
-| `/arm_planner_node/move_cartesian` | `fruit_arm_interfaces/srv/MoveArmCartesian` | 原 XYZ、pitch、duration、gripper、linear_path 语义 |
-| `/arm_planner_node/move_joints` | `fruit_arm_interfaces/srv/MoveArmJoints` | 原四轴硬件角度，输入为度 |
-| `/arm_planner_node/execute_preset` | `fruit_arm_interfaces/srv/ExecuteArmPreset` | 按原名称执行预设 |
+| `/arm_planner_node/move_cartesian` | `fruit_interfaces/srv/MoveArmCartesian` | 原 XYZ、pitch、duration、gripper、linear_path 语义 |
+| `/arm_planner_node/move_joints` | `fruit_interfaces/srv/MoveArmJoints` | 原四轴硬件角度，输入为度 |
+| `/arm_planner_node/execute_preset` | `fruit_interfaces/srv/ExecuteArmPreset` | 按原名称执行预设 |
 | `/arm_planner_node/home` | `std_srvs/srv/Trigger` | 执行配置中的 `home` |
 | `/arm_planner_node/stop` | `std_srvs/srv/Trigger` | 中断业务动作并请求停机 |
 | `/arm_planner_node/emergency_stop` | `std_srvs/srv/Trigger` | 兼容旧调用，执行与 stop 相同的普通 STOP |
@@ -42,8 +42,8 @@
 | `/arm_planner_node/cmd_cartesian` | `geometry_msgs/msg/PointStamped` | 保持固定根部坐标、pitch=0、PTP 的调试输入 |
 | `/arm_planner_node/cmd_joints` | `sensor_msgs/msg/JointState` | 保持四轴硬件弧度与现有 effort 时间约定 |
 | `/arm_planner_node/cmd_preset` | `std_msgs/msg/String` | 按名称调用预设 |
-| `/arm_planner_node/joint_states` | `fruit_arm_interfaces/msg/ArmTelemetry` | 实测硬件角、模型角、TCP 和上位机执行状态 |
-| `/fruit_hardware_bridge/arm/status` | `fruit_hardware_interfaces/msg/ArmStatus` | 由新节点发布的兼容状态输出 |
+| `/arm_planner_node/joint_states` | `fruit_interfaces/msg/ArmTelemetry` | 实测硬件角、模型角、TCP 和上位机执行状态 |
+| `/fruit_hardware_bridge/arm/status` | `fruit_interfaces/msg/ArmStatus` | 由新节点发布的兼容状态输出 |
 
 最后一个话题必须保留，因为 `CameraTargetPlannerClient.is_stationary()` 直接使用它。
 新下位机原始反馈使用新端点，不能再同时向兼容状态话题发布旧业务状态。

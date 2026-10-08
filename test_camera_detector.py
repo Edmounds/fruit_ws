@@ -56,7 +56,7 @@ import rclpy  # noqa: E402
 import tkinter as tk  # noqa: E402
 import yaml  # noqa: E402
 from cv_bridge import CvBridge  # noqa: E402
-from fruit_arm_interfaces.msg import ArmTelemetry  # noqa: E402
+from fruit_interfaces.msg import ArmTelemetry  # noqa: E402
 from fruit_arm_planner.joint_transformer import JointTransformer  # noqa: E402
 from fruit_mission.camera_target_transform import (  # noqa: E402
     load_camera_extrinsic,
@@ -443,8 +443,8 @@ def ensure_arm_communication(
     planner_pubs = node.get_publishers_info_by_topic(joint_state_topic)
     bridge_pubs = node.get_publishers_info_by_topic(status_topic)
 
-    expected_telemetry_type = 'fruit_arm_interfaces/msg/ArmTelemetry'
-    expected_status_type = 'fruit_hardware_interfaces/msg/ArmStatus'
+    expected_telemetry_type = 'fruit_interfaces/msg/ArmTelemetry'
+    expected_status_type = 'fruit_interfaces/msg/ArmStatus'
 
     # Check for telemetry publisher conflicts or type mismatches
     if len(planner_pubs) > 1:

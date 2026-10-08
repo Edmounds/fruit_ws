@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # Copyright 2026 fruit_ws team
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -37,14 +38,14 @@ from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
-from fruit_waypoint_recorder.recorder import (
+from fruit_robviz_bridge.recorder import (
     PoseData,
     TestPointStore,
     VALID_TEST_POINT_TYPES,
     mean_pose,
     yaw_from_quaternion,
 )
-from fruit_waypoint_recorder.waypoint_editor_server import (
+from fruit_robviz_bridge.waypoint_editor_server import (
     EditorFile,
     RequestError,
     document_version,

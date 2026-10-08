@@ -6,13 +6,13 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(OpenCV 4.5.4 EXACT REQUIRED
   PATHS /usr/lib/x86_64-linux-gnu/cmake/opencv4
   NO_DEFAULT_PATH
   COMPONENTS core imgcodecs imgproc)
 find_package(cv_bridge REQUIRED)
-find_package(fruit_arm_interfaces REQUIRED)
-find_package(fruit_hardware_interfaces REQUIRED)
+find_package(fruit_interfaces REQUIRED)
 find_package(fruit_perception REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -31,8 +31,7 @@ target_include_directories(fruit_robviz_bridge_component PUBLIC
 target_link_libraries(fruit_robviz_bridge_component ${OpenCV_LIBRARIES})
 ament_target_dependencies(fruit_robviz_bridge_component
   cv_bridge
-  fruit_arm_interfaces
-  fruit_hardware_interfaces
+  fruit_interfaces
   fruit_perception
   geometry_msgs
   nav_msgs
@@ -57,5 +56,21 @@ install(PROGRAMS
 install(PROGRAMS scripts/check_preview.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME check_preview)
+
+ament_python_install_package(${PROJECT_NAME})
+
+install(PROGRAMS
+  fruit_robviz_bridge/waypoint_recorder_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME waypoint_recorder_node)
+install(PROGRAMS
+  fruit_robviz_bridge/waypoint_editor_server.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME waypoint_editor_server)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_recorder test/test_recorder.py)
+endif()
 
 ament_package()

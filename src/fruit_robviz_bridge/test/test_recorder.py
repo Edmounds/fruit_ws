@@ -3,7 +3,7 @@ import math
 import pytest
 import yaml
 
-from fruit_waypoint_recorder.recorder import (
+from fruit_robviz_bridge.recorder import (
     PoseData,
     TestPointStore,
     mean_pose,

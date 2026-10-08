@@ -5,9 +5,9 @@ from launch_ros.substitutions import FindPackagePrefix
 
 
 def generate_launch_description():
-    package_name = "fruit_waypoint_recorder"
+    package_name = "fruit_robviz_bridge"
     config_file = (
-        "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/config/"
+        "/home/rc4/fruit_ws/src/fruit_robviz_bridge/config/"
         "waypoint_editor.yaml"
     )
 

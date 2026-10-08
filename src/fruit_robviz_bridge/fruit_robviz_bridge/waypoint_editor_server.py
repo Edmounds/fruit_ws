@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # Copyright 2026 fruit_ws team
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -32,11 +33,11 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import yaml
 
-from fruit_waypoint_recorder.recorder import yaw_from_quaternion
+from fruit_robviz_bridge.recorder import yaw_from_quaternion
 
 
 DEFAULT_CONFIG = Path(
-    "/home/rc4/fruit_ws/src/fruit_waypoint_recorder/config/"
+    "/home/rc4/fruit_ws/src/fruit_robviz_bridge/config/"
     "waypoint_editor.yaml"
 )
 VALID_POINT_TYPES = ("waypoint", "goal")
@@ -84,8 +85,7 @@ class EditorConfig:
 
     host: str
     port: int
-    static_dir: Path | None
-    html_file: Path
+    static_dir: Path
     waypoint_file: Path
     debug_waypoint_file: Path
     template_file: Path
@@ -193,10 +193,9 @@ def load_editor_config(path: Path) -> EditorConfig:
     return EditorConfig(
         host=host,
         port=port,
-        static_dir=_optional_configured_path(
+        static_dir=_configured_path(
             document.get("static_dir"), "static_dir"
         ),
-        html_file=_configured_path(document.get("html_file"), "html_file"),
         waypoint_file=_configured_path(
             document.get("waypoint_file"), "waypoint_file"
         ),
@@ -914,20 +913,17 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                 parsed.path == "/" or parsed.path == "/index.html"
             ):
                 root = self.server.editor_config.static_dir
-                static_index = root / "index.html" if root is not None else None
-                if static_index is not None and static_index.is_file():
+                static_index = root / "index.html"
+                if static_index.is_file():
                     static_file = static_index.resolve()
-                else:
-                    fallback = self.server.editor_config.html_file
-                    if fallback.is_file():
-                        static_file = fallback
             if static_file is None and (
                 "text/html" in self.headers.get("Accept", "")
                 or "." not in Path(parsed.path).name
             ):
                 root = self.server.editor_config.static_dir
-                if root is not None and (root / "index.html").is_file():
-                    static_file = (root / "index.html").resolve()
+                static_index = root / "index.html"
+                if static_index.is_file():
+                    static_file = static_index.resolve()
             if static_file is not None:
                 self._send_file(static_file)
                 return
@@ -1080,16 +1076,10 @@ def main() -> int:
     )
     try:
         config = load_editor_config(args.config)
-        static_index = (
-            config.static_dir / "index.html"
-            if config.static_dir is not None
-            else None
-        )
-        if not config.html_file.is_file() and (
-            static_index is None or not static_index.is_file()
-        ):
+        static_index = config.static_dir / "index.html"
+        if not static_index.is_file():
             raise ValueError(
-                f"HTML 文件不存在: {config.html_file}，且静态目录没有 index.html"
+                f"静态目录缺少 index.html: {static_index}"
             )
         load_file_catalog(config)
         server = WaypointEditorHTTPServer(config)

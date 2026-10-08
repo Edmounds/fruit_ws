@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>fruit_arm_interfaces</name>
+  <name>fruit_interfaces</name>
   <version>0.1.0</version>
-  <description>High-level semantic interfaces and services for fruit picking robot arm.</description>
+  <description>Unified ROS 2 interfaces for fruit picking robot: high-level semantic services and hardware trajectory/status messages.</description>
   <maintainer email="fruit-ws@example.com">fruit_ws team</maintainer>
   <license>Apache-2.0</license>
 

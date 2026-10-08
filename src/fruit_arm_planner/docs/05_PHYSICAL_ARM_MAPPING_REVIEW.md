@@ -84,7 +84,7 @@ YAML 的 link_angles 预设 / 控制台 joints
 | 已核对 | Q2/Q3/Q4 角度关系 | Q2 硬件零位为大臂竖直，Q3 命令为小臂绝对角；`q4=pitch-(q2+q3)` 对安装在小臂上的相对腕部成立。Q4 的实际同向零位、正方向还需实测确认。 |
 | 说明 | 硬件角与连杆角入口不同 | `move_joints` 服务、YAML `joints` 预设和控制台 `motors` 直接使用硬件角；现有 `zero/home/retract` 属于 `link_angles`，与控制台 `joints` 一样按 YAML 标定换算。笛卡尔 PTP/LIN 在规划节点使用双向映射。 |
 | 说明 | 插补不改变角度定义 | PTP 在硬件角之间使用相同的五次多项式比例插值；映射是仿射关系，端点正确时插补不会单独改变 Q3 的角度定义。LIN 对每个采样位姿重新做 IK；当前 YAML 的 `interpolation_step_ms=200` 对应目标采样间隔约 5 Hz。 |
-| 说明 | `joint_states` 同时提供原始角、模型角与 TCP | 原话题类型改为 `fruit_arm_interfaces/ArmTelemetry`；`hardware_joint_state` 保留 h，`model_joint_state` 已还原 q（Q3 为相对肘角），`tcp_position/tcp_pitch_deg` 来自共享 FK。模型角不可再次减 offset。角速度消除 direction 并还原 Q3 耦合，不减常量 offset。该话题不再可直接作为 RViz 的标准 JointState 输入。 |
+| 说明 | `joint_states` 同时提供原始角、模型角与 TCP | 原话题类型改为 `fruit_interfaces/msg/ArmTelemetry`；`hardware_joint_state` 保留 h，`model_joint_state` 已还原 q（Q3 为相对肘角），`tcp_position/tcp_pitch_deg` 来自共享 FK。模型角不可再次减 offset。角速度消除 direction 并还原 Q3 耦合，不减常量 offset。该话题不再可直接作为 RViz 的标准 JointState 输入。 |
 | 待核实 | 运动范围与几何参数 | 各轴限位以源码 YAML 为准，但仓库没有实机机械限位依据；`a2/a3=0.26m` 等几何值也需测量轴心距。限位或长度不准会造成拒绝可达目标或末端位置误差。 |
 
 ### 一组可复算的数值

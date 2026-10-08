@@ -84,13 +84,11 @@ fruit_ws/src/
 │   ├── fruit_navigation/         # 轴向航点跟踪 action server
 │   └── fruit_nav_bringup/        # 纯里程计导航集成 bringup
 ├── auto_serial_bridge/           # 串口协议生成与传输
-├── fruit_hardware_interfaces/    # 轨迹、控制模式和状态 msg
-├── fruit_arm_interfaces/         # planner 三类运动 service 定义
+├── fruit_interfaces/             # 统一 ROS 2 接口包：机械臂服务与轨迹/状态 msg
 ├── fruit_arm_planner/            # 4-DOF 机械臂运动学解算、关节偏置映射与轨迹规划
 ├── fruit_perception/             # 单 camera、观察窗口与两阶段 OpenVINO
 ├── fruit_qr_planner/             # camera 彩色图扫码并持久发布 B/C 计划
-├── fruit_waypoint_recorder/      # 航点录制与 Web 航点编辑器
-├── fruit_waypoint_rviz_plugin/   # 保留的旧 RViz Waypoint Maker 面板
+├── fruit_robviz_bridge/         # RobViz 图像预览组件、配置客户端、航点录制节点与 Web HTTP 服务
 ├── fruit_mission/                # A/B/C 比赛编排
 └── joy_linux/                    # 手柄遥控节点
 ```
@@ -105,7 +103,7 @@ fruit_ws/src/
 - 导航采用纯 Point-LIO 激光雷达-IMU 里程计方案，彻底去除了离线建图（GLIM）与重定位（GICP）环节。
 - 坐标系拓扑简化为 `odom -> base_link -> sensors/arm`，不再使用 `map` 全局坐标系。
 - Point-LIO 在开机时以静止状态建立初始参考系，`loam_interface` 在接收到稳定里程计后开始发布 `odom -> base_link` TF。
-- 航点文件（`src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml`）中的坐标全部基于 `odom` 坐标系。
+- 航点文件（`src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml`）中的坐标全部基于 `odom` 坐标系。
  - 导航入口为 `start_navigation.sh`，不提供建图/地图定位模式选择；脚本直接使用 launch 的 source YAML 默认配置，RobViz 提供 Web 可视化。
 
 ### 4.2 轴向定点导航控制器 (`fruit_navigation`)
@@ -212,7 +210,7 @@ RGBD 复合消息和 `compressed`/`compressedDepth`/`theora` 派生图像进入�
 
 机械臂运动入口的低速阈值取 mission `stationary.joint_speed_rps`，反馈新鲜度取 planner 配置；原始 ArmStatus/遥测的非有限速度不替成零。原开窗前 `stable_stop` 与恢复前独立停稳循环已移除，不宣称仍执行连续 0.5 秒或 `/odometry` 静止检测。识别、扫码、端点和取消各有独立期限，机械臂及已接受的导航 goal 等待执行结果。
 
-现有 `/arm_planner_node/joint_states` 使用 `fruit_arm_interfaces/msg/ArmTelemetry`：同一帧包含原始硬件角、已校正的模型角及真实 TCP XYZ/pitch。控制台和 mission 直接读取模型/TCP，不重复逆映射或 FK；原始硬件角仍用于原始角服务和安全检查。话题名不变但类型与标准 JointState 不兼容，字段单位和迁移要求见 [planner 接口文档](../src/fruit_arm_planner/docs/03_INTERFACES_AND_API.md)。
+现有 `/arm_planner_node/joint_states` 使用 `fruit_interfaces/msg/ArmTelemetry`：同一帧包含原始硬件角、已校正的模型角及真实 TCP XYZ/pitch。控制台和 mission 直接读取模型/TCP，不重复逆映射或 FK；原始硬件角仍用于原始角服务和安全检查。话题名不变但类型与标准 JointState 不兼容，字段单位和迁移要求见 [planner 接口文档](../src/fruit_arm_planner/docs/03_INTERFACES_AND_API.md)。
 
 字段类型与线协议布局见 [协议参考](LOWER_CONTROLLER_COMMANDS.md) 和
 [planner 通信文档](../src/fruit_arm_planner/docs/02_COMMUNICATION_PROTOCOL.md)。新协议没有旧 `z_type` 高度索引。

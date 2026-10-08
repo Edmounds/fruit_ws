@@ -252,18 +252,19 @@ arm_planner_node:
         - {duration_ms: 1000, gripper: 0, target: [0.042288450212795675, 0.15905864173713108, 0.3536682379281416, -4.166016328536959], linear: true, is_via_point: true }
         - { target: [0.1202, 0.0000, 0.550, 0.0], duration_ms: 1000, gripper: 0 , linear: true, is_via_point: true }
 
-      # right_store_b_down:
-      #   description: "右方抓取完毕后存储并回到原位"
-      #   coordinate_frame: cartesian
-      #   waypoints:
-      #   - target:
-      #     - 0.0417
-      #     - -0.137
-      #     - 0.176
-      #     - -0.0
-      #     duration_ms: 1000
-      #     gripper: 0
-      #     linear: true
-      #   - {duration_ms: 1000, gripper: 1, target: [-0.1962624798929228, -0.00965640213802654, 0.2506981509144537, -5.973156743762218], linear: true }
-      #   - {duration_ms: 1000, gripper: 0, target: [0.042288450212795675, -0.15905864173713108, 0.3536682379281416, -4.166016328536959], linear: true, is_via_point: true }
-      #   - { target: [0.1202, -0.0000, 0.550, 0.0], duration_ms: 1000, gripper: 0 , linear: true, is_via_point: true }
+      right_store_b_down:
+        description: "右方抓取完毕后存储并回到原位"
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.06
+          - -0.2586
+          - -0.0104
+          - -18.54
+          duration_ms: 1000
+          gripper: 0
+          linear: true
+        - {duration_ms: 2000, gripper: 0, target: [0.040, -0.16, 0.1659, -0.0], linear: true }
+        - {duration_ms: 1000, gripper: 1, target: [-0.1962624798929228, -0.00965640213802654, 0.2506981509144537, -5.973156743762218], linear: true }
+        - {duration_ms: 1000, gripper: 0, target: [0.042288450212795675, -0.15905864173713108, 0.3536682379281416, -4.166016328536959], linear: true, is_via_point: true }
+        - { target: [0.1202, 0.0000, 0.550, 0.0], duration_ms: 1000, gripper: 0 , linear: true, is_via_point: true }

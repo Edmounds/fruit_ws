@@ -166,7 +166,7 @@ service 请求不开放该字段，`move_cartesian` 和 `move_joints` 的最终�
 服务接口适用于任务状态机（`fruit_mission`）需要**同步确认机械臂执行到位**的场景：
 
 ### 1. 笛卡尔末端带模式选择服务 (`~/move_cartesian`)
-- **服务类型**：`fruit_arm_interfaces/srv/MoveArmCartesian`
+- **服务类型**：`fruit_interfaces/srv/MoveArmCartesian`
 - **请求字段**：
   - `x, y, z` (`float32`): 真实夹爪抓取点 TCP 的基座空间坐标 (m)
   - `pitch_deg` (`float32`): 末端 a4 伸出段俯仰角（度，0度表示该段水平，不是腕轴到 TCP 的斜线水平）
@@ -183,7 +183,7 @@ service 请求不开放该字段，`move_cartesian` 和 `move_joints` 的最终�
 ---
 
 ### 2. 关节角度直发服务 (`~/move_joints`)
-- **服务类型**：`fruit_arm_interfaces/srv/MoveArmJoints`
+- **服务类型**：`fruit_interfaces/srv/MoveArmJoints`
 - **请求字段**：`joints_deg[4]` 为四个原始硬件角（度），不应用连杆零位偏置；另有 `duration_ms`、`gripper_action`。控制台 `joints` 是连杆角，`motors` 才与本服务语义一致。
 - **应答字段**：`success`, `message`, `trajectory_id`
 
@@ -195,7 +195,7 @@ service 请求不开放该字段，`move_cartesian` 和 `move_joints` 的最终�
 ---
 
 ### 3. 预设工序调用服务 (`~/execute_preset`)
-- **服务类型**：`fruit_arm_interfaces/srv/ExecuteArmPreset`
+- **服务类型**：`fruit_interfaces/srv/ExecuteArmPreset`
 - **请求字段**：`preset_name` (`string`，如 `"home"`, `"retract"`, `"pick_sequence"`)
 - **应答字段**：`success`, `message`, `trajectory_id`
 
@@ -221,7 +221,7 @@ service 请求不开放该字段，`move_cartesian` 和 `move_joints` 的最终�
 
 ### 机械臂实时状态广播 (`~/joint_states`)
 - **完整话题名**：`/arm_planner_node/joint_states`
-- **消息类型**：`fruit_arm_interfaces/msg/ArmTelemetry`
+- **消息类型**：`fruit_interfaces/msg/ArmTelemetry`
 - **发布频率**：仅在收到有效四轴反馈时发布，正常情况下跟随下位机约 20 Hz 状态回传。
 - **功能描述**：同一帧有效电机反馈同时提供原始硬件角、逆 Joint Mapping 后的模型角，以及共享 FK 算出的真实夹爪抓取点 TCP。不新增话题、不修改标准 ROS 消息定义。
 
@@ -232,23 +232,25 @@ service 请求不开放该字段，`move_cartesian` 和 `move_joints` 的最终�
 | `model_joint_state` | `sensor_msgs/JointState`：逆 mapping 后的 `q1..q4`，`position` 为 rad，`velocity` 为 rad/s；Q1=偏航，Q2=大臂相对水平，Q3=小臂相对大臂，Q4=腕部相对小臂。**不再对这组数据执行逆 mapping。** |
 | `tcp_position` | `geometry_msgs/Point`：真实夹爪抓取点 XYZ，单位 m，已经包含 `geometry.tool_z_offset_m`。 |
 | `tcp_pitch_deg` | a4 伸出段的绝对俯仰角，单位度；0° 表示 12 cm 段水平，TCP 位于其下方 3 cm，不是腕轴到 TCP 的斜线水平。 |
-| `trajectory_id/task_status/progress/gripper_state/error_code` | 原帧硬件状态元数据，原样保留；数值语义以 `fruit_hardware_interfaces/msg/ArmStatus` 为准。 |
+| `trajectory_id/task_status/progress/gripper_state/error_code` | 原帧硬件状态元数据，原样保留；数值语义以 `fruit_interfaces/msg/ArmStatus` 为准。 |
 
 两个 JointState 的 `name` 均为 `['joint_1','joint_2','joint_3','joint_4']`，四轴 position/velocity 各四项，effort 为空；header 与外层一致。角速度按方向及 Q3 耦合求导，不减常量 offset；非有限速度保留，不伪造为零。无效/越限位置不发布遥测，消费者必须检查反馈新鲜度，不能把最后一帧当成当前状态。
 
-**兼容性变更**：该话题不再是标准 JointState，旧订阅者必须改为 ArmTelemetry；RViz/robot_state_publisher 不能直接把此话题当成标准 JointState 输入。本次不新增适配话题。`~/cmd_joints` 仍使用标准 JointState，运动服务及硬件状态协议不变。
+**兼容性变更**：
+1. **遥测消息格式**：该话题不再是标准 JointState，旧订阅者必须改为 ArmTelemetry；RViz/robot_state_publisher 不能直接把此话题当成标准 JointState 输入。本次不新增适配话题。`~/cmd_joints` 仍使用标准 JointState，运动服务及硬件状态协议不变。
+2. **包名合并迁移**：原 `fruit_arm_interfaces` 与 `fruit_hardware_interfaces` 的全部 8 个消息和服务已统一合并至 `fruit_interfaces`。服务路径（`/arm_planner_node/*`）、话题路径及结果字段语义严格保持不变，线协议与下位机固件完全兼容；但旧包客户端代码与旧类型 rosbag 不会自动适配，必须与消费者一同重构建并重启。
 
 确认硬件安全停稳，停止旧 planner、控制台及 mission；构建接口和消费者，然后重新加载运行环境并重启这些进程。不能让同名话题的新旧消息类型同时运行，`reload_presets` 也不能代替重启。可只读核对：
 
 ```bash
 cd /home/rc4/fruit_ws
 source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
-colcon build --base-paths src --packages-select fruit_arm_interfaces fruit_arm_planner fruit_mission \
+colcon build --base-paths src --packages-select fruit_interfaces fruit_arm_planner fruit_mission fruit_robviz_bridge auto_serial_bridge \
   --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 # 重启 planner 和客户端后执行以下只读命令，不会命令机械臂运动：
-ros2 interface show fruit_arm_interfaces/msg/ArmTelemetry
-ros2 topic echo --once /arm_planner_node/joint_states fruit_arm_interfaces/msg/ArmTelemetry
+ros2 interface show fruit_interfaces/msg/ArmTelemetry
+ros2 topic echo --once /arm_planner_node/joint_states fruit_interfaces/msg/ArmTelemetry
 ```
 
 ---

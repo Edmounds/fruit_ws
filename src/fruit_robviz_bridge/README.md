@@ -1,7 +1,18 @@
 # fruit_robviz_bridge
 
-该功能包为 RobViz 提供两路只读 JPEG 预览和图像配置重载接口。
-它不参与比赛决策、机械臂控制或导航控制。
+该功能包为 RobViz 提供图像预览桥接、配置重载接口、Web 航点编辑 HTTP 服务与按需航点录制节点。
+它不参与比赛决策，不实现第二套导航控制器或机械臂运动学。
+
+## 模块与职责
+
+1. **同容器图像预览组件 (`ImageBridgeComponent`)**：
+   与感知相机处于同一 `ComposableNodeContainer`，提供 RGB 与 Native Depth 两路压缩预览。
+2. **配置重载客户端 (`RobvizConfigClient`)**：
+   按需从 HTTP 服务获取图像设置并通过 ROS 参数原子应用。
+3. **Web 航点编辑器服务 (`waypoint_editor_server`)**：
+   常驻 HTTP 服务（默认端口 8000），承载 RobViz 静态页面资源及航点 YAML 读写/版本控制 API。
+4. **航点录制节点 (`waypoint_recorder_node`)**：
+   按需由 `./waypoints_maker.sh` 启动，负责 TF 采样、停稳校验、航点 MarkerArray 锁存发布与 `/follow_waypoints` Action 调试客户端。
 
 ## 端点
 
@@ -63,6 +74,16 @@ RGB 只配对同戳光学与 Base 元数据，单槽最多等待 100 ms。
 cd /home/rc4/fruit_ws
 source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 ros2 launch fruit_robviz_bridge fruit_robviz_bridge.launch.py
+```
+
+### 航点相关入口
+
+```bash
+# Web 航点编辑服务（由 systemd 或独立入口常驻启动）：
+ros2 launch fruit_robviz_bridge waypoint_editor.launch.py
+
+# 现场航点录制节点（由 ./waypoints_maker.sh 按需拉起）：
+ros2 launch fruit_robviz_bridge waypoint_recorder.launch.py
 ```
 
 `check_preview.py` 只读统计压缩帧的 JPEG 可解码性、负载和 FPS：

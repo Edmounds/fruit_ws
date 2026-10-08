@@ -14,7 +14,7 @@
 - 分区间固定通道点直接列在调用处，不再通过隐藏的 transition 名称展开。
 
 只要改变比赛顺序、路线、左右侧或目标，就编辑这里。航点坐标和车体朝向仍由源码
-`src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml` 提供，使用 `odom`。
+`src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml` 提供，使用 `odom`。
 A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点时同步修改
 `Logic.py` 和 `waypoint_route.py` 的必需点校验，不能期待 YAML 自动增加工序。
 

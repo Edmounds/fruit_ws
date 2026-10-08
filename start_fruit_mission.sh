@@ -13,7 +13,7 @@ MONITOR_SCRIPT="$WORKSPACE/scripts/robot_debug_monitor.sh"
 
 MISSION_CONFIG="$WORKSPACE/src/fruit_mission/config/fruit_mission.yaml"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
-WAYPOINT_FILE="$WORKSPACE/src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml"
+WAYPOINT_FILE="$WORKSPACE/src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml"
 ODOM_FRAME="odom"
 
 MISSION_FLOW="full"

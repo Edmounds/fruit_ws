@@ -7,7 +7,7 @@
 ## 权威定义与当前集成
 
 - 线协议：`src/auto_serial_bridge/config/protocol.yaml`，修改消息布局后必须重新构建生成协议。
-- ROS 定义：`src/fruit_hardware_interfaces/msg/`；服务：`src/fruit_arm_interfaces/srv/`。
+- ROS 接口定义：`src/fruit_interfaces/`（合并原 `fruit_hardware_interfaces` 与 `fruit_arm_interfaces`）。
 - 设备与波特率从 source YAML 读取，当前为 `/dev/ttyACM0`、115200，不应假定所有入口都用 `/dev/stm32`。
 - 新协议不含旧 `ArmTarget`、`StateMachineCommand`、`ExecutionCallback`。
   mission 视觉目标、观察、二维码、Harvest 和 Home 均通过 `fruit_arm_planner` 服务；区域状态只通过 ROS 话题通知感知/扫码节点。

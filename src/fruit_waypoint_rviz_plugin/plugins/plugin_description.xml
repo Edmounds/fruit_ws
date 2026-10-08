@@ -1,7 +1,0 @@
-<library path="fruit_waypoint_rviz_plugin">
-  <class name="fruit_waypoint_rviz_plugin/WaypointMakerPanel"
-         type="fruit_waypoint_rviz_plugin::WaypointMakerPanel"
-         base_class_type="rviz_common::Panel">
-    <description>Panel for recording fruit waypoint test and competition points.</description>
-  </class>
-</library>

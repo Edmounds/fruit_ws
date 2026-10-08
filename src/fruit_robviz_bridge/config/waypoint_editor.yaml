@@ -1,0 +1,9 @@
+host: "0.0.0.0"
+port: 8000
+static_dir: "/home/rc4/robviz/dist"
+waypoint_file: "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml"
+debug_waypoint_file: "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/debug_waypoints.yaml"
+template_file: "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/template.yaml"
+image_settings_file: "/home/rc4/robviz/config/fruit-image-settings.json"
+backup_dir: "/home/rc4/fruit_ws/tmp/waypoint_editor_backups"
+max_request_bytes: 1048576

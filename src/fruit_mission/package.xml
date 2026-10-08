@@ -15,8 +15,7 @@
   <depend>nav_msgs</depend>
   <depend>tf2_ros</depend>
   <depend>fruit_perception</depend>
-  <depend>fruit_hardware_interfaces</depend>
-  <depend>fruit_arm_interfaces</depend>
+  <depend>fruit_interfaces</depend>
   <exec_depend>fruit_arm_planner</exec_depend>
   <depend>sensor_msgs</depend>
   <depend>std_srvs</depend>

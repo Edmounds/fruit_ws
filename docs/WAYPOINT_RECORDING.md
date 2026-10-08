@@ -4,8 +4,8 @@
 
 本项目采用纯 Point-LIO 里程计导航架构，航点全部基于开机 `odom` 坐标系。
 
-- **航点文件**: `src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml`
-- **航点模板**: `src/fruit_waypoint_recorder/waypoints/template.yaml`
+- **航点文件**: `src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml`
+- **航点模板**: `src/navigation/fruit_nav_bringup/waypoints/template.yaml`
 - **坐标系**: `frame_id: odom`
 
 航点文件规范：
@@ -54,8 +54,8 @@ source scripts/setup_fruit_runtime.bash
 
 系统提供 Web 航点编辑服务，支持通过浏览器拖拽调整与微调航点：
 - 默认监听端口：`http://<机器人IP>:8000`
-- 配置文件：`src/fruit_waypoint_recorder/config/waypoint_editor.yaml`
-- 服务源文件：`services/waypoint-editor.service`
+- 配置文件：`src/fruit_robviz_bridge/config/waypoint_editor.yaml`
+- 服务源文件：`services/robviz.service`
 - 静态产物：`/home/rc4/robviz/dist/index.html`
 
 ---
@@ -207,25 +207,24 @@ http://<机器人局域网 IP>:8000/
 服务管理命令：
 
 ```bash
-sudo systemctl status waypoint-editor.service
-sudo systemctl restart waypoint-editor.service
-journalctl -u waypoint-editor.service -n 100 --no-pager
+sudo systemctl status robviz.service
+sudo systemctl restart robviz.service
+journalctl -u robviz.service -n 100 --no-pager
 curl http://127.0.0.1:8000/health
 ```
 
 服务启动会复用 `/home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash`。修改网页服务端、launch 或
-package 入口后先重新构建 `fruit_waypoint_recorder`，再重启服务；只修改根目录 HTML 时直接
-刷新浏览器即可。
+package 入口后先重新构建 `fruit_robviz_bridge`，再重启服务。
 
 `start_navigation.sh` 和 `waypoints_maker.sh` 不启动 RViz、HTTP 服务或 Foxglove bridge。
 它们只启动自身需要的导航、里程计、recorder 和调试进程，并输出 RobViz URL。
 
 ## 9. 现场检查
 
-- [ ] 航点文件 `src/fruit_waypoint_recorder/waypoints/odom_waypoints.yaml` 存在且 `frame_id: odom`。
+- [ ] 航点文件 `src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml` 存在且 `frame_id: odom`。
 - [ ] 所有点名称唯一，`schema_version` 为 1。
 - [ ] 里程计打点使用 `odom_waypoints.yaml`；后续复用时必须从同一个物理起点、同一个朝向启动。
-- [ ] `waypoint-editor.service` 为 enabled/active，局域网设备可以访问机器人 TCP `8000`。
+- [ ] `robviz.service` 为 enabled/active，局域网设备可以访问机器人 TCP `8000`。
 
 - [ ] 网页编辑 yaw 时使用角度，保存后的 YAML `yaw` 和 `orientation` 使用一致的弧度姿态。
 
