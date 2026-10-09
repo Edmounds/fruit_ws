@@ -160,14 +160,15 @@ camera 的固定原生流开启同步、深度对齐与 RGBD（Color 为 `1280x7
 3. camera 扫码与果蔬识别和测深；
 4. 可视化、图像落盘和调试日志。
 
-任务使用 `--debug` 时，rosbag 仍记录导航、Action、雷达、点云和控制诊断，但视觉数据限定为
-camera 彩色原图、对齐深度图、标注图。未对齐 camera raw depth、
-RGBD 复合消息和 `compressed`/`compressedDepth`/`theora` 派生图像进入黑名单，避免同一帧
-多次 DDS 序列化和落盘。
+任务入口使用 `--debug` 时，按固定 mission profile 记录导航、Action、雷达、点云、感知、机械臂和控制诊断。
+视觉数据限定为 camera 彩色原图、对齐深度图和标注图。未对齐 camera raw depth、
+RGBD 复合消息、camera_info 和 `compressed`/`compressedDepth`/`theora` 派生图像不进入录包，避免同一帧
+多次 DDS 序列化和落盘。导航、航点和 teleop 入口不因系统中存在 camera 而录制视觉话题。
 调试监视器通过 color/depth metadata 与进程内 RGBD 回调产生的轻量 Header heartbeat 计算
 相机的实际频率和最后帧时间，不直接订阅高带宽 RGBD 消息。
-完整任务脚本会在导航、感知、串口桥和规划器全部初始化完成后启动录包，
-确认 `/rosbag2_recorder` 就绪后才启动 mission，避免录包初始化与节点启动争抢资源。
+所有 debug 入口会在相关节点就绪后启动对应 profile 的录包，并输出最终话题清单。
+确认 `/rosbag2_recorder` 就绪后，任务入口才启动 mission，避免录包初始化与任务启动争抢资源。
+嵌套脚本由共享录包 helper 仲裁，只保留一个 recorder。检测到已有 `/rosbag2_recorder` 时跳过自动录包并继续入口流程。
 
 ## 6. 上下位机接口
 

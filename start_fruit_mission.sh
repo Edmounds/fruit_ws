@@ -28,9 +28,9 @@ startup-relative odom frame.
 Use --reuse-navigation after start_navigation.sh to keep its navigation
 and serial bridge running while starting perception, arm planner, and mission.
 --flow selects a Logic.py entry function; B/C-only entries also scan their QR.
-Use --debug to record ROS diagnostics, LiDAR, point clouds, and the selected
-raw/annotated camera topics under rosbags/. Duplicate high-bandwidth image
-transports and Camera unaligned raw depth are excluded. Recording starts after
+Use --debug to record the mission profile under rosbags/. The profile includes
+navigation, perception, arm, QR, and selected raw camera image topics. Camera
+recording requires the camera and perception publishers. Recording starts after
 the navigation and perception stack is ready, immediately before the mission.
 EOF
 }
@@ -75,9 +75,13 @@ stopped=0
 
 source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
 source "$WORKSPACE/scripts/fruit_runtime_logging.bash"
+source "$WORKSPACE/scripts/fruit_runtime_recording.bash"
 set -u
 
 fruit_logging_init "fruit_mission" "${DEBUG_RECORD_ENABLED}"
+if (( DEBUG_RECORD_ENABLED )); then
+  fruit_recording_prepare mission
+fi
 RUN_DIR="${FRUIT_RUNTIME_SESSION_DIR}"
 ORCHESTRATOR_LOG="${RUN_DIR}/orchestrator.log"
 
@@ -364,6 +368,8 @@ stop_children() {
   timeout --foreground 2s ros2 service call /arm_planner_node/stop std_srvs/srv/Trigger '{}' \
     >/dev/null 2>&1 || true
 
+  fruit_recording_stop
+
   if ((${#child_pids[@]} == 0 && ${#debug_pids[@]} == 0)); then
     fruit_logging_close 0
     return 0
@@ -493,7 +499,7 @@ if [[ "$REUSE_ROBVIZ_BRIDGE" == true ]]; then
   log "RUN mode: reuse existing robviz bridge"
 fi
 if ((DEBUG_RECORD_ENABLED)); then
-  log "RUN debug rosbag: enabled with visual-topic exclusions; output is under $WORKSPACE/rosbags"
+  log "RUN debug rosbag: mission profile enabled; output is under $WORKSPACE/rosbags"
 fi
 
 if ! python3 -c \
@@ -613,10 +619,8 @@ wait_for_topic_endpoint_count \
   10
 
 if ((DEBUG_RECORD_ENABLED)); then
-  start_process "rosbag" \
-    "$RECORD_SCRIPT" \
-    --no-monitor
-  wait_for_node "debug rosbag recorder" /rosbag2_recorder 10
+  fruit_recording_start "$RECORD_SCRIPT" mission
+  fruit_recording_wait_ready 10 || true
 fi
 
 log "READY navigation, perception, and arm planner stack; starting mission"

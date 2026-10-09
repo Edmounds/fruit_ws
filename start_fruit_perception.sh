@@ -65,6 +65,7 @@ cleanup()
     printf '\n[perception] stopping perception launch...\n'
     fruit_stop_process_group "${launch_pid}" "perception" 5 2
   fi
+  fruit_recording_stop
   fruit_logging_close "${status}"
 }
 
@@ -79,9 +80,13 @@ trap on_signal INT TERM
 
 source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
 source "$WORKSPACE/scripts/fruit_runtime_logging.bash"
+source "$WORKSPACE/scripts/fruit_runtime_recording.bash"
 set -u
 
 fruit_logging_init "perception" "${DEBUG_MODE}"
+if (( DEBUG_MODE )); then
+  fruit_recording_prepare perception
+fi
 
 if ros2 run fruit_mission stack_readiness_client node-running \
   --node /fruit_perception_node --node /camera --match any \
@@ -114,6 +119,15 @@ setsid env "DEBUG_OPT=$DEBUG_MODE" bash -c '
   exec ros2 launch fruit_perception fruit_perception.launch.py "$@" 2>&1 | /usr/bin/python3 "'"${filter_script}"'" "${filter_args[@]}"
 ' runner "$@" &
 launch_pid=$!
+
+if (( DEBUG_MODE )); then
+  ros2 run fruit_mission stack_readiness_client nodes \
+    --node /camera --node /fruit_perception_node --match all --timeout 10 \
+    --ros-args --params-file "$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml" \
+    >/dev/null 2>&1 || printf '[perception] perception readiness timed out; recording available topics only\n'
+  fruit_recording_start "$WORKSPACE/record_rosbag.sh" perception
+  fruit_recording_wait_ready 10 || true
+fi
 
 if wait "$launch_pid"; then
   status=0

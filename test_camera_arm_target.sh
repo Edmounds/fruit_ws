@@ -33,7 +33,7 @@ B: <side>_store_b_up / <side>_store_b_down automatically selected by target Base
 to release the fruit.
   --zone A|B|C   Competition zone; A/C use vegetable model, B uses fruit model
   --left|--right  Arm side; presets are <side>_look_<zone> and <side>_store_<zone>
-  --debug         Print per-frame camera detections and coordinates
+  --debug         Print detailed logs and start the camera-arm recording profile
 EOF
 }
 
@@ -141,6 +141,7 @@ cleanup()
   if [[ -n "${PLANNER_PID}" ]]; then
     fruit_stop_process_group "${PLANNER_PID}" "arm_planner" 5 2
   fi
+  fruit_recording_stop
   fruit_logging_close "${status}"
   exit "${status}"
 }
@@ -201,8 +202,12 @@ main()
   # shellcheck source=/home/rc4/fruit_ws/setup_fruit_runtime.bash
   source "${RUNTIME_SETUP}"
   source "${LOGGING_HELPER}"
+  source "${WORKSPACE_DIR}/scripts/fruit_runtime_recording.bash"
   set -u
   fruit_logging_init "camera_arm_target" "${DEBUG}"
+  if (( DEBUG != 0 )); then
+    fruit_recording_prepare camera_arm
+  fi
   check_prerequisites || exit 1
   if (( DEBUG != 0 )); then
     client_args+=(--debug)
@@ -256,6 +261,16 @@ main()
       exec ros2 launch fruit_arm_planner fruit_arm_planner.launch.py log_level:=debug 2>&1 | /usr/bin/python3 "'"${filter_script}"'" --output-file "'"${planner_log}"'" --component "arm_planner"
     ' runner &
     PLANNER_PID=$!
+  fi
+
+  if (( DEBUG != 0 )); then
+    ros2 run fruit_mission stack_readiness_client nodes \
+      --node /camera --node /fruit_perception_node --node /arm_planner_node \
+      --match all --timeout 10 \
+      --ros-args --params-file "${CLIENT_CONFIG}" \
+      >/dev/null 2>&1 || log "WARNING: debug recording readiness timed out; recording available topics only"
+    fruit_recording_start "${WORKSPACE_DIR}/record_rosbag.sh" camera_arm
+    fruit_recording_wait_ready 10 || true
   fi
 
   log "Waiting for the perception stack"

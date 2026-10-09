@@ -15,6 +15,7 @@ fruit_logging_init() {
     if [[ -n "${FRUIT_RUNTIME_SESSION_DIR:-}" && -d "${FRUIT_RUNTIME_SESSION_DIR}" ]]; then
         # Inherit existing parent session directory
         export FRUIT_LOGGING_DEBUG="${debug_mode}"
+        export FRUIT_RUNTIME_TOP_ENTRY=0
         return 0
     fi
 

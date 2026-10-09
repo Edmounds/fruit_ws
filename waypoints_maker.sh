@@ -21,6 +21,7 @@ Usage: ./waypoints_maker.sh [--tele] [--debug]
 Start Point-LIO odometry navigation and the waypoint recorder in the
 startup-relative odom frame. Use RobViz at http://127.0.0.1:8000/ for editing.
 Use --tele when joystick teleop is needed.
+Use --debug to also start the waypoint recording profile.
 EOF
 }
 
@@ -37,6 +38,7 @@ stop_children() {
   fi
 
   printf '\n[waypoints-maker] stopping launched processes...\n'
+  fruit_recording_stop
   fruit_stop_all_process_groups "${pids[@]}"
   fruit_logging_close "${status:-0}"
   pids=()
@@ -105,9 +107,17 @@ done
 
 source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
 source "$WORKSPACE/scripts/fruit_runtime_logging.bash"
+source "$WORKSPACE/scripts/fruit_runtime_recording.bash"
 set -u
 
 fruit_logging_init "waypoints_maker" "${DEBUG}"
+if (( DEBUG )); then
+  if [[ "$USE_TELEOP" == true ]]; then
+    fruit_recording_prepare waypoints_tele
+  else
+    fruit_recording_prepare waypoints
+  fi
+fi
 
 required_files=(
   "$NAV_LAUNCH" \
@@ -162,6 +172,15 @@ else
 fi
 
 wait_for_odom_tf
+
+if (( DEBUG )); then
+  if [[ "$USE_TELEOP" == true ]]; then
+    fruit_recording_start "$WORKSPACE/record_rosbag.sh" waypoints_tele
+  else
+    fruit_recording_start "$WORKSPACE/record_rosbag.sh" waypoints
+  fi
+  fruit_recording_wait_ready 10 || true
+fi
 
 if [[ "$recorder_running" != true ]]; then
   start_process "waypoint recorder" \

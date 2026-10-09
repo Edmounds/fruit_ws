@@ -10,7 +10,8 @@ usage() {
 Usage: ./start_tele.sh [--debug]
 
 Start joystick teleop and the serial bridge. Reuses existing serial bridge
-if already running. Press Ctrl-C to stop.
+if already running. Use --debug to also start the teleop recording profile.
+Press Ctrl-C to stop.
 EOF
 }
 
@@ -41,15 +42,20 @@ cleanup() {
     printf '\n[teleop] stopping teleop launch...\n'
     fruit_stop_process_group "${launch_pid}" "teleop" 5 2
   fi
+  fruit_recording_stop
   fruit_logging_close "${status}"
 }
 trap cleanup EXIT INT TERM
 
 source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
 source "$WORKSPACE/scripts/fruit_runtime_logging.bash"
+source "$WORKSPACE/scripts/fruit_runtime_recording.bash"
 set -u
 
 fruit_logging_init "teleop" "${DEBUG_MODE}"
+if (( DEBUG_MODE )); then
+  fruit_recording_prepare teleop
+fi
 
 if ros2 run fruit_mission stack_readiness_client node-running \
   --node /joy_node --node /joy_conventor --match any \
@@ -75,6 +81,15 @@ setsid env "DEBUG_OPT=$DEBUG_MODE" bash -c '
     "start_serial_bridge:='"$START_SERIAL_BRIDGE"'" 2>&1 | /usr/bin/python3 "'"${filter_script}"'" "${filter_args[@]}"
 ' runner &
 launch_pid=$!
+
+if (( DEBUG_MODE )); then
+  ros2 run fruit_mission stack_readiness_client nodes \
+    --node /joy_node --node /joy_conventor --match all --timeout 10 \
+    --ros-args --params-file "$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml" \
+    >/dev/null 2>&1 || printf '[teleop] teleop readiness timed out; recording available topics only\n'
+  fruit_recording_start "$WORKSPACE/record_rosbag.sh" teleop
+  fruit_recording_wait_ready 10 || true
+fi
 
 if wait "$launch_pid"; then
   status=0

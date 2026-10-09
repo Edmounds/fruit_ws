@@ -21,6 +21,7 @@ Usage: ./start_navigation.sh [--recorder] [--debug]
 Start Point-LIO navigation and the serial bridge in the startup-relative odom
 frame. Use RobViz for visualization and control.
 Use --recorder to also start the RobViz waypoint recorder node.
+Use --debug to also start the navigation or waypoint recording profile.
 EOF
 }
 
@@ -58,6 +59,7 @@ stop_children() {
   fi
 
   printf '\n[navigation] stopping launched processes...\n'
+  fruit_recording_stop
   fruit_stop_all_process_groups "${pids[@]}"
   fruit_logging_close "${status:-0}"
   pids=()
@@ -105,9 +107,17 @@ trap stop_children INT TERM EXIT
 
 source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
 source "$WORKSPACE/scripts/fruit_runtime_logging.bash"
+source "$WORKSPACE/scripts/fruit_runtime_recording.bash"
 set -u
 
 fruit_logging_init "navigation" "${DEBUG}"
+if (( DEBUG )); then
+  if [[ "$START_RECORDER" == true ]]; then
+    fruit_recording_prepare waypoints
+  else
+    fruit_recording_prepare navigation
+  fi
+fi
 
 required_files=(
   "$NAV_LAUNCH" \
@@ -165,6 +175,15 @@ else
 fi
 
 wait_for_odom_tf
+
+if (( DEBUG )); then
+  if [[ "$START_RECORDER" == true ]]; then
+    fruit_recording_start "$WORKSPACE/record_rosbag.sh" waypoints
+  else
+    fruit_recording_start "$WORKSPACE/record_rosbag.sh" navigation
+  fi
+  fruit_recording_wait_ready 10 || true
+fi
 
 if [[ "$START_RECORDER" == true ]]; then
   if [[ "$recorder_running" != true ]]; then

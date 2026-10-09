@@ -139,7 +139,8 @@ cd /home/rc4/fruit_ws
 - **终端精简输出**：
   - 默认仅输出关键生命周期推进（就绪、连接、观察窗口、目标锁定坐标、轨迹执行完成结果、告警与错误），不刷高频周期巡检与冗长启动参数。
   - **彻底移除 raw 原始十六进制字节**（如 `[MCU TX RAW]`），无论是否开启 debug，终端均不再输出 raw 数据。
-  - 显式传入 `--debug` 选项时，仅额外在终端打印当前允许的串口关键数据帧（轨迹头、轨迹点、控制模式）的结构化解码文本。高频底盘速度、机械臂 20Hz 状态、系统 ACK/心跳等即便在 `--debug` 下也仅保存于磁盘日志，避免刷屏。
+  - 显式传入 `--debug` 选项时，同时启动该入口的 rosbag profile。详细日志和 rosbag 使用同一个运行目录。
+  - 嵌套入口只允许一个录包所有者。子脚本复用父入口的日志和录包状态，不启动第二个 recorder。
 - **详细诊断落盘与保留**：
   - 每次运行的完整日志存放于 `/home/rc4/fruit_ws/log/runtime/<时间戳>_<入口>_<PID>/`。
   - 最新的运行目录可通过软链接 `/home/rc4/fruit_ws/log/runtime/latest` 快速访问。
@@ -176,13 +177,16 @@ mission 负责相机坐标转换、目标筛选与 A/B/C 顺序，planner 负责
 ```bash
 cd /home/rc4/fruit_ws
 source scripts/setup_fruit_runtime.bash
-./record_rosbag.sh --full
+./record_rosbag.sh
 ```
 
+7 个运行入口使用固定录包 profile。导航录制 TF、Point-LIO、里程计、速度和航点 Action；航点入口追加航点录制话题；teleop 录制手柄和速度；感知、单点相机调试和任务入口追加感知、二维码、机械臂和串口状态。
 
-录包保留所有非视觉话题。视觉数据保留单 camera 的彩色原图、对齐深度图和标注图。camera 未对齐的
-`/camera/depth/image_rect_raw`、重复的 `/camera/rgbd`，以及所有
-`compressed`、`compressedDepth`、`theora` 派生话题均通过 rosbag 黑名单排除。
+感知、相机调试、任务和 full profile 只有在入口实际使用 camera，且 `/camera`、`/fruit_perception_node` 和图像 publisher 已就绪时，才加入以下三路原始图像：
+`/camera/color/image_raw`、`/camera/aligned_depth_to_color/image_raw`、`/fruit_perception/camera/annotated_image`。
+不录 camera_info、`/camera/rgbd`、未对齐深度或任何 `compressed`、`compressedDepth`、`theora` 派生话题。
+
+导航、航点和 teleop 单独运行时，即使系统中存在 camera 也不录图像。已有 `/rosbag2_recorder` 时自动跳过本次录包并继续运行。启动录包时会输出 profile、bag 路径、相机状态和完整话题清单。
 
 ## 语音播报排查
 

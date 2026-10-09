@@ -6,29 +6,28 @@ WORKSPACE=/home/rc4/fruit_ws
 BAG_ROOT="$WORKSPACE/rosbags"
 MAX_BAGS=5
 BAG_LABEL=""
-DEBUG_MODE=0
-
-RECORD_EXCLUDE_REGEX='(^/camera/(color|depth|extrinsics|rgbd).*|^/camera/aligned_depth_to_color/camera_info$|/(compressed|compressedDepth|theora)$)'
+BAG_PROFILE="${FRUIT_RECORDING_PROFILE:-full}"
 
 BAG_NAME_PATTERN='^([A-Za-z0-9_.-]+_)?([0-9]{8}_[0-9]{6})(_[0-9]+)?$'
 
 usage() {
   cat <<'EOF'
-Usage: ./record_rosbag.sh [label] [--full] [--no-monitor]
+Usage: ./record_rosbag.sh [label] [--no-monitor]
 
-Record all discovered ROS topics using the MCAP storage format.
-To control camera load and bag size, Camera raw color, unaligned raw depth,
-the composite RGBD topic, camera info/metadata, and image transport derivatives
-are excluded.
-The retained visual topics are Camera annotated image (/fruit_perception/camera/annotated_image),
-aligned depth (/camera/aligned_depth_to_color/image_raw), and fruit decisions (/fruit_perception/decision).
---full is accepted as an explicit mode flag.
+Record the selected fixed topic profile using the MCAP storage format.
+The default direct-run profile is full. Debug entrypoints pass their profile
+through FRUIT_RECORDING_PROFILE and start this script only once.
+Camera topics are added only for profiles that use the camera, when /camera,
+/fruit_perception_node, and each selected image publisher are ready.
+The selected raw visual topics are /camera/color/image_raw,
+/camera/aligned_depth_to_color/image_raw, and
+/fruit_perception/camera/annotated_image. Camera info, /camera/rgbd,
+unaligned depth, and compressed image transport topics are never recorded.
 The bag is written to:
   rosbags/YYYYMMDD_HHMMSS/
 
 The newest five date-named bags are retained. An optional label is kept as a
-prefix before the timestamp. --no-monitor is used by start_fruit_mission.sh
-to avoid starting a second robot debug monitor.
+prefix before the timestamp. --no-monitor is retained for compatibility.
 
 Press Ctrl-C once to stop recording cleanly.
 EOF
@@ -42,13 +41,6 @@ while (($# > 0)); do
       ;;
     --no-monitor)
       # Retained for compatibility
-      shift
-      ;;
-    --debug)
-      DEBUG_MODE=1
-      shift
-      ;;
-    --full)
       shift
       ;;
     --*)
@@ -71,9 +63,10 @@ fi
 
 source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
 source "$WORKSPACE/scripts/fruit_runtime_logging.bash"
+source "$WORKSPACE/scripts/fruit_runtime_recording.bash"
 set -u
 
-fruit_logging_init "record_rosbag" "${DEBUG_MODE}"
+fruit_logging_init "record_rosbag" "${FRUIT_LOGGING_DEBUG:-0}"
 
 bag_pid=""
 stopped=0
@@ -122,6 +115,59 @@ prune_recorded_bags()
   done
 }
 
+topic_has_publishers()
+{
+  local topic=$1
+  local topic_info
+
+  topic_info=$(ros2 topic info "$topic" --verbose 2>/dev/null || true)
+  [[ "$topic_info" =~ Publisher[[:space:]]count:[[:space:]]+[1-9][0-9]* ]]
+}
+
+node_is_running()
+{
+  local node=$1
+  /usr/bin/grep -Fxq "$node" < <(ros2 node list 2>/dev/null)
+}
+
+add_topic()
+{
+  local topic=$1
+  [[ -n "${recorded_topic_set[$topic]+yes}" ]] && return
+  recorded_topic_set["$topic"]=1
+  recorded_topics+=("$topic")
+}
+
+declare -a recorded_topics=()
+declare -A recorded_topic_set=()
+while IFS= read -r topic; do
+  [[ -n "$topic" ]] || continue
+  add_topic "$topic"
+done < <(fruit_recording_profile_topics "$BAG_PROFILE")
+
+if fruit_recording_profile_uses_camera "$BAG_PROFILE"; then
+  if node_is_running /camera && node_is_running /fruit_perception_node; then
+    for camera_topic in \
+      /camera/color/image_raw \
+      /camera/aligned_depth_to_color/image_raw \
+      /fruit_perception/camera/annotated_image; do
+      if topic_has_publishers "$camera_topic"; then
+        add_topic "$camera_topic"
+        printf '[rosbag] camera topic included: %s\n' "$camera_topic"
+      else
+        printf '[rosbag] camera topic skipped: no publisher: %s\n' "$camera_topic"
+      fi
+    done
+  else
+    printf '[rosbag] camera topics skipped: /camera or /fruit_perception_node is unavailable\n'
+  fi
+fi
+
+if [[ "${FRUIT_RECORDING_WORKER:-0}" != 1 ]] && fruit_recording_node_running; then
+  printf '[rosbag] recorder already exists; skip duplicate recording\n'
+  exit 0
+fi
+
 mkdir -p "$BAG_ROOT"
 prune_recorded_bags
 
@@ -138,17 +184,27 @@ fi
 
 printf '[rosbag] output: %s\n' "$BAG_PATH"
 printf '[rosbag] storage: mcap\n'
-printf '[rosbag] recording all non-excluded topics, including LiDAR and point-cloud topics\n'
-printf '[rosbag] visual topics: Camera annotated image, aligned depth, and fruit decisions (raw color excluded)\n'
-printf '[rosbag] excluded topic regex: %s\n' "$RECORD_EXCLUDE_REGEX"
+printf '[rosbag] profile: %s\n' "$BAG_PROFILE"
+printf '[rosbag] topics (%s):\n' "${#recorded_topics[@]}"
+printf '[rosbag]   %s\n' "${recorded_topics[@]}"
 printf '[rosbag] retaining the newest %s date-named bags\n' "$MAX_BAGS"
 printf '[rosbag] press Ctrl-C once when the failure has been captured\n'
 
+orchestrator_log="${FRUIT_RUNTIME_SESSION_DIR:-}/orchestrator.log"
+if [[ -n "${FRUIT_RUNTIME_SESSION_DIR:-}" && -w "$orchestrator_log" ]]; then
+  {
+    printf '=== Recording Configuration ===\n'
+    printf 'Profile: %s\n' "$BAG_PROFILE"
+    printf 'Output: %s\n' "$BAG_PATH"
+    printf 'Topics (%s):\n' "${#recorded_topics[@]}"
+    printf '  %s\n' "${recorded_topics[@]}"
+  } >> "$orchestrator_log"
+fi
+
 ros2 bag record \
-  --all \
   --include-hidden-topics \
   --storage mcap \
-  --exclude "$RECORD_EXCLUDE_REGEX" \
+  "${recorded_topics[@]}" \
   --output "$BAG_PATH" &
 bag_pid=$!
 
