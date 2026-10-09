@@ -17,6 +17,7 @@ from sensor_msgs.msg import CompressedImage, Image
 from fruit_robviz_bridge.video_frames import (
     convert_depth_to_jet,
     encode_jpeg,
+    encode_png,
     validate_and_extract_color,
 )
 
@@ -139,7 +140,70 @@ def run_self_check() -> int:
     if decoded is None or decoded.shape != (480, 848, 3):
         raise AssertionError("JPEG decoded image does not match native dimensions")
 
-    print("[self-check] All frame, depth JET, and JPEG checks passed successfully.")
+    # 7. PNG lossless encoding check with asymmetric color blocks and row padding
+    width, height = 120, 80
+    row_bytes = width * 3  # 360
+    step = 380  # 20 bytes row padding
+    raw_rgb_data = np.zeros((height, width, 3), dtype=np.uint8)
+    raw_rgb_data[0:20, 0:30] = [255, 0, 0]      # Red
+    raw_rgb_data[20:40, 30:60] = [0, 255, 0]    # Green
+    raw_rgb_data[40:60, 60:90] = [0, 0, 255]    # Blue
+    raw_rgb_data[60:80, 90:120] = [12, 34, 56]  # Custom asymmetric pattern
+
+    # Construct Image message with step padding
+    pad = b"\x00" * (step - row_bytes)
+    rows = [raw_rgb_data[r, :, :].tobytes() + pad for r in range(height)]
+    padded_msg = Image()
+    padded_msg.width = width
+    padded_msg.height = height
+    padded_msg.encoding = "rgb8"
+    padded_msg.step = step
+    padded_msg.data = b"".join(rows)
+
+    _, extracted_bgr, spec_png = validate_and_extract_color(padded_msg)
+    if spec_png != (width, height, "RGB"):
+        raise AssertionError(f"Unexpected PNG spec: {spec_png}")
+    png_bytes = encode_png(extracted_bgr)
+    decoded_bgr = cv2.imdecode(
+        np.frombuffer(png_bytes, dtype=np.uint8), cv2.IMREAD_COLOR
+    )
+    if decoded_bgr is None or decoded_bgr.shape != (height, width, 3):
+        shape_info = decoded_bgr.shape if decoded_bgr is not None else None
+        raise AssertionError(f"Decoded PNG shape mismatch: {shape_info}")
+    if not np.array_equal(decoded_bgr, extracted_bgr):
+        raise AssertionError(
+            "PNG lossless round-trip failed: decoded BGR differs from extracted BGR"
+        )
+
+    # Convert decoded BGR back to RGB and compare with raw unpadded input pixels
+    decoded_rgb = cv2.cvtColor(decoded_bgr, cv2.COLOR_BGR2RGB)
+    if not np.array_equal(decoded_rgb, raw_rgb_data):
+        raise AssertionError(
+            "PNG lossless round-trip failed: RGB pixels do not match original message"
+        )
+
+    # Also verify bgr8 encoding
+    bgr_msg = Image()
+    bgr_msg.width = 64
+    bgr_msg.height = 32
+    bgr_msg.encoding = "bgr8"
+    bgr_msg.step = 64 * 3
+    bgr_raw = np.full((32, 64, 3), 128, dtype=np.uint8)
+    bgr_raw[5:15, 10:20] = [10, 20, 30]
+    bgr_msg.data = bgr_raw.tobytes()
+    _, bgr_mat2, spec_bgr = validate_and_extract_color(bgr_msg)
+    if spec_bgr != (64, 32, "BGR"):
+        raise AssertionError(f"Unexpected BGR spec: {spec_bgr}")
+    png_bytes2 = encode_png(bgr_mat2)
+    decoded_bgr2 = cv2.imdecode(
+        np.frombuffer(png_bytes2, dtype=np.uint8), cv2.IMREAD_COLOR
+    )
+    if not np.array_equal(decoded_bgr2, bgr_raw):
+        raise AssertionError(
+            "PNG bgr8 round-trip failed: decoded pixels do not match original BGR"
+        )
+
+    print("[self-check] All frame, depth JET, JPEG, and lossless PNG checks passed successfully.")
     return 0
 
 

@@ -87,8 +87,9 @@ Python 节点发布同戳 `/fruit_perception/camera/base_preview_detections`。
 这两路元数据均不是抓取授权，不改变观察窗口或 `/fruit_perception/decision`。
 Base 要求采集时连续实测停稳，无效时为 N/A。
 图像组件保持同容器 intra-process raw 数据路径。
-RGB 和 Native Depth 的 JPEG 预算相互独立。
+RGB 和 Native Depth 的 JPEG 预算相互独立，原始 RGB 预览共用标注 RGB 传输设置。
 配置重载成功消息精确确认版本和 HTTP 启动会话。
+RobViz “图像采集”页支持一键/空格保存 NUC 原始帧为无损 PNG 至 `/home/rc4/fruit_ws/data/yolo_images/camera`，无自动连拍，无重试。
 
 ```bash
 # 启动感知与扫码（不启动串口桥与任务）

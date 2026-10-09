@@ -6,7 +6,7 @@
 ## 模块与职责
 
 1. **原尺寸图像网关与桥接节点 (`fruit_robviz_image_bridge`)**：
-   运行在 Python/GStreamer，经批准跨进程订阅本机 raw image，提供 RGB 与 Native Depth 两路 WebRTC (H.264) 及可选 JPEG 压缩流。保持输入原尺寸传输，不进行降采样。
+   运行在 Python/GStreamer，经批准跨进程订阅本机 raw image，提供标注 RGB、原始 RGB (`/camera/color/image_raw`) 与 Native Depth 三路 WebRTC (H.264) 及可选 JPEG 压缩流。保持输入原尺寸传输，不进行降采样。提供 NUC 本地单张无损 PNG 采集服务端协议。原始 RGB 共用 `rgb.*` 传输设置。
 2. **配置重载客户端 (`RobvizConfigClient`)**：
    在启动时及接收到 `/fruit_robviz_bridge/reload_image_settings` Trigger 请求时从 HTTP 服务获取最新图像设置，并通过 ROS 参数原子应用到图像网关节点。
 3. **Web 航点编辑器服务 (`waypoint_editor_server`)**：
@@ -20,12 +20,20 @@
 提供 WebSocket 信令及基于 GStreamer x264 的 WebRTC H.264 视频流（Constrained Baseline, packetization-mode=1）。
 支持动态网络拥塞控制（根据客户端 RTT 与丢包反馈调节码率）。
 
+### NUC 原始图像采集协议
+通过网关 WebSocket (`/ws`) 提供轻量采集命令：
+- `getCaptureInfo`: 注册采集客户端并返回原始话题、输出目录、已保存 PNG 数量、最近文件名、最新帧接收延迟与尺寸。
+- `captureFrame`: 校验 Origin 与 1 秒接收新鲜度，将最新原尺寸原始 RGB 帧无损编码为 PNG，安全落盘至 `/home/rc4/fruit_ws/data/yolo_images/camera`。
+- 网关同一时间仅允许一个保存任务执行（全局互斥），保存取最新未丢弃原始帧，不受视频预览限帧影响。
+- 独立单机脚本 `collect_cam_img.py` 仍保留原来的 JPG 行为；RobViz 采集专用于无损 PNG 采集。
+
 ### JPEG 压缩话题
 当所选传输模式为 JPEG 时，节点按需编码并发布原尺寸压缩图像：
 
 ```text
-/fruit_perception/camera/annotated_image/compressed  sensor_msgs/msg/CompressedImage
-/fruit_perception/camera/native_depth/compressed     sensor_msgs/msg/CompressedImage
+/fruit_perception/camera/annotated_image/compressed        sensor_msgs/msg/CompressedImage
+/fruit_robviz_bridge/camera/color/image_raw/compressed    sensor_msgs/msg/CompressedImage
+/fruit_perception/camera/native_depth/compressed           sensor_msgs/msg/CompressedImage
 ```
 
 RGB 预览直接转发感知节点的标注图。

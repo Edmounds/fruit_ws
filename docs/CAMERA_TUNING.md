@@ -17,10 +17,17 @@ C++ 标注显示原始品种、熟度百分比、检测置信度、中心深度�
 成熟框为绿色，未成熟框为橙色，无深度时显示 `D: NoDepth`。
 相机启动配置 `initial_reset: true`，重置设备状态，但不能保证修复硬件 MIPI 故障。
 
-日常预览使用两个 JPEG `CompressedImage` 话题：
+日常预览使用 JPEG `CompressedImage` 话题及 WebRTC 视频通道：
 
 - `/fruit_perception/camera/annotated_image/compressed`：感知标注图 JPEG 预览（包含成熟度颜色框、类别置信度、深度与准星）。
+- `/fruit_robviz_bridge/camera/color/image_raw/compressed`：原始相机 RGB 预览（无标注覆盖，共用 rgb 传输参数）。
 - `/fruit_perception/camera/native_depth/compressed`：Native Depth JET、距离范围和有效像素比例。
+
+RobViz 顶栏“图像采集”页面提供原始 RGB 实时预览与单张无损 PNG 采集：
+- 采集保存源必须为 NUC 本机 `/camera/color/image_raw`，保存为原尺寸无损 PNG。
+- 固定保存目录为 `/home/rc4/fruit_ws/data/yolo_images/camera`。
+- 超过 1 秒未收到新帧拒绝保存，保证数据新鲜度。
+- 必须先通过 `./start_fruit_perception.sh --zone A|B|C` 启动感知与相机；网页端不管理相机生命周期。退出采集页面释放采集与视频订阅，不停止底层相机。
 
 JPEG 深度图不能用于数值测距。
 Base 由 Python 节点复用现有变换函数，要求图像采集时已满足连续实测停稳窗口。

@@ -12,7 +12,7 @@ import logging
 import math
 import threading
 import time
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Set, Tuple
 
 import gi
 
@@ -28,6 +28,7 @@ from fruit_robviz_bridge.video_frames import (  # noqa: E402
 )
 from rclpy.node import Node  # noqa: E402
 from rclpy.qos import (  # noqa: E402
+    DurabilityPolicy,
     HistoryPolicy,
     QoSProfile,
     ReliabilityPolicy,
@@ -85,6 +86,9 @@ class StreamChannel:
         # State and synchronization
         self.lock = threading.Lock()
         self.latest_msg: Optional[Image] = None
+        self.latest_raw_msg: Optional[Image] = None
+        self.latest_raw_time: float = 0.0
+        self.capture_viewers: Set[str] = set()
         self.last_admitted_time = 0.0
         self.subscription = None
         self.viewers: Dict[str, dict] = {}
@@ -166,8 +170,23 @@ class StreamChannel:
 
         self.update_demand()
 
-    def has_demand(self) -> bool:
-        """Return True if there is an active subscriber/viewer for this stream."""
+    def add_capture_client(self, viewer_id: str) -> None:
+        """Register a client needing raw frame caching."""
+        self.capture_viewers.add(viewer_id)
+        self.update_demand()
+
+    def remove_capture_client(self, viewer_id: str) -> None:
+        """Unregister a client needing raw frame caching."""
+        self.capture_viewers.discard(viewer_id)
+        self.update_demand()
+
+    def get_latest_raw_frame(self) -> Tuple[Optional[Image], float]:
+        """Return the latest unthrottled raw frame and its monotonic receive time."""
+        with self.lock:
+            return self.latest_raw_msg, self.latest_raw_time
+
+    def has_video_demand(self) -> bool:
+        """Return True if there is an active subscriber/viewer for this stream video."""
         if not self.settings_applied:
             return False
         if self.transport == "webrtc":
@@ -175,6 +194,10 @@ class StreamChannel:
         if self.transport == "jpeg":
             return self.compressed_publisher.get_subscription_count() > 0
         return False
+
+    def has_demand(self) -> bool:
+        """Return True if there is video demand or raw capture demand."""
+        return self.has_video_demand() or len(self.capture_viewers) > 0
 
     def update_demand(self) -> None:
         """Ensure ROS raw subscription is active only when demand exists."""
@@ -193,6 +216,7 @@ class StreamChannel:
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
+            durability=DurabilityPolicy.VOLATILE,
         )
         self.subscription = self.node.create_subscription(
             Image, self.raw_topic, self.on_raw_image, qos
@@ -213,10 +237,16 @@ class StreamChannel:
             self.push_task = None
         with self.lock:
             self.latest_msg = None
+            self.latest_raw_msg = None
+            self.latest_raw_time = 0.0
         self.teardown_pipeline()
 
     def on_raw_image(self, msg: Image) -> None:
         now = time.monotonic()
+        with self.lock:
+            self.latest_raw_msg = msg
+            self.latest_raw_time = now
+
         interval = 1.0 / max(0.1, self.max_fps)
         if now - self.last_admitted_time < interval:
             return  # Drop frame before processing
@@ -581,6 +611,12 @@ class StreamChannel:
     async def frame_push_loop(self) -> None:
         pts = 0
         while self.is_active:
+            if not self.has_video_demand():
+                if self.pipeline:
+                    self.teardown_pipeline()
+                await asyncio.sleep(0.1)
+                continue
+
             interval = 1.0 / max(0.1, self.max_fps)
             loop_start = time.monotonic()
 

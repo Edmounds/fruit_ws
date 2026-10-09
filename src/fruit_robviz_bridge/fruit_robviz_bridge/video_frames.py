@@ -229,3 +229,14 @@ def encode_jpeg(bgr_mat: np.ndarray, quality: int) -> bytes:
     if not success:
         raise RuntimeError("OpenCV JPEG encoding failed")
     return buffer.tobytes()
+
+
+def encode_png(bgr_mat: np.ndarray, compression_level: int = 3) -> bytes:
+    """Encode BGR image to PNG bytes losslessly."""
+    level = max(0, min(9, int(compression_level)))
+    success, buffer = cv2.imencode(
+        ".png", bgr_mat, [int(cv2.IMWRITE_PNG_COMPRESSION), level]
+    )
+    if not success:
+        raise RuntimeError("OpenCV PNG encoding failed")
+    return buffer.tobytes()

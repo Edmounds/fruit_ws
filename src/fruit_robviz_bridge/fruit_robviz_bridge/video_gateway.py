@@ -13,8 +13,11 @@ import ipaddress
 import json
 import logging
 import math
+import os
+from pathlib import Path
 import threading
-from typing import Dict, Optional, Set
+import time
+from typing import Dict, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 import aiohttp
@@ -24,11 +27,16 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst  # noqa: E402
 
+from fruit_robviz_bridge.video_frames import (  # noqa: E402
+    encode_png,
+    validate_and_extract_color,
+)
 from fruit_robviz_bridge.video_streamer import StreamChannel  # noqa: E402
 from rcl_interfaces.msg import SetParametersResult  # noqa: E402
 import rclpy  # noqa: E402
 from rclpy.node import Node  # noqa: E402
 from rclpy.parameter import Parameter  # noqa: E402
+from sensor_msgs.msg import Image  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -72,6 +80,22 @@ class VideoGatewayNode(Node):
         self.rgb_output_topic = str(self.get_parameter("rgb_output_topic").value)
         self.depth_output_topic = str(self.get_parameter("depth_output_topic").value)
 
+        self.declare_parameter("raw_rgb_topic", "/camera/color/image_raw")
+        self.declare_parameter(
+            "raw_rgb_output_topic",
+            "/fruit_robviz_bridge/camera/color/image_raw/compressed",
+        )
+        self.declare_parameter(
+            "capture_output_dir",
+            "/home/rc4/fruit_ws/data/yolo_images/camera",
+        )
+
+        self.raw_rgb_topic = str(self.get_parameter("raw_rgb_topic").value)
+        self.raw_rgb_output_topic = str(
+            self.get_parameter("raw_rgb_output_topic").value
+        )
+        self.capture_output_dir = str(self.get_parameter("capture_output_dir").value)
+
         # Version & session tracking
         self.declare_parameter("settings_version", 0)
         self.declare_parameter("settings_session", "")
@@ -95,6 +119,14 @@ class VideoGatewayNode(Node):
                 self.loop,
                 rgb_params,
             ),
+            "camera": StreamChannel(
+                "camera",
+                self.raw_rgb_topic,
+                self.raw_rgb_output_topic,
+                self,
+                self.loop,
+                rgb_params,
+            ),
             "depth": StreamChannel(
                 "depth",
                 self.depth_topic,
@@ -110,6 +142,9 @@ class VideoGatewayNode(Node):
             self.annotated_topic: self.channels["rgb"],
             self.rgb_output_topic: self.channels["rgb"],
             "rgb": self.channels["rgb"],
+            self.raw_rgb_topic: self.channels["camera"],
+            self.raw_rgb_output_topic: self.channels["camera"],
+            "camera": self.channels["camera"],
             self.depth_topic: self.channels["depth"],
             self.depth_output_topic: self.channels["depth"],
             "depth": self.channels["depth"],
@@ -207,6 +242,11 @@ class VideoGatewayNode(Node):
                 merged.update(updates[stream_name])
                 self.channels[stream_name].update_parameters(merged)
 
+            # Camera raw stream shares full rgb stream settings
+            rgb_merged = dict(self._get_stream_params("rgb"))
+            rgb_merged.update(updates["rgb"])
+            self.channels["camera"].update_parameters(rgb_merged)
+
             self.applied_version = new_version
             self.applied_session = new_session
 
@@ -228,6 +268,82 @@ class VideoGatewayNode(Node):
         return result
 
 
+def _count_png_files(directory: str) -> int:
+    try:
+        p = Path(directory)
+        if not p.is_dir():
+            return 0
+        return sum(
+            1 for f in p.iterdir()
+            if f.is_file() and f.name.lower().endswith(".png")
+        )
+    except OSError:
+        return 0
+
+
+def _get_last_png_name(directory: str) -> Optional[str]:
+    try:
+        p = Path(directory)
+        if not p.is_dir():
+            return None
+        pngs = [
+            f for f in p.iterdir()
+            if f.is_file() and f.name.lower().endswith(".png")
+        ]
+        if not pngs:
+            return None
+        pngs.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        return pngs[0].name
+    except OSError:
+        return None
+
+
+def _save_raw_png_disk(
+    msg: Image, output_dir: str
+) -> Tuple[str, str, int, int, int, int]:
+    """Encode raw Image to PNG and write atomically to output_dir.
+
+    Returns:
+        (final_path, file_name, width, height, stamp_sec, stamp_nanosec)
+    """
+    _, bgr_mat, spec = validate_and_extract_color(msg)
+    width, height = spec[0], spec[1]
+    stamp_sec = int(msg.header.stamp.sec)
+    stamp_nanosec = int(msg.header.stamp.nanosec)
+
+    png_bytes = encode_png(bgr_mat, compression_level=3)
+
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    now_ts = time.strftime("%Y%m%d_%H%M%S")
+    millis = int((time.time() % 1.0) * 1000)
+    base_name = f"frame_{now_ts}_{millis:03d}"
+    final_file = out_path / f"{base_name}.png"
+    suffix_idx = 1
+    while final_file.exists():
+        final_file = out_path / f"{base_name}_{suffix_idx}.png"
+        suffix_idx += 1
+
+    temp_file = out_path / f".tmp_{final_file.name}_{os.getpid()}_{time.monotonic_ns()}"
+    try:
+        with open(temp_file, "wb") as f:
+            f.write(png_bytes)
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(temp_file, final_file)
+    except Exception as err:
+        if temp_file.exists():
+            try:
+                temp_file.unlink()
+            except OSError:
+                pass
+        raise RuntimeError(f"Failed to write image file: {err}") from err
+
+    return str(final_file), final_file.name, width, height, stamp_sec, stamp_nanosec
+
+
 class VideoGatewayServer:
     """Aiohttp WebSocket signaling server for RobViz."""
 
@@ -235,10 +351,21 @@ class VideoGatewayServer:
         self.node = node
         self.loop = loop
         self.active_websockets: Set[web.WebSocketResponse] = set()
+        self.save_lock = asyncio.Lock()
+        self._active_save_future: Optional[asyncio.Future] = None
 
         self.app = web.Application()
         self.app.router.add_get("/", self.handle_index)
         self.app.router.add_get("/ws", self.handle_ws)
+
+    def is_save_busy(self) -> bool:
+        return (
+            self.save_lock.locked()
+            or (
+                self._active_save_future is not None
+                and not self._active_save_future.done()
+            )
+        )
 
     def is_origin_allowed(self, request: web.Request) -> bool:
         """Validate request Origin to allow only local/LAN connections."""
@@ -266,6 +393,35 @@ class VideoGatewayServer:
             # Check private LAN address ranges (RFC 1918 / RFC 4193)
             ip = ipaddress.ip_address(origin_host)
             return ip.is_private or ip.is_loopback
+        except ValueError:
+            return False
+
+    def is_capture_origin_allowed(self, request: web.Request) -> bool:
+        """Validate Origin specifically for captureFrame write commands.
+
+        Requires browser Origin hostname to match server hostname or loopback.
+        """
+        origin = request.headers.get("Origin")
+        if not origin:
+            return False
+
+        try:
+            parsed = urlparse(origin)
+            if parsed.scheme not in ("http", "https"):
+                return False
+            origin_host = parsed.hostname
+            if not origin_host:
+                return False
+
+            req_host = request.host.split(":")[0]
+            if origin_host == req_host:
+                return True
+
+            loopbacks = ("localhost", "127.0.0.1", "::1")
+            if origin_host in loopbacks and req_host in loopbacks:
+                return True
+
+            return False
         except ValueError:
             return False
 
@@ -325,6 +481,7 @@ class VideoGatewayServer:
         self.active_websockets.add(ws)
         ws_id = str(id(ws))
         watched_channels: Set[StreamChannel] = set()
+        capture_registered = False
         logger.info("Client connected: %s", ws_id)
 
         # Send initial stream metadata on connect
@@ -349,6 +506,230 @@ class VideoGatewayServer:
 
                     if mtype == "getMeta":
                         await ws.send_json(self.build_metadata())
+                        continue
+
+                    if mtype == "getCaptureInfo":
+                        req_id = data.get("requestId")
+                        if not isinstance(req_id, str) or not (1 <= len(req_id) <= 128):
+                            await ws.send_json(
+                                {
+                                    "type": "captureInfo",
+                                    "requestId": "",
+                                    "error": "Invalid or missing requestId",
+                                }
+                            )
+                            continue
+
+                        camera_ch = self.node.channels.get("camera")
+                        if camera_ch is None:
+                            await ws.send_json(
+                                {
+                                    "type": "captureInfo",
+                                    "requestId": req_id,
+                                    "error": "Camera stream channel not configured",
+                                }
+                            )
+                            continue
+
+                        if not capture_registered:
+                            camera_ch.add_capture_client(ws_id)
+                            capture_registered = True
+
+                        msg, recv_time = camera_ch.get_latest_raw_frame()
+                        now = time.monotonic()
+                        has_frame = msg is not None and (now - recv_time <= 1.0)
+                        frame_age = (now - recv_time) if msg is not None else -1.0
+                        w = int(msg.width) if msg is not None else 0
+                        h = int(msg.height) if msg is not None else 0
+
+                        total_count = _count_png_files(self.node.capture_output_dir)
+                        last_name = _get_last_png_name(self.node.capture_output_dir)
+
+                        await ws.send_json(
+                            {
+                                "type": "captureInfo",
+                                "requestId": req_id,
+                                "topic": self.node.raw_rgb_topic,
+                                "outputDir": self.node.capture_output_dir,
+                                "totalCount": total_count,
+                                "lastFileName": last_name,
+                                "hasFrame": has_frame,
+                                "frameAgeSec": (
+                                    round(frame_age, 3) if frame_age >= 0 else None
+                                ),
+                                "width": w,
+                                "height": h,
+                            }
+                        )
+                        continue
+
+                    if mtype == "unwatchCapture":
+                        if capture_registered:
+                            camera_ch = self.node.channels.get("camera")
+                            if camera_ch:
+                                camera_ch.remove_capture_client(ws_id)
+                            capture_registered = False
+                        continue
+
+                    if mtype == "captureFrame":
+                        req_id = data.get("requestId")
+                        if not isinstance(req_id, str) or not (1 <= len(req_id) <= 128):
+                            await ws.send_json(
+                                {
+                                    "type": "captureResult",
+                                    "requestId": "",
+                                    "success": False,
+                                    "error": "Invalid or missing requestId",
+                                }
+                            )
+                            continue
+
+                        if not self.is_capture_origin_allowed(request):
+                            await ws.send_json(
+                                {
+                                    "type": "captureResult",
+                                    "requestId": req_id,
+                                    "success": False,
+                                    "error": "Forbidden Origin for capture write command",
+                                }
+                            )
+                            continue
+
+                        camera_ch = self.node.channels.get("camera")
+                        if camera_ch is None:
+                            await ws.send_json(
+                                {
+                                    "type": "captureResult",
+                                    "requestId": req_id,
+                                    "success": False,
+                                    "error": "Camera stream channel not configured",
+                                }
+                            )
+                            continue
+
+                        if self.is_save_busy():
+                            await ws.send_json(
+                                {
+                                    "type": "captureResult",
+                                    "requestId": req_id,
+                                    "success": False,
+                                    "error": "A capture task is already in progress",
+                                }
+                            )
+                            continue
+
+                        now = time.monotonic()
+                        msg, recv_time = camera_ch.get_latest_raw_frame()
+                        if msg is None:
+                            await ws.send_json(
+                                {
+                                    "type": "captureResult",
+                                    "requestId": req_id,
+                                    "success": False,
+                                    "error": "No camera frame received yet",
+                                }
+                            )
+                            continue
+
+                        age = now - recv_time
+                        if age > 1.0:
+                            await ws.send_json(
+                                {
+                                    "type": "captureResult",
+                                    "requestId": req_id,
+                                    "success": False,
+                                    "error": (
+                                        f"Frame expired (age: {age:.3f}s > 1.0s)"
+                                    ),
+                                }
+                            )
+                            continue
+
+                        async with self.save_lock:
+                            if (
+                                self._active_save_future is not None
+                                and not self._active_save_future.done()
+                            ):
+                                await ws.send_json(
+                                    {
+                                        "type": "captureResult",
+                                        "requestId": req_id,
+                                        "success": False,
+                                        "error": (
+                                            "A capture task is already in progress"
+                                        ),
+                                    }
+                                )
+                                continue
+
+                            save_fut = self.loop.create_future()
+                            self._active_save_future = save_fut
+
+                            def _worker():
+                                try:
+                                    return _save_raw_png_disk(
+                                        msg, self.node.capture_output_dir
+                                    )
+                                except Exception as exc:
+                                    return exc
+
+                            async def _run_save():
+                                try:
+                                    res = await self.loop.run_in_executor(
+                                        None, _worker
+                                    )
+                                    if isinstance(res, Exception):
+                                        if not save_fut.done():
+                                            save_fut.set_exception(res)
+                                    else:
+                                        if not save_fut.done():
+                                            save_fut.set_result(res)
+                                except BaseException as exc:
+                                    if not save_fut.done():
+                                        save_fut.set_exception(exc)
+                                finally:
+                                    if self._active_save_future is save_fut:
+                                        self._active_save_future = None
+
+                            self.loop.create_task(_run_save())
+
+                            try:
+                                fpath, fname, w, h, s_sec, s_nsec = (
+                                    await asyncio.shield(save_fut)
+                                )
+                                total_count = _count_png_files(
+                                    self.node.capture_output_dir
+                                )
+                                await ws.send_json(
+                                    {
+                                        "type": "captureResult",
+                                        "requestId": req_id,
+                                        "success": True,
+                                        "filePath": fpath,
+                                        "fileName": fname,
+                                        "totalCount": total_count,
+                                        "width": w,
+                                        "height": h,
+                                        "stampSec": s_sec,
+                                        "stampNsec": s_nsec,
+                                    }
+                                )
+                            except asyncio.CancelledError:
+                                logger.info(
+                                    "Client disconnected during capture; "
+                                    "background save proceeds to completion"
+                                )
+                                raise
+                            except Exception as exc:
+                                logger.exception("Capture frame save failed")
+                                await ws.send_json(
+                                    {
+                                        "type": "captureResult",
+                                        "requestId": req_id,
+                                        "success": False,
+                                        "error": str(exc),
+                                    }
+                                )
                         continue
 
                     if not isinstance(topic, str):
@@ -407,6 +788,10 @@ class VideoGatewayServer:
             logger.info("Client disconnected: %s", ws_id)
             for ch in list(watched_channels):
                 ch.remove_viewer(ws_id)
+            if capture_registered:
+                camera_ch = self.node.channels.get("camera")
+                if camera_ch:
+                    camera_ch.remove_capture_client(ws_id)
 
         return ws
 
