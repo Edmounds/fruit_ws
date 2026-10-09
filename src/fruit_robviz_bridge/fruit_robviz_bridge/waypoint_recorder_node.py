@@ -88,6 +88,8 @@ class WaypointRecorderNode(Node):
         self.declare_parameter("standstill_angular_speed_rps", 0.08)
         self.declare_parameter("standstill_confirm_duration_sec", 0.3)
         self.declare_parameter("standstill_timeout_sec", 5.0)
+        self.declare_parameter("record_pose_max_translation_m", 0.05)
+        self.declare_parameter("record_pose_max_yaw_rad", 0.10)
         self.declare_parameter("command_topic", "/fruit/waypoint_maker/command")
         self.declare_parameter("state_topic", "/fruit/waypoint_maker/state")
         self.declare_parameter("marker_topic", "/fruit/waypoint_maker/markers")
@@ -128,6 +130,12 @@ class WaypointRecorderNode(Node):
         self._standstill_timeout_sec = float(
             self.get_parameter("standstill_timeout_sec").value
         )
+        self._record_pose_max_translation_m = float(
+            self.get_parameter("record_pose_max_translation_m").value
+        )
+        self._record_pose_max_yaw_rad = float(
+            self.get_parameter("record_pose_max_yaw_rad").value
+        )
         positive_values = (
             self._sample_duration_sec,
             self._sample_period_sec,
@@ -135,6 +143,8 @@ class WaypointRecorderNode(Node):
             self._odometry_max_age_sec,
             self._standstill_confirm_duration_sec,
             self._standstill_timeout_sec,
+            self._record_pose_max_translation_m,
+            self._record_pose_max_yaw_rad,
         )
         if not all(math.isfinite(value) and value > 0 for value in positive_values):
             raise ValueError("sampling durations and freshness limits must be finite and positive")
@@ -480,7 +490,7 @@ class WaypointRecorderNode(Node):
         samples = []
         deadline = time.monotonic() + self._sample_duration_sec
         last_error = None
-        previous = None
+        first_pose = None
         started = False
         interrupted = False
         while rclpy.ok() and time.monotonic() < deadline:
@@ -498,24 +508,26 @@ class WaypointRecorderNode(Node):
                     raise RuntimeError(
                         "TF sample is stale or has no timestamp"
                     )
-                if not self._is_standstill():
-                    raise RuntimeError("robot is moving; waypoint recording rejected")
                 current = self._pose_from_transform(name, transform)
-                if previous is not None:
+                if first_pose is None:
+                    first_pose = current
+                else:
                     moved = math.hypot(
-                        current.x - previous.x,
-                        current.y - previous.y,
+                        current.x - first_pose.x,
+                        current.y - first_pose.y,
                     )
                     yaw_delta = abs(
-                        (current.yaw - previous.yaw + math.pi) % (2 * math.pi)
+                        (current.yaw - first_pose.yaw + math.pi) % (2 * math.pi)
                         - math.pi
                     )
-                    if moved > 0.03 or yaw_delta > math.radians(5.0):
+                    if (
+                        moved > self._record_pose_max_translation_m
+                        or yaw_delta > self._record_pose_max_yaw_rad
+                    ):
                         raise RuntimeError(
                             "robot moved during waypoint recording"
                         )
                 samples.append(current)
-                previous = current
                 started = True
             except TransformException as error:
                 last_error = error
