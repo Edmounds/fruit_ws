@@ -26,7 +26,10 @@
 | ArmStatus | `0x20` | RX | 否 | `/fruit_hardware_bridge/arm/status` |
 
 `ChassisVelocity` 来自速度仲裁后的 `geometry_msgs/Twist`：`linear.x` 为 m/s，
-`angular.z` 为 rad/s；协议映射在串口发送前取反 angular_z，客户端不要再次取反。
+`angular.z` 为 rad/s；协议映射在串口发送前分别取反 `linear.x` 和 `angular.z`。
+手柄与导航客户端继续使用 ROS 方向约定，不要再次取反。
+字段映射在编译时生成，修改后必须构建并重启实际持有串口的桥。
+录点脚本复用已有桥时，仅重启录点脚本不会更新映射。
 
 ## 轨迹、ACK 与执行结果
 

@@ -30,7 +30,7 @@ auto_serial_bridge  --传输业务数据--  下位机
 | `TrajectoryHeader` `/fruit_hardware_bridge/arm/trajectory_header` | `trajectory_id: uint32`、`point_num: uint16` | 声明新机械臂轨迹的 ID 和路点总数。 |
 | `TrajectoryPoint` `/fruit_hardware_bridge/arm/trajectory_point` | `trajectory_id: uint32`、`point_id: uint16`、`time_from_start: uint32`、`joint_1..4: float32`、`gripper_action: uint8`、`is_via_point: uint8` | 按时间排列的四轴目标；时间单位 ms，角度单位 rad。`0` 为精确点，`1` 为途经点。 |
 | `ArmControlMode` `/fruit_hardware_bridge/arm/control_mode` | `control_mode: uint8` | 受控停止或急停。下位机收到完整点位后自动启动轨迹。此消息**不包含 `trajectory_id`**。 |
-| `ChassisVelocity` `/cmd_vel` | `linear_x: float32`、`angular_z: float32` | 底盘线速度 m/s 和角速度 rad/s；桥在下发时对 ROS `angular.z` 取反以匹配下位机方向。 |
+| `ChassisVelocity` `/cmd_vel` | `linear_x: float32`、`angular_z: float32` | 底盘线速度 m/s 和角速度 rad/s；桥在下发时分别对 ROS `linear.x` 和 `angular.z` 取反以匹配下位机方向。 |
 
 `TrajectoryPoint.gripper_action`：`0` 保持当前开度（HOLD），`1` 张开（OPEN），`2` 闭合（CLOSE）。这是**命令**，不等于已完成的夹爪状态反馈。
 
