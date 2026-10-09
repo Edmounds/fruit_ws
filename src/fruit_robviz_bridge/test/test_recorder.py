@@ -144,3 +144,59 @@ def test_test_point_store_does_not_advance_without_success(tmp_path):
     store.next_test_segment()
 
     assert store.cursor == 0
+
+
+def test_template_document_load_and_save(tmp_path):
+    from fruit_robviz_bridge.waypoint_editor_server import (
+        EditorFile,
+        load_waypoint_document,
+        save_waypoint_document,
+    )
+
+    template_yaml = tmp_path / "template.yaml"
+    template_yaml.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "points": [
+                    {"name": "A1", "type": "goal"},
+                    {"name": "to_B", "type": "waypoint"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    editor_file = EditorFile(
+        file_id="template",
+        profile="template",
+        mode="template",
+        frame_id="",
+        waypoint_file=template_yaml,
+        template_file=template_yaml,
+        reference_file=template_yaml,
+        formal=False,
+    )
+
+    doc, points = load_waypoint_document(editor_file)
+    assert doc["schema_version"] == 1
+    assert [p["name"] for p in points] == ["A1", "to_B"]
+    assert [p["type"] for p in points] == ["goal", "waypoint"]
+
+    backup_path, version = save_waypoint_document(
+        editor_file,
+        tmp_path / "backups",
+        [
+            {"name": "A1", "type": "goal"},
+            {"name": "A2", "type": "goal"},
+            {"name": "to_B", "type": "waypoint"},
+        ],
+    )
+    assert backup_path is not None and backup_path.is_file()
+    assert version
+
+    saved = yaml.safe_load(template_yaml.read_text(encoding="utf-8"))
+    assert saved["schema_version"] == 1
+    assert [p["name"] for p in saved["points"]] == ["A1", "A2", "to_B"]
+    assert [p["type"] for p in saved["points"]] == ["goal", "goal", "waypoint"]
+
