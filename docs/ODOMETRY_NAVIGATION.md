@@ -136,6 +136,54 @@ B 区固定访问 1～8 号树，C 区按二维码顺序访问。B/C 单区调�
   `/follow_waypoints` 沿用 `nav2_msgs/action/FollowWaypoints` 消息接口，不启动 Nav2 地图导航栈。
   控制器不再包含 GICP 开关、诊断订阅或定位状态门控；新鲜 TF、取消和停车保护继续保留。
 
+### 手柄自走排查与录包
+
+雷达网口断开后，Cyclone DDS 可能反复输出 `ddsi_udp_conn_write ... failed with retcode -1`。
+统一日志过滤器将这些行保留在会话日志中，终端不再重复显示。
+这只消除刷屏，不恢复雷达数据或网络通信。
+
+手柄自走时同时记录原始轴值和速度链路。先在一个终端启动录包：
+
+```bash
+cd /home/rc4/fruit_ws
+source scripts/setup_fruit_runtime.bash
+mkdir -p rosbags
+ros2 bag record -s sqlite3 --polling-interval 100 \
+  -o "rosbags/joy_debug_$(date +%Y%m%d_%H%M%S)" \
+  /joy /cmd_vel_teleop /cmd_vel_nav /cmd_vel
+```
+
+然后在另一个准备好运行环境的终端启动 `./waypoints_maker.sh --tele`。
+这会启动实际底盘控制，排查自走前应关闭底盘驱动。
+保持摇杆松开数秒，再分别操作前、后、左、右，并记录操作时间。
+复现后在录包终端按 Ctrl-C，等待保存完成。
+`/cmd_vel_nav` 没有消息时，通常表示本次没有导航目标。
+
+只检查手柄、不启动底盘控制时，可单独启动驱动并将输出隔离到诊断话题：
+
+```bash
+ros2 run joy_linux joy_linux_node --ros-args \
+  -r __node:=joy_diagnostic \
+  --params-file /home/rc4/fruit_ws/src/joy_linux/config/joy_config.yaml \
+  -p dev:=/dev/input/js0 -p dev_name:="Xbox Wireless Controller" \
+  -p 'dev_ff:=""' -p deadzone:=0.05 -p autorepeat_rate:=20.0 \
+  -p default_trig_val:=true \
+  -r joy:=/joy_diagnostic
+```
+
+节点重命名后，显式参数指定机器人手柄配置。
+诊断时 `default_trig_val=true` 读取设备打开时的真实轴值，避免初始化值被置零。
+另一个终端运行 `ros2 topic echo /joy_diagnostic`，或录制 `/joy_diagnostic`。
+这一路不运行 `joy_convert_node`，不发布底盘速度。
+
+正式链路中，松开摇杆时 `/joy.axes[1]` 应在死区内，两个速度分量应为零。
+当前纵轴为 `1`，转向轴为 `2`，转换器死区为 `0.1`。
+`joy_linux` 已应用 `0.05` 驱动死区，随后转换器计算 `linear.x = axes[1] * 0.4`。
+手柄速度进入 `twist_mux`，优先级为 `100`，导航优先级为 `10`。
+桥只在串口发送前取反两个速度分量，ROS 话题仍使用标准方向约定。
+用 `ros2 bag info <录包目录>` 检查消息数量。
+不要在连接底盘控制节点的 ROS 域中播放包含速度指令的录包。
+
 ### 4.1 静止实测参考（2026-10-02）
 
 在用户确认底盘静止、仅启动雷达与 Point-LIO 里程计栈的条件下，从 `/odometry` 采集约 30 秒、600 帧数据（约 20 Hz）：

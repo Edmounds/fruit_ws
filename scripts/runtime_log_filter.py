@@ -26,6 +26,7 @@ TERMINAL_NEVER_SHOW_PATTERNS = [
     re.compile(r"MCU TX RAW"),
     re.compile(r"MCU RX RAW"),
     re.compile(r"serial_controller\.detail"),
+    re.compile(r"ddsi_udp_conn_write to udp/.*failed with\s*retcode -1"),
 ]
 
 # High-frequency routine inspection patterns (only written to disk).
