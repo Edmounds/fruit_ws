@@ -57,37 +57,25 @@ arm_planner_node:
     # dwell_ms: 到达该点后原地停顿夹取时长 (双点驻留法)
     # ------------------------------------------------------------------------
     presets:
+      # pick_sequence:
+      #   description: "标准苹果采摘多动作工序 (以笛卡尔空间坐标定义)测试用"
+      #   coordinate_frame: "cartesian"
+      #   waypoints:
+      #     # linear 写在每个航点内，控制上一位置到该目标的运动段；true=LIN，false/省略=PTP
+      #     # 段 0: 移至果树前方 5cm 悬停准备位，耗时 1500ms，到位后张开夹爪 (停顿 400ms)
+      #     - { target: [0.20, 0.0, 0.25, 0.0], duration_ms: 1500, gripper: 1, dwell_ms: 400, linear: true }
+      #     # 段 1: 探入 8cm 包裹果实，耗时 1000ms，到位后闭合夹紧 (停顿 600ms)
+      #     - { target: [0.40, 0.0, 0.25, 0.0], duration_ms: 1000, gripper: 2, dwell_ms: 600, linear: true }
+      #     # 段 2: 垂直向上提拉 6cm 脱离果柄，耗时 1000ms，保持夹紧；目标为途经点
+      #     - { target: [0.40, 0.0, 0.40, 0.0], duration_ms: 1000, gripper: 0, dwell_ms: 0, linear: true, is_via_point: true }
+      #     # 段 3: 带着果实收回到安全悬停高度，耗时 1500ms，保持夹紧
+      #     - { target: [0.20, 0.0, 0.25, 0.0], duration_ms: 1500, gripper: 0, dwell_ms: 0, linear: true }
+
       zero:
         description: "机械臂基准零位姿 (大臂竖直朝天，小臂水平朝前)"
         coordinate_frame: "link_angles"
         waypoints:
           - { target: [0.0, 0.0, 0.0, 0.0], duration_ms: 2500, gripper: 0 }
-
-      left_look_a:
-        description: "机械臂左侧观察位姿"
-        coordinate_frame: "cartesian"
-        waypoints:
-          - { target: [0.0, 0.15, 0.30, -58.0], duration_ms: 1000, gripper: 0 }
-
-      right_look_a:
-        description: "机械臂右侧观察位姿"
-        coordinate_frame: "cartesian"
-        waypoints:
-          - { target: [0.0, -0.15, 0.30, -58.0], duration_ms: 1000, gripper: 0 }
-
-      pick_sequence:
-        description: "标准苹果采摘多动作工序 (以笛卡尔空间坐标定义)测试用"
-        coordinate_frame: "cartesian"
-        waypoints:
-          # linear 写在每个航点内，控制上一位置到该目标的运动段；true=LIN，false/省略=PTP
-          # 段 0: 移至果树前方 5cm 悬停准备位，耗时 1500ms，到位后张开夹爪 (停顿 400ms)
-          - { target: [0.20, 0.0, 0.25, 0.0], duration_ms: 1500, gripper: 1, dwell_ms: 400, linear: true }
-          # 段 1: 探入 8cm 包裹果实，耗时 1000ms，到位后闭合夹紧 (停顿 600ms)
-          - { target: [0.40, 0.0, 0.25, 0.0], duration_ms: 1000, gripper: 2, dwell_ms: 600, linear: true }
-          # 段 2: 垂直向上提拉 6cm 脱离果柄，耗时 1000ms，保持夹紧；目标为途经点
-          - { target: [0.40, 0.0, 0.40, 0.0], duration_ms: 1000, gripper: 0, dwell_ms: 0, linear: true, is_via_point: true }
-          # 段 3: 带着果实收回到安全悬停高度，耗时 1500ms，保持夹紧
-          - { target: [0.20, 0.0, 0.25, 0.0], duration_ms: 1500, gripper: 0, dwell_ms: 0, linear: true }
 
       home:
         description: "返回运动初始位置"
@@ -101,6 +89,44 @@ arm_planner_node:
           duration_ms: 1000
           gripper: 0
 
+      shenzhi:
+        description: "伸直位姿"
+        coordinate_frame: "link_angles"
+        waypoints:
+          - { target: [0.0, 0.0, 90.0, 0.0], duration_ms: 1000, gripper: 0 }
+
+      left_look_a:
+        description: "机械臂左侧观察位姿"
+        coordinate_frame: "cartesian"
+        waypoints:
+          - { target: [0.0, 0.15, 0.30, -58.0], duration_ms: 1000, gripper: 0 }
+
+      right_look_a:
+        description: "机械臂右侧观察位姿"
+        coordinate_frame: "cartesian"
+        waypoints:
+          - { target: [0.0, -0.15, 0.30, -58.0], duration_ms: 1000, gripper: 0 }
+
+      left_pick_openloop_a:
+        description: "左方开环控制抓取"
+        coordinate_frame: "cartesian"
+        waypoints:
+          - { target: [0.0, 0.42, -0.13, 0.0], duration_ms: 2500, gripper: 2 }
+          - { target: [0.0, 0.29, 0.23, 0.0], duration_ms: 1000, gripper: 0 }
+          - {duration_ms: 1000, gripper: 1, target: [-0.18, 0.01, 0.23, 0.0]}
+          - {duration_ms: 1000, gripper: 0, target: [0.00, 0.22, 0.23, 0.0]}
+          - {duration_ms: 1000, gripper: 0, target: [0.25, 0.00, 0.17, 0.0]}
+
+      right_pick_openloop_a:
+        description: "右方开环控制抓取"
+        coordinate_frame: "cartesian"
+        waypoints:
+          - { target: [0.0, -0.42, -0.13, 0.0], duration_ms: 2500, gripper: 2 }
+          - { target: [0.0, -0.29, 0.23, 0.0], duration_ms: 1000, gripper: 0 }
+          - {duration_ms: 1000, gripper: 1, target: [-0.18, -0.01, 0.23, 0.0]}
+          - {duration_ms: 1000, gripper: 0, target: [0.00, -0.22, 0.23, 0.0]}
+          - {duration_ms: 1000, gripper: 0, target: [0.25, -0.00, 0.17, 0.0]}
+
       left_store_a:
         description: "左方抓取完毕后存储并回到原位"
         coordinate_frame: cartesian
@@ -113,7 +139,7 @@ arm_planner_node:
           duration_ms: 2000
           gripper: 0
         - {duration_ms: 2000, gripper: 1, target: [-0.18, 0.01, 0.23, 0.0]}
-        - {duration_ms: 2000, gripper: 0, target: [0.00, 0.22, 0.23, 0.0]}
+        - {duration_ms: 2000, gripper: 0, target: [0.00, 0.22, 0.23, 0.0],is_via_point: true}
         - {duration_ms: 2000, gripper: 0, target: [0.22, 0.00, 0.17, 0.0]}
 
       right_store_a:
@@ -128,7 +154,7 @@ arm_planner_node:
           duration_ms: 2000
           gripper: 0
         - {duration_ms: 2000, gripper: 1, target: [-0.18, -0.01, 0.23, 0.0]}
-        - {duration_ms: 2000, gripper: 0, target: [0.00, -0.22, 0.23, 0.0]}
+        - {duration_ms: 2000, gripper: 0, target: [0.00, -0.22, 0.23, 0.0],is_via_point: true}
         - {duration_ms: 2000, gripper: 0, target: [0.22, -0.00, 0.17, 0.0]}
 
       qr_scan:
@@ -142,12 +168,6 @@ arm_planner_node:
           - 0.0
           duration_ms: 1000
           gripper: 0
-
-      shenzhi:
-        description: "伸直位姿"
-        coordinate_frame: "link_angles"
-        waypoints:
-          - { target: [0.0, 0.0, 90.0, 0.0], duration_ms: 1000, gripper: 0 }
 
       left_look_c:
         description: "机械臂左侧观察位姿"
@@ -201,7 +221,7 @@ arm_planner_node:
         description: "机械臂右侧观察位姿"
         coordinate_frame: "cartesian"
         waypoints:
-          - { target: [0.0203, -0.0703, 0.303, 46.7], duration_ms: 1000, gripper: 0 }
+          - { target: [0.0203, -0.0703, 0.303, -46.7], duration_ms: 1000, gripper: 0 }
 
       left_store_b_up:
         description: "左方抓取完毕后存储并回到原位"
