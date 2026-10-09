@@ -43,5 +43,11 @@ venv/
 # Local YOLO training captures
 /img_output/
 
-
 tmp/
+
+# Agent and planning artifacts
+.pi/
+.planning/
+
+# Model weights
+/models/
