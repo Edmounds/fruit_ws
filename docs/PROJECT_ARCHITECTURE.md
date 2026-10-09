@@ -113,7 +113,7 @@ RobViz 的 Maker 沿用 recorder 的 Action 客户端，不添加导航控制器
 取消终态后的实际里程计样本必须覆盖连续停稳窗口。
 MarkerArray 锁存完整航点快照，晚连接无需新的编辑操作。
 
-Web RGB 和 Native Depth 采用 `fruit_robviz_bridge` 的同容器 JPEG 组件。
+Web RGB 和 Native Depth 采用 `fruit_robviz_bridge` 的原尺寸 WebRTC (H.264) 与可选 JPEG 图像网关。
 Python 配置节点只读检测与遥测，复用 mission 变换生成同戳 Base 元数据。
 它不接收 raw image，不执行 IK、机械臂控制或比赛编排。
 

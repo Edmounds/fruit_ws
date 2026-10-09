@@ -45,20 +45,22 @@ MAX_POINT_COUNT = 5000
 DEFAULT_IMAGE_SETTINGS = {
     "version": 1,
     "rgb": {
-        "bandwidth_mbps": 10.0,
-        "auto_quality": True,
-        "quality": 70,
-        "width": 640,
-        "height": 360,
+        "transport": "webrtc",
+        "bandwidth_mbps": 25.0,
         "max_fps": 10.0,
+        "target_bitrate_mbps": 4.0,
+        "quality": 90,
+        "min_quality": 70,
+        "auto_quality": True,
     },
     "depth": {
-        "bandwidth_mbps": 10.0,
-        "auto_quality": True,
-        "quality": 70,
-        "width": 424,
-        "height": 240,
+        "transport": "webrtc",
+        "bandwidth_mbps": 25.0,
         "max_fps": 10.0,
+        "target_bitrate_mbps": 1.5,
+        "quality": 90,
+        "min_quality": 70,
+        "auto_quality": True,
     },
 }
 
@@ -126,6 +128,27 @@ class ImageSettingsStore:
     def snapshot(self) -> dict:
         with self._lock:
             return copy.deepcopy(self.settings)
+
+    def update(self, payload: Mapping[str, Any]) -> dict:
+        validated = validate_image_settings(payload)
+        with self._lock:
+            current_version = int(self.settings["version"])
+            if payload.get("session") != self.settings["session"]:
+                raise VersionConflict("图像配置服务已重启，请重新加载")
+            expected_version = payload.get("version")
+            if (
+                expected_version is None
+                or isinstance(expected_version, bool)
+                or not isinstance(expected_version, int)
+                or expected_version != current_version
+            ):
+                raise VersionConflict("图像配置版本已变化，请重新加载")
+
+            next_settings = copy.deepcopy(validated)
+            next_settings["version"] = current_version + 1
+            next_settings["session"] = self.settings["session"]
+            self.settings = next_settings
+            return copy.deepcopy(next_settings)
 
     def save(
         self, payload: Mapping[str, Any], backup_root: Path
@@ -288,31 +311,49 @@ def validate_image_settings(payload: Mapping[str, Any]) -> dict:
         stream = payload.get(stream_name)
         if not isinstance(stream, Mapping):
             raise ValueError(f"图像配置缺少 {stream_name} 对象")
+
+        transport = str(stream.get("transport", "webrtc")).strip().lower()
+        if transport not in ("webrtc", "jpeg"):
+            raise ValueError(f"{stream_name}.transport 必须是 webrtc 或 jpeg")
+
+        bw = _strict_positive(
+            stream.get("bandwidth_mbps"),
+            f"{stream_name}.bandwidth_mbps",
+            1000.0,
+        )
+        max_fps = _strict_positive(
+            stream.get("max_fps"), f"{stream_name}.max_fps", 60.0
+        )
+        target_bitrate = _strict_positive(
+            stream.get("target_bitrate_mbps"),
+            f"{stream_name}.target_bitrate_mbps",
+            bw,
+        )
+        quality = _strict_int(
+            stream.get("quality"),
+            f"{stream_name}.quality",
+            30,
+            95,
+        )
+        min_quality = _strict_int(
+            stream.get("min_quality", 70),
+            f"{stream_name}.min_quality",
+            30,
+            quality,
+        )
+        auto_quality = _strict_bool(
+            stream.get("auto_quality"),
+            f"{stream_name}.auto_quality",
+        )
+
         normalized[stream_name] = {
-            "bandwidth_mbps": _strict_positive(
-                stream.get("bandwidth_mbps"),
-                f"{stream_name}.bandwidth_mbps",
-                1000.0,
-            ),
-            "auto_quality": _strict_bool(
-                stream.get("auto_quality"),
-                f"{stream_name}.auto_quality",
-            ),
-            "quality": _strict_int(
-                stream.get("quality"),
-                f"{stream_name}.quality",
-                30,
-                95,
-            ),
-            "width": _strict_int(
-                stream.get("width"), f"{stream_name}.width", 64, 3840
-            ),
-            "height": _strict_int(
-                stream.get("height"), f"{stream_name}.height", 48, 2160
-            ),
-            "max_fps": _strict_positive(
-                stream.get("max_fps"), f"{stream_name}.max_fps", 60.0
-            ),
+            "transport": transport,
+            "bandwidth_mbps": bw,
+            "max_fps": max_fps,
+            "target_bitrate_mbps": target_bitrate,
+            "quality": quality,
+            "min_quality": min_quality,
+            "auto_quality": auto_quality,
         }
     return normalized
 
@@ -736,11 +777,13 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
         if host_name and re.match(r"^[a-zA-Z0-9.\-_\[\]]+$", host_name):
             remote_ws = (
                 f" ws://{host_name}:8765 wss://{host_name}:8765 "
+                f"ws://{host_name}:8787 wss://{host_name}:8787 "
                 f"ws://{host_name}:8000 wss://{host_name}:8000"
             )
         self.send_header("Content-Security-Policy", (
             "default-src 'self'; base-uri 'none'; object-src 'none'; "
             "frame-ancestors 'none'; img-src 'self' data: blob:; "
+            "media-src 'self' blob: mediastream:; "
             f"connect-src 'self' ws://127.0.0.1:* ws://localhost:*{remote_ws}; "
             "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; "
             "style-src 'self' 'unsafe-inline'"
@@ -952,6 +995,18 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             self._check_same_origin()
+            if parsed.path == "/api/image-settings":
+                payload = self._read_json_body()
+                settings = self.server.image_settings.update(payload)
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "applied": True,
+                        "settings": settings,
+                        "version": settings["version"],
+                    },
+                )
+                return
             if parsed.path != "/api/document":
                 raise RequestError(HTTPStatus.NOT_FOUND, "接口不存在")
             payload = self._read_json_body()

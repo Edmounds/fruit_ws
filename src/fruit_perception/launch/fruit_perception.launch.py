@@ -61,12 +61,6 @@ def generate_launch_description():
         'name': 'fruit_perception_node',
         'parameters': [perception_node_parameters],
     })
-    nodes_to_launch.append({
-        'package': 'fruit_robviz_bridge',
-        'plugin': 'fruit_robviz_bridge::ImageBridgeComponent',
-        'name': 'fruit_robviz_image_bridge',
-        'parameters': [robviz_config_path],
-    })
 
     # ========================================================================
     # 3. 声明 Launch 参数
@@ -82,7 +76,10 @@ def generate_launch_description():
     declare_serial_debug_raw_frame = DeclareLaunchArgument(
         'serial_debug_raw_frame',
         default_value='false',
-        description='Enable auto_serial_bridge debug log if true (raw frame dump is deprecated and disabled)',
+        description=(
+            'Enable auto_serial_bridge debug log if true '
+            '(raw frame dump is deprecated and disabled)'
+        ),
     )
     declare_start_serial_bridge = DeclareLaunchArgument(
         'start_serial_bridge',
@@ -182,6 +179,14 @@ def generate_launch_description():
         ],
         condition=IfCondition(serial_debug_raw_frame),
     )
+    robviz_image_bridge = Node(
+        package='fruit_robviz_bridge',
+        executable='fruit_robviz_image_bridge',
+        name='fruit_robviz_image_bridge',
+        output='screen',
+        emulate_tty=True,
+        parameters=[robviz_config_path, {'use_sim_time': use_sim_time}],
+    )
     robviz_config_client = Node(
         package='fruit_robviz_bridge',
         executable='robviz_config_client.py',
@@ -200,6 +205,7 @@ def generate_launch_description():
         declare_performance_hint,
         declare_perception_log_level,
         container,
+        robviz_image_bridge,
         robviz_config_client,
         qr_planner,
         GroupAction(
