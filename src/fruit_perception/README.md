@@ -82,10 +82,10 @@ and detector. Do not launch `fruit_robviz_bridge.launch.py` separately when this
 perception launch is active.
 
 It publishes JPEG previews on `/fruit_perception/camera/annotated_image/compressed`
-and `/fruit_perception/camera/native_depth/compressed`. RGB annotations include
-valid measured coordinates. Invalid, stale, moving, or unavailable base
-coordinates are rendered as `N/A`. Image settings come from RobViz over the
-explicit `/fruit_robviz_bridge/reload_image_settings` service.
+and `/fruit_perception/camera/native_depth/compressed`. The RGB stream forwards
+the perception node's annotated image without redundant duplicate overlays.
+Image settings come from RobViz over the explicit `/fruit_robviz_bridge/reload_image_settings`
+service.
 
 For headless debugging, specify the initial zone explicitly:
 

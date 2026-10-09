@@ -14,17 +14,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <deque>
-#include <iomanip>
 #include <memory>
 #include <mutex>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
-
-#include "fruit_perception/msg/fruit_detections.hpp"
 
 namespace fruit_robviz_bridge
 {
@@ -32,7 +27,6 @@ namespace
 {
 using Clock = std::chrono::steady_clock;
 using Image = sensor_msgs::msg::Image;
-using Detections = fruit_perception::msg::FruitDetections;
 
 struct StreamConfig
 {
@@ -66,19 +60,6 @@ double finite_parameter(const rclcpp::Parameter & parameter)
     throw std::invalid_argument(parameter.get_name() + " must be finite");
   }
   return value;
-}
-
-bool same_stamp(const std_msgs::msg::Header & left, const std_msgs::msg::Header & right)
-{
-  return left.stamp.sec == right.stamp.sec && left.stamp.nanosec == right.stamp.nanosec;
-}
-
-std::string point_text(const geometry_msgs::msg::Point & point)
-{
-  std::ostringstream stream;
-  stream << std::fixed << std::setprecision(2)
-         << "(" << point.x << "," << point.y << "," << point.z << ")";
-  return stream.str();
 }
 }  // namespace
 
@@ -281,18 +262,6 @@ private:
     }
     if (applied && has_demand(rgb_publisher_)) {
       if (!annotated_subscription_) {
-        detections_subscription_ = create_subscription<Detections>(
-          detections_topic_, rclcpp::SensorDataQoS().keep_last(1),
-          [this](Detections::ConstSharedPtr message) {
-            remember(detections_, message);
-            process_pending_rgb();
-          });
-        base_subscription_ = create_subscription<Detections>(
-          base_topic_, rclcpp::SensorDataQoS().keep_last(1),
-          [this](Detections::ConstSharedPtr message) {
-            remember(base_detections_, message);
-            process_pending_rgb();
-          });
         annotated_subscription_ = create_subscription<Image>(
           annotated_topic_, rclcpp::SensorDataQoS().keep_last(1),
           [this](Image::ConstSharedPtr message) {
@@ -300,17 +269,12 @@ private:
               return;
             }
             pending_rgb_ = message;
-            pending_rgb_received_ = Clock::now();
             process_pending_rgb();
           });
       }
     } else {
       annotated_subscription_.reset();
-      detections_subscription_.reset();
-      base_subscription_.reset();
       pending_rgb_.reset();
-      detections_.clear();
-      base_detections_.clear();
     }
     if (applied && has_demand(depth_publisher_)) {
       if (!depth_subscription_) {
@@ -348,37 +312,9 @@ private:
     return true;
   }
 
-  static void remember(
-    std::deque<Detections::ConstSharedPtr> & cache,
-    const Detections::ConstSharedPtr & message)
-  {
-    cache.push_back(message);
-    while (cache.size() > 4U) {
-      cache.pop_front();
-    }
-  }
-
-  static Detections::ConstSharedPtr matching(
-    const std::deque<Detections::ConstSharedPtr> & cache, const std_msgs::msg::Header & header)
-  {
-    for (auto item = cache.rbegin(); item != cache.rend(); ++item) {
-      if (same_stamp((*item)->header, header)) {
-        return *item;
-      }
-    }
-    return nullptr;
-  }
-
   void process_pending_rgb()
   {
     if (!pending_rgb_ || !has_demand(rgb_publisher_)) {
-      return;
-    }
-    const auto optical = matching(detections_, pending_rgb_->header);
-    const auto base = matching(base_detections_, pending_rgb_->header);
-    if ((!optical || !base) &&
-      Clock::now() - pending_rgb_received_ < std::chrono::milliseconds(100))
-    {
       return;
     }
     const auto message = std::move(pending_rgb_);
@@ -392,15 +328,6 @@ private:
       cv::Mat annotated;
       const cv::Size output_size(config.width, config.height);
       cv::resize(image->image, annotated, output_size, 0, 0, cv::INTER_AREA);
-      if (optical && optical->header.frame_id == camera_frame_ &&
-        message->header.frame_id == camera_frame_)
-      {
-        draw_detections(annotated, *optical, base, image->image.size());
-      } else {
-        cv::putText(
-          annotated, "D=N/A Cam=N/A Base=N/A", cv::Point(5, 15),
-          cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 255, 0), 1);
-      }
       cv::Mat bgr;
       cv::cvtColor(annotated, bgr, cv::COLOR_RGB2BGR);
       encode_and_publish(true, bgr, message->header);
@@ -408,60 +335,6 @@ private:
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 5000,
         "RGB preview rejected: %s", error.what());
-    }
-  }
-
-  void draw_detections(
-    cv::Mat & image, const Detections & optical,
-    const Detections::ConstSharedPtr & base, const cv::Size & source_size)
-  {
-    const double scale_x = static_cast<double>(image.cols) / source_size.width;
-    const double scale_y = static_cast<double>(image.rows) / source_size.height;
-    for (std::size_t index = 0; index < optical.detections.size(); ++index) {
-      const auto & detection = optical.detections[index];
-      const int x =
-        std::clamp(static_cast<int>(detection.roi.x_offset * scale_x), 0, image.cols - 2);
-      const int y =
-        std::clamp(static_cast<int>(detection.roi.y_offset * scale_y), 0, image.rows - 2);
-      const int right = std::clamp(
-        static_cast<int>(
-          (static_cast<double>(detection.roi.x_offset) + detection.roi.width) * scale_x),
-        x + 1, image.cols - 1);
-      const int bottom = std::clamp(
-        static_cast<int>(
-          (static_cast<double>(detection.roi.y_offset) + detection.roi.height) * scale_y),
-        y + 1, image.rows - 1);
-      const cv::Rect roi(cv::Point(x, y), cv::Point(right, bottom));
-      cv::rectangle(image, roi, cv::Scalar(0, 255, 0), 2);
-      std::ostringstream label;
-      label << detection.type << " " << std::fixed << std::setprecision(0)
-            << detection.confidence * 100.0F << "%";
-      std::string camera = "D=N/A Cam=N/A";
-      std::string base_text = "Base=N/A";
-      if (detection.has_point && std::isfinite(detection.point.x) &&
-        std::isfinite(detection.point.y) && std::isfinite(detection.point.z) &&
-        detection.point.z > 0)
-      {
-        std::ostringstream depth;
-        depth << "D=" << std::fixed << std::setprecision(2) << detection.point.z;
-        camera = depth.str() + " Cam=" + point_text(detection.point);
-        if (base && base->header.frame_id == arm_frame_ && index < base->detections.size()) {
-          const auto & converted = base->detections[index];
-          if (converted.has_point && converted.type == detection.type &&
-            converted.roi == detection.roi && std::isfinite(converted.point.x) &&
-            std::isfinite(converted.point.y) && std::isfinite(converted.point.z))
-          {
-            base_text = "Base=" + point_text(converted.point);
-          }
-        }
-      }
-      int line_y = std::clamp(y - 32, 12, image.rows - 24);
-      for (const auto & text : {label.str(), camera, base_text}) {
-        cv::putText(
-          image, text, cv::Point(std::min(x, std::max(0, image.cols - 260)), line_y),
-          cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
-        line_y += 12;
-      }
     }
   }
 
@@ -578,12 +451,9 @@ private:
   StreamRuntime rgb_runtime_, depth_runtime_;
   std::string camera_frame_, arm_frame_, annotated_topic_, depth_topic_, detections_topic_,
     base_topic_;
-  std::deque<Detections::ConstSharedPtr> detections_, base_detections_;
   Image::ConstSharedPtr pending_rgb_;
-  Clock::time_point pending_rgb_received_{};
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr rgb_publisher_, depth_publisher_;
   rclcpp::Subscription<Image>::SharedPtr annotated_subscription_, depth_subscription_;
-  rclcpp::Subscription<Detections>::SharedPtr detections_subscription_, base_subscription_;
   rclcpp::TimerBase::SharedPtr demand_timer_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_handle_;
 };

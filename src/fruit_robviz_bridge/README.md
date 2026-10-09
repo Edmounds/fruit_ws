@@ -23,7 +23,7 @@
 /fruit_perception/camera/native_depth/compressed     sensor_msgs/msg/CompressedImage
 ```
 
-RGB 预览使用感知标注图，叠加同一 RGB 时间戳的检测框、类型、置信度、相机深度、相机坐标和有效的 `arm_base_link` 坐标。
+RGB 预览直接转发感知节点的标注图（包含成熟度彩色框、品种类型、置信度、深度与十字准星），不重复叠加额外文字或边框。
 Native Depth 预览读取 `/camera/depth/image_rect_raw`，使用最近邻缩放和 JET 伪彩色。
 JPEG 深度图只用于观察，不能替代数值深度输入。
 
@@ -62,10 +62,8 @@ RGB 默认 `640x360`、`1.5 Mbps`、最高 `10 FPS`，Depth 默认 `424x240`、`
 固定质量模式不修改质量，只降低发布频率。
 两路均使用 latest-wins 和有界令牌桶，预算必须是有限正数，`0` 不表示暂停。
 首次成功重载前没有 raw-image 订阅，也不推流。
-全部压缩订阅者退出后取消对应 raw-image 订阅，并清理 RGB 元数据缓存。
-FPS 准入先于复制、缩放、绘字、伪彩色和 JPEG 编码。
-RGB 只配对同戳光学与 Base 元数据，单槽最多等待 100 ms。
-缺少匹配元数据时显示 N/A，不套用另一帧的坐标。
+全部压缩订阅者退出后取消对应 raw-image 订阅。
+FPS 准入先于复制、缩放、伪彩色和 JPEG 编码。
 
 组件必须和感知相机组件位于同一个 `ComposableNodeContainer`，以保留 raw image 的 intra-process 数据路径。
 运行前先构建并 source 当前工作区：

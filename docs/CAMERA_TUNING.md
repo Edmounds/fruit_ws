@@ -19,7 +19,7 @@ C++ 标注显示原始品种、熟度百分比、检测置信度、中心深度�
 
 日常预览使用两个 JPEG `CompressedImage` 话题：
 
-- `/fruit_perception/camera/annotated_image/compressed`：RGB、D、Cam XYZ 和有效 Base XYZ。
+- `/fruit_perception/camera/annotated_image/compressed`：感知标注图 JPEG 预览（包含成熟度颜色框、类别置信度、深度与准星）。
 - `/fruit_perception/camera/native_depth/compressed`：Native Depth JET、距离范围和有效像素比例。
 
 JPEG 深度图不能用于数值测距。
