@@ -34,6 +34,7 @@ from fruit_robviz_bridge.video_frames import (  # noqa: E402
 from fruit_robviz_bridge.video_streamer import StreamChannel  # noqa: E402
 from rcl_interfaces.msg import SetParametersResult  # noqa: E402
 import rclpy  # noqa: E402
+from rclpy.executors import ExternalShutdownException  # noqa: E402
 from rclpy.node import Node  # noqa: E402
 from rclpy.parameter import Parameter  # noqa: E402
 from sensor_msgs.msg import Image  # noqa: E402
@@ -236,23 +237,23 @@ class VideoGatewayNode(Node):
                         f"{stream_name}.min_quality ({min_quality}) must be in [30, {quality}]"
                     )
 
-            # Apply verified settings
+            merged_streams = {}
             for stream_name in ("rgb", "depth"):
                 merged = dict(self._get_stream_params(stream_name))
                 merged.update(updates[stream_name])
-                self.channels[stream_name].update_parameters(merged)
+                merged_streams[stream_name] = merged
 
-            # Camera raw stream shares full rgb stream settings
-            rgb_merged = dict(self._get_stream_params("rgb"))
-            rgb_merged.update(updates["rgb"])
-            self.channels["camera"].update_parameters(rgb_merged)
+            async def apply_settings():
+                # Subscription demand and GStreamer tasks belong to the HTTP loop.
+                for stream_name, merged in merged_streams.items():
+                    self.channels[stream_name].update_parameters(merged)
+                self.channels["camera"].update_parameters(merged_streams["rgb"])
+                self.applied_version = new_version
+                self.applied_session = new_session
+                if self.server:
+                    self.server.broadcast_metadata()
 
-            self.applied_version = new_version
-            self.applied_session = new_session
-
-            # Broadcast metadata update to connected WebRTC/WS clients
-            if self.server:
-                self.loop.call_soon_threadsafe(self.server.broadcast_metadata)
+            asyncio.run_coroutine_threadsafe(apply_settings(), self.loop).result(timeout=5.0)
 
             result.successful = True
             logger.info(
@@ -386,7 +387,7 @@ class VideoGatewayServer:
                 return True
 
             # Match host header
-            req_host = request.host.split(":")[0]
+            req_host = urlparse(f"//{request.host}").hostname
             if origin_host == req_host:
                 return True
 
@@ -410,7 +411,7 @@ class VideoGatewayServer:
             if not origin_host:
                 return False
 
-            req_host = request.host.split(":")[0]
+            req_host = urlparse(f"//{request.host}").hostname
             if origin_host == req_host:
                 return True
 
@@ -419,6 +420,8 @@ class VideoGatewayServer:
                 return True
 
             origin_ip = ipaddress.ip_address(origin_host)
+            if req_host == "localhost":
+                return origin_ip.is_private
             request_ip = ipaddress.ip_address(req_host)
             return origin_ip.is_private and request_ip.is_private
         except ValueError:
@@ -813,7 +816,21 @@ def main(args=None) -> None:
     node.server = server
 
     # ROS 2 spin in background daemon thread
-    ros_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    shutting_down = threading.Event()
+
+    def stop_http_loop():
+        if not shutting_down.is_set():
+            loop.stop()
+
+    def spin_ros():
+        try:
+            rclpy.spin(node)
+        except ExternalShutdownException:
+            pass
+        finally:
+            loop.call_soon_threadsafe(stop_http_loop)
+
+    ros_thread = threading.Thread(target=spin_ros, daemon=True)
     ros_thread.start()
 
     app_runner = web.AppRunner(server.app)
@@ -834,9 +851,23 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        shutting_down.set()
+        loop.run_until_complete(asyncio.gather(
+            *(ws.close() for ws in list(server.active_websockets))
+        ))
         loop.run_until_complete(app_runner.cleanup())
+        for channel in node.channels.values():
+            channel.stop_active()
+        rclpy.try_shutdown()
+        ros_thread.join(timeout=2.0)
         node.destroy_node()
-        rclpy.shutdown()
+        glib_loop.quit()
+        glib_thread.join(timeout=2.0)
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.close()
 
 
 if __name__ == "__main__":

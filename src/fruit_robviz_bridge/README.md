@@ -24,6 +24,7 @@
 通过网关 WebSocket (`/ws`) 提供轻量采集命令：
 - `getCaptureInfo`: 注册采集客户端并返回原始话题、输出目录、已保存 PNG 数量、最近文件名、最新帧接收延迟与尺寸。
 - `captureFrame`: 允许同主机或私有局域网 Origin，校验 Origin 与 1 秒接收新鲜度，将最新原尺寸原始 RGB 帧无损编码为 PNG，安全落盘至 `/home/rc4/fruit_ws/data/yolo_images/camera`。
+- 局域网页面通过 `localhost` 转发访问网关时也允许采集。无 Origin 或公网 Origin 仍拒绝写入。
 - 网关同一时间仅允许一个保存任务执行（全局互斥），保存取最新未丢弃原始帧，不受视频预览限帧影响。
 - 独立单机脚本 `collect_cam_img.py` 仍保留原来的 JPG 行为；RobViz 采集专用于无损 PNG 采集。
 
@@ -42,6 +43,8 @@ Native Depth 预览读取 `/camera/depth/image_rect_raw` (16UC1 毫米语义)，
 
 ### 服务
 - `/fruit_robviz_bridge/reload_image_settings` (`std_srvs/srv/Trigger`)：从 HTTP 服务拉取设置并通过 `set_parameters_atomically` 应用到网关节点，返回确认版本与会话 ID。
+- 参数响应采用异步等待，保留每次请求的超时，启动与并发重载不会阻塞响应处理线程。
+- 网关在 HTTP 事件循环中更新订阅和编码任务。退出时关闭浏览器连接、释放管线与监听端口。
 
 ## 默认参数与模式
 
@@ -59,7 +62,9 @@ Native Depth 预览读取 `/camera/depth/image_rect_raw` (16UC1 毫米语义)，
 - 当模式为 WebRTC 时，不编码和发布 JPEG。
 - 当模式为 JPEG 时，不启动 WebRTC 编码。
 - 无客户端观看或订阅时，停止 raw image 订阅与编码管线。
-- WebRTC 错误停止，不自动回退至 JPEG 或 Raw，重新连接需用户显式操作。
+- 网关未启动或信令断线时，活动图像页每秒等待网关恢复，不自动回退至 JPEG 或 Raw。
+- WebRTC 协商错误停止，重新协商需用户显式操作。采集连接恢复不会自动重发截图命令。
+- WebRTC 在 GStreamer 通知协商就绪后生成 offer，避免初始 RTP caps 尚未就绪时生成空视频协商。
 
 ## 运行与验证
 

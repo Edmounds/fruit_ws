@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import math
-import threading
 import time
 import uuid
 from collections import deque
@@ -363,7 +362,7 @@ class RobvizConfigClient(Node):
         request.parameters = parameters
         return request
 
-    def _on_startup_poll(self) -> None:
+    async def _on_startup_poll(self) -> None:
         if self._started:
             if self._startup_timer is not None:
                 self._startup_timer.cancel()
@@ -386,9 +385,30 @@ class RobvizConfigClient(Node):
         if self._startup_timer is not None:
             self._startup_timer.cancel()
             self._startup_timer = None
-        self._apply_initial_settings()
+        await self._apply_initial_settings()
 
-    def _apply_initial_settings(self) -> None:
+    async def _set_image_parameters(self, settings: dict, version: int, session: str):
+        future = self._parameter_client.call_async(
+            self._to_request(settings, version, session)
+        )
+        timer = self.create_timer(
+            self._timeout,
+            future.cancel,
+            callback_group=self._callback_group,
+            clock=Clock(clock_type=ClockType.STEADY_TIME),
+        )
+        try:
+            result = await future
+            if future.cancelled():
+                raise RuntimeError("Image bridge parameter update timed out")
+            if result is None or not result.result.successful:
+                reason = result.result.reason if result is not None else "no response"
+                raise RuntimeError(f"Image bridge rejected settings: {reason}")
+        finally:
+            timer.cancel()
+            self.destroy_timer(timer)
+
+    async def _apply_initial_settings(self) -> None:
         source = "web"
         settings = None
         version = None
@@ -425,19 +445,10 @@ class RobvizConfigClient(Node):
             )
             return
 
-        future = self._parameter_client.call_async(
-            self._to_request(settings, version, session)
-        )
-        done = threading.Event()
-        future.add_done_callback(lambda _future: done.set())
-        if not done.wait(self._timeout):
-            self.get_logger().error("Image bridge parameter update timed out")
-            return
-
-        result = future.result()
-        if result is None or not result.result.successful:
-            reason = result.result.reason if result is not None else "no response"
-            self.get_logger().error(f"Image bridge rejected settings: {reason}")
+        try:
+            await self._set_image_parameters(settings, version, session)
+        except Exception as error:
+            self.get_logger().error(str(error))
             return
 
         self.get_logger().info(
@@ -445,7 +456,7 @@ class RobvizConfigClient(Node):
             f"version={version}, session={session}"
         )
 
-    def _on_reload_image_settings(
+    async def _on_reload_image_settings(
         self, _request: Trigger.Request, response: Trigger.Response
     ) -> Trigger.Response:
         try:
@@ -464,18 +475,7 @@ class RobvizConfigClient(Node):
             if not self._parameter_client.wait_for_service(timeout_sec=self._timeout):
                 raise RuntimeError("Image bridge parameter service unavailable")
 
-            future = self._parameter_client.call_async(
-                self._to_request(validated, ver, sess)
-            )
-            done = threading.Event()
-            future.add_done_callback(lambda _future: done.set())
-            if not done.wait(self._timeout):
-                raise RuntimeError("Image bridge parameter update timed out")
-
-            result = future.result()
-            if result is None or not result.result.successful:
-                reason = result.result.reason if result is not None else "no response"
-                raise RuntimeError(f"Image bridge rejected settings: {reason}")
+            await self._set_image_parameters(validated, ver, sess)
 
             response.success = True
             response.message = json.dumps({"version": ver, "session": sess})
@@ -502,7 +502,7 @@ def main(args=None) -> None:
     finally:
         executor.shutdown()
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

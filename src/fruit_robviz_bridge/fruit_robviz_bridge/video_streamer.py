@@ -434,11 +434,13 @@ class StreamChannel:
             "on-ice-candidate",
             lambda elem, mline, cand: self.on_gst_ice(viewer_id, cand, mline),
         )
+        webrtc.connect(
+            "on-negotiation-needed",
+            lambda elem: self.create_offer(viewer_id),
+        )
         queue.sync_state_with_parent()
         capsfilter.sync_state_with_parent()
         webrtc.sync_state_with_parent()
-
-        self.create_offer(viewer_id)
 
     def detach_viewer(self, viewer_id: str) -> None:
         viewer = self.viewers.get(viewer_id)
