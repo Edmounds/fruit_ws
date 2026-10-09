@@ -75,9 +75,21 @@ set -u
 
 fruit_logging_init "record_rosbag" "${DEBUG_MODE}"
 
+bag_pid=""
+stopped=0
+
 cleanup()
 {
+  trap - EXIT INT TERM
+  if ((stopped)); then
+    return
+  fi
+  stopped=1
   local status=$?
+  if [[ -n "${bag_pid}" ]]; then
+    printf '\n[rosbag] stopping bag recording and writing index...\n'
+    fruit_stop_process_group "${bag_pid}" "rosbag" 10 2
+  fi
   fruit_logging_close "${status}"
 }
 
@@ -137,4 +149,13 @@ ros2 bag record \
   --include-hidden-topics \
   --storage mcap \
   --exclude "$RECORD_EXCLUDE_REGEX" \
-  --output "$BAG_PATH"
+  --output "$BAG_PATH" &
+bag_pid=$!
+
+if wait "$bag_pid"; then
+  status=0
+else
+  status=$?
+fi
+cleanup
+exit "$status"

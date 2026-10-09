@@ -37,10 +37,7 @@ stop_children() {
   fi
 
   printf '\n[waypoints-maker] stopping launched processes...\n'
-  for pid in "${pids[@]}"; do
-    kill -INT -- "-$pid" 2>/dev/null || true
-  done
-  ((${#pids[@]} == 0)) || wait "${pids[@]}" 2>/dev/null || true
+  fruit_stop_all_process_groups "${pids[@]}"
   fruit_logging_close "${status:-0}"
   pids=()
 }
@@ -125,38 +122,52 @@ for required_file in "${required_files[@]}"; do
   fi
 done
 
-if ros2 node list 2>/dev/null | grep -Eq \
-  '^/(livox_ros_driver2|laserMapping|loam_interface|axis_waypoint_action_server|fruit_waypoint_recorder)$'; then
-  printf '[waypoints-maker] an odometry or waypoint node is already running.\n' >&2
-  printf '[waypoints-maker] stop the existing stack before starting this script.\n' >&2
+if ros2 run fruit_mission stack_readiness_client node-running \
+  --node /fruit_waypoint_recorder \
+  --ros-args --params-file "$SCRIPT_CLIENT_CONFIG" 2>/dev/null; then
+  printf '[waypoints-maker] waypoint recorder is already running.\n' >&2
   exit 1
 fi
 
-START_SERIAL_BRIDGE=$(ros2 run fruit_mission stack_readiness_client bridge-start-required \
-  --ros-args --params-file "$SCRIPT_CLIENT_CONFIG")
-if [[ "$START_SERIAL_BRIDGE" == true ]]; then
-  start_process "serial bridge" \
-    ros2 launch "$HARDWARE_LAUNCH"
-else
-  printf '[waypoints-maker] reusing existing serial bridge; it will not be stopped on exit\n'
+nav_running=false
+if ros2 run fruit_mission stack_readiness_client node-running \
+  --node /laserMapping --node /loam_interface --node /axis_waypoint_action_server \
+  --match any \
+  --ros-args --params-file "$SCRIPT_CLIENT_CONFIG" 2>/dev/null; then
+  nav_running=true
 fi
 
-if [[ "$USE_TELEOP" == true ]]; then
-  nav_process_name="axis navigation, odometry, and teleop"
+if [[ "$nav_running" == true ]]; then
+  printf '[waypoints-maker] reusing existing navigation stack and serial bridge\n'
 else
-  nav_process_name="axis navigation and odometry"
-fi
+  START_SERIAL_BRIDGE=$(ros2 run fruit_mission stack_readiness_client bridge-start-required \
+    --ros-args --params-file "$SCRIPT_CLIENT_CONFIG")
+  if [[ "$START_SERIAL_BRIDGE" == true ]]; then
+    start_process "serial bridge" \
+      ros2 launch "$HARDWARE_LAUNCH"
+  else
+    printf '[waypoints-maker] reusing existing serial bridge; it will not be stopped on exit\n'
+  fi
 
-start_process "$nav_process_name" \
-  ros2 launch "$NAV_LAUNCH" \
-    "use_teleop:=$USE_TELEOP"
+  if [[ "$USE_TELEOP" == true ]]; then
+    nav_process_name="axis navigation, odometry, and teleop"
+  else
+    nav_process_name="axis navigation and odometry"
+  fi
+
+  start_process "$nav_process_name" \
+    ros2 launch "$NAV_LAUNCH" \
+      "use_teleop:=$USE_TELEOP"
+fi
 
 wait_for_odom_tf
 
 start_process "waypoint recorder" \
   ros2 launch "$RECORDER_LAUNCH"
 
-if [[ "$USE_TELEOP" == true ]]; then
+if [[ "$nav_running" == true ]]; then
+  printf '[waypoints-maker] waypoint recorder started (reusing running navigation).\n'
+elif [[ "$USE_TELEOP" == true ]]; then
   printf '[waypoints-maker] odometry, teleop, and waypoint recorder started.\n'
 else
   printf '[waypoints-maker] odometry and waypoint recorder started.\n'

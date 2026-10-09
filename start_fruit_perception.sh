@@ -50,10 +50,21 @@ if [[ -z "$ZONE" ]]; then
 fi
 set -- "${LAUNCH_ARGS[@]}" "zone:=$ZONE"
 
+launch_pid=""
+stopped=0
+
 cleanup()
 {
-  local status=$?
   trap - EXIT INT TERM
+  if ((stopped)); then
+    return
+  fi
+  stopped=1
+  local status=$?
+  if [[ -n "${launch_pid}" ]]; then
+    printf '\n[perception] stopping perception launch...\n'
+    fruit_stop_process_group "${launch_pid}" "perception" 5 2
+  fi
   fruit_logging_close "${status}"
 }
 
@@ -72,6 +83,13 @@ set -u
 
 fruit_logging_init "perception" "${DEBUG_MODE}"
 
+if ros2 run fruit_mission stack_readiness_client node-running \
+  --node /fruit_perception_node --node /camera --match any \
+  --ros-args --params-file "$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml" 2>/dev/null; then
+  printf '[perception] fruit_perception is already running. Stop existing perception first or reuse it.\n' >&2
+  exit 1
+fi
+
 START_SERIAL_BRIDGE=$(ros2 run fruit_mission stack_readiness_client bridge-start-required \
   --ros-args --params-file "$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml")
 if [[ "$START_SERIAL_BRIDGE" == false ]]; then
@@ -79,8 +97,22 @@ if [[ "$START_SERIAL_BRIDGE" == false ]]; then
   set -- "$@" start_serial_bridge:=false
 fi
 
-if [[ "${FRUIT_RUNTIME_TOP_ENTRY:-0}" == "1" ]]; then
-  fruit_run_logged "perception_launch" ros2 launch fruit_perception fruit_perception.launch.py "$@"
+log_file="${FRUIT_RUNTIME_SESSION_DIR}/perception_launch.log"
+filter_script="${WORKSPACE}/scripts/runtime_log_filter.py"
+
+setsid env "DEBUG_OPT=$DEBUG_MODE" bash -c '
+  set -o pipefail
+  filter_args=(--output-file "'"${log_file}"'" --component "perception_launch")
+  [[ "$DEBUG_OPT" == "1" ]] && filter_args+=(--debug)
+  exec ros2 launch fruit_perception fruit_perception.launch.py "$@" 2>&1 | /usr/bin/python3 "'"${filter_script}"'" "${filter_args[@]}"
+' runner "$@" &
+launch_pid=$!
+
+if wait "$launch_pid"; then
+  status=0
 else
-  ros2 launch fruit_perception fruit_perception.launch.py "$@"
+  status=$?
 fi
+
+cleanup
+exit "$status"

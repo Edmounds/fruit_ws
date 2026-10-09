@@ -127,18 +127,20 @@ cleanup()
   trap - EXIT INT TERM
   log "Stopping perception stack"
 
-  if process_is_alive "${PLANNER_PID}"; then
-    timeout --foreground 2s ros2 service call /arm_planner_node/stop std_srvs/srv/Trigger '{}' \
-      >/dev/null 2>&1 || true
-  fi
+  timeout --foreground 2s ros2 service call /arm_planner_node/stop std_srvs/srv/Trigger '{}' \
+    >/dev/null 2>&1 || true
 
   while read -r job_pid; do
-    [[ -n "${job_pid}" && "${job_pid}" != "${LAUNCH_PID}" ]] || continue
+    [[ -n "${job_pid}" && "${job_pid}" != "${LAUNCH_PID}" && "${job_pid}" != "${PLANNER_PID}" ]] || continue
     kill -TERM "${job_pid}" 2>/dev/null || true
   done < <(jobs -pr)
 
-  stop_process_group "${LAUNCH_PID}"
-  stop_process_group "${PLANNER_PID}"
+  if [[ -n "${LAUNCH_PID}" ]]; then
+    fruit_stop_process_group "${LAUNCH_PID}" "perception" 5 2
+  fi
+  if [[ -n "${PLANNER_PID}" ]]; then
+    fruit_stop_process_group "${PLANNER_PID}" "arm_planner" 5 2
+  fi
   fruit_logging_close "${status}"
   exit "${status}"
 }
@@ -205,35 +207,56 @@ main()
   if (( DEBUG != 0 )); then
     client_args+=(--debug)
   fi
-  ros2 run fruit_mission camera_arm_target_client \
-    --require-stack-absent --ros-args --params-file "${CLIENT_CONFIG}" || {
-    log "ERROR: perception, arm planner, or mission nodes are already running"
+  if ros2 run fruit_mission stack_readiness_client node-running \
+    --node /fruit_mission \
+    --ros-args --params-file "${CLIENT_CONFIG}" 2>/dev/null; then
+    log "ERROR: fruit_mission is running; cannot run manual camera-arm test"
     exit 1
-  }
+  fi
+
+  local reuse_perception=false
+  if ros2 run fruit_mission stack_readiness_client node-running \
+    --node /fruit_perception_node --node /camera --match any \
+    --ros-args --params-file "${CLIENT_CONFIG}" 2>/dev/null; then
+    reuse_perception=true
+    log "Reusing existing perception stack"
+  fi
+
+  local reuse_planner=false
+  if ros2 run fruit_mission stack_readiness_client node-running \
+    --node /arm_planner_node \
+    --ros-args --params-file "${CLIENT_CONFIG}" 2>/dev/null; then
+    reuse_planner=true
+    log "Reusing existing arm planner"
+  fi
 
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
-  local perception_log="${FRUIT_RUNTIME_SESSION_DIR}/perception.log"
-  local planner_log="${FRUIT_RUNTIME_SESSION_DIR}/arm_planner.log"
+  local filter_script="${WORKSPACE_DIR}/scripts/runtime_log_filter.py"
   local client_log="${FRUIT_RUNTIME_SESSION_DIR}/client.log"
 
-  local filter_script="${WORKSPACE_DIR}/scripts/runtime_log_filter.py"
-  local -a perception_cmd=("${START_SCRIPT}" --zone "${ZONE}")
-  if (( DEBUG != 0 )); then
-    perception_cmd+=(--debug)
+  if [[ "$reuse_perception" != true ]]; then
+    local perception_log="${FRUIT_RUNTIME_SESSION_DIR}/perception.log"
+    local -a perception_cmd=("${START_SCRIPT}" --zone "${ZONE}")
+    if (( DEBUG != 0 )); then
+      perception_cmd+=(--debug)
+    fi
+
+    setsid bash -c '
+      exec "$@" 2>&1 | /usr/bin/python3 "'"${filter_script}"'" --output-file "'"${perception_log}"'" --component "perception" '"$([[ ${DEBUG} -ne 0 ]] && echo "--debug")"'
+    ' runner "${perception_cmd[@]}" &
+    LAUNCH_PID=$!
   fi
 
-  setsid bash -c '
-    exec "$@" 2>&1 | /usr/bin/python3 "'"${filter_script}"'" --output-file "'"${perception_log}"'" --component "perception" '"$([[ ${DEBUG} -ne 0 ]] && echo "--debug")"'
-  ' runner "${perception_cmd[@]}" &
-  LAUNCH_PID=$!
-
-  setsid bash -c '
-    exec ros2 launch fruit_arm_planner fruit_arm_planner.launch.py log_level:=debug 2>&1 | /usr/bin/python3 "'"${filter_script}"'" --output-file "'"${planner_log}"'" --component "arm_planner"
-  ' runner &
-  PLANNER_PID=$!
+  if [[ "$reuse_planner" != true ]]; then
+    local planner_log="${FRUIT_RUNTIME_SESSION_DIR}/arm_planner.log"
+    setsid bash -c '
+      exec ros2 launch fruit_arm_planner fruit_arm_planner.launch.py log_level:=debug 2>&1 | /usr/bin/python3 "'"${filter_script}"'" --output-file "'"${planner_log}"'" --component "arm_planner"
+    ' runner &
+    PLANNER_PID=$!
+  fi
 
   log "Waiting for the perception stack"
   if ros2 run fruit_mission camera_arm_target_client \

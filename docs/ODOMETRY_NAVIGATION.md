@@ -84,12 +84,14 @@ colcon build --base-paths src --packages-select fruit_navigation
 - RobViz 的 Fixed Frame 使用 `odom`。
 - 可通过 RobViz 交互或发送 Action 目标控制底盘。
 
-### 3.2 录制与编辑航点 (`waypoints_maker.sh`)
-用于现场采集或示教目标航点：
+### 3.2 录制与编辑航点 (`waypoints_maker.sh` / `start_navigation.sh --recorder`)
+用于现场采集或示教目标航点。若导航已由 `start_navigation.sh` 启动，脚本会自动复用现有导航堆栈，仅启动录点器；若导航未启动，则一同启动 Point-LIO 与串口桥：
 ```bash
 ./waypoints_maker.sh
 # 若需要配合手柄遥控底盘移动：
 ./waypoints_maker.sh --tele
+# 或者在启动导航时直接带上录点器：
+./start_navigation.sh --recorder
 ```
 - 录制的航点保存至 `src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml`（`frame_id: odom`）。
 

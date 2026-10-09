@@ -27,7 +27,7 @@ points:
 
 ## 2. 启动航点录制工具
 
-启动打点工具：
+启动打点工具（若导航已启动，脚本自动复用导航；若未启动，则完整拉起导航）：
 
 ```bash
 # 启动基础录制（包含雷达、Point-LIO、recorder 与 RobViz Web 面板）
@@ -35,6 +35,9 @@ points:
 
 # 若需配合手柄遥控移动车体打点：
 ./waypoints_maker.sh --tele
+
+# 也可以直接在启动导航时附带录点器：
+./start_navigation.sh --recorder
 ```
 
 启动前请确保加载了运行环境：

@@ -347,7 +347,6 @@ log_recent_child_output() {
 stop_children() {
   local pid
   local index
-  local wait_deadline
 
   trap - EXIT INT TERM
   if ((stopped)); then
@@ -361,55 +360,17 @@ stop_children() {
     readiness_pid=""
   fi
 
-  if ((${#child_pids[@]} == 0)); then
+  # Ensure arm motion is stopped if planner is available
+  timeout --foreground 2s ros2 service call /arm_planner_node/stop std_srvs/srv/Trigger '{}' \
+    >/dev/null 2>&1 || true
+
+  if ((${#child_pids[@]} == 0 && ${#debug_pids[@]} == 0)); then
+    fruit_logging_close 0
     return 0
   fi
 
-  log "STOP stopping all child process groups"
-  for pid in "${child_pids[@]}"; do
-    kill -INT -- "-$pid" 2>/dev/null || true
-  done
-  for pid in "${debug_pids[@]}"; do
-    kill -INT -- "-$pid" 2>/dev/null || true
-  done
-
-  wait_deadline=$((SECONDS + 10))
-  while ((SECONDS < wait_deadline)); do
-    local any_alive=0
-    for pid in "${child_pids[@]}"; do
-      if process_alive "$pid"; then
-        any_alive=1
-        break
-      fi
-    done
-    for pid in "${debug_pids[@]}"; do
-      if process_alive "$pid"; then
-        any_alive=1
-        break
-      fi
-    done
-    ((any_alive == 0)) && break
-    sleep 1
-  done
-
-  for index in "${!child_pids[@]}"; do
-    pid=${child_pids[index]}
-    if process_alive "$pid"; then
-      log "STOP forcing ${child_names[index]} pid=$pid"
-      kill -TERM -- "-$pid" 2>/dev/null || true
-    fi
-  done
-  for pid in "${debug_pids[@]}"; do
-    if process_alive "$pid"; then
-      log "STOP forcing debug pid=$pid"
-      kill -TERM -- "-$pid" 2>/dev/null || true
-    fi
-  done
-
-  for pid in "${child_pids[@]}"; do
-    wait "$pid" 2>/dev/null || true
-  done
-  ((${#debug_pids[@]} == 0)) || wait "${debug_pids[@]}" 2>/dev/null || true
+  log "STOP stopping all launched child process groups"
+  fruit_stop_all_process_groups "${child_pids[@]}" "${debug_pids[@]}"
   fruit_logging_close 0
   log "STOP complete; logs kept at $RUN_DIR"
 }
@@ -483,10 +444,42 @@ log "RUN directory: $RUN_DIR"
 log "RUN mission flow: $MISSION_FLOW"
 log "RUN branch: $(git -C "$WORKSPACE" branch --show-current)"
 log "RUN commit: $(git -C "$WORKSPACE" rev-parse --short HEAD)"
+# Check for existing stack components to reuse
+if [[ "$REUSE_NAVIGATION" != true ]]; then
+  if run_readiness_client node-running \
+    --node /laserMapping --node /loam_interface --node /axis_waypoint_action_server \
+    --match all >/dev/null 2>&1; then
+    REUSE_NAVIGATION=true
+    log "DETECT: navigation nodes are already running; automatically reusing existing navigation stack"
+  fi
+fi
+
+REUSE_PERCEPTION=false
+if run_readiness_client node-running \
+  --node /fruit_perception_node --node /camera \
+  --match all >/dev/null 2>&1; then
+  REUSE_PERCEPTION=true
+  log "DETECT: perception nodes are already running; automatically reusing existing perception stack"
+fi
+
+REUSE_ARM_PLANNER=false
+if run_readiness_client node-running \
+  --node /arm_planner_node \
+  --match all >/dev/null 2>&1; then
+  REUSE_ARM_PLANNER=true
+  log "DETECT: arm planner is already running; automatically reusing existing arm planner"
+fi
+
 if [[ "$REUSE_NAVIGATION" == true ]]; then
-  log "RUN mode: reuse existing navigation and serial bridge"
+  log "RUN mode: reuse existing navigation"
 else
   log "RUN navigation: Point-LIO in odom"
+fi
+if [[ "$REUSE_PERCEPTION" == true ]]; then
+  log "RUN mode: reuse existing perception"
+fi
+if [[ "$REUSE_ARM_PLANNER" == true ]]; then
+  log "RUN mode: reuse existing arm planner"
 fi
 if ((DEBUG_RECORD_ENABLED)); then
   log "RUN debug rosbag: enabled with visual-topic exclusions; output is under $WORKSPACE/rosbags"
@@ -499,28 +492,30 @@ if ! python3 -c \
 fi
 log "READY mission waypoint schema and required A/C points"
 
-if [[ "$REUSE_NAVIGATION" == true ]]; then
-  check_no_existing_nodes \
-    /fruit_perception_container \
-    /camera \
-    /fruit_perception_node \
-    /fruit_qr_planner \
-    /arm_planner_node \
-    /fruit_mission
-else
-  check_no_existing_nodes \
-    /livox_ros_driver2 \
-    /laserMapping \
-    /loam_interface \
-    /axis_waypoint_action_server \
-    /twist_mux \
-    /fruit_perception_container \
-    /camera \
-    /fruit_perception_node \
-    /fruit_qr_planner \
-    /arm_planner_node \
-    /fruit_mission
+# Verify no duplicate or conflicting instances for components that need to be launched
+nodes_to_check_absent=(/fruit_mission)
+if [[ "$REUSE_NAVIGATION" != true ]]; then
+  nodes_to_check_absent+=(
+    /livox_ros_driver2
+    /laserMapping
+    /loam_interface
+    /axis_waypoint_action_server
+    /twist_mux
+  )
 fi
+if [[ "$REUSE_PERCEPTION" != true ]]; then
+  nodes_to_check_absent+=(
+    /fruit_perception_container
+    /camera
+    /fruit_perception_node
+    /fruit_qr_planner
+  )
+fi
+if [[ "$REUSE_ARM_PLANNER" != true ]]; then
+  nodes_to_check_absent+=(/arm_planner_node)
+fi
+
+check_no_existing_nodes "${nodes_to_check_absent[@]}"
 
 if [[ "$REUSE_NAVIGATION" != true ]]; then
   start_process "navigation" \
@@ -533,7 +528,7 @@ if [[ "$START_SERIAL_BRIDGE" == false ]]; then
 fi
 if [[ "$REUSE_NAVIGATION" == true ]]; then
   START_SERIAL_BRIDGE=false
-  log "RUN reuse: existing navigation and serial bridge remain owned by start_navigation.sh"
+  log "RUN reuse: existing navigation and serial bridge remain owned by original launcher"
 fi
 
 wait_for_nodes "odometry navigation readiness" 10 \
@@ -544,20 +539,28 @@ wait_for_action "waypoint navigation" "/follow_waypoints" 10
 wait_for_odometry "base odometry" /odometry 10
 wait_for_tf "stable odometry origin" odom base_link 5
 
-start_process "perception" \
-  ros2 launch "$PERCEPTION_LAUNCH" \
-    "use_sim_time:=false" \
-    "serial_debug_raw_frame:=$([[ $DEBUG_RECORD_ENABLED -eq 1 ]] && echo 'true' || echo 'false')" \
-    "start_serial_bridge:=$START_SERIAL_BRIDGE"
-
+if [[ "$REUSE_PERCEPTION" != true ]]; then
+  start_process "perception" \
+    ros2 launch "$PERCEPTION_LAUNCH" \
+      "use_sim_time:=false" \
+      "serial_debug_raw_frame:=$([[ $DEBUG_RECORD_ENABLED -eq 1 ]] && echo 'true' || echo 'false')" \
+      "start_serial_bridge:=$START_SERIAL_BRIDGE"
+else
+  log "RUN reuse: existing perception stack remains owned by original launcher"
+fi
 
 wait_for_nodes "perception readiness" 10 \
   /serial_controller \
   /fruit_perception_node \
   /fruit_qr_planner
 wait_for_serial_bridge_running 10
-start_process "arm_planner" \
-  ros2 launch "$ARM_LAUNCH" "use_sim_time:=false"
+
+if [[ "$REUSE_ARM_PLANNER" != true ]]; then
+  start_process "arm_planner" \
+    ros2 launch "$ARM_LAUNCH" "use_sim_time:=false"
+else
+  log "RUN reuse: existing arm planner remains owned by original launcher"
+fi
 wait_for_nodes "arm planner readiness" 10 /arm_planner_node
 wait_for_arm_planner 10
 wait_for_topic_endpoint_count \

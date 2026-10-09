@@ -5,23 +5,31 @@ set -eo pipefail
 WORKSPACE=/home/rc4/fruit_ws
 NAV_LAUNCH="$WORKSPACE/src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.py"
 HARDWARE_LAUNCH="$WORKSPACE/src/auto_serial_bridge/launch/auto_serial_bridge.launch.py"
+RECORDER_LAUNCH="$WORKSPACE/src/fruit_robviz_bridge/launch/waypoint_recorder.launch.py"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
+WEB_URL="http://127.0.0.1:8000/"
 
 pids=()
 stopped=0
 DEBUG=0
+START_RECORDER=false
 
 usage() {
   cat <<'EOF'
-Usage: ./start_navigation.sh [--debug]
+Usage: ./start_navigation.sh [--recorder] [--debug]
 
 Start Point-LIO navigation and the serial bridge in the startup-relative odom
 frame. Use RobViz for visualization and control.
+Use --recorder to also start the RobViz waypoint recorder node.
 EOF
 }
 
 while (($# > 0)); do
   case "$1" in
+    --recorder)
+      START_RECORDER=true
+      shift
+      ;;
     --debug)
       DEBUG=1
       shift
@@ -50,10 +58,7 @@ stop_children() {
   fi
 
   printf '\n[navigation] stopping launched processes...\n'
-  for pid in "${pids[@]}"; do
-    kill -INT -- "-$pid" 2>/dev/null || true
-  done
-  ((${#pids[@]} == 0)) || wait "${pids[@]}" 2>/dev/null || true
+  fruit_stop_all_process_groups "${pids[@]}"
   fruit_logging_close "${status:-0}"
   pids=()
 }
@@ -109,6 +114,9 @@ required_files=(
   "$HARDWARE_LAUNCH" \
   "$SCRIPT_CLIENT_CONFIG"
 )
+if [[ "$START_RECORDER" == true ]]; then
+  required_files+=("$RECORDER_LAUNCH")
+fi
 for required_file in "${required_files[@]}"; do
   if [[ ! -r "$required_file" ]]; then
     printf '[navigation] required file is unavailable: %s\n' "$required_file" >&2
@@ -116,28 +124,52 @@ for required_file in "${required_files[@]}"; do
   fi
 done
 
-if ros2 node list 2>/dev/null | grep -Eq \
-  '^/(livox_ros_driver2|laserMapping|loam_interface|axis_waypoint_action_server|fruit_waypoint_recorder)$'; then
-  printf '[navigation] an odometry or navigation node is already running.\n' >&2
-  printf '[navigation] stop the existing stack before starting this script.\n' >&2
-  exit 1
+nav_running=false
+if ros2 run fruit_mission stack_readiness_client node-running \
+  --node /laserMapping --node /loam_interface --node /axis_waypoint_action_server \
+  --match any \
+  --ros-args --params-file "$SCRIPT_CLIENT_CONFIG" 2>/dev/null; then
+  nav_running=true
 fi
 
-START_SERIAL_BRIDGE=$(ros2 run fruit_mission stack_readiness_client bridge-start-required \
-  --ros-args --params-file "$SCRIPT_CLIENT_CONFIG")
-if [[ "$START_SERIAL_BRIDGE" == true ]]; then
-  start_process "serial bridge" \
-    ros2 launch "$HARDWARE_LAUNCH"
+if [[ "$nav_running" == true ]]; then
+  if [[ "$START_RECORDER" == true ]]; then
+    if ros2 run fruit_mission stack_readiness_client node-running \
+      --node /fruit_waypoint_recorder \
+      --ros-args --params-file "$SCRIPT_CLIENT_CONFIG" 2>/dev/null; then
+      printf '[navigation] waypoint recorder is already running.\n' >&2
+      exit 1
+    fi
+    printf '[navigation] reusing existing odometry navigation stack and serial bridge\n'
+  else
+    printf '[navigation] an odometry or navigation node is already running.\n' >&2
+    printf '[navigation] stop the existing stack before starting this script.\n' >&2
+    exit 1
+  fi
 else
-  printf '[navigation] reusing existing serial bridge; it will not be stopped on exit\n'
-fi
+  START_SERIAL_BRIDGE=$(ros2 run fruit_mission stack_readiness_client bridge-start-required \
+    --ros-args --params-file "$SCRIPT_CLIENT_CONFIG")
+  if [[ "$START_SERIAL_BRIDGE" == true ]]; then
+    start_process "serial bridge" \
+      ros2 launch "$HARDWARE_LAUNCH"
+  else
+    printf '[navigation] reusing existing serial bridge; it will not be stopped on exit\n'
+  fi
 
-start_process "axis navigation and odometry" \
-  ros2 launch "$NAV_LAUNCH"
+  start_process "axis navigation and odometry" \
+    ros2 launch "$NAV_LAUNCH"
+fi
 
 wait_for_odom_tf
 
-printf '[navigation] axis odometry navigation and serial bridge ready (frame=odom). Use RobViz for visualization. Press Ctrl-C to stop launched processes.\n'
+if [[ "$START_RECORDER" == true ]]; then
+  start_process "waypoint recorder" \
+    ros2 launch "$RECORDER_LAUNCH"
+  printf '[navigation] odometry and waypoint recorder ready (frame=odom). Use RobViz at %s to record waypoints.\n' "$WEB_URL"
+else
+  printf '[navigation] axis odometry navigation and serial bridge ready (frame=odom). Use RobViz for visualization.\n'
+fi
+printf '[navigation] Press Ctrl-C to stop launched processes.\n'
 
 if wait -n "${pids[@]}"; then
   status=0

@@ -68,6 +68,14 @@ class StackReadinessClient(Node):
             return False
         return True
 
+    def nodes_are_running(self, candidates: list[str], match: str = "all") -> bool:
+        """Return True when candidates are running (no error logging)."""
+        self.wait_until(lambda: False, self.graph_discovery_timeout_sec)
+        active = self.node_names()
+        if match == "all":
+            return set(candidates).issubset(active)
+        return bool(set(candidates) & active)
+
     def wait_for_nodes(self, required: list[str], timeout_sec: float) -> bool:
         """Wait for every required fully qualified node name."""
         ready = self.wait_until(
@@ -295,6 +303,12 @@ def _parser() -> argparse.ArgumentParser:
     nodes_absent = commands.add_parser("nodes-absent")
     nodes_absent.add_argument("--node", action="append", required=True)
 
+    node_running = commands.add_parser("node-running")
+    node_running.add_argument("--node", action="append", required=True)
+    node_running.add_argument(
+        "--match", choices=("any", "all"), default="all"
+    )
+
     nodes = commands.add_parser("nodes")
     nodes.add_argument("--node", action="append", required=True)
     nodes.add_argument("--timeout", type=float, required=True)
@@ -340,6 +354,8 @@ def main(args=None) -> None:
     try:
         if options.command == "nodes-absent":
             ready = node.nodes_are_absent(options.node)
+        elif options.command == "node-running":
+            ready = node.nodes_are_running(options.node, options.match)
         elif options.command == "nodes":
             ready = node.wait_for_nodes(options.node, options.timeout)
         elif options.command == "action":
