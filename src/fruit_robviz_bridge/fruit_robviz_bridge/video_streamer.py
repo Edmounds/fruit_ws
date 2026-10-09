@@ -296,6 +296,12 @@ class StreamChannel:
             asyncio.run_coroutine_threadsafe(viewer["send"](payload), self.loop)
 
     def notify_error(self, message: str, viewer_id: Optional[str] = None) -> None:
+        logger.error(
+            "[%s] Stream error for viewer %s: %s",
+            self.name,
+            viewer_id or "all",
+            message,
+        )
         targets = (
             [self.viewers[viewer_id]]
             if viewer_id in self.viewers
@@ -389,12 +395,12 @@ class StreamChannel:
             ),
         )
 
-        if (
-            not self.pipeline.add(queue)
-            or not self.pipeline.add(capsfilter)
-            or not self.pipeline.add(webrtc)
-        ):
-            self.notify_error("Could not add WebRTC elements to pipeline", viewer_id)
+        try:
+            self.pipeline.add(queue)
+            self.pipeline.add(capsfilter)
+            self.pipeline.add(webrtc)
+        except Exception as exc:
+            self.notify_error(f"Could not add WebRTC elements to pipeline: {exc}", viewer_id)
             return
         if not queue.link(capsfilter) or not capsfilter.link(webrtc):
             for elem in (webrtc, capsfilter, queue):
