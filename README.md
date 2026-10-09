@@ -86,11 +86,12 @@ cd /home/rc4/fruit_ws
 fuser -v /dev/stm32
 ```
 
-清理脚本覆盖任务启动器、ROS launch/run、`test_camera_detector.py` 创建的
+清理脚本覆盖任务启动器、ROS launch/run、感知流程启动的 `fruit_robviz_image_bridge`、
+`test_camera_detector.py` 创建的
 `test_camera_detector_*_container`、`lower_controller_console.py`、录包进程和调试监视器；
 它会先恢复被 `Ctrl-Z` 挂起的目标，再依次发送 `SIGINT`、`SIGTERM` 和 `SIGKILL`，成功后
-停止 ROS 2 daemon 以清除过期图缓存。RobViz、`foxglove_bridge.service` 和
-`robviz.service` 是独立工具，不由该脚本停止，也不占用摄像头或下位机串口。
+停止 ROS 2 daemon 以清除过期图缓存。RobViz 网页服务、`foxglove_bridge.service` 和
+`robviz.service` 是独立工具，不由该脚本停止。感知流程启动的 RobViz 图像网关会随感知进程清理。
 
 `fruit-perception.service` 会占用摄像头和 `/dev/stm32`。如果清理脚本提示该服务处于
 active，必须先执行：

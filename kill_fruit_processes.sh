@@ -24,6 +24,7 @@ target_tokens=(
   "/home/rc4/fruit_ws/record_rosbag.sh"
   "/home/rc4/fruit_ws/scripts/robot_debug_monitor.sh"
   "fruit_robot_debug_monitor"
+  "fruit_robviz_image_bridge"
   "python3 - fruit-mission "
   "python3 - navigation "
   "python3 - perception "
