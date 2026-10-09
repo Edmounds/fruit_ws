@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # Copyright (c) 2026 Edmounds
 # Copyright (c) 2026 fruit_ws team
 #
