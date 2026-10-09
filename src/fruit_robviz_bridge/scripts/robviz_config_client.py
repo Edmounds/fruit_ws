@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 
-"""Reload RobViz image settings through the local HTTP API on demand."""
+"""Fetch and configure RobViz image settings for the image bridge on startup."""
 
 from __future__ import annotations
 
 import json
 import math
-import time
 import threading
+import time
+import uuid
 from collections import deque
 from copy import deepcopy
 from pathlib import Path
@@ -16,23 +17,25 @@ from urllib.request import Request, urlopen
 
 import rclpy
 import yaml
-from fruit_interfaces.msg import ArmTelemetry
-from fruit_interfaces.msg import ArmStatus
+from fruit_interfaces.msg import ArmStatus, ArmTelemetry
 from fruit_mission.camera_target_transform import (
     load_camera_extrinsic,
     transform_camera_to_end_effector_mm,
     transform_end_to_base_mm,
 )
 from fruit_perception.msg import FruitDetections
+from fruit_robviz_bridge.waypoint_editor_server import (
+    DEFAULT_IMAGE_SETTINGS,
+    validate_image_settings,
+)
 from nav_msgs.msg import Odometry
-from rcl_interfaces.msg import Parameter, ParameterValue
-from rcl_interfaces.msg import ParameterType
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParametersAtomically
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.clock import Clock, ClockType
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from std_srvs.srv import Trigger
 
 
 MAX_RESPONSE_BYTES = 64 * 1024
@@ -47,7 +50,7 @@ STREAM_FIELDS = (
 
 
 class RobvizConfigClient(Node):
-    """Bridge the explicit reload service to the RobViz-owned JSON settings."""
+    """Fetch RobViz image settings and apply them to the image bridge."""
 
     def __init__(self) -> None:
         super().__init__("fruit_robviz_config_client")
@@ -62,18 +65,24 @@ class RobvizConfigClient(Node):
         self._config_url = str(self.get_parameter("config_url").value)
         self._timeout = timeout
         self._callback_group = ReentrantCallbackGroup()
-        self._reload_lock = threading.Lock()
+        self._started = False
+        self.declare_parameter("startup_timeout_sec", 60.0)
+        startup_timeout = float(self.get_parameter("startup_timeout_sec").value)
+        if not 1.0 <= startup_timeout <= 300.0:
+            raise ValueError("startup_timeout_sec must be in [1.0, 300]")
+        self._startup_timeout = startup_timeout
+        self._startup_start_time = time.monotonic()
         self._parameter_client = self.create_client(
             SetParametersAtomically,
             f"{str(self.get_parameter('image_node').value).rstrip('/')}/"
             "set_parameters_atomically",
             callback_group=self._callback_group,
         )
-        self._reload_service = self.create_service(
-            Trigger,
-            "/fruit_robviz_bridge/reload_image_settings",
-            self._on_reload,
+        self._startup_timer = self.create_timer(
+            0.1,
+            self._on_startup_poll,
             callback_group=self._callback_group,
+            clock=Clock(clock_type=ClockType.STEADY_TIME),
         )
         self._init_base_preview()
 
@@ -346,46 +355,87 @@ class RobvizConfigClient(Node):
         request.parameters = parameters
         return request
 
-    def _on_reload(self, _request: Trigger.Request, response: Trigger.Response):
-        if not self._reload_lock.acquire(blocking=False):
-            response.success = False
-            response.message = "image settings reload is already in progress"
-            return response
-        parameter_future = None
+    def _on_startup_poll(self) -> None:
+        if self._started:
+            if self._startup_timer is not None:
+                self._startup_timer.cancel()
+                self._startup_timer = None
+            return
+
+        if not self._parameter_client.service_is_ready():
+            if time.monotonic() - self._startup_start_time > self._startup_timeout:
+                self.get_logger().error(
+                    "Image bridge parameter service not available within "
+                    f"{self._startup_timeout}s; could not apply image settings"
+                )
+                self._started = True
+                if self._startup_timer is not None:
+                    self._startup_timer.cancel()
+                    self._startup_timer = None
+            return
+
+        self._started = True
+        if self._startup_timer is not None:
+            self._startup_timer.cancel()
+            self._startup_timer = None
+        self._apply_initial_settings()
+
+    def _apply_initial_settings(self) -> None:
+        source = "web"
+        settings = None
+        version = None
+        session = None
         try:
             payload = self._fetch_settings()
-            version = payload.get("version", payload["settings"].get("version"))
-            if not isinstance(version, int) or isinstance(version, bool) or version < 1:
-                raise ValueError("settings version is invalid")
-            session = payload["settings"].get("session")
-            if not isinstance(session, str) or len(session) != 32:
-                raise ValueError("settings session is invalid")
-            if not self._parameter_client.wait_for_service(timeout_sec=self._timeout):
-                raise RuntimeError("image bridge parameter service is unavailable")
-            future = self._parameter_client.call_async(
-                self._to_request(payload["settings"], version, session)
-            )
-            parameter_future = future
-            done = threading.Event()
-            future.add_done_callback(lambda _future: done.set())
-            if not done.wait(self._timeout):
-                raise RuntimeError("image bridge parameter update timed out")
-            result = future.result()
-            if result is None or not result.result.successful:
-                reason = result.result.reason if result is not None else "no response"
-                raise RuntimeError(f"image bridge rejected settings: {reason}")
-            response.success = True
-            response.message = json.dumps({"version": version, "session": session})
+            raw_settings = payload.get("settings")
+            if not isinstance(raw_settings, dict):
+                raise ValueError("payload missing settings mapping")
+            validated = validate_image_settings(raw_settings)
+            ver = payload.get("version", raw_settings.get("version"))
+            if not isinstance(ver, int) or isinstance(ver, bool) or ver < 1:
+                raise ValueError(f"invalid settings version: {ver}")
+            sess = raw_settings.get("session")
+            if not isinstance(sess, str) or len(sess) != 32:
+                raise ValueError(f"invalid settings session: {sess}")
+            settings = validated
+            version = ver
+            session = sess
         except Exception as error:
-            self.get_logger().error(f"RobViz image settings reload failed: {error}")
-            response.success = False
-            response.message = str(error)
-        finally:
-            if parameter_future is not None and not parameter_future.done():
-                parameter_future.add_done_callback(lambda _future: self._reload_lock.release())
-            else:
-                self._reload_lock.release()
-        return response
+            self.get_logger().warn(
+                f"Failed to fetch RobViz image settings from {self._config_url}: {error}. "
+                "Falling back to built-in default image settings."
+            )
+            source = "fallback_defaults"
+            settings = validate_image_settings(DEFAULT_IMAGE_SETTINGS)
+            version = 1
+            session = uuid.uuid4().hex
+
+        if not self._parameter_client.wait_for_service(timeout_sec=self._timeout):
+            self.get_logger().error(
+                f"Image bridge parameter service not available within {self._timeout}s; "
+                "could not apply image settings"
+            )
+            return
+
+        future = self._parameter_client.call_async(
+            self._to_request(settings, version, session)
+        )
+        done = threading.Event()
+        future.add_done_callback(lambda _future: done.set())
+        if not done.wait(self._timeout):
+            self.get_logger().error("Image bridge parameter update timed out")
+            return
+
+        result = future.result()
+        if result is None or not result.result.successful:
+            reason = result.result.reason if result is not None else "no response"
+            self.get_logger().error(f"Image bridge rejected settings: {reason}")
+            return
+
+        self.get_logger().info(
+            f"Successfully applied image settings from {source}: "
+            f"version={version}, session={session}"
+        )
 
 
 def main(args=None) -> None:

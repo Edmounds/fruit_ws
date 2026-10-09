@@ -45,7 +45,7 @@ MAX_POINT_COUNT = 5000
 DEFAULT_IMAGE_SETTINGS = {
     "version": 1,
     "rgb": {
-        "bandwidth_mbps": 1.5,
+        "bandwidth_mbps": 10.0,
         "auto_quality": True,
         "quality": 70,
         "width": 640,
@@ -53,7 +53,7 @@ DEFAULT_IMAGE_SETTINGS = {
         "max_fps": 10.0,
     },
     "depth": {
-        "bandwidth_mbps": 0.8,
+        "bandwidth_mbps": 10.0,
         "auto_quality": True,
         "quality": 70,
         "width": 424,
@@ -127,32 +127,38 @@ class ImageSettingsStore:
         with self._lock:
             return copy.deepcopy(self.settings)
 
-    def apply(self, payload: Mapping[str, Any]) -> dict:
+    def save(
+        self, payload: Mapping[str, Any], backup_root: Path
+    ) -> tuple[dict, Path | None]:
         validated = validate_image_settings(payload)
         with self._lock:
             current_version = int(self.settings["version"])
             if payload.get("session") != self.settings["session"]:
                 raise VersionConflict("图像配置服务已重启，请重新加载")
             expected_version = payload.get("version")
-            if expected_version is not None:
-                if (
-                    isinstance(expected_version, bool)
-                    or not isinstance(expected_version, int)
-                    or expected_version != current_version
-                ):
-                    raise VersionConflict("图像配置版本已变化，请重新加载")
-            validated["version"] = current_version + 1
-            validated["session"] = self.settings["session"]
-            self.settings = validated
-            return copy.deepcopy(validated)
+            if (
+                expected_version is None
+                or isinstance(expected_version, bool)
+                or not isinstance(expected_version, int)
+                or expected_version != current_version
+            ):
+                raise VersionConflict("图像配置版本已变化，请重新加载")
 
-    def save_defaults(self, backup_root: Path) -> Path | None:
-        with self._lock:
-            return _atomic_save_json(
+            next_settings = copy.deepcopy(validated)
+            next_settings["version"] = current_version + 1
+            next_settings["session"] = self.settings["session"]
+            to_save = {
+                key: value
+                for key, value in next_settings.items()
+                if key != "session"
+            }
+            backup_path = _atomic_save_json(
                 self.path,
-                {key: value for key, value in self.settings.items() if key != "session"},
+                to_save,
                 backup_root / "image-settings",
             )
+            self.settings = next_settings
+            return copy.deepcopy(next_settings), backup_path
 
 
 def _required_mapping(document: Any, label: str) -> Mapping[str, Any]:
@@ -946,19 +952,6 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             self._check_same_origin()
-            if parsed.path == "/api/image-settings":
-                payload = self._read_json_body()
-                settings = self.server.image_settings.apply(payload)
-                self._send_json(
-                    HTTPStatus.OK,
-                    {
-                        "applied": True,
-                        "status": "pending_ros_reload",
-                        "settings": settings,
-                        "version": settings["version"],
-                    },
-                )
-                return
             if parsed.path != "/api/document":
                 raise RequestError(HTTPStatus.NOT_FOUND, "接口不存在")
             payload = self._read_json_body()
@@ -1015,18 +1008,15 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
             self._check_same_origin()
             if parsed.path != "/api/image-settings/defaults":
                 raise RequestError(HTTPStatus.NOT_FOUND, "接口不存在")
-            payload = self._read_json_body(allow_empty=True)
-            if payload:
-                self.server.image_settings.apply(payload)
-            backup_path = self.server.image_settings.save_defaults(
-                self.server.editor_config.backup_dir
+            payload = self._read_json_body()
+            settings, backup_path = self.server.image_settings.save(
+                payload, self.server.editor_config.backup_dir
             )
-            settings = self.server.image_settings.snapshot()
             self._send_json(
                 HTTPStatus.OK,
                 {
                     "saved": True,
-                    "status": "pending_ros_reload",
+                    "status": "saved_for_next_start",
                     "backup": str(backup_path) if backup_path else None,
                     "settings": settings,
                     "version": settings["version"],

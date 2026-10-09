@@ -80,8 +80,8 @@ public:
       "base_detections_topic", "/fruit_perception/camera/base_preview_detections");
     declare_parameter("settings_version", 0);
     declare_parameter("settings_session", "");
-    declare_stream_parameters("rgb", 1.5, 640, 360);
-    declare_stream_parameters("depth", 0.8, 424, 240);
+    declare_stream_parameters("rgb", 10.0, 640, 360);
+    declare_stream_parameters("depth", 10.0, 424, 240);
     rgb_config_ = read_stream_parameters("rgb");
     depth_config_ = read_stream_parameters("depth");
     initialize_runtime(rgb_runtime_, rgb_config_);

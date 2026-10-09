@@ -34,20 +34,11 @@ Base 坐标要求采集时的 ArmTelemetry、ArmStatus 和 `/odometry` 已覆盖
 机械臂停稳速度阈值只作用于原始硬件速度，模型速度另做有限值检查。
 运动、过期、缺少反馈、坐标系不匹配或非有限值均显示 `N/A`。
 
-配置客户端提供：
-
-```text
-/fruit_robviz_bridge/reload_image_settings  std_srvs/srv/Trigger
-```
-
-客户端调用同源 HTTP 服务的 `/api/image-settings`，再通过原子参数更新配置。
-没有后台轮询。
-HTTP 成功不等于 ROS 应用成功，只有参数更新成功才返回成功。
-成功消息为 JSON：`{"version": 2, "session": "<HTTP 启动会话>"}`。
-前端精确匹配版本和会话，不做字符串包含匹配。
-同时只允许一次重载在途，超时但未结束的参数请求继续占有重载锁。
-同一会话的较旧版本不能覆盖组件中的较新版本。
-HTTP 重启后生成新会话，陈旧的 HTTP 写入返回 409。
+配置客户端在 ROS 图像桥启动时主动向同源 HTTP 服务的 `/api/image-settings` 发起单次请求，并通过原子参数更新应用到图像桥组件中。
+运行期间无后台轮询，网页端保存操作仅持久保存为默认配置，将在下次 ROS 图像桥启动时获取生效。
+HTTP 服务不可用或返回非法配置时，输出显式告警并自动回退使用内置默认值（两路带宽均为 10.0 Mbps）兜底应用，不阻塞其他节点。
+首次参数成功应用前没有 raw-image 订阅，也不推流。
+已移除旧的 `/fruit_robviz_bridge/reload_image_settings` Trigger 服务。
 
 ## 配置
 
@@ -55,13 +46,13 @@ HTTP 重启后生成新会话，陈旧的 HTTP 写入返回 409。
 组件 YAML 保存 ROS 接线和 Python 节点的只读配置路径。
 Python 节点用标准 YAML 读取外参、planner 限位与现有停稳参数。
 C++ 组件不读取标定 YAML，不自行转换坐标，不复制 planner 的标定偏置。
-RGB 默认 `640x360`、`1.5 Mbps`、最高 `10 FPS`，Depth 默认 `424x240`、`0.8 Mbps`、最高 `10 FPS`。
+RGB 默认 `640x360`、`10.0 Mbps`、最高 `10 FPS`，Depth 默认 `424x240`、`10.0 Mbps`、最高 `10 FPS`。
 带宽预算只计算该路 JPEG `data` 负载，不包含 DDS、WebSocket 或 IP 开销。
 
 自动质量从 70 开始，最低 30。预算不足时先降质量，再丢帧。
 固定质量模式不修改质量，只降低发布频率。
 两路均使用 latest-wins 和有界令牌桶，预算必须是有限正数，`0` 不表示暂停。
-首次成功重载前没有 raw-image 订阅，也不推流。
+首次参数成功应用前没有 raw-image 订阅，也不推流。
 全部压缩订阅者退出后取消对应 raw-image 订阅。
 FPS 准入先于复制、缩放、伪彩色和 JPEG 编码。
 
