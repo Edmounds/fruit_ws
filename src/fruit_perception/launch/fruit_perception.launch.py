@@ -68,6 +68,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     serial_debug_raw_frame = LaunchConfiguration('serial_debug_raw_frame')
     start_serial_bridge = LaunchConfiguration('start_serial_bridge')
+    start_robviz_bridge = LaunchConfiguration('start_robviz_bridge')
     declare_use_sim_time = DeclareLaunchArgument(
         'use_sim_time',
         default_value='false',
@@ -85,6 +86,11 @@ def generate_launch_description():
         'start_serial_bridge',
         default_value='true',
         description='Start auto_serial_bridge as part of this launch',
+    )
+    declare_start_robviz_bridge = DeclareLaunchArgument(
+        'start_robviz_bridge',
+        default_value='true',
+        description='Start fruit_robviz_bridge as part of this launch',
     )
     declare_ripeness_model = DeclareLaunchArgument(
         'ripeness_model',
@@ -195,18 +201,22 @@ def generate_launch_description():
         emulate_tty=True,
         parameters=[robviz_config_path, {'use_sim_time': use_sim_time}],
     )
+    robviz_bridge_group = GroupAction(
+        actions=[robviz_image_bridge, robviz_config_client],
+        condition=IfCondition(start_robviz_bridge),
+    )
 
     return LaunchDescription([
         declare_use_sim_time,
         declare_serial_debug_raw_frame,
         declare_start_serial_bridge,
+        declare_start_robviz_bridge,
         declare_ripeness_model,
         declare_zone,
         declare_performance_hint,
         declare_perception_log_level,
         container,
-        robviz_image_bridge,
-        robviz_config_client,
+        robviz_bridge_group,
         qr_planner,
         GroupAction(
             actions=[serial_bridge, serial_bridge_debug],

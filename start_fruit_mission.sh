@@ -470,6 +470,14 @@ if run_readiness_client node-running \
   log "DETECT: arm planner is already running; automatically reusing existing arm planner"
 fi
 
+REUSE_ROBVIZ_BRIDGE=false
+if run_readiness_client node-running \
+  --node /fruit_robviz_image_bridge \
+  --match any >/dev/null 2>&1; then
+  REUSE_ROBVIZ_BRIDGE=true
+  log "DETECT: robviz bridge is already running; automatically reusing existing robviz bridge"
+fi
+
 if [[ "$REUSE_NAVIGATION" == true ]]; then
   log "RUN mode: reuse existing navigation"
 else
@@ -480,6 +488,9 @@ if [[ "$REUSE_PERCEPTION" == true ]]; then
 fi
 if [[ "$REUSE_ARM_PLANNER" == true ]]; then
   log "RUN mode: reuse existing arm planner"
+fi
+if [[ "$REUSE_ROBVIZ_BRIDGE" == true ]]; then
+  log "RUN mode: reuse existing robviz bridge"
 fi
 if ((DEBUG_RECORD_ENABLED)); then
   log "RUN debug rosbag: enabled with visual-topic exclusions; output is under $WORKSPACE/rosbags"
@@ -531,6 +542,12 @@ if [[ "$REUSE_NAVIGATION" == true ]]; then
   log "RUN reuse: existing navigation and serial bridge remain owned by original launcher"
 fi
 
+START_ROBVIZ_BRIDGE=true
+if [[ "$REUSE_ROBVIZ_BRIDGE" == true ]] || ! run_readiness_client robviz-bridge-start-required >/dev/null 2>&1; then
+  START_ROBVIZ_BRIDGE=false
+  log "RUN reuse: existing robviz bridge remains owned by original launcher"
+fi
+
 wait_for_nodes "odometry navigation readiness" 10 \
   /axis_waypoint_action_server \
   /laserMapping \
@@ -544,7 +561,8 @@ if [[ "$REUSE_PERCEPTION" != true ]]; then
     ros2 launch "$PERCEPTION_LAUNCH" \
       "use_sim_time:=false" \
       "serial_debug_raw_frame:=$([[ $DEBUG_RECORD_ENABLED -eq 1 ]] && echo 'true' || echo 'false')" \
-      "start_serial_bridge:=$START_SERIAL_BRIDGE"
+      "start_serial_bridge:=$START_SERIAL_BRIDGE" \
+      "start_robviz_bridge:=$START_ROBVIZ_BRIDGE"
 else
   log "RUN reuse: existing perception stack remains owned by original launcher"
 fi

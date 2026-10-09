@@ -97,6 +97,13 @@ if [[ "$START_SERIAL_BRIDGE" == false ]]; then
   set -- "$@" start_serial_bridge:=false
 fi
 
+START_ROBVIZ_BRIDGE=$(ros2 run fruit_mission stack_readiness_client robviz-bridge-start-required \
+  --ros-args --params-file "$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml")
+if [[ "$START_ROBVIZ_BRIDGE" == false ]]; then
+  printf '[perception] reusing existing robviz bridge; it will not be stopped on exit\n'
+  set -- "$@" start_robviz_bridge:=false
+fi
+
 log_file="${FRUIT_RUNTIME_SESSION_DIR}/perception_launch.log"
 filter_script="${WORKSPACE}/scripts/runtime_log_filter.py"
 

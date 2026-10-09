@@ -132,14 +132,18 @@ if ros2 run fruit_mission stack_readiness_client node-running \
   nav_running=true
 fi
 
+recorder_running=false
+if [[ "$START_RECORDER" == true ]]; then
+  if ros2 run fruit_mission stack_readiness_client node-running \
+    --node /fruit_waypoint_recorder \
+    --ros-args --params-file "$SCRIPT_CLIENT_CONFIG" 2>/dev/null; then
+    recorder_running=true
+    printf '[navigation] reusing existing waypoint recorder; it will not be stopped on exit\n'
+  fi
+fi
+
 if [[ "$nav_running" == true ]]; then
   if [[ "$START_RECORDER" == true ]]; then
-    if ros2 run fruit_mission stack_readiness_client node-running \
-      --node /fruit_waypoint_recorder \
-      --ros-args --params-file "$SCRIPT_CLIENT_CONFIG" 2>/dev/null; then
-      printf '[navigation] waypoint recorder is already running.\n' >&2
-      exit 1
-    fi
     printf '[navigation] reusing existing odometry navigation stack and serial bridge\n'
   else
     printf '[navigation] an odometry or navigation node is already running.\n' >&2
@@ -163,8 +167,10 @@ fi
 wait_for_odom_tf
 
 if [[ "$START_RECORDER" == true ]]; then
-  start_process "waypoint recorder" \
-    ros2 launch "$RECORDER_LAUNCH"
+  if [[ "$recorder_running" != true ]]; then
+    start_process "waypoint recorder" \
+      ros2 launch "$RECORDER_LAUNCH"
+  fi
   printf '[navigation] odometry and waypoint recorder ready (frame=odom). Use RobViz at %s to record waypoints.\n' "$WEB_URL"
 else
   printf '[navigation] axis odometry navigation and serial bridge ready (frame=odom). Use RobViz for visualization.\n'

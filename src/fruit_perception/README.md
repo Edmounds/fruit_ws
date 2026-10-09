@@ -77,9 +77,11 @@ colcon build --packages-up-to fruit_robviz_bridge \
 ros2 launch fruit_perception fruit_perception.launch.py
 ```
 
-The RobViz bridge component runs in the same composable container as the camera
-and detector. Do not launch `fruit_robviz_bridge.launch.py` separately when this
-perception launch is active.
+The RobViz bridge nodes run alongside the perception stack. When a RobViz
+bridge is already running, `fruit_perception.launch.py` accepts
+`start_robviz_bridge:=false` to reuse the existing instance.
+`start_fruit_perception.sh` and `start_fruit_mission.sh` detect running RobViz
+bridge nodes automatically and set this flag to avoid port 8787 conflicts.
 
 It publishes JPEG previews on `/fruit_perception/camera/annotated_image/compressed`
 and `/fruit_perception/camera/native_depth/compressed`. The RGB stream forwards

@@ -241,6 +241,15 @@ class StackReadinessClient(Node):
             raise ValueError("Multiple serial_controller nodes are already running")
         return not (bridge_nodes or status_publishers or ready_publishers)
 
+    def robviz_bridge_start_required(self) -> bool:
+        """Select RobViz bridge startup without duplicate instances."""
+        self.wait_until(lambda: False, self.graph_discovery_timeout_sec)
+        bridge_nodes = [
+            name for name, _namespace in self.get_node_names_and_namespaces()
+            if name in ("fruit_robviz_image_bridge", "fruit_robviz_config_client")
+        ]
+        return not bool(bridge_nodes)
+
     def wait_for_endpoint(
         self,
         topic: str,
@@ -321,6 +330,7 @@ def _parser() -> argparse.ArgumentParser:
     bridge.add_argument("--timeout", type=float, required=True)
 
     commands.add_parser("bridge-start-required")
+    commands.add_parser("robviz-bridge-start-required")
 
     planner = commands.add_parser("planner")
     planner.add_argument("--timeout", type=float, required=True)
@@ -365,6 +375,9 @@ def main(args=None) -> None:
             ready = node.wait_for_bridge(options.timeout)
         elif options.command == "bridge-start-required":
             print("true" if node.bridge_start_required() else "false", flush=True)
+            ready = True
+        elif options.command == "robviz-bridge-start-required":
+            print("true" if node.robviz_bridge_start_required() else "false", flush=True)
             ready = True
         elif options.command == "planner":
             ready = node.wait_for_planner(options.timeout)

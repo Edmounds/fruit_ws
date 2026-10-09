@@ -82,6 +82,11 @@ colcon build --base-paths src --packages-select fruit_robviz_bridge --cmake-args
 ros2 launch fruit_robviz_bridge fruit_robviz_bridge.launch.py
 ```
 
+感知启动脚本 (`start_fruit_perception.sh`) 与比赛任务脚本 (`start_fruit_mission.sh`)
+会自动检测已运行的 `fruit_robviz_image_bridge` 节点并自动复用，不再重复拉起冲突进程。
+航点录制脚本 (`waypoints_maker.sh`) 与导航脚本 (`start_navigation.sh --recorder`)
+也会自动检测并复用已运行的 `fruit_waypoint_recorder` 节点。
+
 ### 离线自检与实时检查
 
 ```bash

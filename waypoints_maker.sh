@@ -122,11 +122,12 @@ for required_file in "${required_files[@]}"; do
   fi
 done
 
+recorder_running=false
 if ros2 run fruit_mission stack_readiness_client node-running \
   --node /fruit_waypoint_recorder \
   --ros-args --params-file "$SCRIPT_CLIENT_CONFIG" 2>/dev/null; then
-  printf '[waypoints-maker] waypoint recorder is already running.\n' >&2
-  exit 1
+  recorder_running=true
+  printf '[waypoints-maker] reusing existing waypoint recorder; it will not be stopped on exit\n'
 fi
 
 nav_running=false
@@ -162,11 +163,17 @@ fi
 
 wait_for_odom_tf
 
-start_process "waypoint recorder" \
-  ros2 launch "$RECORDER_LAUNCH"
+if [[ "$recorder_running" != true ]]; then
+  start_process "waypoint recorder" \
+    ros2 launch "$RECORDER_LAUNCH"
+fi
 
-if [[ "$nav_running" == true ]]; then
+if [[ "$nav_running" == true && "$recorder_running" == true ]]; then
+  printf '[waypoints-maker] reusing running navigation and waypoint recorder.\n'
+elif [[ "$nav_running" == true ]]; then
   printf '[waypoints-maker] waypoint recorder started (reusing running navigation).\n'
+elif [[ "$recorder_running" == true ]]; then
+  printf '[waypoints-maker] odometry started (reusing running waypoint recorder).\n'
 elif [[ "$USE_TELEOP" == true ]]; then
   printf '[waypoints-maker] odometry, teleop, and waypoint recorder started.\n'
 else
