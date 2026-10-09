@@ -397,10 +397,7 @@ class VideoGatewayServer:
             return False
 
     def is_capture_origin_allowed(self, request: web.Request) -> bool:
-        """Validate Origin specifically for captureFrame write commands.
-
-        Requires browser Origin hostname to match server hostname or loopback.
-        """
+        """Validate Origin for captureFrame writes from the local network."""
         origin = request.headers.get("Origin")
         if not origin:
             return False
@@ -421,7 +418,9 @@ class VideoGatewayServer:
             if origin_host in loopbacks and req_host in loopbacks:
                 return True
 
-            return False
+            origin_ip = ipaddress.ip_address(origin_host)
+            request_ip = ipaddress.ip_address(req_host)
+            return origin_ip.is_private and request_ip.is_private
         except ValueError:
             return False
 

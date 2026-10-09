@@ -23,7 +23,7 @@
 ### NUC 原始图像采集协议
 通过网关 WebSocket (`/ws`) 提供轻量采集命令：
 - `getCaptureInfo`: 注册采集客户端并返回原始话题、输出目录、已保存 PNG 数量、最近文件名、最新帧接收延迟与尺寸。
-- `captureFrame`: 校验 Origin 与 1 秒接收新鲜度，将最新原尺寸原始 RGB 帧无损编码为 PNG，安全落盘至 `/home/rc4/fruit_ws/data/yolo_images/camera`。
+- `captureFrame`: 允许同主机或私有局域网 Origin，校验 Origin 与 1 秒接收新鲜度，将最新原尺寸原始 RGB 帧无损编码为 PNG，安全落盘至 `/home/rc4/fruit_ws/data/yolo_images/camera`。
 - 网关同一时间仅允许一个保存任务执行（全局互斥），保存取最新未丢弃原始帧，不受视频预览限帧影响。
 - 独立单机脚本 `collect_cam_img.py` 仍保留原来的 JPG 行为；RobViz 采集专用于无损 PNG 采集。
 
