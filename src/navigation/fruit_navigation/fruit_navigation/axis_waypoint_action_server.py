@@ -47,13 +47,10 @@ class AxisWaypointActionServer(Node):
         self.declare_parameter("forward_tolerance", 0.03)
         self.declare_parameter("lateral_tolerance", 0.06)
         self.declare_parameter("rotate_yaw_tolerance", 0.06)
-        self.declare_parameter("blend_yaw_tolerance", 0.12)
         self.declare_parameter("reverse_yaw_tolerance", 0.25)
         self.declare_parameter("linear_gain", 0.8)
         self.declare_parameter("yaw_gain", 1.8)
         self.declare_parameter("lookahead_distance", 0.3)
-        self.declare_parameter("final_yaw_mode", "rotate_at_goal")
-        self.declare_parameter("final_yaw_blend_distance", 0.6)
         self.declare_parameter("tf_timeout_sec", 0.3)
         self.declare_parameter("progress_timeout_sec", 5.0)
         self.declare_parameter("progress_min_delta", 0.01)
@@ -78,19 +75,12 @@ class AxisWaypointActionServer(Node):
         self._rotate_yaw_tolerance = float(
             self.get_parameter("rotate_yaw_tolerance").value
         )
-        self._blend_yaw_tolerance = float(
-            self.get_parameter("blend_yaw_tolerance").value
-        )
         self._reverse_yaw_tolerance = float(
             self.get_parameter("reverse_yaw_tolerance").value
         )
         self._linear_gain = float(self.get_parameter("linear_gain").value)
         self._yaw_gain = float(self.get_parameter("yaw_gain").value)
         self._lookahead_distance = float(self.get_parameter("lookahead_distance").value)
-        self._final_yaw_mode = self.get_parameter("final_yaw_mode").value
-        self._final_yaw_blend_distance = float(
-            self.get_parameter("final_yaw_blend_distance").value
-        )
         self._tf_timeout_sec = float(self.get_parameter("tf_timeout_sec").value)
         self._progress_timeout_sec = float(
             self.get_parameter("progress_timeout_sec").value
@@ -144,16 +134,12 @@ class AxisWaypointActionServer(Node):
             raise ValueError("max_angular_acceleration must be positive")
         if self._forward_tolerance <= 0.0 or self._lateral_tolerance <= 0.0:
             raise ValueError("tolerances must be positive")
-        if self._rotate_yaw_tolerance <= 0.0 or self._blend_yaw_tolerance <= 0.0:
-            raise ValueError("yaw tolerances must be positive")
+        if self._rotate_yaw_tolerance <= 0.0:
+            raise ValueError("rotate_yaw_tolerance must be positive")
         if self._reverse_yaw_tolerance <= 0.0:
             raise ValueError("reverse_yaw_tolerance must be positive")
         if not math.isfinite(self._lookahead_distance) or self._lookahead_distance <= 0.0:
             raise ValueError("lookahead_distance must be finite and positive")
-        if self._final_yaw_mode not in ("blend_on_path", "rotate_at_goal"):
-            raise ValueError("final_yaw_mode must be blend_on_path or rotate_at_goal")
-        if self._final_yaw_blend_distance <= 0.0:
-            raise ValueError("final_yaw_blend_distance must be positive")
         if self._tf_timeout_sec <= 0.0 or self._progress_timeout_sec <= 0.0:
             raise ValueError("timeouts must be positive")
         if self._progress_min_delta <= 0.0:
@@ -271,8 +257,6 @@ class AxisWaypointActionServer(Node):
         target: AxisPose,
         is_final_goal: bool = False,
     ) -> bool:
-        if not self._refresh_final_yaw_mode():
-            return False
         start = self._lookup_pose()
         if start is None:
             return False
@@ -282,11 +266,6 @@ class AxisWaypointActionServer(Node):
             f"start=({start.x:.3f},{start.y:.3f},{start.yaw:.3f}) "
             f"target=({target.x:.3f},{target.y:.3f},{target.yaw:.3f}) "
             f"distance={distance:.3f} is_final_goal={is_final_goal}"
-        )
-        final_yaw = (
-            target.yaw
-            if is_final_goal and self._final_yaw_mode == "blend_on_path"
-            else None
         )
         if distance > self._forward_tolerance:
             path_heading = math.atan2(target.y - start.y, target.x - start.x)
@@ -331,15 +310,8 @@ class AxisWaypointActionServer(Node):
                 approach_yaw,
                 linear_direction,
                 distance,
-                final_yaw,
             ):
                 return False
-        if final_yaw is not None:
-            return self._rotate_to(
-                goal_handle,
-                final_yaw,
-                self._blend_yaw_tolerance,
-            )
         return self._rotate_to(goal_handle, target.yaw, self._rotate_yaw_tolerance)
 
     def _rotate_to(self, goal_handle, target_yaw: float, yaw_tolerance: float) -> bool:
@@ -372,7 +344,6 @@ class AxisWaypointActionServer(Node):
         approach_yaw: float,
         linear_direction: float,
         distance: float,
-        final_yaw: Optional[float] = None,
     ) -> bool:
         period = 1.0 / self._control_frequency
         direction_x = math.cos(path_heading)
@@ -406,23 +377,7 @@ class AxisWaypointActionServer(Node):
                 time.sleep(period)
                 continue
 
-            yaw_target = approach_yaw
-            if final_yaw is not None and remaining < self._final_yaw_blend_distance:
-                blend_span = max(
-                    self._final_yaw_blend_distance - self._forward_tolerance,
-                    self._forward_tolerance,
-                )
-                blend_progress = self._clamp(
-                    (self._final_yaw_blend_distance - remaining) / blend_span,
-                    0.0,
-                    1.0,
-                )
-                yaw_target = normalize_angle(
-                    approach_yaw
-                    + normalize_angle(final_yaw - approach_yaw) * blend_progress
-                )
-
-            heading_error = normalize_angle(yaw_target - current.yaw)
+            heading_error = normalize_angle(approach_yaw - current.yaw)
             # Extend the steering carrot along the line near the endpoint;
             # shortening it to zero would amplify noise and cause sharp turns.
             lookahead = math.copysign(
@@ -599,18 +554,6 @@ class AxisWaypointActionServer(Node):
     @staticmethod
     def _command_is_stopped(command: Twist) -> bool:
         return command.linear.x == 0.0 and command.angular.z == 0.0
-
-    def _refresh_final_yaw_mode(self) -> bool:
-        final_yaw_mode = str(self.get_parameter("final_yaw_mode").value)
-        if final_yaw_mode not in ("blend_on_path", "rotate_at_goal"):
-            self.get_logger().error(
-                "Aborting waypoint goal: invalid final_yaw_mode "
-                f"{final_yaw_mode}"
-            )
-            self._publish_stop_burst()
-            return False
-        self._final_yaw_mode = final_yaw_mode
-        return True
 
 
 def main(args=None) -> None:

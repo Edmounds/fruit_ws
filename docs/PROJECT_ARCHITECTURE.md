@@ -118,7 +118,7 @@ Python 配置节点只读检测与遥测，复用 mission 变换生成同戳 Bas
 它不接收 raw image，不执行 IK、机械臂控制或比赛编排。
 
 - `axis_waypoint_action_server` 提供 `/follow_waypoints` Action 接口。
-- 支持按轴行走、自动倒车判定，以及 `final_yaw_mode=rotate_at_goal|blend_on_path`；没有逐点 `yaw_mode` 或 `reverse` 模式。
+- 支持按轴行走、自动倒车判定，并固定在位置到达后原地调整最终车体朝向；没有逐点 `yaw_mode` 或 `reverse` 模式。
 - 速度输出经由 `twist_mux` 输出至串口控制器。
 
 

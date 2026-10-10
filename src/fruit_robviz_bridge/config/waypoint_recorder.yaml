@@ -21,8 +21,6 @@ fruit_waypoint_recorder:
     state_topic: "/fruit/waypoint_maker/state"
     marker_topic: "/fruit/waypoint_maker/markers"
     follow_waypoints_action: "/follow_waypoints"
-    axis_waypoint_node: "/axis_waypoint_action_server"
-    default_final_yaw_mode: "blend_on_path"
     auto_name_prefix: ""
     auto_name_file: "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/template.yaml"
     source_root: "/home/rc4/fruit_ws/src"

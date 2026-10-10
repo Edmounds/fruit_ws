@@ -19,8 +19,6 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import FollowWaypoints
-from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-from rcl_interfaces.srv import SetParameters
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
@@ -55,7 +53,7 @@ from fruit_robviz_bridge.waypoint_editor_server import (
 )
 
 
-FINAL_YAW_MODES = ("blend_on_path", "rotate_at_goal")
+FINAL_YAW_MODE = "rotate_at_goal"
 
 
 def latched_qos() -> QoSProfile:
@@ -94,8 +92,6 @@ class WaypointRecorderNode(Node):
         self.declare_parameter("state_topic", "/fruit/waypoint_maker/state")
         self.declare_parameter("marker_topic", "/fruit/waypoint_maker/markers")
         self.declare_parameter("follow_waypoints_action", "/follow_waypoints")
-        self.declare_parameter("axis_waypoint_node", "/axis_waypoint_action_server")
-        self.declare_parameter("default_final_yaw_mode", "blend_on_path")
         self.declare_parameter("auto_name_prefix", "")
         self.declare_parameter("auto_name_file", "")
         self.declare_parameter("source_root", "")
@@ -154,13 +150,6 @@ class WaypointRecorderNode(Node):
         )
         if not all(math.isfinite(value) and value >= 0 for value in velocity_limits):
             raise ValueError("standstill velocity limits must be finite and nonnegative")
-        self._current_final_yaw_mode = str(
-            self.get_parameter("default_final_yaw_mode").value
-        )
-        if self._current_final_yaw_mode not in FINAL_YAW_MODES:
-            raise ValueError(
-                "default_final_yaw_mode must be blend_on_path or rotate_at_goal"
-            )
         waypoint_path = self._resolve_src_yaml_path(
             str(self.get_parameter("waypoint_file").value)
         )
@@ -238,16 +227,6 @@ class WaypointRecorderNode(Node):
             FollowWaypoints,
             self.get_parameter("follow_waypoints_action").value,
         )
-        axis_waypoint_node = str(
-            self.get_parameter("axis_waypoint_node").value
-        ).rstrip("/")
-        if not axis_waypoint_node:
-            axis_waypoint_node = "/axis_waypoint_action_server"
-        self._axis_waypoint_parameters = self.create_client(
-            SetParameters,
-            f"{axis_waypoint_node}/set_parameters",
-        )
-
         self._prompt_publisher = self.create_publisher(
             String,
             "~/prompt",
@@ -336,8 +315,6 @@ class WaypointRecorderNode(Node):
                 self._load_test_file(payload)
             elif command in ("reload", "reload_file"):
                 self._reload_current_file(payload)
-            elif command == "set_final_yaw_mode":
-                self._set_final_yaw_mode(payload)
             else:
                 self._reject_command(f"Unknown waypoint-maker command: {command}")
 
@@ -669,19 +646,6 @@ class WaypointRecorderNode(Node):
         )
         self._publish_state(message)
 
-    def _set_final_yaw_mode(self, payload) -> None:
-        if self._active_test_goal:
-            self._reject_command("Cannot change final_yaw_mode while navigating")
-            return
-        value = payload.get("final_yaw_mode")
-        if not isinstance(value, str) or value.strip() not in FINAL_YAW_MODES:
-            self._reject_command(
-                "final_yaw_mode must be blend_on_path or rotate_at_goal"
-            )
-            return
-        self._current_final_yaw_mode = value.strip()
-        self._publish_state(f"Set final_yaw_mode to {self._current_final_yaw_mode}")
-
     def _auto_name_prefix(self) -> str:
         """Return the explicit profile prefix or infer A/B from the file path."""
         if self._configured_auto_name_prefix:
@@ -887,18 +851,6 @@ class WaypointRecorderNode(Node):
             )
             return
 
-        final_yaw_value = payload.get(
-            "final_yaw_mode", self._current_final_yaw_mode
-        )
-        if not isinstance(final_yaw_value, str):
-            self._reject_command("final_yaw_mode must be a string")
-            return
-        final_yaw_mode = final_yaw_value.strip()
-        if final_yaw_mode not in FINAL_YAW_MODES:
-            self._reject_command(
-                "final_yaw_mode must be blend_on_path or rotate_at_goal"
-            )
-            return
         try:
             segment, after_cursor = self._test_store.next_test_segment()
         except ValueError as error:
@@ -906,9 +858,6 @@ class WaypointRecorderNode(Node):
             return
         if not self._follow_waypoints_client.wait_for_server(timeout_sec=0.5):
             self._reject_command("FollowWaypoints action server is unavailable")
-            return
-        if not self._axis_waypoint_parameters.wait_for_service(timeout_sec=0.5):
-            self._reject_command("Axis waypoint parameter service is unavailable")
             return
 
         goal = FollowWaypoints.Goal()
@@ -923,58 +872,16 @@ class WaypointRecorderNode(Node):
         self._waiting_standstill = False
         self._pending_test_cursor = after_cursor
         self._publish_state(
-            f"Running route segment to {segment[-1].name} with {final_yaw_mode}"
+            f"Running route segment to {segment[-1].name} with {FINAL_YAW_MODE}"
         )
-        request = SetParameters.Request()
-        request.parameters = [
-            Parameter(
-                name="final_yaw_mode",
-                value=ParameterValue(
-                    type=ParameterType.PARAMETER_STRING,
-                    string_value=final_yaw_mode,
-                ),
+        try:
+            send_goal_future = self._follow_waypoints_client.send_goal_async(goal)
+            send_goal_future.add_done_callback(
+                partial(self._on_test_goal_response, run_id=run_id)
             )
-        ]
-        future = self._axis_waypoint_parameters.call_async(request)
-        future.add_done_callback(
-            partial(
-                self._on_final_yaw_mode_set,
-                goal=goal,
-                final_yaw_mode=final_yaw_mode,
-                run_id=run_id,
-            )
-        )
-
-    def _on_final_yaw_mode_set(self, future, goal, final_yaw_mode: str, run_id: int) -> None:
-        with self._lock:
-            if run_id != self._nav_run_id or not self._active_test_goal:
-                return
-            if self._cancel_requested:
-                self._finish_test_goal("Route segment cancelled before dispatch", False)
-                return
-            try:
-                response = future.result()
-                if response is None or len(response.results) != 1:
-                    raise ValueError("missing final_yaw_mode parameter result")
-            except Exception as error:
-                self._finish_test_goal(f"Failed to set final_yaw_mode: {error}", False)
-                return
-            for result in response.results:
-                if not result.successful:
-                    self._finish_test_goal(
-                        f"Failed to set final_yaw_mode: {result.reason}",
-                        False,
-                    )
-                    return
-            self._current_final_yaw_mode = final_yaw_mode
-            try:
-                send_goal_future = self._follow_waypoints_client.send_goal_async(goal)
-                send_goal_future.add_done_callback(
-                    partial(self._on_test_goal_response, run_id=run_id)
-                )
-            except Exception as error:
-                self._navigation_unknown = True
-                self._publish_state(f"Goal dispatch unknown; next segment blocked: {error}")
+        except Exception as error:
+            self._navigation_unknown = True
+            self._publish_state(f"Goal dispatch unknown; next segment blocked: {error}")
 
     def _on_test_goal_response(self, future, run_id: int) -> None:
         with self._lock:
@@ -1176,7 +1083,7 @@ class WaypointRecorderNode(Node):
             "count": len(self._test_store.points),
             "cursor": self._test_store.cursor,
             "next_goal": self._next_test_goal_name(),
-            "final_yaw_mode": self._current_final_yaw_mode,
+            "final_yaw_mode": FINAL_YAW_MODE,
             "output_path": str(self._test_store.output_path),
             "auto_name_prefix": self._auto_name_prefix(),
             "next_name": self._next_auto_name_for_state(),
