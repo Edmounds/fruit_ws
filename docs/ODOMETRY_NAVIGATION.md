@@ -176,9 +176,9 @@ ros2 run joy_linux joy_linux_node --ros-args \
 另一个终端运行 `ros2 topic echo /joy_diagnostic`，或录制 `/joy_diagnostic`。
 这一路不运行 `joy_convert_node`，不发布底盘速度。
 
-正式链路中，松开摇杆时 `/joy.axes[1]` 应在死区内，两个速度分量应为零。
-当前纵轴为 `1`，转向轴为 `2`，转换器死区为 `0.0`。
-`joy_linux` 已应用 `0.2` 驱动平滑死区，随后转换器计算 `linear.x = axes[1] * 0.4`。
+正式链路中，松开扳机与摇杆时速度分量应为零。
+当前前进使用 RT（轴 `4`），后退使用 LT（轴 `5`），转向轴使用右摇杆 X（轴 `2`）。
+`joy_linux` 开启 `default_trig_val: true` 并应用 `0.2` 摇杆平滑死区；`joy_convert_node` 具有启动防飞车保护与 `0.05` 扳机死区，计算差值线速度 `linear.x = (rt_throttle - lt_throttle) * 0.4`。
 手柄速度进入 `twist_mux`，优先级为 `100`，导航优先级为 `10`。
 桥只在串口发送前取反两个速度分量，ROS 话题仍使用标准方向约定。
 用 `ros2 bag info <录包目录>` 检查消息数量。
