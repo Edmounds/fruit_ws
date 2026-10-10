@@ -51,7 +51,7 @@ class AxisWaypointActionServer(Node):
         self.declare_parameter("linear_gain", 0.8)
         self.declare_parameter("yaw_gain", 1.8)
         self.declare_parameter("lookahead_distance", 0.3)
-        self.declare_parameter("tf_timeout_sec", 0.3)
+        self.declare_parameter("tf_timeout_sec", 0.5)
         self.declare_parameter("progress_timeout_sec", 5.0)
         self.declare_parameter("progress_min_delta", 0.01)
         self.declare_parameter("waypoint_retry_attempts", 1)

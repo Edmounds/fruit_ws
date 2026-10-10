@@ -18,7 +18,7 @@ axis_waypoint_action_server:
     linear_gain: 1.0
     yaw_gain: 2.0
     lookahead_distance: 0.3
-    tf_timeout_sec: 0.3
+    tf_timeout_sec: 0.5
     progress_timeout_sec: 5.0
     progress_min_delta: 0.01
     waypoint_retry_attempts: 1

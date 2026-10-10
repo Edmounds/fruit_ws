@@ -137,7 +137,8 @@ B 区固定访问 1～8 号树，C 区按二维码顺序访问。B/C 单区调�
   `ros2 launch /home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/launch/pointlio_odometry.launch.py`。
 - **接口约定**: 控制器和任务配置仍沿用 `map_frame` 参数名，其值为 `odom`；这不是地图模式开关。
   `/follow_waypoints` 沿用 `nav2_msgs/action/FollowWaypoints` 消息接口，不启动 Nav2 地图导航栈。
-  控制器不再包含 GICP 开关、诊断订阅或定位状态门控；新鲜 TF、取消和停车保护继续保留。
+ 控制器不再包含 GICP 开关、诊断订阅或定位状态门控；新鲜 TF、取消和停车保护继续保留。
+ `axis_waypoint_action_server` 的 `tf_timeout_sec` 默认值为 `0.5` 秒。Point-LIO 实测输出的 TF 时间戳相对控制器约有 `0.28`～`0.34` 秒延迟，旧的 `0.3` 秒门限会反复触发零速保护，造成底盘停下后重新加速。TF 超过 `0.5` 秒仍会先发布零速并等待新 TF，等待失败则终止当前航点。
 
 ### 手柄自走排查与录包
 
