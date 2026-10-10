@@ -10,7 +10,7 @@
 
 - A/C：`vegetable_type/best.onnx`，类别为 bad、onion、pepper、pumpkin、tomato。
 - B：`fruit_type/best.onnx`，类别索引为 0=apple、1=pear、2=bad。
-- 两个品种检测器使用工作区 `models/` 中 2026-10-08 导出的新权重。七个熟度分类权重未变。
+- 两个品种检测器使用工作区 `models/` 中 2026-10-10 导出的新权重。七个熟度分类权重未变。
 - 检测：640×640 letterbox，RGB /255，按品种 NMS。
 - 两个检测器的 `bad` 均不做熟度分类。标注图、预览检测及 `FruitDecision.types/detections` 发布裸标签 `bad`，A 区也保留该标签。
 - `bad` 的框和可选深度点仅供诊断。A/C 与 B 采摘候选均排除 `bad`，`targets` 不包含它。不增加坏果摘除流程。

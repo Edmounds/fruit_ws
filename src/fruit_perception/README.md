@@ -124,7 +124,7 @@ Open a new matching window after a successful parameter response.
 Camera startup uses `initial_reset: true`. This resets device state, but does not
 guarantee recovery from a physical MIPI, cable, or USB fault.
 
-The species detectors were updated from workspace `models/` exports dated 2026-10-08.
+The species detectors were updated from workspace `models/` exports dated 2026-10-10.
 Fruit species indices are `0=apple`, `1=pear`, `2=bad`.
 Vegetable species indices remain `0=bad`, `1=onion`, `2=pepper`, `3=pumpkin`, `4=tomato`.
 Ripeness models remain unchanged.
