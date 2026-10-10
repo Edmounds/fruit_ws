@@ -484,6 +484,8 @@ class VideoGatewayServer:
         ws_id = str(id(ws))
         watched_channels: Set[StreamChannel] = set()
         capture_registered = False
+        capture_channel: Optional[StreamChannel] = None
+        capture_topic = self.node.raw_rgb_topic
         logger.info("Client connected: %s", ws_id)
 
         # Send initial stream metadata on connect
@@ -510,6 +512,62 @@ class VideoGatewayServer:
                         await ws.send_json(self.build_metadata())
                         continue
 
+                    if mtype == "setCaptureTopic":
+                        req_id = data.get("requestId")
+                        requested_topic = data.get("topic")
+                        if (
+                            not isinstance(req_id, str)
+                            or not (1 <= len(req_id) <= 128)
+                            or not isinstance(requested_topic, str)
+                        ):
+                            await ws.send_json(
+                                {
+                                    "type": "captureTopicResult",
+                                    "requestId": req_id if isinstance(req_id, str) else "",
+                                    "success": False,
+                                    "error": "Invalid capture topic request",
+                                }
+                            )
+                            continue
+
+                        requested_channel = self.node.topic_to_channel.get(
+                            requested_topic
+                        )
+                        if requested_channel is None or requested_channel.name not in (
+                            "rgb", "camera"
+                        ):
+                            await ws.send_json(
+                                {
+                                    "type": "captureTopicResult",
+                                    "requestId": req_id,
+                                    "success": False,
+                                    "error": (
+                                        "Only managed RGB image topics can be captured: "
+                                        f"{requested_topic}"
+                                    ),
+                                }
+                            )
+                            continue
+
+                        if capture_registered and capture_channel is not requested_channel:
+                            if capture_channel is not None:
+                                capture_channel.remove_capture_client(ws_id)
+                            requested_channel.add_capture_client(ws_id)
+                        elif not capture_registered:
+                            requested_channel.add_capture_client(ws_id)
+                            capture_registered = True
+                        capture_channel = requested_channel
+                        capture_topic = requested_topic
+                        await ws.send_json(
+                            {
+                                "type": "captureTopicResult",
+                                "requestId": req_id,
+                                "success": True,
+                                "topic": capture_topic,
+                            }
+                        )
+                        continue
+
                     if mtype == "getCaptureInfo":
                         req_id = data.get("requestId")
                         if not isinstance(req_id, str) or not (1 <= len(req_id) <= 128):
@@ -522,8 +580,9 @@ class VideoGatewayServer:
                             )
                             continue
 
-                        camera_ch = self.node.channels.get("camera")
-                        if camera_ch is None:
+                        if capture_channel is None:
+                            capture_channel = self.node.channels.get("camera")
+                        if capture_channel is None:
                             await ws.send_json(
                                 {
                                     "type": "captureInfo",
@@ -534,10 +593,10 @@ class VideoGatewayServer:
                             continue
 
                         if not capture_registered:
-                            camera_ch.add_capture_client(ws_id)
+                            capture_channel.add_capture_client(ws_id)
                             capture_registered = True
 
-                        msg, recv_time = camera_ch.get_latest_raw_frame()
+                        msg, recv_time = capture_channel.get_latest_raw_frame()
                         now = time.monotonic()
                         has_frame = msg is not None and (now - recv_time <= 1.0)
                         frame_age = (now - recv_time) if msg is not None else -1.0
@@ -551,7 +610,13 @@ class VideoGatewayServer:
                             {
                                 "type": "captureInfo",
                                 "requestId": req_id,
-                                "topic": self.node.raw_rgb_topic,
+                                "topic": capture_topic,
+                                "availableTopics": [
+                                    self.node.raw_rgb_topic,
+                                    self.node.raw_rgb_output_topic,
+                                    self.node.annotated_topic,
+                                    self.node.rgb_output_topic,
+                                ],
                                 "outputDir": self.node.capture_output_dir,
                                 "totalCount": total_count,
                                 "lastFileName": last_name,
@@ -567,10 +632,10 @@ class VideoGatewayServer:
 
                     if mtype == "unwatchCapture":
                         if capture_registered:
-                            camera_ch = self.node.channels.get("camera")
-                            if camera_ch:
-                                camera_ch.remove_capture_client(ws_id)
+                            if capture_channel:
+                                capture_channel.remove_capture_client(ws_id)
                             capture_registered = False
+                            capture_channel = None
                         continue
 
                     if mtype == "captureFrame":
@@ -597,8 +662,9 @@ class VideoGatewayServer:
                             )
                             continue
 
-                        camera_ch = self.node.channels.get("camera")
-                        if camera_ch is None:
+                        if capture_channel is None:
+                            capture_channel = self.node.channels.get("camera")
+                        if capture_channel is None:
                             await ws.send_json(
                                 {
                                     "type": "captureResult",
@@ -621,7 +687,7 @@ class VideoGatewayServer:
                             continue
 
                         now = time.monotonic()
-                        msg, recv_time = camera_ch.get_latest_raw_frame()
+                        msg, recv_time = capture_channel.get_latest_raw_frame()
                         if msg is None:
                             await ws.send_json(
                                 {
@@ -791,9 +857,8 @@ class VideoGatewayServer:
             for ch in list(watched_channels):
                 ch.remove_viewer(ws_id)
             if capture_registered:
-                camera_ch = self.node.channels.get("camera")
-                if camera_ch:
-                    camera_ch.remove_capture_client(ws_id)
+                if capture_channel:
+                    capture_channel.remove_capture_client(ws_id)
 
         return ws
 
