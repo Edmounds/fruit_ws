@@ -10,7 +10,8 @@
 2. **配置重载客户端 (`RobvizConfigClient`)**：
    在启动时及接收到 `/fruit_robviz_bridge/reload_image_settings` Trigger 请求时从 HTTP 服务获取最新图像设置，并通过 ROS 参数原子应用到图像网关节点。
 3. **Web 航点编辑器服务 (`waypoint_editor_server`)**：
-   常驻 HTTP 服务（默认端口 8000），承载 RobViz 静态页面资源、图像配置读写与航点 YAML 读写/版本控制 API。
+   常驻 HTTP 服务（默认端口 8000），承载 RobViz 静态页面资源、图像设置、航点和机械臂预设读写。
+   `/api/arm/pose` 与 `/api/arm/preview` 复用 planner 纯计算，不执行运动。
 4. **航点录制节点 (`waypoint_recorder_node`)**：
    按需由 `./waypoints_maker.sh` 启动，负责 TF 采样、停稳校验、航点 MarkerArray 锁存发布与 `/follow_waypoints` Action 调试客户端。
 
@@ -96,6 +97,12 @@ ros2 run fruit_robviz_bridge check_preview --self-check
 # 实时 JPEG 接收与解码检查：
 ros2 run fruit_robviz_bridge check_preview --duration-sec 60
 ```
+
+## 机械臂编辑与预览
+
+机械臂插件、只读运行快照、文件版本和离线检查见
+[RobViz 机械臂插件](../../docs/ROBVIZ_ARM_PLUGIN.md)。
+`ros2 run fruit_robviz_bridge check_arm_preview` 只使用临时文件，不连接硬件。
 
 ## 许可说明
 

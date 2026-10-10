@@ -9,7 +9,7 @@ mission / 调试客户端
     | 关节目标、笛卡尔目标或预设名称 (ROS 2 service)
     v
 fruit_arm_planner  --状态检查、IK、映射、轨迹规划、等待执行结果--
-    | TrajectoryHeader -> TrajectoryPoint[] -> ArmControlMode
+    | TrajectoryHeader -> TrajectoryPoint[]，STOP/ESTOP 使用 ArmControlMode
     v
 auto_serial_bridge  --传输业务数据--  下位机
     ^                                |
@@ -20,6 +20,9 @@ auto_serial_bridge  --传输业务数据--  下位机
 - 规划器通过 `/arm_planner_node/move_joints`、`/arm_planner_node/move_cartesian`、`/arm_planner_node/execute_preset` 接收正式运动请求。`home` 是预设快捷服务；`cmd_joints`、`cmd_cartesian`、`cmd_preset` 是无逐请求结果的调试话题。
 - `move_joints` 的目标单位是度；`move_cartesian` 的 XYZ 是真实夹爪抓取点 TCP 的基座坐标（米），`pitch_deg` 是末端 a4 伸出段俯仰角（度）。直接输入和笛卡尔预设共用 `geometry.tool_z_offset_m` 固定结构模型，不再叠加旧 `planning.cartesian_offset_m` 输入平移。下发给下位机的四轴角度统一为**硬件关节弧度 rad**，关节角速度回报单位为 rad/s。
 - 底盘速度是独立的下发路径，不经过机械臂规划器。
+- RobViz 复用正式服务。`get_configuration` 是只读内存快照，不新增线协议。
+- HTTP 预览只复用 `planning_api.py` 的纯计算，不发布 Header、Point 或 Mode。
+- 网页运动等待无期限。断连后结果未知，不自动重发，也不把等待超时解释为 STOP。
 
 业务遥测仍使用 `/arm_planner_node/joint_states`，类型已改为 `fruit_interfaces/msg/ArmTelemetry`：同一帧原始电机角、逆映射模型角及 FK TCP。硬件 `/fruit_hardware_bridge/arm/status` 的 ArmStatus 与线协议保持不变；模型角不要再次逆 mapping。详见[遥测字段](03_INTERFACES_AND_API.md#六遥测广播接口-telemetry)。
 

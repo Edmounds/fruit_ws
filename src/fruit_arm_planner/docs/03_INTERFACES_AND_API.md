@@ -217,6 +217,23 @@ service 请求不开放该字段，`move_cartesian` 和 `move_joints` 的最终�
 
 ---
 
+### 6. 只读运行配置 (`~/get_configuration`)
+
+- 完整服务名：`/arm_planner_node/get_configuration`。
+- 类型：`fruit_interfaces/srv/GetArmPlannerConfiguration`，请求为空。
+- 返回：`success`、`message`、`config_path`、`revision`、`configuration_yaml`、`max_trajectory_points`。
+- YAML 包含实际内存中的 geometry、joint_mapping、planning、presets，不重新读取磁盘。
+- 语义版本忽略注释和整数/浮点表示差别。容量为 `64`。
+- 读取不取得运动占用权，可以在运动期间查询。
+- 成功重载同步更新预设快照。重载失败保留原配置和版本。
+- 查询不执行运动，也不表示磁盘改动已应用。
+
+RobViz 的文件编辑和预览接口见 [插件说明](../../../docs/ROBVIZ_ARM_PLUGIN.md)。
+单目标与预设规划通过 `planning_api.py` 复用原有算法。
+正式服务继续检查反馈、占用、STOP 和匹配的硬件执行终态。
+
+---
+
 ## 六、遥测广播接口 (Telemetry)
 
 ### 机械臂实时状态广播 (`~/joint_states`)

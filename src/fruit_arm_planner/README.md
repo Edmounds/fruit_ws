@@ -10,7 +10,8 @@ mission 可调用关节单目标、机械臂根部坐标系下的笛卡尔单目
 mission 负责相机坐标转换、目标筛选和 A/B/C 顺序，本包负责 FK/IK、关节映射、轨迹规划和执行结果；
 任务层不再发送旧 `ArmTarget` / `StateMachineCommand` 或等待 `ExecutionCallback`。
 目标 CLOSE 完成后，mission 复用 `move_joints` 在新鲜实测四轴角执行 planner 的 HOLD 驻留，再调用 Harvest/Home。
-启动脚本已启动 planner-only launch。桥可靠发送仍按消息 ID 排队，Header/Point/Mode 尚无跨类型装载顺序保证；
+启动脚本已启动 planner-only launch。当前仅发布 Header/Point，完整点位由下位机自动启动。
+桥可靠发送仍按消息 ID 排队，Header/Point 尚无跨类型装载确认；
 真实预设轨迹、标定、STOP 优先级和下位机保护仍需现场验收，服务成功不能单独证明完整实机闭环。
 坐标边界见[mission 换算说明](../fruit_mission/docs/CAMERA_TARGET_TRANSFORM.md)，控制必须按[接口 API](docs/03_INTERFACES_AND_API.md)。
 
@@ -19,6 +20,14 @@ mission 负责相机坐标转换、目标筛选和 A/B/C 顺序，本包负责 F
 `/arm_planner_node/joint_states` 现为 `fruit_interfaces/msg/ArmTelemetry`，原话题名不变：保留原始硬件角/速度，新增逆映射模型角/速度及真实 TCP XYZ（m）/pitch（度）。控制台 `status`、jog/示教与 mission 直接使用 planner 遥测，不重复减偏置或 FK。标准 JointState 订阅者需适配；接口、planner、mission 必须一起构建并重启。原始硬件 Status 和运动服务输入语义不变。
 
 ---
+
+## RobViz 手动调试
+
+`fruit-arm` 插件通过正式服务执行单姿态、预设、Home、夹爪和累计 jog。
+二维拖动、三维轨迹、文件保存均不执行运动。
+`get_configuration` 提供只读内存快照，预览复用 `planning_api.py` 的纯规划函数。
+文件保存与 `reload_presets` 分开。几何和 mapping 仍只读。
+详见 [RobViz 机械臂插件](../../docs/ROBVIZ_ARM_PLUGIN.md)。
 
 ## 专题文档导航 (Documentation Index)
 
@@ -99,6 +108,7 @@ src/fruit_arm_planner/
 │   ├── arm_planner_node.py          # ROS 2 核心节点
 │   ├── joint_transformer.py         # 关节坐标系映射与零位偏置解耦模块
 │   ├── kinematics.py                # 4-DOF 纯几何运动学求解器 (FK/IK)
+│   ├── planning_api.py              # ROS 与 HTTP 共用的纯规划入口
 │   └── trajectory_planner.py        # 五次多项式平滑轨迹插值器
 ├── launch/
 │   ├── fruit_arm_planner.launch.py  # 单独启动规划器

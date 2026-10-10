@@ -1,0 +1,8 @@
+# Read-only snapshot of the configuration currently loaded by the planner.
+---
+bool success
+string message
+string config_path
+string revision
+string configuration_yaml
+uint16 max_trajectory_points

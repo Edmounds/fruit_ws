@@ -94,6 +94,7 @@ class EditorConfig:
     image_settings_file: Path
     backup_dir: Path
     max_request_bytes: int
+    arm_config_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -241,6 +242,7 @@ def load_editor_config(path: Path) -> EditorConfig:
         ),
         backup_dir=_configured_path(document.get("backup_dir"), "backup_dir"),
         max_request_bytes=max_request_bytes,
+        arm_config_path=_optional_configured_path(document.get('arm_config_path'), 'arm_config_path'),
     )
 
 
@@ -987,6 +989,12 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
             raise RequestError(HTTPStatus.NOT_FOUND, "未知的 waypoint 文件 ID")
         return editor_file
 
+    def _arm_path(self) -> Path:
+        path = self.server.editor_config.arm_config_path
+        if path is None:
+            raise RequestError(HTTPStatus.NOT_FOUND, '机械臂编辑未配置 arm_config_path')
+        return path
+
     def _read_json_body(self, allow_empty: bool = False) -> Mapping[str, Any]:
         content_type = self.headers.get_content_type()
         if content_type != "application/json":
@@ -1026,6 +1034,10 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/health":
                 self._send_json(HTTPStatus.OK, {"status": "ok"})
+                return
+            if parsed.path == '/api/arm/document':
+                from fruit_robviz_bridge.arm_editor import document
+                self._send_json(HTTPStatus.OK, document(self._arm_path()))
                 return
             if parsed.path == "/api/image-settings":
                 snapshot = self.server.image_settings.snapshot()
@@ -1123,6 +1135,14 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             self._check_same_origin()
+            if parsed.path == '/api/arm/presets':
+                from fruit_robviz_bridge.arm_editor import save_presets
+                result = save_presets(
+                    self._arm_path(), self.server.editor_config.backup_dir / 'arm',
+                    self._read_json_body(), _document_lock, VersionConflict,
+                )
+                self._send_json(HTTPStatus.OK, result)
+                return
             if parsed.path == "/api/image-settings":
                 payload = self._read_json_body()
                 settings = self.server.image_settings.update(payload)
@@ -1189,6 +1209,12 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             self._check_same_origin()
+            if parsed.path in ('/api/arm/pose', '/api/arm/preview'):
+                from fruit_robviz_bridge.arm_editor import calculate
+                self._arm_path()
+                result = calculate(self._read_json_body(), parsed.path.endswith('/preview'))
+                self._send_json(HTTPStatus.OK, result)
+                return
             if parsed.path != "/api/image-settings/defaults":
                 raise RequestError(HTTPStatus.NOT_FOUND, "接口不存在")
             payload = self._read_json_body()
@@ -1207,7 +1233,7 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
             )
         except RequestError as error:
             self._send_error(error)
-        except (OSError, TypeError, ValueError, yaml.YAMLError) as error:
+        except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as error:
             self._send_error(
                 RequestError(HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
             )

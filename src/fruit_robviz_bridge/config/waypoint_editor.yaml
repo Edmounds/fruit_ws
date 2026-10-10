@@ -7,3 +7,4 @@ template_file: "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/te
 image_settings_file: "/home/rc4/robviz/config/fruit-image-settings.json"
 backup_dir: "/home/rc4/fruit_ws/tmp/waypoint_editor_backups"
 max_request_bytes: 1048576
+arm_config_path: "/home/rc4/fruit_ws/src/fruit_arm_planner/config/arm_presets.yaml"

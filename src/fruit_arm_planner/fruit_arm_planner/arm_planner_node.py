@@ -32,51 +32,21 @@ from fruit_interfaces.msg import (
 )
 from fruit_interfaces.srv import (
     ExecuteArmPreset,
+    GetArmPlannerConfiguration,
     MoveArmCartesian,
     MoveArmJoints,
 )
 
 from fruit_arm_planner.joint_transformer import JointTransformer
 from fruit_arm_planner.kinematics import RobotKinematics
+from fruit_arm_planner.planning_api import (
+    MAX_TRAJECTORY_POINTS, configuration, plan_preset, plan_target, revision,
+    validate_presets, validate_trajectory,
+)
 from fruit_arm_planner.trajectory_planner import (
-    GripperAction,
     TrajectoryPlanner,
     TrajectoryPoint as PlannerTrajectoryPoint,
 )
-
-
-MAX_TRAJECTORY_POINTS = 64  # FT lower-controller trajectory buffer capacity.
-
-
-def validate_presets(presets: dict) -> None:
-    """Validate a complete preset replacement before installing or saving it."""
-    if not isinstance(presets, dict):
-        raise ValueError('presets must be a mapping')
-    for name, preset in presets.items():
-        if (not isinstance(name, str) or not name.strip() or not isinstance(preset, dict)
-                or preset.get('coordinate_frame') not in ('joints', 'cartesian', 'link_angles')
-                or not isinstance(preset.get('waypoints'), list) or not preset['waypoints']):
-            raise ValueError(f'Invalid preset {name}')
-        for wp in preset['waypoints']:
-            if not isinstance(wp, dict):
-                raise ValueError(f'Invalid waypoint in preset {name}')
-            target = wp.get('target')
-            gripper = wp.get('gripper', 0)
-            dwell_ms = wp.get('dwell_ms', 0)
-            is_via_point = wp.get('is_via_point', False)
-            if (not isinstance(target, list) or len(target) < 4
-                    or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
-                               and math.isfinite(v) for v in target)
-                    or not isinstance(wp.get('duration_ms'), int)
-                    or isinstance(wp['duration_ms'], bool)
-                    or not 0 < wp['duration_ms'] <= 0xFFFFFFFF
-                    or not isinstance(dwell_ms, int)
-                    or isinstance(dwell_ms, bool)
-                    or dwell_ms < 0
-                    or gripper not in (0, 1, 2)
-                    or not isinstance(wp.get('linear', False), bool)
-                    or not isinstance(is_via_point, bool)):
-                raise ValueError(f'Invalid waypoint in preset {name}')
 
 
 class ArmPlannerNode(Node):
@@ -177,6 +147,10 @@ class ArmPlannerNode(Node):
             Trigger, '~/reload_presets', self._srv_reload_presets_cb,
             callback_group=self.cb_group,
         )
+        self._srv_configuration = self.create_service(
+            GetArmPlannerConfiguration, '~/get_configuration',
+            self._srv_configuration_cb, callback_group=self.cb_group,
+        )
 
         # 快捷服务接口
         self._srv_home = self.create_service(
@@ -219,17 +193,8 @@ class ArmPlannerNode(Node):
             with open(config_path, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f)
             params = data['arm_planner_node']['ros__parameters']
-            for key in ('geometry', 'joint_mapping', 'planning', 'presets'):
-                if key not in params:
-                    raise ValueError(f'Missing configuration section: {key}')
-            for key in ('q1', 'q2', 'q3', 'q4'):
-                cfg = params['joint_mapping'][key]
-                limits = cfg['limits_deg']
-                if (len(limits) != 2 or not all(math.isfinite(float(v)) for v in limits)
-                        or float(limits[0]) >= float(limits[1])
-                        or not math.isfinite(float(cfg['offset_deg']))
-                        or float(cfg['direction']) not in (-1.0, 1.0)):
-                    raise ValueError(f'Invalid joint_mapping.{key}')
+            params = configuration(params)
+            self._configuration = params
 
             # 1. 连杆几何参数
             self.kinematics = RobotKinematics.from_geometry_dict(params['geometry'])
@@ -257,16 +222,9 @@ class ArmPlannerNode(Node):
             self.hover_height_m = float(planning_cfg['hover_height_m'])
             self.status_max_age_sec = float(planning_cfg['status_max_age_sec'])
             self.mode_start_delay_ms = int(planning_cfg['mode_start_delay_ms'])
-            if (self.default_duration_ms <= 0 or self.interpolation_step_ms <= 0
-                    or self.default_dwell_ms < 0
-                    or not 0 < self.status_max_age_sec < 10
-                    or not 0 <= self.mode_start_delay_ms <= 10000
-                    or not math.isfinite(self.hover_height_m)):
-                raise ValueError('Invalid planning parameters')
 
             # 4. 预设工序与固定轨迹
             presets_data = params['presets']
-            validate_presets(presets_data)
             self.presets = presets_data
             self.get_logger().info(f"Loaded {len(self.presets)} arm presets: {list(self.presets.keys())}")
 
@@ -287,11 +245,25 @@ class ArmPlannerNode(Node):
                 if self._motion_active:
                     raise ValueError('Arm planner is busy; reload after motion completes')
                 self.presets = presets
+                self._configuration['presets'] = presets
             res.success = True
             res.message = f'Reloaded {len(presets)} presets: {list(presets)}'
         except Exception as exc:
             res.success = False
             res.message = f'Presets unchanged: {exc}'
+        return res
+
+    def _srv_configuration_cb(self, _req, res):
+        """Serialize an atomic memory snapshot without reading the file again."""
+        import yaml
+        with self._state_lock:
+            snapshot = self._configuration.copy()
+        res.configuration_yaml = yaml.safe_dump(snapshot, sort_keys=False)
+        res.revision = revision(snapshot)
+        res.config_path = self.get_parameter('config_path').value
+        res.max_trajectory_points = MAX_TRAJECTORY_POINTS
+        res.success = True
+        res.message = 'Loaded planner configuration'
         return res
 
     # ========================================================================
@@ -377,32 +349,7 @@ class ArmPlannerNode(Node):
     def _validate_trajectory(
         self, points: List[PlannerTrajectoryPoint], start: Tuple[float, float, float, float]
     ) -> Optional[str]:
-        if not 2 <= len(points) <= MAX_TRAJECTORY_POINTS:
-            return (
-                f'Trajectory point count must be 2..{MAX_TRAJECTORY_POINTS} '
-                f'(MCU capacity, got {len(points)})'
-            )
-        if (points[0].joints != start
-                or points[0].gripper_action != GripperAction.HOLD
-                or points[0].is_via_point != 0):
-            return 'Trajectory first point must be measured joints with HOLD'
-        previous_time = -1
-        for index, point in enumerate(points):
-            if point.point_id != index or not previous_time < point.time_from_start <= 0xFFFFFFFF:
-                return f'Invalid point ID or timestamp at point {index}'
-            if not all(math.isfinite(q) for q in point.joints):
-                return f'Non-finite joint angle at point {index}'
-            ok, message = self.transformer.check_hardware_limits(point.joints)
-            if not ok:
-                return f'Point {index}: {message}'
-            if point.gripper_action not in (0, 1, 2):
-                return f'Invalid gripper action at point {index}'
-            if point.is_via_point not in (0, 1):
-                return f'Invalid via-point flag at point {index}'
-            previous_time = point.time_from_start
-        if points[0].time_from_start != 0:
-            return 'Trajectory must start at 0 ms'
-        return None
+        return validate_trajectory(points, start, self.transformer)
 
     def execute_trajectory_sync(
         self,
@@ -509,50 +456,11 @@ class ArmPlannerNode(Node):
     ) -> MoveArmCartesian.Response:
         """笛卡尔空间控制服务 (支持动态选择 linear_path 直线 vs PTP 弧线)."""
         def build(start):
-            duration_ms = int(req.duration_ms) if req.duration_ms > 0 else self.default_duration_ms
-            pitch_rad = math.radians(float(req.pitch_deg))
-            target_xyz = (float(req.x), float(req.y), float(req.z))
-            gripper = int(req.gripper_action)
-            if (duration_ms <= 0 or duration_ms > 0xFFFFFFFF
-                    or not all(math.isfinite(v) for v in (*target_xyz, pitch_rad))
-                    or gripper not in (0, 1, 2)):
-                return False, [], 'Invalid Cartesian target, duration or gripper action'
-            if req.linear_path:
-                fk_current = self.kinematics.forward_kinematics(
-                    *self.transformer.hardware_to_algo(start)
-                )
-                return self.planner.plan_cartesian_linear_path(
-                    start_xyz=fk_current['end_effector'][:3],
-                    target_xyz=target_xyz,
-                    start_pitch=fk_current['end_effector'][3],
-                    target_pitch=pitch_rad,
-                    duration_ms=duration_ms,
-                    step_ms=self.interpolation_step_ms,
-                    transformer=self.transformer,
-                    start_q_hw=start,
-                    gripper_action=gripper,
-                    target_is_via_point=0,
-                )
-            ok, q_algo, ik_msg = self.kinematics.inverse_kinematics(
-                target_xyz[0], target_xyz[1], target_xyz[2], pitch=pitch_rad, force_elbow_up=True
+            return plan_target(
+                self.planner, self.transformer, self._configuration['planning'], start,
+                [float(req.x), float(req.y), float(req.z), float(req.pitch_deg)],
+                'cartesian', int(req.duration_ms), int(req.gripper_action), req.linear_path,
             )
-            if not ok:
-                return False, [], f'PTP IK failed: {ik_msg}'
-
-            target_q_hw = self.transformer.algo_to_hardware(q_algo)
-            lim_ok, lim_msg = self.transformer.check_hardware_limits(target_q_hw)
-            if not lim_ok:
-                return False, [], f'PTP limit exceeded: {lim_msg}'
-            num_pts = max(2, min(duration_ms + 1, math.ceil(duration_ms / self.interpolation_step_ms) + 1))
-            points = self.planner.plan_joint_point_to_point(
-                start_q=start,
-                end_q=target_q_hw,
-                duration_ms=duration_ms,
-                num_points=num_pts,
-                gripper_action=gripper,
-                target_is_via_point=0,
-            )
-            return True, points, ''
 
         res.success, res.trajectory_id, res.message = self._run_motion(build, 'move_cartesian')
         return res
@@ -562,21 +470,10 @@ class ArmPlannerNode(Node):
     ) -> MoveArmJoints.Response:
         """关节角直接控制服务."""
         def build(start):
-            duration_ms = int(req.duration_ms) if req.duration_ms > 0 else self.default_duration_ms
-            target_q_hw = tuple(math.radians(float(d)) for d in req.joints_deg)
-            gripper = int(req.gripper_action)
-            if (len(target_q_hw) != 4 or not all(math.isfinite(q) for q in target_q_hw)
-                    or duration_ms <= 0 or duration_ms > 0xFFFFFFFF or gripper not in (0, 1, 2)):
-                return False, [], 'Invalid joint target, duration or gripper action'
-            lim_ok, lim_msg = self.transformer.check_hardware_limits(target_q_hw)
-            if not lim_ok:
-                return False, [], f'Joint limit exceeded: {lim_msg}'
-            num_pts = max(2, min(duration_ms + 1, math.ceil(duration_ms / self.interpolation_step_ms) + 1))
-            points = self.planner.plan_joint_point_to_point(
-                start_q=start, end_q=target_q_hw, duration_ms=duration_ms,
-                num_points=num_pts, gripper_action=gripper,
+            return plan_target(
+                self.planner, self.transformer, self._configuration['planning'], start,
+                list(req.joints_deg), 'joints', int(req.duration_ms), int(req.gripper_action),
             )
-            return True, points, ''
 
         res.success, res.trajectory_id, res.message = self._run_motion(build, 'move_joints')
         return res
@@ -590,13 +487,9 @@ class ArmPlannerNode(Node):
             if preset_name not in self.presets:
                 return False, [], f"Unknown preset '{preset_name}'. Available: {list(self.presets.keys())}"
             preset_data = self.presets[preset_name]
-            return self.planner.plan_multi_waypoint_sequence(
-                current_q_hw=start,
-                waypoints=preset_data['waypoints'],
-                transformer=self.transformer,
-                coordinate_frame=preset_data['coordinate_frame'],
-                step_ms=self.interpolation_step_ms,
-                default_dwell_ms=self.default_dwell_ms,
+            return plan_preset(
+                self.planner, self.transformer, self._configuration['planning'], start,
+                preset_data,
             )
 
         res.success, res.trajectory_id, res.message = self._run_motion(build, f'preset({req.preset_name})')

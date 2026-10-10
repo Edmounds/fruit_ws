@@ -12,6 +12,7 @@
 - 新协议不含旧 `ArmTarget`、`StateMachineCommand`、`ExecutionCallback`。
   mission 视觉目标、观察、二维码、Harvest 和 Home 均通过 `fruit_arm_planner` 服务；区域状态只通过 ROS 话题通知感知/扫码节点。
 - `auto_serial_bridge` 负责串口帧、CRC、ACK、重传和心跳，不实现任务或 IK。
+- RobViz 使用同一 planner。新增 `get_configuration` 只读服务和 HTTP 预览不改变 MCU 协议。
 
 ## 消息概览
 
@@ -38,10 +39,12 @@
    四个原始硬件关节角为 float32 弧度，夹爪动作 0=HOLD、1=OPEN、2=CLOSE；
    `is_via_point:uint8` 为 0=精确到达、1=途经点。
 3. 轨迹从 `t=0` 新鲜实测四轴角开始（HOLD），至少两点，时间严格递增。
-4. 完整装载后才可用 Mode=0 启动；新鲜 `ArmStatus` 的轨迹 ID 匹配且状态为 COMPLETED 才表示执行完成。
+4. 当前 planner 不发送 Mode=0，假定下位机收到完整点位后自动启动。
+   新鲜 `ArmStatus` 的轨迹 ID 匹配且状态为 COMPLETED 才表示执行完成。
 
-**现有限制：**planner 按 Header → Points → Mode 发布，但串口桥可靠队列按消息 ID 独立处理，
-尚无跨类型 ACK 装载屏障。`mode_start_delay_ms` 只是调试缓冲，不能证明装载完成。
+**现有限制：**planner 按 Header → Points 发布，串口桥可靠队列按消息 ID 独立处理。
+Header/Point 传输顺序仍须验证，尚无 planner 可用的装载确认。
+`mode_start_delay_ms` 当前不触发启动 Mode，也不能证明装载完成。
 ACK 也不是电机到位确认。详细线布局与时序见[通信文档](../src/fruit_arm_planner/docs/02_COMMUNICATION_PROTOCOL.md)。
 
 `reliable_retry_interval_ms` 当前为 1000，`reliable_max_retries=3` 表示每累计三次告警，

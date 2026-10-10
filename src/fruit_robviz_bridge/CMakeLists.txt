@@ -16,6 +16,9 @@ install(PROGRAMS
 install(PROGRAMS scripts/check_preview.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME check_preview)
+install(PROGRAMS scripts/check_arm_preview.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME check_arm_preview)
 
 ament_python_install_package(${PROJECT_NAME})
 
