@@ -4,7 +4,7 @@
 
 用户级 `default-volume.service` 调用 `/home/rc4/.local/bin/set-startup-volume`。
 这些文件位于本机当前用户的 `~/.config/systemd/user/` 与 `~/.local/bin/`，不属于本 Git 仓库跟踪文件；本篇用于这台调试机器的音频排查，不作为在新机器上自动配置完毕的说明。
-脚本等待指定的蓝牙音响 `MINISO-A127`（MAC `54:87:28:69:49:26`）创建 PulseAudio sink，解除该 sink 的静音，并把音量设置为 `30%`，对应桌面音量条截图中的大约三成位置。
+脚本等待指定的蓝牙音响 `MINISO-A127`（MAC `54:87:28:69:49:26`）创建 PulseAudio sink，解除该 sink 的静音，并把音量设置为 `20%`，对应桌面音量条截图中的大约两成位置。
 
 该 service 是登录会话启动的常驻监听器。它启动时先检查一次目标 sink，随后通过 `pactl subscribe` 监听目标 sink 新建和默认输出切换事件。PulseAudio 重启导致订阅断开时，脚本会重新连接监听。
 
