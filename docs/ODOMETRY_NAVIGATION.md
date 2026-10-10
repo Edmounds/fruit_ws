@@ -166,7 +166,7 @@ ros2 run joy_linux joy_linux_node --ros-args \
   -r __node:=joy_diagnostic \
   --params-file /home/rc4/fruit_ws/src/joy_linux/config/joy_config.yaml \
   -p dev:=/dev/input/js0 -p dev_name:="Xbox Wireless Controller" \
-  -p 'dev_ff:=""' -p deadzone:=0.05 -p autorepeat_rate:=20.0 \
+  -p 'dev_ff:=""' -p deadzone:=0.2 -p autorepeat_rate:=20.0 \
   -p default_trig_val:=true \
   -r joy:=/joy_diagnostic
 ```
@@ -177,8 +177,8 @@ ros2 run joy_linux joy_linux_node --ros-args \
 这一路不运行 `joy_convert_node`，不发布底盘速度。
 
 正式链路中，松开摇杆时 `/joy.axes[1]` 应在死区内，两个速度分量应为零。
-当前纵轴为 `1`，转向轴为 `2`，转换器死区为 `0.1`。
-`joy_linux` 已应用 `0.05` 驱动死区，随后转换器计算 `linear.x = axes[1] * 0.4`。
+当前纵轴为 `1`，转向轴为 `2`，转换器死区为 `0.0`。
+`joy_linux` 已应用 `0.2` 驱动平滑死区，随后转换器计算 `linear.x = axes[1] * 0.4`。
 手柄速度进入 `twist_mux`，优先级为 `100`，导航优先级为 `10`。
 桥只在串口发送前取反两个速度分量，ROS 话题仍使用标准方向约定。
 用 `ros2 bag info <录包目录>` 检查消息数量。
