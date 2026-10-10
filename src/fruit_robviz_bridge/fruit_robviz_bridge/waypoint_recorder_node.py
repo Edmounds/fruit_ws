@@ -1246,8 +1246,9 @@ class WaypointRecorderNode(Node):
                 markers,
                 marker_id,
                 point.pose,
-                f"W{index + 1}: {point.name} [{point.point_type}]",
+                f"W{index + 1}: {point.name}",
                 color,
+                index=index,
             )
         return MarkerArray(markers=markers)
 
@@ -1258,6 +1259,7 @@ class WaypointRecorderNode(Node):
         pose: PoseData,
         label: str,
         color: ColorRGBA,
+        index: int = 0,
     ) -> int:
         point_marker = self._base_marker(marker_id, Marker.SPHERE)
         marker_id += 1
@@ -1270,14 +1272,16 @@ class WaypointRecorderNode(Node):
         point_marker.color = color
         markers.append(point_marker)
 
-        text_marker = self._base_marker(marker_id, Marker.TEXT_VIEW_FACING)
+        text_marker = self._base_marker(
+            marker_id, Marker.TEXT_VIEW_FACING, ns="fruit_waypoint_labels"
+        )
         marker_id += 1
         text_marker.pose.position.x = pose.x
         text_marker.pose.position.y = pose.y
-        text_marker.pose.position.z = pose.z + 0.25
-        text_marker.scale.z = 0.16
+        text_marker.pose.position.z = pose.z + 0.18 + (index % 3) * 0.12
+        text_marker.scale.z = 0.10
         text_marker.color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
-        text_marker.text = f"{label} yaw={pose.yaw:.2f}"
+        text_marker.text = label
         markers.append(text_marker)
 
         arrow_marker = self._base_marker(marker_id, Marker.ARROW)
@@ -1296,11 +1300,13 @@ class WaypointRecorderNode(Node):
         markers.append(arrow_marker)
         return marker_id
 
-    def _base_marker(self, marker_id: int, marker_type: int) -> Marker:
+    def _base_marker(
+        self, marker_id: int, marker_type: int, ns: str = "fruit_waypoint_maker"
+    ) -> Marker:
         marker = Marker()
         marker.header.frame_id = self._frame_id
         marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = "fruit_waypoint_maker"
+        marker.ns = ns
         marker.id = marker_id
         marker.type = marker_type
         marker.action = Marker.ADD
