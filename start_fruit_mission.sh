@@ -30,8 +30,9 @@ and serial bridge running while starting perception, arm planner, and mission.
 --flow selects a Logic.py entry function; B/C-only entries also scan their QR.
 Use --debug to record the mission profile under rosbags/. The profile includes
 navigation, perception, arm, QR, and selected raw camera image topics. Camera
-recording requires the camera and perception publishers. Recording starts after
-the navigation and perception stack is ready, immediately before the mission.
+recording requires the camera and perception publishers. Recording starts in
+the background after perception is ready and does not delay the mission.
+The perception launch also starts or reuses the RobViz bridge.
 EOF
 }
 
@@ -295,36 +296,6 @@ wait_for_odometry() {
   log "WARNING: $label odometry unavailable; navigation requires odometry"
 }
 
-wait_for_topic_endpoint_count() {
-  local label=$1
-  local topic=$2
-  local endpoint=$3
-  local expected_count=$4
-  local timeout_sec=$5
-  local status
-
-  case "$endpoint" in
-    publishers|subscribers)
-      ;;
-    *)
-      die "unsupported topic endpoint kind: $endpoint"
-      ;;
-  esac
-
-  log "WAIT $label topic=$topic $endpoint>=$expected_count timeout=${timeout_sec}s"
-  if run_readiness_client endpoint \
-    --topic "$topic" \
-    --kind "$endpoint" \
-    --count "$expected_count" \
-    --timeout "$timeout_sec"; then
-    log "READY $label topic=$topic $endpoint>=$expected_count"
-    return 0
-  else
-    status=$?
-  fi
-  log "WARNING: $label endpoint unavailable; mission will skip unavailable work"
-}
-
 wait_for_serial_bridge_running() {
   local timeout_sec=$1
   local log_file="$RUN_DIR/perception.log"
@@ -554,14 +525,6 @@ if [[ "$REUSE_ROBVIZ_BRIDGE" == true ]] || ! run_readiness_client robviz-bridge-
   log "RUN reuse: existing robviz bridge remains owned by original launcher"
 fi
 
-wait_for_nodes "odometry navigation readiness" 10 \
-  /axis_waypoint_action_server \
-  /laserMapping \
-  /loam_interface
-wait_for_action "waypoint navigation" "/follow_waypoints" 10
-wait_for_odometry "base odometry" /odometry 10
-wait_for_tf "stable odometry origin" odom base_link 5
-
 if [[ "$REUSE_PERCEPTION" != true ]]; then
   start_process "perception" \
     ros2 launch "$PERCEPTION_LAUNCH" \
@@ -573,55 +536,35 @@ else
   log "RUN reuse: existing perception stack remains owned by original launcher"
 fi
 
-wait_for_nodes "perception readiness" 10 \
-  /serial_controller \
-  /fruit_perception_node \
-  /fruit_qr_planner
-wait_for_serial_bridge_running 10
-
 if [[ "$REUSE_ARM_PLANNER" != true ]]; then
   start_process "arm_planner" \
     ros2 launch "$ARM_LAUNCH" "use_sim_time:=false"
 else
   log "RUN reuse: existing arm planner remains owned by original launcher"
 fi
-wait_for_nodes "arm planner readiness" 10 /arm_planner_node
-wait_for_arm_planner 10
-wait_for_topic_endpoint_count \
-  "trajectory header bridge subscription" \
-  "/fruit_hardware_bridge/arm/trajectory_header" \
-  subscribers \
-  1 \
-  10
-wait_for_topic_endpoint_count \
-  "trajectory point bridge subscription" \
-  "/fruit_hardware_bridge/arm/trajectory_point" \
-  subscribers \
-  1 \
-  10
-wait_for_topic_endpoint_count \
-  "arm mode bridge subscription" \
-  "/fruit_hardware_bridge/arm/control_mode" \
-  subscribers \
-  1 \
-  10
-wait_for_topic_endpoint_count \
-  "arm status bridge publisher" \
-  "/fruit_hardware_bridge/arm/status" \
-  publishers \
-  1 \
-  10
-wait_for_topic_endpoint_count \
-  "perception observation window subscription" \
-  "/fruit_mission/observation_window" \
-  subscribers \
-  1 \
-  10
+
+# Start all independent stacks before waiting. Navigation localization continues
+# while the camera and planner initialize.
+wait_for_nodes "odometry navigation readiness" 10 \
+  /axis_waypoint_action_server \
+  /laserMapping \
+  /loam_interface
+wait_for_action "waypoint navigation" "/follow_waypoints" 10
+wait_for_odometry "base odometry" /odometry 10
+wait_for_tf "stable odometry origin" odom base_link 5
+
+wait_for_nodes "perception readiness" 10 \
+  /serial_controller \
+  /fruit_perception_node \
+  /fruit_qr_planner
+wait_for_serial_bridge_running 10
 
 if ((DEBUG_RECORD_ENABLED)); then
   fruit_recording_start "$RECORD_SCRIPT" mission
-  fruit_recording_wait_ready 10 || true
 fi
+
+wait_for_nodes "arm planner readiness" 10 /arm_planner_node
+wait_for_arm_planner 10
 
 log "READY navigation, perception, and arm planner stack; starting mission"
 start_process "mission" \

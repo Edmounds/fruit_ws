@@ -752,7 +752,10 @@ class MissionContext:
         if not self._arm_home_confirmed and (
                 (motion_future is not None and not motion_future.done())
                 or not stationary):
+            stop_requested_at = time.monotonic()
             stop_future = self._camera_planner.request_stop()
+        else:
+            stop_requested_at = 0.0
         if not self.cancel_navigation():
             return False
         if self._arm_home_confirmed:
@@ -763,6 +766,15 @@ class MissionContext:
                     return False
                 response = stop_future.result()
                 if response is None or not response.success:
+                    return False
+                if not self._wait_until(
+                        lambda: self._camera_planner.is_stationary(
+                            self.config['stationary']['joint_speed_rps'],
+                            received_after=stop_requested_at,
+                            require_idle=True),
+                        10.0):
+                    self.node.get_logger().warning(
+                        'STOP acknowledged without fresh STATUS_IDLE feedback')
                     return False
             except Exception as error:
                 self.node.get_logger().warning(f'Cannot confirm STOP dispatch: {error}')
@@ -867,6 +879,15 @@ class MissionContext:
         self._arm_home_confirmed = False
         self._arm_shenzhi_confirmed = False
         completed, reason = self._camera_planner.execute_preset(preset_name, self._wait_until)
+        if completed and preset_name == 'home':
+            completed_at = time.monotonic()
+            completed = self._wait_until(
+                lambda: self._camera_planner.is_stationary(
+                    self.config['stationary']['joint_speed_rps'],
+                    received_after=completed_at),
+                10.0)
+            if not completed:
+                reason = 'home_not_stationary'
         self._arm_home_confirmed = preset_name == 'home' and completed
         self._arm_shenzhi_confirmed = preset_name == 'shenzhi' and completed
         if self._arm_shenzhi_confirmed:
