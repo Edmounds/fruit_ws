@@ -42,6 +42,7 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 参数失败只告警并推进流程，不重试。区域不匹配的 harvest 窗口不产生抓取目标。
 `start_fruit_mission.sh` 继续直接启动感知 launch，不调用调试入口，并启动或复用
 RobViz 预览桥。比赛入口会并行启动导航、感知和 planner；调试录包在感知就绪后后台启动。
+任务退出时先停止 mission 和录包，再依次停止感知相机、机械臂 planner 和导航，释放相机订阅后再下电设备。
 单点调试入口传递 `--zone`，客户端使用同一参数服务，不再等待区域话题订阅者。
 独立单点调试入口 `test_camera_arm_target.sh`（`camera_arm_target_client`）不依赖导航，只接受 `--zone A|B|C --left|--right`（可加 `--debug`），不再接受 `--model`。区域同时选择模型（A/C 蔬菜、B 水果）和 `<side>_look_<zone>` / `<side>_store_<zone>`（B 根据目标基座高度自动选择 `_store_b_up` 或 `_store_b_down`）；例如 `--zone C --left` 使用 `left_look_c`、`left_store_c`。工序为 Home→区域 Look→OPEN/HOLD→识别→CLOSE/HOLD→区域 Store，不加入跨区保护动作。它是人工硬件工具，不能作为自动测试运行。
 原 `mission_flow.py` 和作为判断帮助文件的 `logic.py` 已移除，避免两个主流程来源。

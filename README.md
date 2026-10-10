@@ -130,7 +130,7 @@ cd /home/rc4/fruit_ws
 流程说明：
 脚本等待实际感知节点的区域订阅端就绪后发布区域，并等待可靠 DDS 确认。工序为 `home` → 区域 Look → 实测关节角 OPEN/HOLD → harvest 窗口 → 目标 CLOSE/HOLD → 区域 Store → `home`。B 只选统计完成后的有效成熟水果；A/C 使用蔬菜目标。坐标换算和 `target_offset_m` 仍共用 mission 实现。运动等待下位机结果，端点、识别与区域交付各自限时最多 10 秒；共享 OPEN/HOLD 逐次等待新鲜有效的静止反馈，不做外层即时拒绝。
 
-正式 mission 在旧正常收臂边界调用 `shenzhi`，扫码直接调用 `qr_scan`，不使用下位机任务或摄像头切换状态机。QR 按当前窗口 B/C 区域解析，不依赖先 B 后 C。真实姿态及已定义名称以源码 YAML 为准，现场运行前须补齐所用预设；客户端不填空轨迹或覆盖已有坐标。缺失按失败处理，必要保护姿态未确认不放行转场；单点测试不调用 `shenzhi`。
+正式 mission 在正常收臂边界调用 `shenzhi`，扫码直接调用 `qr_scan`，不使用下位机任务或摄像头切换状态机。QR 按当前窗口 B/C 区域解析，不依赖先 B 后 C。真实姿态及已定义名称以源码 YAML 为准，现场运行前须补齐所用预设；客户端不填空轨迹或覆盖已有坐标。局部观察或采摘失败只执行一次 Home 恢复，并在 Home 状态确认后继续固定路线；成功工序才进入 `shenzhi`。单点测试不调用 `shenzhi`。
 
 ## 运行日志与终端调试说明
 
@@ -146,6 +146,8 @@ cd /home/rc4/fruit_ws
   - 最新的运行目录可通过软链接 `/home/rc4/fruit_ws/log/runtime/latest` 快速访问。
   - 详细内容包括：`orchestrator.log`（全局生命周期与进程列表）、各子组件独立日志（`perception.log`、`arm_planner.log`、`client.log`、`navigation.log`、`monitor.log` 等）、所有收发包完整解码字段以及 `ros/` 原生日志。
   - 系统启动与退出时自动清理已结束的运行目录，严格保留**最近 20 次**记录；活动运行通过 `.active.lock` 文件锁保护，禁止误删。
+  - 相机 USB 设备断开后的 RealSense `VIDIOC_QBUF` 和 `UVCIOC_CTRL_QUERY` `No such device` teardown 噪声不显示，也不写入组件日志。正常运行期间的其他相机错误仍保留。
+  - `start_fruit_mission.sh` 退出时依次停止 mission、录包、感知相机、机械臂 planner 和导航，先释放相机订阅再允许硬件下电。
 - **AI Agent 排查指引**：详见 [AGENTS.md](AGENTS.md)。
 
 ## 上位机机械臂调试

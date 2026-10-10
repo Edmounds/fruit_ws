@@ -21,10 +21,12 @@ def navigate(ctx, waypoints, *, side=None):
 
 
 def enter_shenzhi(ctx, *, completed):
-    """Normal work ends in protection; failed work keeps its one Home recovery."""
-    ctx.require_shenzhi()
+    """Normal work ends in protection; failed work keeps its Home handoff."""
     if not completed:
+        # All local failure paths recover Home before reaching this boundary.
+        # Home is the measured safe handoff for the next fixed route point.
         return False
+    ctx.require_shenzhi()
     motion = ctx.execute_arm_preset('shenzhi')
     if not motion.completed:
         ctx.node.get_logger().warning(f'保护姿态失败，禁止后续转场: {motion.reason_code}')

@@ -319,6 +319,23 @@ log_recent_child_output() {
   log "EXIT $name output recorded at $log_file"
 }
 
+stop_child_by_name() {
+  local wanted_name=$1
+  local index
+
+  for index in "${!child_names[@]}"; do
+    if [[ "${child_names[index]}" == "$wanted_name" ]]; then
+      if process_alive "${child_pids[index]}"; then
+        log "STOP $wanted_name pid=${child_pids[index]}"
+        fruit_stop_process_group "${child_pids[index]}" "$wanted_name" 5 2
+      fi
+      child_pids[index]=""
+      return 0
+    fi
+  done
+  return 0
+}
+
 stop_children() {
   local pid
   local index
@@ -335,19 +352,39 @@ stop_children() {
     readiness_pid=""
   fi
 
-  # Ensure arm motion is stopped if planner is available
+  # Ensure arm motion is stopped if planner is available.
   timeout --foreground 2s ros2 service call /arm_planner_node/stop std_srvs/srv/Trigger '{}' \
     >/dev/null 2>&1 || true
 
+  # Stop the mission before its dependencies. This closes observation windows
+  # and releases ROS camera subscribers before the camera container exits.
+  stop_child_by_name mission
+
+  # Stop the recorder before the camera stack so it releases image subscriptions.
   fruit_recording_stop
 
-  if ((${#child_pids[@]} == 0 && ${#debug_pids[@]} == 0)); then
+  # Stop camera/perception before arm and navigation. Do this sequentially so
+  # hardware-backed processes finish teardown before lower-level devices may be
+  # powered down by the operator.
+  stop_child_by_name perception
+  stop_child_by_name arm_planner
+  stop_child_by_name navigation
+
+  local -a remaining_pids=()
+  local pid
+  for pid in "${child_pids[@]}" "${debug_pids[@]}"; do
+    if process_alive "$pid"; then
+      remaining_pids+=("$pid")
+    fi
+  done
+
+  if ((${#remaining_pids[@]} == 0)); then
     fruit_logging_close 0
     return 0
   fi
 
-  log "STOP stopping all launched child process groups"
-  fruit_stop_all_process_groups "${child_pids[@]}" "${debug_pids[@]}"
+  log "STOP stopping remaining launched child process groups"
+  fruit_stop_all_process_groups "${remaining_pids[@]}"
   fruit_logging_close 0
   log "STOP complete; logs kept at $RUN_DIR"
 }

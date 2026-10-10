@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Runtime log filter and archiver for fruit_ws.
 
-Reads raw stdout/stderr from stdin, writes full unfiltered lines to the target
-log file, and filters terminal output so that operators only see concise, high-value
+Reads raw stdout/stderr from stdin, writes useful lines to the target log file,
+and filters terminal output so that operators only see concise, high-value
 information, warnings, errors, and lifecycle events.
 """
 
@@ -17,6 +17,17 @@ ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 DISCARD_PATTERNS = [
     re.compile(r"\[DEBUG\].*?\[(?:rcl|rclpy|rcutils|rmw_cyclonedds_cpp)\]:"),
     re.compile(r"\[rcl\]:\s+(?:Initializing wait set|Subscription taking message|Subscription take succeeded)"),
+    # RealSense emits these after the USB device has already disappeared. They
+    # are teardown noise and can be emitted thousands of times per second.
+    re.compile(
+        r"(?:backend-v4l2\.cpp|librealsense-exception\.h).*"
+        r"(?:VIDIOC_QBUF|UVCIOC_CTRL_QUERY).*No such device",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"xioctl\((?:VIDIOC_QBUF|UVCIOC_CTRL_QUERY)\).*No such device",
+        re.IGNORECASE,
+    ),
 ]
 
 # Patterns that should NEVER be displayed on terminal under any circumstances.
