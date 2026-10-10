@@ -31,7 +31,9 @@ and serial bridge running while starting perception, arm planner, and mission.
 Use --debug to record the mission profile under rosbags/. The profile includes
 navigation, perception, arm, QR, and selected raw camera image topics. Camera
 recording requires the camera and perception publishers. Recording starts in
-the background after perception is ready and does not delay the mission.
+the background after perception is ready and does not delay the mission. Debug
+mode also records kernel USB events in kernel.log and udev events in udev.log.
+It may request sudo once before starting these monitors.
 The perception launch also starts or reuses the RobViz bridge.
 EOF
 }
@@ -194,6 +196,29 @@ start_debug_process() {
   debug_pids+=("$pid")
   printf '%s\t%s\t%s\n' "$name" "$pid" "$log_file" >> "$RUN_DIR/processes.tsv"
   log "STARTED $name pid=$pid log=$log_file"
+}
+
+start_usb_debug_monitors() {
+  (( DEBUG_RECORD_ENABLED )) || return 0
+
+  local -a privilege=()
+  if (( EUID != 0 )); then
+    if ! command -v sudo >/dev/null 2>&1; then
+      log "WARNING: sudo is unavailable; USB debug monitors were not started"
+      return 0
+    fi
+    if ! sudo -v; then
+      log "WARNING: sudo authorization failed; USB debug monitors were not started"
+      return 0
+    fi
+    privilege=(sudo -n)
+  fi
+
+  start_debug_process "kernel" "${privilege[@]}" \
+    journalctl -k -f -o short-iso
+  start_debug_process "udev" "${privilege[@]}" \
+    udevadm monitor --kernel --udev
+  log "RUN USB diagnostics: kernel.log and udev.log"
 }
 
 wait_for_node() {
@@ -396,6 +421,8 @@ on_signal() {
 
 trap stop_children EXIT
 trap on_signal INT TERM
+
+start_usb_debug_monitors
 
 required_files=(
   "$NAV_LAUNCH" \

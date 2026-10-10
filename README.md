@@ -140,6 +140,9 @@ cd /home/rc4/fruit_ws
   - 默认仅输出关键生命周期推进（就绪、连接、观察窗口、目标锁定坐标、轨迹执行完成结果、告警与错误），不刷高频周期巡检与冗长启动参数。
   - **彻底移除 raw 原始十六进制字节**（如 `[MCU TX RAW]`），无论是否开启 debug，终端均不再输出 raw 数据。
   - 显式传入 `--debug` 选项时，同时启动该入口的 rosbag profile。详细日志和 rosbag 使用同一个运行目录。
+  - `start_fruit_mission.sh --debug` 还会启动 `journalctl -k -f` 和
+    `udevadm monitor --kernel --udev`，分别写入当前运行目录的 `kernel.log` 和
+    `udev.log`。启动监控前会请求一次 sudo 授权；授权失败时任务仍可启动，但会记录告警。
   - 嵌套入口只允许一个录包所有者。子脚本复用父入口的日志和录包状态，不启动第二个 recorder。
 - **详细诊断落盘与保留**：
   - 每次运行的完整日志存放于 `/home/rc4/fruit_ws/log/runtime/<时间戳>_<入口>_<PID>/`。
