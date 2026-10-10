@@ -242,7 +242,9 @@ def load_editor_config(path: Path) -> EditorConfig:
         ),
         backup_dir=_configured_path(document.get("backup_dir"), "backup_dir"),
         max_request_bytes=max_request_bytes,
-        arm_config_path=_optional_configured_path(document.get('arm_config_path'), 'arm_config_path'),
+        arm_config_path=_optional_configured_path(
+            document.get("arm_config_path"), "arm_config_path"
+        ),
     )
 
 
