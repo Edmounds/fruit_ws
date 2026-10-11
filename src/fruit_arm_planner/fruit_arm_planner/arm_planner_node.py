@@ -472,7 +472,8 @@ class ArmPlannerNode(Node):
         def build(start):
             return plan_target(
                 self.planner, self.transformer, self._configuration['planning'], start,
-                list(req.joints_deg), 'joints', int(req.duration_ms), int(req.gripper_action),
+                [float(value) for value in req.joints_deg], 'joints',
+                int(req.duration_ms), int(req.gripper_action),
             )
 
         res.success, res.trajectory_id, res.message = self._run_motion(build, 'move_joints')

@@ -184,7 +184,7 @@ service 请求不开放该字段，`move_cartesian` 和 `move_joints` 的最终�
 
 ### 2. 关节角度直发服务 (`~/move_joints`)
 - **服务类型**：`fruit_interfaces/srv/MoveArmJoints`
-- **请求字段**：`joints_deg[4]` 为四个原始硬件角（度），不应用连杆零位偏置；另有 `duration_ms`、`gripper_action`。控制台 `joints` 是连杆角，`motors` 才与本服务语义一致。
+- **请求字段**：`joints_deg[4]` 为四个原始硬件角（度），不应用连杆零位偏置；另有 `duration_ms`、`gripper_action`。planner 会先把 ROS 数组元素规范化为 Python 浮点数，再执行有限值、长度和关节限位校验。控制台 `joints` 是连杆角，`motors` 才与本服务语义一致。
 - **应答字段**：`success`, `message`, `trajectory_id`
 
 正式 mission 和相机单点调试客户端在区域 Look 后、开启识别前，以新鲜且静止的实测四轴硬件角调用本服务，
