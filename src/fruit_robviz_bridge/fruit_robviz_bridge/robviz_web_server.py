@@ -910,13 +910,18 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
             remote_ws = (
                 f" ws://{host_name}:8765 wss://{host_name}:8765 "
                 f"ws://{host_name}:8787 wss://{host_name}:8787 "
-                f"ws://{host_name}:8000 wss://{host_name}:8000"
+                f"ws://{host_name}:8000 wss://{host_name}:8000 "
+                f"http://{host_name}:8001 https://{host_name}:8001"
             )
+        connect_src = (
+            "connect-src 'self' http://127.0.0.1:8001 http://localhost:8001 "
+            f"ws://127.0.0.1:* ws://localhost:*{remote_ws}; "
+        )
         self.send_header("Content-Security-Policy", (
             "default-src 'self'; base-uri 'none'; object-src 'none'; "
             "frame-ancestors 'none'; img-src 'self' data: blob:; "
             "media-src 'self' blob: mediastream:; "
-            f"connect-src 'self' ws://127.0.0.1:* ws://localhost:*{remote_ws}; "
+            f"{connect_src}"
             "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; "
             "style-src 'self' 'unsafe-inline'"
         ))

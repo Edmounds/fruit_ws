@@ -55,10 +55,14 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         parsed = urlparse(origin) if origin else None
         host = self.headers.get("Host", "").split(":", 1)[0]
+        local = {"localhost", "127.0.0.1", "::1"}
+        is_local_pair = (
+            parsed is not None and parsed.hostname in local and host in local
+        )
         if (
             parsed is not None
             and parsed.scheme in ("http", "https")
-            and parsed.hostname == host
+            and (parsed.hostname == host or is_local_pair)
             and parsed.port in (None, 8000)
         ):
             self.send_header("Access-Control-Allow-Origin", origin)
