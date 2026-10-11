@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+# Copyright 2026 fruit_ws team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+
+"""HTTP endpoint for the persistent RobViz runtime control service."""
+
+from __future__ import annotations
+
+import argparse
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import logging
+from pathlib import Path
+from typing import Any
+from urllib.parse import unquote, urlparse
+
+from fruit_robviz_bridge.runtime_manager import (
+    RuntimeErrorBase,
+    RuntimeManager,
+)
+
+
+DEFAULT_CONFIG = Path(
+    "/home/rc4/fruit_ws/src/fruit_robviz_bridge/config/runtime_tasks.yaml"
+)
+
+
+class RuntimeHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, host: str, port: int, manager: RuntimeManager) -> None:
+        self.manager = manager
+        super().__init__((host, port), RuntimeRequestHandler)
+
+
+class RuntimeRequestHandler(BaseHTTPRequestHandler):
+    server: RuntimeHTTPServer
+
+    def _send(self, status: HTTPStatus, payload: Any) -> None:
+        body = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self._cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _cors_headers(self) -> None:
+        origin = self.headers.get("Origin")
+        parsed = urlparse(origin) if origin else None
+        host = self.headers.get("Host", "").split(":", 1)[0]
+        if (
+            parsed is not None
+            and parsed.scheme in ("http", "https")
+            and parsed.hostname == host
+            and parsed.port in (None, 8000)
+        ):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        self.send_header(
+            "Access-Control-Allow-Methods", "GET, POST, OPTIONS"
+        )
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def _task_id(self) -> str | None:
+        prefix = "/api/runtime/tasks/"
+        path = unquote(urlparse(self.path).path)
+        if not path.startswith(prefix):
+            return None
+        suffix = path[len(prefix):].strip("/")
+        if not suffix or "/" in suffix:
+            return None
+        task_id = suffix
+        return task_id or None
+
+    def _operation(self) -> tuple[str | None, str | None]:
+        prefix = "/api/runtime/tasks/"
+        path = unquote(urlparse(self.path).path)
+        if not path.startswith(prefix):
+            return None, None
+        parts = path[len(prefix):].strip("/").split("/")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            return None, None
+        return parts[0], parts[1]
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self._cors_headers()
+        self.end_headers()
+
+    def do_GET(self) -> None:  # noqa: N802
+        try:
+            path = urlparse(self.path).path
+            if path == "/health":
+                self._send(HTTPStatus.OK, {"status": "ok"})
+                return
+            if path == "/api/runtime/tasks":
+                self._send(HTTPStatus.OK, self.server.manager.status())
+                return
+            task_id = self._task_id()
+            if task_id is not None:
+                self._send(
+                    HTTPStatus.OK, self.server.manager.status(task_id)
+                )
+                return
+            self._send(HTTPStatus.NOT_FOUND, {"error": "接口不存在"})
+        except RuntimeErrorBase as error:
+            self._send(HTTPStatus(error.status), {"error": error.message})
+        except Exception:
+            logging.exception("Runtime status request failed")
+            self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "服务器内部错误"})
+
+    def do_POST(self) -> None:  # noqa: N802
+        task_id, operation = self._operation()
+        try:
+            if task_id is None or operation not in ("start", "stop"):
+                self._send(HTTPStatus.NOT_FOUND, {"error": "接口不存在"})
+                return
+            if operation == "start":
+                result = self.server.manager.start(task_id)
+            else:
+                result = self.server.manager.stop(task_id)
+            self._send(HTTPStatus.OK, result)
+        except RuntimeErrorBase as error:
+            self._send(HTTPStatus(error.status), {"error": error.message})
+        except Exception:
+            logging.exception("Runtime operation failed")
+            self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "服务器内部错误"})
+
+    def log_message(self, message: str, *args: Any) -> None:
+        logging.info("%s - %s", self.address_string(), message % args)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Serve runtime task control API")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8001)
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    try:
+        manager = RuntimeManager(args.config)
+        server = RuntimeHTTPServer(args.host, args.port, manager)
+    except Exception as error:
+        logging.error("runtime control service 启动失败: %s", error)
+        return 1
+
+    logging.info(
+        "Runtime control listening on http://%s:%d", args.host, args.port
+    )
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

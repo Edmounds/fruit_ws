@@ -1,0 +1,21 @@
+[Unit]
+Description=Fruit robot runtime task control API
+Wants=network-online.target
+After=local-fs.target network-online.target foxglove_bridge.service
+
+[Service]
+Type=simple
+User=rc4
+Group=rc4
+WorkingDirectory=/home/rc4/fruit_ws
+Environment=HOME=/home/rc4
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/bin/bash -lc 'set -eo pipefail; source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash; set -u; exec ros2 run fruit_robviz_bridge fruit_runtime_server --config /home/rc4/fruit_ws/src/fruit_robviz_bridge/config/runtime_tasks.yaml --port 8001'
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=15
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

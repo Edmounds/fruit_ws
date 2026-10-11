@@ -24,7 +24,7 @@ from fruit_mission.camera_target_transform import (
     transform_end_to_base_mm,
 )
 from fruit_perception.msg import FruitDetections
-from fruit_robviz_bridge.waypoint_editor_server import (
+from fruit_robviz_bridge.robviz_web_server import (
     DEFAULT_IMAGE_SETTINGS,
     validate_image_settings,
 )

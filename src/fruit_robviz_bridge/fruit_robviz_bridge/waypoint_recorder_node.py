@@ -43,7 +43,7 @@ from fruit_robviz_bridge.recorder import (
     mean_pose,
     yaw_from_quaternion,
 )
-from fruit_robviz_bridge.waypoint_editor_server import (
+from fruit_robviz_bridge.robviz_web_server import (
     EditorFile,
     RequestError,
     document_version,

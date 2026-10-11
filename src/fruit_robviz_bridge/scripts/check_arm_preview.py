@@ -14,7 +14,7 @@ from fruit_arm_planner.kinematics import RobotKinematics
 from fruit_arm_planner.planning_api import configuration, revision
 from fruit_arm_planner.trajectory_planner import TrajectoryPlanner
 from fruit_robviz_bridge.arm_editor import calculate, document, save_presets
-from fruit_robviz_bridge.waypoint_editor_server import _document_lock, VersionConflict
+from fruit_robviz_bridge.robviz_web_server import _document_lock, VersionConflict
 
 
 def main():

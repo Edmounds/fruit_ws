@@ -57,7 +57,7 @@ source scripts/setup_fruit_runtime.bash
 
 系统提供 Web 航点编辑服务，支持通过浏览器拖拽调整与微调航点：
 - 默认监听端口：`http://<机器人IP>:8000`
-- 配置文件：`src/fruit_robviz_bridge/config/waypoint_editor.yaml`
+- 配置文件：`src/fruit_robviz_bridge/config/robviz_web.yaml`
 - 服务源文件：`services/robviz.service`
 - 静态产物：`/home/rc4/robviz/dist/index.html`
 

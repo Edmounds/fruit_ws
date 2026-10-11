@@ -1,5 +1,5 @@
 [Unit]
-Description=RobViz web dashboard and waypoint editor
+Description=RobViz web dashboard and configuration server
 Wants=network-online.target
 After=local-fs.target network-online.target
 
@@ -10,7 +10,7 @@ Group=rc4
 WorkingDirectory=/home/rc4/fruit_ws
 Environment=HOME=/home/rc4
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/bin/bash -lc 'set -eo pipefail; test -r /home/rc4/robviz/dist/index.html; source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash; set -u; exec ros2 launch fruit_robviz_bridge waypoint_editor.launch.py'
+ExecStart=/bin/bash -lc 'set -eo pipefail; test -r /home/rc4/robviz/dist/index.html; source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash; set -u; exec ros2 launch fruit_robviz_bridge robviz_web.launch.py'
 
 Restart=on-failure
 RestartSec=3
@@ -20,4 +20,4 @@ NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
-Alias=waypoint-editor.service roboviz.service
+Alias=robviz-web.service roboviz.service

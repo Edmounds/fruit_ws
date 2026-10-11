@@ -4,7 +4,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 
-"""Serve the waypoint editor and its allowlisted YAML API."""
+"""Serve the RobViz web and its allowlisted YAML API."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ from fruit_robviz_bridge.recorder import yaw_from_quaternion
 
 DEFAULT_CONFIG = Path(
     "/home/rc4/fruit_ws/src/fruit_robviz_bridge/config/"
-    "waypoint_editor.yaml"
+    "robviz_web.yaml"
 )
 VALID_POINT_TYPES = ("waypoint", "goal")
 MAX_POINT_COUNT = 5000
@@ -209,7 +209,7 @@ def load_editor_config(path: Path) -> EditorConfig:
     """Load server configuration from an explicit source path."""
     with path.expanduser().resolve().open(encoding="utf-8") as stream:
         document = _required_mapping(
-            yaml.safe_load(stream), "waypoint editor 配置"
+            yaml.safe_load(stream), "RobViz web 配置"
         )
 
     host = str(document.get("host", "0.0.0.0")).strip()
@@ -1126,7 +1126,7 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                 RequestError(HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
             )
         except Exception:
-            logging.exception("Unhandled waypoint editor GET error")
+            logging.exception("Unhandled RobViz web GET error")
             self._send_error(
                 RequestError(
                     HTTPStatus.INTERNAL_SERVER_ERROR, "服务器内部错误"
@@ -1200,7 +1200,7 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                 RequestError(HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
             )
         except Exception:
-            logging.exception("Unhandled waypoint editor PUT error")
+            logging.exception("Unhandled RobViz web PUT error")
             self._send_error(
                 RequestError(
                     HTTPStatus.INTERNAL_SERVER_ERROR, "服务器内部错误"
@@ -1240,7 +1240,7 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                 RequestError(HTTPStatus.UNPROCESSABLE_ENTITY, str(error))
             )
         except Exception:
-            logging.exception("Unhandled waypoint editor POST error")
+            logging.exception("Unhandled RobViz web POST error")
             self._send_error(
                 RequestError(
                     HTTPStatus.INTERNAL_SERVER_ERROR, "服务器内部错误"
@@ -1285,11 +1285,11 @@ def main() -> int:
         load_file_catalog(config)
         server = WaypointEditorHTTPServer(config)
     except Exception as error:
-        logging.error("waypoint editor 启动失败: %s", error)
+        logging.error("RobViz web 启动失败: %s", error)
         return 1
 
     logging.info(
-        "Waypoint editor listening on http://%s:%d",
+        "RobViz web listening on http://%s:%d",
         config.host,
         config.port,
     )

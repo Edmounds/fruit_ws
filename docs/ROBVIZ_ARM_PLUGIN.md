@@ -8,9 +8,13 @@
 HTTP 服务只提供文件编辑和纯数学计算，不执行运动。
 不修改下位机协议，不创建第二套机械臂控制器。
 
+机械臂节点的按需启动和停止由常驻 `fruit-runtime.service` 管理。
+网页通过端口 8001 的通用运行任务 API 控制 `arm` 任务。
+详细接口见 [RobViz 运行任务控制](ROBVIZ_RUNTIME_CONTROL.md)。
+
 ## 配置与接口
 
-`src/fruit_robviz_bridge/config/waypoint_editor.yaml` 的 `arm_config_path` 指定唯一可编辑文件。
+`src/fruit_robviz_bridge/config/robviz_web.yaml` 的 `arm_config_path` 指定唯一可编辑文件。
 客户端不能提交任意文件路径。
 默认文件为源码 `src/fruit_arm_planner/config/arm_presets.yaml`。
 

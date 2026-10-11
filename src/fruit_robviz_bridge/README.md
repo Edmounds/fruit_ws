@@ -1,6 +1,6 @@
 # fruit_robviz_bridge
 
-该功能包为 RobViz 提供图像预览桥接、配置重载接口、Web 航点编辑 HTTP 服务与按需航点录制节点。
+该功能包为 RobViz 提供图像预览桥接、配置重载接口、Web 配置服务与按需航点录制节点。
 它不参与比赛决策，不实现第二套导航控制器或机械臂运动学。
 
 ## 模块与职责
@@ -9,11 +9,13 @@
    运行在 Python/GStreamer，经批准跨进程订阅本机 raw image，提供标注 RGB、原始 RGB (`/camera/color/image_raw`) 与 Native Depth 三路 WebRTC (H.264) 及可选 JPEG 压缩流。保持输入原尺寸传输，不进行降采样。提供 NUC 本地单张无损 PNG 采集服务端协议。原始 RGB 共用 `rgb.*` 传输设置。
 2. **配置重载客户端 (`RobvizConfigClient`)**：
    在启动时及接收到 `/fruit_robviz_bridge/reload_image_settings` Trigger 请求时从 HTTP 服务获取最新图像设置，并通过 ROS 参数原子应用到图像网关节点。
-3. **Web 航点编辑器服务 (`waypoint_editor_server`)**：
+3. **RobViz Web 服务 (`robviz_web_server`)**：
    常驻 HTTP 服务（默认端口 8000），承载 RobViz 静态页面资源、图像设置、航点和机械臂预设读写。
    `/api/arm/pose` 与 `/api/arm/preview` 复用 planner 纯计算，不执行运动。
 4. **航点录制节点 (`waypoint_recorder_node`)**：
    按需由 `./waypoints_maker.sh` 启动，负责 TF 采样、停稳校验、航点 MarkerArray 锁存发布与 `/follow_waypoints` Action 调试客户端。
+5. **运行任务控制服务 (`fruit_runtime_server`)**：
+   由 `fruit-runtime.service` 常驻监听端口 8001，按配置启动、停止和查询机械臂、感知、导航、Mission 与打点任务。
 
 ## 端点与传输
 
@@ -103,6 +105,12 @@ ros2 run fruit_robviz_bridge check_preview --duration-sec 60
 机械臂插件、只读运行快照、文件版本和离线检查见
 [RobViz 机械臂插件](../../docs/ROBVIZ_ARM_PLUGIN.md)。
 `ros2 run fruit_robviz_bridge check_arm_preview` 只使用临时文件，不连接硬件。
+
+## 运行任务控制
+
+任务控制 API 和配置见
+[RobViz 运行任务控制](../../docs/ROBVIZ_RUNTIME_CONTROL.md)。
+`robviz_web_server` 不启动、停止或扫描任何 ROS 进程。
 
 ## 许可说明
 

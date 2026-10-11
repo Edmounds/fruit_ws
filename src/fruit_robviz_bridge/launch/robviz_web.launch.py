@@ -8,21 +8,21 @@ def generate_launch_description():
     package_name = "fruit_robviz_bridge"
     config_file = (
         "/home/rc4/fruit_ws/src/fruit_robviz_bridge/config/"
-        "waypoint_editor.yaml"
+        "robviz_web.yaml"
     )
 
     config = LaunchConfiguration("config")
     declare_config = DeclareLaunchArgument(
         "config",
         default_value=config_file,
-        description="Source-workspace waypoint editor configuration",
+        description="Source-workspace RobViz web configuration",
     )
     executable = PathJoinSubstitution(
         [
             FindPackagePrefix(package_name),
             "lib",
             package_name,
-            "waypoint_editor_server",
+            "robviz_web_server",
         ]
     )
     server = ExecuteProcess(

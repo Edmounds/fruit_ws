@@ -13,6 +13,10 @@ install(DIRECTORY config launch
 install(PROGRAMS
   scripts/robviz_config_client.py
   DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS
+  scripts/fruit_runtime.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME fruit-runtime)
 install(PROGRAMS scripts/check_preview.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME check_preview)
@@ -31,9 +35,13 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
   RENAME waypoint_recorder_node)
 install(PROGRAMS
-  fruit_robviz_bridge/waypoint_editor_server.py
+  fruit_robviz_bridge/robviz_web_server.py
   DESTINATION lib/${PROJECT_NAME}
-  RENAME waypoint_editor_server)
+  RENAME robviz_web_server)
+install(PROGRAMS
+  fruit_robviz_bridge/runtime_server.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME fruit_runtime_server)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)

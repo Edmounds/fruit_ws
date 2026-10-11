@@ -3,6 +3,9 @@
 [项目文档导航](docs/README.md)汇总架构、导航、感知、录点、语音和历史计划。
 开发约束见 [AGENTS.md](AGENTS.md)。当前比赛范围为 A/B/C。
 
+RobViz 的网页服务和按需任务控制服务都由 systemd 常驻启动。
+任务控制接口、配置和命令行用法见 [RobViz 运行任务控制](docs/ROBVIZ_RUNTIME_CONTROL.md)。
+
 驱动源码位于 `src/driver/`：RealSense 使用仓库已配置的 Git submodule；
 Livox 源码当前有 `COLCON_IGNORE`，普通 workspace 构建不会编译它。
 不要在工作区根目录重复 clone 驱动来替代已配置的路径。
