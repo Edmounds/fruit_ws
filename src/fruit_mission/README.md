@@ -41,7 +41,8 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 `/fruit_mission/current_area` 仍发布任务状态，但感知不再订阅。
 参数失败只告警并推进流程，不重试。区域不匹配的 harvest 窗口不产生抓取目标。
 `start_fruit_mission.sh` 继续直接启动感知 launch，不调用调试入口，并启动或复用
-RobViz 预览桥。比赛入口会并行启动导航、感知和 planner；调试录包在感知就绪后后台启动。
+RobViz 预览桥。`start_fruit_mission.sh` 支持 `--open-loop` 参数：开启后 A/C 区使用开环预设抓取（`left/right_pick_openloop_a/c`），在感知输出决策后直接抓取，且左右观察姿态间直接切换，不穿插中间 Home 复归。
+比赛入口会并行启动导航、感知和 planner；调试录包在感知就绪后后台启动。
 使用 `--debug` 时，入口还会在启动 ROS 子系统前记录内核 USB 事件和 udev 事件，文件分别为
 当前运行目录的 `kernel.log` 和 `udev.log`。退出时监控进程与其他调试进程一起停止。
 任务退出时先停止 mission 和录包，再依次停止感知相机、机械臂 planner 和导航，释放相机订阅后再下电设备。

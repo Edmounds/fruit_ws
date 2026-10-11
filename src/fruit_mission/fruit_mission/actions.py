@@ -13,6 +13,8 @@ from fruit_qr_planner.planner import build_b_plan, build_c_plan
 
 def navigate(ctx, waypoints, *, side=None):
     """Navigate with optional concurrent Look; failed handoffs get one safe Home."""
+    if side is None and not (ctx._arm_home_confirmed or ctx._arm_shenzhi_confirmed):
+        ctx.recover_home()
     if ctx.navigate_named(waypoints, observation_side=side):
         return True
     ctx.node.get_logger().warning(f"导航失败，跳过当前动作: {' -> '.join(waypoints)}")
@@ -22,6 +24,8 @@ def navigate(ctx, waypoints, *, side=None):
 
 def enter_shenzhi(ctx, *, completed):
     """Normal work ends in protection; failed work keeps its Home handoff."""
+    if ctx.is_open_loop and ctx._current_area in ("A", "C"):
+        return True
     if not completed:
         # All local failure paths recover Home before reaching this boundary.
         # Home is the measured safe handoff for the next fixed route point.
@@ -105,9 +109,29 @@ def observe_and_pick(ctx, *, side, expected_type):
     area = ctx._current_area or "A"
     window_id = ctx.open_observation_window(area, "harvest", expected_type)
     try:
-        selection = ctx.wait_camera_target(window_id, expected_type)
+        if ctx.is_open_loop and area in ("A", "C"):
+            selection = ctx.wait_camera_decision(window_id, expected_type)
+        else:
+            selection = ctx.wait_camera_target(window_id, expected_type)
     finally:
         ctx.close_observation_window()
+
+    if ctx.is_open_loop and area in ("A", "C"):
+        if selection.reason_code != "matched":
+            ctx.node.get_logger().info(
+                f"{area}区开环跳过抓取: {selection.reason_code} (type={selection.matched_type})"
+            )
+            return PickExecutionResult(
+                False, selection.reason_code, selection.matched_type)
+        preset_name = f"{side}_pick_openloop_a"
+        ctx.node.get_logger().info(f"{area}区开环执行抓取预设: {preset_name}")
+        motion = ctx.execute_arm_preset(preset_name)
+        if not motion.completed:
+            ctx.recover_home()
+            return PickExecutionResult(False, motion.reason_code, selection.matched_type)
+        ctx.record_pick(selection.matched_type)
+        return PickExecutionResult(True, "store_completed", selection.matched_type)
+
     if selection.target is None:
         ctx.recover_home()
         return PickExecutionResult(

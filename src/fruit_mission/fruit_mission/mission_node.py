@@ -33,13 +33,20 @@ class FruitMissionNode(Node):
         self.declare_parameter("waypoint_file", "")
         self.declare_parameter("mission_flow", "full")
         self.declare_parameter("map_frame", "odom")
+        self.declare_parameter("open_loop", False)
         config_path = self.get_parameter("config_path").value
         waypoint_file = str(self.get_parameter("waypoint_file").value).strip()
         mission_flow = str(self.get_parameter("mission_flow").value).strip().lower()
         map_frame = str(self.get_parameter("map_frame").value).strip()
+        open_loop_param = self.get_parameter("open_loop").value
+        if isinstance(open_loop_param, str):
+            open_loop = open_loop_param.strip().lower() in ("true", "1", "yes")
+        else:
+            open_loop = bool(open_loop_param)
         self.config = load_config(str(config_path), waypoint_file)
         self.config["mission_flow"] = mission_flow or "full"
         self.config["map_frame"] = map_frame
+        self.config["open_loop"] = open_loop
         try:
             self._entrypoint = ENTRYPOINTS[self.config["mission_flow"]]
         except KeyError as error:

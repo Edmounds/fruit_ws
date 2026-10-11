@@ -177,6 +177,7 @@ ros2 service call /arm_planner_node/reload_presets std_srvs/srv/Trigger '{}'
 
 ## Prohibited Actions
 
+- Do not modify files in `fruit_arm_planner`, especially `src/fruit_arm_planner/config/arm_presets.yaml`, without explicit and detailed instructions from the user. Presets and calibration are manually tuned by the operator; agents must never arbitrarily modify, reformat, add, or delete presets.
 - Do not hand-edit or commit `build/`, `install/`, `log/`, rosidl outputs, or `build/auto_serial_bridge/include/auto_serial_bridge/generated/*`. Change `src/auto_serial_bridge/config/protocol.yaml` / source interfaces and rebuild instead; protocol YAML changes require regeneration, not just restarting.
 - Do not write new tests, remove safety validation/STOP handling, introduce a second arm controller, or add dependencies (e.g. MoveIt) without agreement. Reuse existing code first; ask whether an edge case actually occurs before adding speculative fallback modules or defensive policies.
 - Never run `pip install` or `pip install --user` in system Python or `~/.local`. Training/annotation/export belongs in an independent venv **outside this workspace**, with its own requirements/lock file. Keep pip OpenCV, NumPy 2.x, Ultralytics and training OpenVINO tools out of ROS. Do not load `/usr/local` OpenCV 4.10, `cv2`, or related incompatible libraries during ROS build/runtime.

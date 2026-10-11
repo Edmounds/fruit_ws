@@ -683,8 +683,8 @@ private:
       const auto classified_at = std::chrono::steady_clock::now();
 
       msg::FruitDecision result;
-      const auto business_type = [area](const std::string & type) {
-          return area == 'A' && type != "bad" ? type.substr(type.rfind('_') + 1U) : type;
+      const auto business_type = [](const std::string & type) {
+          return type;
         };
       result.header = stream.aligned_depth->header;
       result.types.reserve(detections.size());

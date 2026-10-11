@@ -49,6 +49,7 @@ def _validated_node(context):
                     "waypoint_file": waypoint_file,
                     "mission_flow": LaunchConfiguration("mission_flow"),
                     "map_frame": map_frame,
+                    "open_loop": LaunchConfiguration("open_loop"),
                 },
             ],
         )
@@ -83,6 +84,11 @@ def generate_launch_description():
                 default_value="info",
                 choices=["debug", "info", "warn", "error", "fatal"],
                 description="Logging level for fruit_mission_node",
+            ),
+            DeclareLaunchArgument(
+                "open_loop",
+                default_value="false",
+                description="Enable open-loop picking in Zones A and C using direct presets",
             ),
 
             OpaqueFunction(function=_validated_node),

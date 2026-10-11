@@ -18,16 +18,18 @@ ODOM_FRAME="odom"
 MISSION_FLOW="full"
 DEBUG_RECORD_ENABLED=0
 REUSE_NAVIGATION=false
+OPEN_LOOP=false
 
 usage() {
   cat <<'EOF'
-Usage: ./start_fruit_mission.sh [--reuse-navigation] [--flow full|ac|a|b|c] [--debug]
+Usage: ./start_fruit_mission.sh [--reuse-navigation] [--flow full|ac|a|b|c] [--open-loop] [--debug]
 
 Start the complete perception, arm planner, odometry navigation, and mission stack in the
 startup-relative odom frame.
 Use --reuse-navigation after start_navigation.sh to keep its navigation
 and serial bridge running while starting perception, arm planner, and mission.
 --flow selects a Logic.py entry function; B/C-only entries also scan their QR.
+Use --open-loop to perform open-loop picking in Zones A and C using direct presets without 3D depth closure.
 Use --debug to record the mission profile under rosbags/. The profile includes
 navigation, perception, arm, QR, and selected raw camera image topics. Camera
 recording requires the camera and perception publishers. Recording starts in
@@ -47,6 +49,10 @@ while (($# > 0)); do
       ;;
     --reuse-navigation)
       REUSE_NAVIGATION=true
+      shift
+      ;;
+    --open-loop)
+      OPEN_LOOP=true
       shift
       ;;
     --debug)
@@ -483,6 +489,7 @@ done
 
 log "RUN directory: $RUN_DIR"
 log "RUN mission flow: $MISSION_FLOW"
+log "RUN open loop: $OPEN_LOOP"
 log "RUN branch: $(git -C "$WORKSPACE" branch --show-current)"
 log "RUN commit: $(git -C "$WORKSPACE" rev-parse --short HEAD)"
 # Check for existing stack components to reuse
@@ -635,7 +642,8 @@ start_process "mission" \
   ros2 launch "$MISSION_LAUNCH" \
     "use_sim_time:=false" \
     "waypoint_file:=$WAYPOINT_FILE" \
-    "mission_flow:=$MISSION_FLOW"
+    "mission_flow:=$MISSION_FLOW" \
+    "open_loop:=$OPEN_LOOP"
 
 if [[ "$REUSE_NAVIGATION" == true ]]; then
   log "RUN mission started; Ctrl-C stops mission, arm planner, and perception but keeps the reused navigation stack running"

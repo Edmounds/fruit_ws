@@ -170,6 +170,11 @@ class MissionContext:
             _latched_qos(),
         )
 
+    @property
+    def is_open_loop(self) -> bool:
+        """Whether open-loop picking is enabled for AC zones."""
+        return bool(self.config.get("open_loop", False))
+
     def go_to(self, waypoint_names: Union[str, Sequence[str]]) -> bool:
         """Reach one or more named waypoints through /follow_waypoints."""
         requested_names = (
@@ -686,6 +691,7 @@ class MissionContext:
         future = None
         if (not self._shenzhi_required
                 and (self._arm_home_confirmed or self._arm_shenzhi_confirmed
+                     or (self.is_open_loop and self._current_area in ("A", "C"))
                      or self.recover_home())
                 and self._camera_planner.is_stationary(
                     self.config['stationary']['joint_speed_rps'])):
@@ -944,18 +950,33 @@ class MissionContext:
                 if latest_types:
                     seen_types = merge_seen_types(seen_types, latest_types)
 
-                expected_present = (expected_type is None) or (expected_type in latest_types)
+                if expected_type == "ripe":
+                    expected_present = any(
+                        t == "ripe" or t.endswith("_ripe") for t in latest_types
+                    )
+                else:
+                    expected_present = (expected_type is None) or (expected_type in latest_types)
                 if expected_present:
                     unmatched_consecutive_frames = 0
                 elif latest_types and expected_type:
-                    if unripe_label and unripe_label in latest_types:
-                        unmatched_consecutive_frames += 1
-                        last_unmatched_reason = "target_unripe"
-                        last_unmatched_type = unripe_label
+                    if expected_type == "ripe":
+                        if any(t == "unripe" or t.endswith("_unripe") for t in latest_types):
+                            unmatched_consecutive_frames += 1
+                            last_unmatched_reason = "target_unripe"
+                            last_unmatched_type = latest_types[0]
+                        else:
+                            unmatched_consecutive_frames += 1
+                            last_unmatched_reason = "type_mismatch"
+                            last_unmatched_type = latest_types[0]
                     else:
-                        unmatched_consecutive_frames += 1
-                        last_unmatched_reason = "type_mismatch"
-                        last_unmatched_type = latest_types[0]
+                        if unripe_label and unripe_label in latest_types:
+                            unmatched_consecutive_frames += 1
+                            last_unmatched_reason = "target_unripe"
+                            last_unmatched_type = unripe_label
+                        else:
+                            unmatched_consecutive_frames += 1
+                            last_unmatched_reason = "type_mismatch"
+                            last_unmatched_type = latest_types[0]
 
                     if unmatched_consecutive_frames >= confirm_frames:
                         self.node.get_logger().info(
@@ -981,12 +1002,17 @@ class MissionContext:
                     "Camera target received from perception window: "
                     f"x={point[0]}, y={point[1]}, z={point[2]}"
                 )
-                if expected_type is None or expected_type in seen_types:
+                ripe_seen = [t for t in seen_types if t == "ripe" or t.endswith("_ripe")]
+                matched_ripe = expected_type == "ripe" and bool(ripe_seen)
+                if expected_type is None or matched_ripe or (expected_type in seen_types):
                     self._latest_camera_target = None
+                    resolved_type = (
+                        ripe_seen[0] if (expected_type == "ripe" and ripe_seen) else expected_type
+                    )
                     return _CameraSelection(
                         "matched",
                         _CameraTarget(target),
-                        expected_type,
+                        resolved_type,
                     )
 
             if time.monotonic() >= empty_deadline and not seen_types:
@@ -995,19 +1021,156 @@ class MissionContext:
                 )
                 return _CameraSelection("no_detection")
 
-        expected_seen = expected_type is not None and expected_type in seen_types
-        matched_type = expected_type if expected_seen else (
-            seen_types[0] if seen_types else None
-        )
         if not seen_types:
             reason_code = "no_detection"
-        elif expected_type and not expected_seen:
-            if unripe_label and unripe_label in seen_types:
+            matched_type = None
+        elif expected_type == "ripe":
+            ripe_seen = [t for t in seen_types if t == "ripe" or t.endswith("_ripe")]
+            if ripe_seen:
+                reason_code = "camera_target_timeout"
+                matched_type = ripe_seen[0]
+            elif any(t == "unripe" or t.endswith("_unripe") for t in seen_types):
                 reason_code = "target_unripe"
+                matched_type = seen_types[0]
             else:
                 reason_code = "type_mismatch"
+                matched_type = seen_types[0]
         else:
-            reason_code = "camera_target_timeout"
+            expected_seen = expected_type is not None and expected_type in seen_types
+            matched_type = expected_type if expected_seen else (
+                seen_types[0] if seen_types else None
+            )
+            if expected_type and not expected_seen:
+                if unripe_label and unripe_label in seen_types:
+                    reason_code = "target_unripe"
+                else:
+                    reason_code = "type_mismatch"
+            else:
+                reason_code = "camera_target_timeout"
+        return _CameraSelection(reason_code, matched_type=matched_type)
+
+    def wait_camera_decision(
+        self,
+        window_id: str,
+        expected_type: Optional[str],
+    ) -> _CameraSelection:
+        """Wait only for classification decision without requiring 3D depth lock."""
+        self._latest_camera_types = None
+        self._latest_camera_types_stamp_ns = 0
+        seen_types: list[str] = []
+        timeout_sec = float(self.config.get("camera_detection_timeout_sec", 10.0))
+        empty_timeout_sec = float(self.config.get("camera_empty_detection_timeout_sec", 2.5))
+        confirm_frames = int(self.config.get("camera_early_exit_confirm_frames", 3))
+
+        start_time = time.monotonic()
+        deadline = start_time + timeout_sec
+        empty_deadline = start_time + empty_timeout_sec
+
+        last_eval_stamp_ns = 0
+        unmatched_consecutive_frames = 0
+        last_unmatched_reason = "target_unripe"
+        last_unmatched_type: Optional[str] = None
+
+        if expected_type == "ripe":
+            unripe_label = "unripe"
+        elif expected_type:
+            unripe_label = f"{expected_type.rsplit('_', 1)[0]}_unripe"
+        else:
+            unripe_label = None
+
+        while rclpy.ok() and time.monotonic() < deadline:
+            rclpy.spin_once(self.node, timeout_sec=0.1)
+            if self._active_window_id != window_id:
+                break
+
+            if self._latest_camera_types_stamp_ns > last_eval_stamp_ns:
+                last_eval_stamp_ns = self._latest_camera_types_stamp_ns
+                latest_types = self._latest_camera_types or []
+                if latest_types:
+                    seen_types = merge_seen_types(seen_types, latest_types)
+
+                if expected_type == "ripe":
+                    ripe_candidates = [
+                        t for t in latest_types if t == "ripe" or t.endswith("_ripe")
+                    ]
+                    expected_present = bool(ripe_candidates)
+                    matched_fruit_type = ripe_candidates[0] if ripe_candidates else "ripe"
+                elif expected_type is None:
+                    expected_present = bool(latest_types)
+                    matched_fruit_type = latest_types[0] if latest_types else None
+                else:
+                    expected_present = expected_type in latest_types
+                    matched_fruit_type = expected_type
+
+                if expected_present:
+                    self.node.get_logger().info(
+                        "Perception decision matched: "
+                        f"expected={expected_type}, type={matched_fruit_type}"
+                    )
+                    return _CameraSelection(
+                        "matched",
+                        matched_type=matched_fruit_type,
+                    )
+
+                if latest_types and expected_type:
+                    if expected_type == "ripe":
+                        if any(t == "unripe" or t.endswith("_unripe") for t in latest_types):
+                            unmatched_consecutive_frames += 1
+                            last_unmatched_reason = "target_unripe"
+                            last_unmatched_type = latest_types[0]
+                        else:
+                            unmatched_consecutive_frames += 1
+                            last_unmatched_reason = "type_mismatch"
+                            last_unmatched_type = latest_types[0]
+                    else:
+                        if unripe_label and unripe_label in latest_types:
+                            unmatched_consecutive_frames += 1
+                            last_unmatched_reason = "target_unripe"
+                            last_unmatched_type = unripe_label
+                        else:
+                            unmatched_consecutive_frames += 1
+                            last_unmatched_reason = "type_mismatch"
+                            last_unmatched_type = latest_types[0]
+
+                    if unmatched_consecutive_frames >= confirm_frames:
+                        self.node.get_logger().info(
+                            f"Early exit after {unmatched_consecutive_frames} frames: "
+                            f"{last_unmatched_reason} (type={last_unmatched_type})"
+                        )
+                        return _CameraSelection(
+                            last_unmatched_reason,
+                            matched_type=last_unmatched_type,
+                        )
+
+            if time.monotonic() >= empty_deadline and not seen_types:
+                self.node.get_logger().info(
+                    f"Empty observation window timeout after {empty_timeout_sec:.1f}s"
+                )
+                return _CameraSelection("no_detection")
+
+        if not seen_types:
+            reason_code = "no_detection"
+            matched_type = None
+        elif expected_type == "ripe":
+            ripe_seen = [t for t in seen_types if t == "ripe" or t.endswith("_ripe")]
+            if ripe_seen:
+                return _CameraSelection("matched", matched_type=ripe_seen[0])
+            if any(t == "unripe" or t.endswith("_unripe") for t in seen_types):
+                reason_code = "target_unripe"
+                matched_type = seen_types[0]
+            else:
+                reason_code = "type_mismatch"
+                matched_type = seen_types[0]
+        elif expected_type and expected_type not in seen_types:
+            if unripe_label and unripe_label in seen_types:
+                reason_code = "target_unripe"
+                matched_type = unripe_label
+            else:
+                reason_code = "type_mismatch"
+                matched_type = seen_types[0]
+        else:
+            reason_code = "no_detection"
+            matched_type = seen_types[0] if seen_types else None
         return _CameraSelection(reason_code, matched_type=matched_type)
 
     def wait_b_targets(
