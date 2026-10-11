@@ -39,8 +39,8 @@ void validate_config(const BTargetSelectorConfig & config)
   if (config.acquisition_frames == 0U) {
     throw std::invalid_argument("camera_b_target_acquisition_frames must be positive");
   }
-  if (config.max_targets == 0U || config.max_targets > 2U) {
-    throw std::invalid_argument("camera_b_target_max_count must be between 1 and 2");
+  if (config.max_targets == 0U) {
+    throw std::invalid_argument("camera_b_target_max_count must be positive");
   }
   if (!std::isfinite(config.association_radius_m) || config.association_radius_m <= 0.0) {
     throw std::invalid_argument(
@@ -90,6 +90,11 @@ BTargetUpdate BTargetSelector::update(const std::vector<BTargetCandidate> & cand
   std::stable_sort(
     statistics.begin(), statistics.end(),
     [](const auto & left, const auto & right) {
+      const bool left_ripe = left.result.type.rfind("_ripe") != std::string::npos;
+      const bool right_ripe = right.result.type.rfind("_ripe") != std::string::npos;
+      if (left_ripe != right_ripe) {
+        return left_ripe;
+      }
       if (left.confidence != right.confidence) {
         return left.confidence > right.confidence;
       }

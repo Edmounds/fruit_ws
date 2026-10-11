@@ -219,6 +219,12 @@ public:
     if (b_target_max_count <= 0) {
       throw std::invalid_argument("camera_b_target_max_count must be positive");
     }
+    if (b_target_max_count > 2) {
+      RCLCPP_WARN(
+        get_logger(),
+        "camera_b_target_max_count is set to %ld (> 2). Proceeding without throwing; mission will select top 2 ripe targets.",
+        b_target_max_count);
+    }
     b_target_selector_config_ = BTargetSelectorConfig{
       static_cast<std::size_t>(b_target_acquisition_frames),
       static_cast<std::size_t>(b_target_max_count),

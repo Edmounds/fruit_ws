@@ -183,6 +183,10 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
 
 
 def _select_b_targets(ctx, label, target, targets):
+    if len(targets) > 2:
+        ctx.node.get_logger().warning(
+            f"B区{label}检测到 {len(targets)} 个目标 (>2)，将按评分只抓取前两个成熟目标。"
+        )
     decision = decide_b_tree_targets(
         target, expected_ripe_type(target),
         ((item.model_type, item.pixel_x, item.pixel_y, item.image_width) for item in targets),

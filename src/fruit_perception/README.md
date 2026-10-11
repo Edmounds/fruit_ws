@@ -201,8 +201,10 @@ displacements cannot keep republishing an arbitrarily old location.
 B observes once per tree. After the short warmup, all live candidates must be
 confirmed and currently visible; conflicting confirmed species keep observation
 pending rather than selecting a species from a single high score. Both ripe and
-unripe labels need evidence. Up to two confirmed targets are frozen together and
-repeated until the next observation reset. A fully empty window can return ready
+unripe labels need evidence. Confirmed targets are sorted prioritizing ripe targets;
+up to `camera_b_target_max_count` (warns if > 2) are frozen together and
+repeated until the next observation reset. The mission client selects at most two
+highest-scoring ripe targets for execution. A fully empty window can return ready
 with no targets; uncertain tracks remain pending until confirmation, expiry or
 the client's existing per-operation timeout. No additional observation retries
 are introduced.
