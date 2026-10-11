@@ -92,6 +92,16 @@ def validate_config(params: Mapping[str, Any]) -> None:
     ):
         if float(params.get(timeout_name, 0.0)) <= 0.0:
             raise ValueError(f"{timeout_name} must be positive")
+    if (
+        "camera_empty_detection_timeout_sec" in params
+        and float(params.get("camera_empty_detection_timeout_sec", 0.0)) <= 0.0
+    ):
+        raise ValueError("camera_empty_detection_timeout_sec must be positive")
+    if (
+        "camera_early_exit_confirm_frames" in params
+        and int(params.get("camera_early_exit_confirm_frames", 0)) <= 0
+    ):
+        raise ValueError("camera_early_exit_confirm_frames must be positive")
     if not str(params.get("map_frame", "")).strip():
         raise ValueError("map_frame must not be empty")
     if not str(params.get("base_frame", "")).strip():
