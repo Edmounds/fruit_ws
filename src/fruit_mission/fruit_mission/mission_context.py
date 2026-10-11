@@ -104,6 +104,7 @@ class MissionContext:
         self._latest_c_plan: Optional[Dict[str, Any]] = None
         self._pending_observation = None
         self._observation_side = None
+        self._gripper_is_open = False
         self._arm_home_confirmed = False
         self._arm_shenzhi_confirmed = False
         self._shenzhi_required = False
@@ -655,6 +656,7 @@ class MissionContext:
             self._observation_side = None
             return _ArmMotionResult(False, reason)
         self._observation_side = side
+        self._gripper_is_open = True
         gripper_result = self.open_gripper()
         if not gripper_result.completed:
             self._observation_side = None
@@ -663,10 +665,14 @@ class MissionContext:
 
     def open_gripper(self) -> _ArmMotionResult:
         """OPEN at measured raw joints, then HOLD for the configured gripper dwell."""
+        if self._gripper_is_open:
+            return _ArmMotionResult(True, 'completed')
         self._arm_home_confirmed = False
         self._arm_shenzhi_confirmed = False
         completed, reason = self._camera_planner.open_gripper(
             self._wait_until, self.config['stationary']['joint_speed_rps'])
+        if completed:
+            self._gripper_is_open = True
         return _ArmMotionResult(completed, reason)
 
     def start_observation(self, side: str) -> None:
@@ -720,6 +726,8 @@ class MissionContext:
         self._arm_shenzhi_confirmed = False
         completed, reason = self._camera_planner.move_to_base_target(
             request, self._wait_until, self.config['stationary']['joint_speed_rps'])
+        if completed:
+            self._gripper_is_open = False
         return _ArmMotionResult(completed, reason)
 
     def set_expected_fruit_type(self, expected_type: Optional[str]) -> None:
@@ -888,8 +896,10 @@ class MissionContext:
                 10.0)
             if not completed:
                 reason = 'home_not_stationary'
-        self._arm_home_confirmed = preset_name == 'home' and completed
+        self._arm_home_confirmed = (preset_name == 'home' or 'store' in preset_name) and completed
         self._arm_shenzhi_confirmed = preset_name == 'shenzhi' and completed
+        if completed and ('store' in preset_name or 'look' in preset_name):
+            self._gripper_is_open = True
         if self._arm_shenzhi_confirmed:
             self._shenzhi_required = False
         return _ArmMotionResult(completed, reason)

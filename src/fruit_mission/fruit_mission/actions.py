@@ -125,19 +125,16 @@ def observe_and_pick(ctx, *, side, expected_type):
 
 
 def _grasp_and_collect(ctx, request, *, store_preset, matched_type=None):
-    """One CLOSE/dwell -> side Store/OPEN -> Home; failure recovers once."""
+    """One CLOSE/dwell -> side Store/OPEN; failure recovers once."""
     motion = ctx.move_to_base_target(request)
     if motion.completed:
         motion = ctx.execute_arm_preset(store_preset)
     if not motion.completed:
         ctx.recover_home()
         return PickExecutionResult(False, motion.reason_code, matched_type)
-    home = ctx.execute_arm_preset("home")
-    if home.completed:
-        ctx.record_pick(matched_type)
+    ctx.record_pick(matched_type)
     return PickExecutionResult(
-        home.completed, "store_completed" if home.completed else home.reason_code,
-        matched_type,
+        True, "store_completed", matched_type,
     )
 
 

@@ -72,191 +72,310 @@ arm_planner_node:
       #     - { target: [0.20, 0.0, 0.25, 0.0], duration_ms: 1500, gripper: 0, dwell_ms: 0, linear: true }
 
       zero:
-        description: "机械臂基准零位姿 (大臂竖直朝天，小臂水平朝前)"
-        coordinate_frame: "link_angles"
+        description: 机械臂基准零位姿 (大臂竖直朝天，小臂水平朝前)
+        coordinate_frame: link_angles
         waypoints:
-          - { target: [0.0, 0.0, 0.0, 0.0], duration_ms: 2500, gripper: 0 }
-
+        - target:
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          duration_ms: 2500
+          gripper: 0
       home:
-        description: "返回运动初始位置"
+        description: 返回运动初始位置
         coordinate_frame: cartesian
         waypoints:
         - target:
           - 0.22
-          - -0.00
+          - 0.0
           - 0.17
           - 0.0
           duration_ms: 1000
           gripper: 0
-
       shenzhi:
-        description: "伸直位姿"
-        coordinate_frame: "link_angles"
-        waypoints:
-          - { target: [0.0, 0.0, 90.0, 0.0], duration_ms: 1000, gripper: 0 }
-
-      left_look_a:
-        description: "机械臂左侧观察位姿"
-        coordinate_frame: "cartesian"
-        waypoints:
-          - { target: [0.0, 0.15, 0.30, -58.0], duration_ms: 1000, gripper: 0 }
-
-      right_look_a:
-        description: "机械臂右侧观察位姿"
-        coordinate_frame: "cartesian"
-        waypoints:
-          - { target: [0.0, -0.15, 0.30, -58.0], duration_ms: 1000, gripper: 0 }
-
-      left_pick_openloop_a:
-        description: "左方开环控制抓取"
-        coordinate_frame: "cartesian"
-        waypoints:
-          - { target: [0.0, 0.42, -0.13, 0.0], duration_ms: 2500, gripper: 2 }
-          - { target: [0.0, 0.29, 0.23, 0.0], duration_ms: 1000, gripper: 0 }
-          - {duration_ms: 1000, gripper: 1, target: [-0.18, 0.01, 0.23, 0.0]}
-          - {duration_ms: 1000, gripper: 0, target: [0.00, 0.22, 0.23, 0.0]}
-          - {duration_ms: 1000, gripper: 0, target: [0.25, 0.00, 0.17, 0.0]}
-
-      right_pick_openloop_a:
-        description: "右方开环控制抓取"
-        coordinate_frame: "cartesian"
-        waypoints:
-          - { target: [0.0, -0.42, -0.13, 0.0], duration_ms: 2500, gripper: 2 }
-          - { target: [0.0, -0.29, 0.23, 0.0], duration_ms: 1000, gripper: 0 }
-          - {duration_ms: 1000, gripper: 1, target: [-0.18, -0.01, 0.23, 0.0]}
-          - {duration_ms: 1000, gripper: 0, target: [0.00, -0.22, 0.23, 0.0]}
-          - {duration_ms: 1000, gripper: 0, target: [0.25, -0.00, 0.17, 0.0]}
-
-      left_store_a:
-        description: "左方抓取完毕后存储并回到原位"
-        coordinate_frame: cartesian
+        description: 伸直位姿
+        coordinate_frame: link_angles
         waypoints:
         - target:
-          - 0.00
-          - 0.29
-          - 0.23
           - 0.0
-          duration_ms: 2000
+          - 0.0
+          - 90.0
+          - 0.0
+          duration_ms: 1000
           gripper: 0
-        - {duration_ms: 2000, gripper: 1, target: [-0.18, 0.01, 0.23, 0.0]}
-        - {duration_ms: 2000, gripper: 0, target: [0.00, 0.22, 0.23, 0.0],is_via_point: true}
-        - {duration_ms: 2000, gripper: 0, target: [0.22, 0.00, 0.17, 0.0]}
-
-      right_store_a:
-        description: "右方抓取完毕后存储并回到原位"
+      left_look_a:
+        description: 机械臂左侧观察位姿
         coordinate_frame: cartesian
         waypoints:
         - target:
-          - 0.00
+          - 0.001
+          - 0.15
+          - 0.3
+          - -65.0
+          duration_ms: 1000
+          gripper: 1
+          dwell_ms: 0
+      right_look_a:
+        description: 机械臂右侧观察位姿
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.001
+          - -0.15
+          - 0.3
+          - -65.0
+          duration_ms: 1000
+          gripper: 1
+          dwell_ms: 0
+      left_store_a:
+        description: 左方抓取完毕后存储并回到原位
+        coordinate_frame: cartesian
+        waypoints:
+        - target: [0.0, 0.29, 0.23, 0.0]
+          duration_ms: 1000
+          gripper: 0
+        - target: [-0.18, 0.01, 0.23, 0.0]
+          duration_ms: 996
+          gripper: 1
+        - target: [0.0, 0.22, 0.23, 0.0]
+          duration_ms: 1000
+          gripper: 0
+          is_via_point: true
+      right_store_a:
+        description: 右方抓取完毕后存储并回到原位
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.0
           - -0.29
           - 0.23
           - 0.0
-          duration_ms: 2000
+          duration_ms: 1000
           gripper: 0
-        - {duration_ms: 2000, gripper: 1, target: [-0.18, -0.01, 0.23, 0.0]}
-        - {duration_ms: 2000, gripper: 0, target: [0.00, -0.22, 0.23, 0.0],is_via_point: true}
-        - {duration_ms: 2000, gripper: 0, target: [0.22, -0.00, 0.17, 0.0]}
-
+        - target:
+          - -0.18
+          - -0.01
+          - 0.23
+          - 0.0
+          duration_ms: 1000
+          gripper: 1
+        - target:
+          - 0.0
+          - -0.22
+          - 0.23
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
+          is_via_point: true
+        - target:
+          - 0.22
+          - 0.0
+          - 0.17
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
       qr_scan:
-        description: "二维码扫描位姿"
+        description: 二维码扫描位姿
         coordinate_frame: cartesian
         waypoints:
         - target:
           - 0.3532
-          - 0.00
+          - 0.0
           - 0.1289
           - 0.0
           duration_ms: 1000
           gripper: 0
-
       left_look_c:
-        description: "机械臂左侧观察位姿"
-        coordinate_frame: "cartesian"
-        waypoints:
-          - { target: [0.0, 0.15, 0.30, -58.0], duration_ms: 1000, gripper: 0 }
-
-      right_look_c:
-        description: "机械臂右侧观察位姿"
-        coordinate_frame: "cartesian"
-        waypoints:
-          - { target: [0.0, -0.15, 0.30, 58.0], duration_ms: 1000, gripper: 0 }
-
-      left_store_c:
-        description: "左方抓取完毕后存储并回到原位"
+        description: 机械臂左侧观察位姿
         coordinate_frame: cartesian
         waypoints:
         - target:
-          - 0.00
+          - 0.0
+          - 0.15
+          - 0.3
+          - -65.0
+          duration_ms: 1000
+          gripper: 1
+          dwell_ms: 0
+      right_look_c:
+        description: 机械臂右侧观察位姿
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.0
+          - -0.15
+          - 0.3
+          - -65.0
+          duration_ms: 1000
+          gripper: 1
+          dwell_ms: 0
+      left_store_c:
+        description: 左方抓取完毕后存储并回到原位
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.0
           - 0.29
           - 0.23
           - 0.0
           duration_ms: 2000
           gripper: 0
-        - {duration_ms: 2000, gripper: 1, target: [-0.18, 0.01, 0.23, 0.0]}
-        - {duration_ms: 2000, gripper: 0, target: [0.00, 0.22, 0.23, 0.0]}
-        - {duration_ms: 2000, gripper: 0, target: [0.22, 0.00, 0.17, 0.0]}
-
+        - target:
+          - -0.18
+          - 0.01
+          - 0.23
+          - 0.0
+          duration_ms: 2000
+          gripper: 1
+        - target:
+          - 0.0
+          - 0.22
+          - 0.23
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+        - target:
+          - 0.22
+          - 0.0
+          - 0.17
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
       right_store_c:
-        description: "右方抓取完毕后存储并回到原位"
+        description: 右方抓取完毕后存储并回到原位
         coordinate_frame: cartesian
         waypoints:
         - target:
-          - 0.00
+          - 0.0
           - -0.29
           - 0.23
           - 0.0
           duration_ms: 2000
           gripper: 0
-        - {duration_ms: 2000, gripper: 1, target: [-0.18, -0.01, 0.23, 0.0]}
-        - {duration_ms: 2000, gripper: 0, target: [0.00, -0.22, 0.23, 0.0]}
-        - {duration_ms: 2000, gripper: 0, target: [0.22, -0.00, 0.17, 0.0]}
-
+        - target:
+          - -0.18
+          - -0.01
+          - 0.23
+          - 0.0
+          duration_ms: 2000
+          gripper: 1
+        - target:
+          - 0.0
+          - -0.22
+          - 0.23
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+        - target:
+          - 0.22
+          - 0.0
+          - 0.17
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
       left_look_b:
-        description: "机械臂左侧观察位姿"
-        coordinate_frame: "cartesian"
+        description: 机械臂左侧观察位姿
+        coordinate_frame: cartesian
         waypoints:
-          - { target: [0.0203, 0.0703, 0.303, -46.7], duration_ms: 1000, gripper: 0 }
-
+        - target:
+          - 0.0203
+          - 0.0703
+          - 0.303
+          - -46.7
+          duration_ms: 1000
+          gripper: 1
+          dwell_ms: 0
       right_look_b:
-        description: "机械臂右侧观察位姿"
-        coordinate_frame: "cartesian"
+        description: 机械臂右侧观察位姿
+        coordinate_frame: cartesian
         waypoints:
-          - { target: [0.0203, -0.0703, 0.303, -46.7], duration_ms: 1000, gripper: 0 }
-
+        - target:
+          - 0.0203
+          - -0.0703
+          - 0.303
+          - -46.7
+          duration_ms: 1000
+          gripper: 1
+          dwell_ms: 0
       left_store_b_up:
-        description: "左方抓取完毕后存储并回到原位"
+        description: 左方抓取完毕后存储并回到原位
         coordinate_frame: cartesian
         waypoints:
         - target:
           - 0.0417
           - 0.137
           - 0.176
-          - -0.0
+          - 0.0
           duration_ms: 1000
           gripper: 0
           linear: true
-        - {duration_ms: 1000, gripper: 1, target: [-0.1962624798929228, 0.00965640213802654, 0.2506981509144537, -5.973156743762218], linear: true }
-        - {duration_ms: 1000, gripper: 0, target: [0.042288450212795675, 0.15905864173713108, 0.3536682379281416, -4.166016328536959], linear: true, is_via_point: true }
-        - { target: [0.1202, 0.0000, 0.550, 0.0], duration_ms: 1000, gripper: 0 , linear: true, is_via_point: true }
-
+        - target:
+          - -0.1962624798929228
+          - 0.00965640213802654
+          - 0.2506981509144537
+          - -5.973156743762218
+          duration_ms: 1000
+          gripper: 1
+          linear: true
+        - target:
+          - 0.042288450212795675
+          - 0.15905864173713108
+          - 0.3536682379281416
+          - -4.166016328536959
+          duration_ms: 1000
+          gripper: 0
+          linear: true
+          is_via_point: true
+        - target:
+          - 0.1202
+          - 0.0
+          - 0.55
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
+          linear: true
+          is_via_point: true
       right_store_b_up:
-        description: "右方抓取完毕后存储并回到原位"
+        description: 右方抓取完毕后存储并回到原位
         coordinate_frame: cartesian
         waypoints:
         - target:
           - 0.0417
           - -0.137
           - 0.176
-          - -0.0
+          - 0.0
           duration_ms: 1000
           gripper: 0
           linear: true
-        - {duration_ms: 1000, gripper: 1, target: [-0.1962624798929228, -0.00965640213802654, 0.2506981509144537, -5.973156743762218], linear: true }
-        - {duration_ms: 1000, gripper: 0, target: [0.042288450212795675, -0.15905864173713108, 0.3536682379281416, -4.166016328536959], linear: true, is_via_point: true }
-        - { target: [0.1202, -0.0000, 0.550, 0.0], duration_ms: 1000, gripper: 0 , linear: true, is_via_point: true }
-
+        - target:
+          - -0.1962624798929228
+          - -0.00965640213802654
+          - 0.2506981509144537
+          - -5.973156743762218
+          duration_ms: 1000
+          gripper: 1
+          linear: true
+        - target:
+          - 0.042288450212795675
+          - -0.15905864173713108
+          - 0.3536682379281416
+          - -4.166016328536959
+          duration_ms: 1000
+          gripper: 0
+          linear: true
+          is_via_point: true
+        - target:
+          - 0.1202
+          - 0.0
+          - 0.55
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
+          linear: true
+          is_via_point: true
       left_store_b_down:
-        description: "左方抓取完毕后存储并回到原位"
+        description: 左方抓取完毕后存储并回到原位
         coordinate_frame: cartesian
         waypoints:
         - target:
@@ -267,13 +386,42 @@ arm_planner_node:
           duration_ms: 1000
           gripper: 0
           linear: true
-        - {duration_ms: 2000, gripper: 0, target: [0.040, 0.16, 0.1659, -0.0], linear: true }
-        - {duration_ms: 1000, gripper: 1, target: [-0.1962624798929228, 0.00965640213802654, 0.2506981509144537, -5.973156743762218], linear: true }
-        - {duration_ms: 1000, gripper: 0, target: [0.042288450212795675, 0.15905864173713108, 0.3536682379281416, -4.166016328536959], linear: true, is_via_point: true }
-        - { target: [0.1202, 0.0000, 0.550, 0.0], duration_ms: 1000, gripper: 0 , linear: true, is_via_point: true }
-
+        - target:
+          - 0.04
+          - 0.16
+          - 0.1659
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+          linear: true
+        - target:
+          - -0.1962624798929228
+          - 0.00965640213802654
+          - 0.2506981509144537
+          - -5.973156743762218
+          duration_ms: 1000
+          gripper: 1
+          linear: true
+        - target:
+          - 0.042288450212795675
+          - 0.15905864173713108
+          - 0.3536682379281416
+          - -4.166016328536959
+          duration_ms: 1000
+          gripper: 0
+          linear: true
+          is_via_point: true
+        - target:
+          - 0.1202
+          - 0.0
+          - 0.55
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
+          linear: true
+          is_via_point: true
       right_store_b_down:
-        description: "右方抓取完毕后存储并回到原位"
+        description: 右方抓取完毕后存储并回到原位
         coordinate_frame: cartesian
         waypoints:
         - target:
@@ -284,7 +432,101 @@ arm_planner_node:
           duration_ms: 1000
           gripper: 0
           linear: true
-        - {duration_ms: 2000, gripper: 0, target: [0.040, -0.16, 0.1659, -0.0], linear: true }
-        - {duration_ms: 1000, gripper: 1, target: [-0.1962624798929228, -0.00965640213802654, 0.2506981509144537, -5.973156743762218], linear: true }
-        - {duration_ms: 1000, gripper: 0, target: [0.042288450212795675, -0.15905864173713108, 0.3536682379281416, -4.166016328536959], linear: true, is_via_point: true }
-        - { target: [0.1202, 0.0000, 0.550, 0.0], duration_ms: 1000, gripper: 0 , linear: true, is_via_point: true }
+        - target:
+          - 0.04
+          - -0.16
+          - 0.1659
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+          linear: true
+        - target:
+          - -0.1962624798929228
+          - -0.00965640213802654
+          - 0.2506981509144537
+          - -5.973156743762218
+          duration_ms: 1000
+          gripper: 1
+          linear: true
+        - target:
+          - 0.042288450212795675
+          - -0.15905864173713108
+          - 0.3536682379281416
+          - -4.166016328536959
+          duration_ms: 1000
+          gripper: 0
+          linear: true
+          is_via_point: true
+        - target:
+          - 0.1202
+          - 0.0
+          - 0.55
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
+          linear: true
+          is_via_point: true
+      left_pick_openloop_a:
+        description: 左方开环控制抓取
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.0
+          - 0.42
+          - -0.12
+          - 0.0
+          duration_ms: 2500
+          gripper: 2
+        - target:
+          - 0.0
+          - 0.29
+          - 0.23
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
+        - target:
+          - -0.18
+          - 0.01
+          - 0.23
+          - 0.0
+          duration_ms: 1000
+          gripper: 1
+        - target:
+          - 0.0
+          - 0.22
+          - 0.23
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
+      right_pick_openloop_a:
+        description: 右方开环控制抓取
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.0
+          - -0.42
+          - -0.12
+          - 0.0
+          duration_ms: 2500
+          gripper: 2
+        - target:
+          - 0.0
+          - -0.29
+          - 0.23
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
+        - target:
+          - -0.18
+          - -0.01
+          - 0.23
+          - 0.0
+          duration_ms: 1000
+          gripper: 1
+        - target:
+          - 0.0
+          - -0.22
+          - 0.23
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
