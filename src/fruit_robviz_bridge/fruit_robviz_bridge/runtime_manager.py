@@ -276,6 +276,7 @@ class RuntimeManager:
             pid = None
         return {
             "id": task_id,
+            "task_id": task_id,
             "state": state,
             "ready": ready,
             "detail": detail,
