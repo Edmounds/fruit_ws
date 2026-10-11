@@ -125,17 +125,15 @@ C_entrance_waypoint_2 -- C_4_8 -- C_3_7 -- C_2_6 -- C_1_5 -- C_top_waypoint_2
 ```text
 A: A1 -> A2 -> A3 -> A4 -> to_B_QR_waypoint
 B QR: B_QR
-B 到 C: to_C_waypoint_1 -> to_C_waypoint_2 -> to_C_waypoint_3 -> C_QR
+B 树位: B1 -> B2 -> B3 -> B4 -> B5 -> B6 -> B7 -> B8
+B 到 C: to_C_waypoint_1 -> C_QR
 C: C_entrance_passway_1 / C_top_waypoint_1 / C_top_waypoint_2 /
    C_entrance_waypoint_2，以及 C_8_12 ... C_4_8
-C 回 B: C_entrance_waypoint_2 -> to_B_waypoint_1 -> to_B_waypoint_2
-       -> toB_waypoint_3 -> B1
-B 树位: B1 -> B2 -> B3 -> B4 -> B5 -> B6 -> B7 -> B8
 ```
 
-`C_QR` 只负责停车扫码。C 任务完成后，`full` 才沿 C 到 B 过渡返回 B；`ac` 在 C
+`C_QR` 只负责停车扫码。当前全流程按 A → B → C 顺序执行。`ac` 在 C
 完成后结束。`a` 在 `to_B_QR_waypoint` 结束，`b` 从 `B_QR` 扫码后执行 B1-B8，
-再到 `to_C_waypoint_2 -> to_C_waypoint_3` 结束，`c` 在 `C_QR` 扫码并完成 C 后结束。
+再到 `to_C_waypoint_1` 结束，`c` 在 `C_QR` 扫码并完成 C 后结束。
 B 区观察方向按车辆视角交替：B1、B3、B5、B7 使用 `right`，B2、B4、B6、B8 使用 `left`。
 
 ## 7. Waypoint Maker 录点流程

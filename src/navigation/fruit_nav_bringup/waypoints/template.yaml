@@ -12,11 +12,23 @@ points:
   type: waypoint
 - name: B_QR
   type: goal
+- name: B1
+  type: goal
+- name: B2
+  type: goal
+- name: B3
+  type: goal
+- name: B4
+  type: goal
+- name: B5
+  type: goal
+- name: B6
+  type: goal
+- name: B7
+  type: goal
+- name: B8
+  type: goal
 - name: to_C_waypoint_1
-  type: waypoint
-- name: to_C_waypoint_2
-  type: waypoint
-- name: to_C_waypoint_3
   type: waypoint
 - name: C_QR
   type: goal
@@ -44,25 +56,3 @@ points:
   type: goal
 - name: C_entrance_waypoint_2
   type: waypoint
-- name: to_B_waypoint_1
-  type: waypoint
-- name: to_B_waypoint_2
-  type: waypoint
-- name: toB_waypoint_3
-  type: waypoint
-- name: B1
-  type: goal
-- name: B2
-  type: goal
-- name: B3
-  type: goal
-- name: B4
-  type: goal
-- name: B5
-  type: goal
-- name: B6
-  type: goal
-- name: B7
-  type: goal
-- name: B8
-  type: goal

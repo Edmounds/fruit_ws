@@ -3,6 +3,8 @@ fruit_mission:
     qr_plan_timeout_sec: 10.0
     qr_fallback_file: "/home/rc4/fruit_ws/src/fruit_mission/config/qr_fallback.yaml"
     camera_detection_timeout_sec: 10.0
+    camera_empty_detection_timeout_sec: 2.5
+    camera_early_exit_confirm_frames: 3
     stationary:
       joint_speed_rps: 0.05
     c_distribution_output_dir: "/home/rc4/fruit_ws/tmp/fruit_mission"

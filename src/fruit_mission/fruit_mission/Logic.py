@@ -20,7 +20,7 @@ def main(ctx):
     run_b(ctx, b_plan)
 
     arrived = navigate(ctx, [
-        "to_C_waypoint_1", "to_C_waypoint_2", "to_C_waypoint_3", "C_QR",
+        "to_C_waypoint_1", "C_QR",
     ])
     c_plan = scan_c_qr(ctx, arrived=arrived)
     run_c(ctx, c_plan)
@@ -112,9 +112,9 @@ def debug_b(ctx):
     """B-only entry: scan the real QR before the same B work function."""
     arrived = navigate(ctx, ["B_QR"])
     plan = scan_b_qr(ctx, arrived=arrived)
-    navigate(ctx, ["to_C_waypoint_1", "B1"])
+    navigate(ctx, ["B1"])
     run_b(ctx, plan)
-    navigate(ctx, ["to_C_waypoint_2", "to_C_waypoint_3"])
+    navigate(ctx, ["to_C_waypoint_1"])
 
 
 def debug_c(ctx):
@@ -130,7 +130,7 @@ def run_ac(ctx):
     arrived = navigate(ctx, ["to_B_QR_waypoint", "B_QR"])
     scan_b_qr(ctx, arrived=arrived)
     arrived = navigate(ctx, [
-        "to_C_waypoint_1", "to_C_waypoint_2", "to_C_waypoint_3", "C_QR",
+        "to_C_waypoint_1", "C_QR",
     ])
     plan = scan_c_qr(ctx, arrived=arrived)
     run_c(ctx, plan)
