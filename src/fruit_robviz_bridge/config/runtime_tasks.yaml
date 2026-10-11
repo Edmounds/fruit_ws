@@ -1,0 +1,58 @@
+# Commands in this file are allowlisted local entry points.
+# The browser can select task IDs, but cannot submit a command.
+tasks:
+  foxglove_bridge:
+    readiness:
+      tcp_port: 8765
+
+  serial_controller:
+    command: "ros2 launch auto_serial_bridge auto_serial_bridge.launch.py"
+    readiness:
+      ros_nodes:
+        - /serial_controller
+    log_file: serial_controller.log
+
+  arm_planner_node:
+    command: "ros2 launch fruit_arm_planner fruit_arm_planner.launch.py"
+    dependencies:
+      - serial_controller
+    readiness:
+      ros_nodes:
+        - /arm_planner_node
+      ros_services:
+        - /arm_planner_node/move_cartesian
+        - /arm_planner_node/move_joints
+        - /arm_planner_node/execute_preset
+        - /arm_planner_node/stop
+    stop_command: "ros2 service call /arm_planner_node/stop std_srvs/srv/Trigger '{}'"
+    log_file: arm_planner_node.log
+
+  arm:
+    dependencies:
+      - foxglove_bridge
+      - serial_controller
+      - arm_planner_node
+
+  perception:
+    command: "/home/rc4/fruit_ws/start_fruit_perception.sh --zone A"
+    readiness:
+      process_pattern: "/home/rc4/fruit_ws/start_fruit_perception.sh"
+    log_file: perception.log
+
+  navigation:
+    command: "/home/rc4/fruit_ws/start_navigation.sh"
+    readiness:
+      process_pattern: "/home/rc4/fruit_ws/start_navigation.sh"
+    log_file: navigation.log
+
+  mission:
+    command: "/home/rc4/fruit_ws/start_fruit_mission.sh"
+    readiness:
+      process_pattern: "/home/rc4/fruit_ws/start_fruit_mission.sh"
+    log_file: mission.log
+
+  waypoint_recording:
+    command: "/home/rc4/fruit_ws/waypoints_maker.sh"
+    readiness:
+      process_pattern: "/home/rc4/fruit_ws/waypoints_maker.sh"
+    log_file: waypoint_recording.log
