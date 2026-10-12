@@ -230,14 +230,16 @@ class FruitQrPlannerNode(Node):
                 self._candidate = None
                 self._candidate_count = 0
                 return
+            plan = (build_b_plan(canonical_payload) if target_area == 'B'
+                    else build_c_plan(canonical_payload))
             if canonical_payload != self._candidate:
                 self._candidate = canonical_payload
                 self._candidate_count = 1
             else:
                 self._candidate_count += 1
-            plan = (build_b_plan(canonical_payload) if target_area == 'B'
-                    else build_c_plan(canonical_payload))
         except Exception as exc:
+            self._candidate = None
+            self._candidate_count = 0
             self.get_logger().warning(
                 f"QR {target_area} image or payload rejected: {exc}", throttle_duration_sec=2.0
             )
@@ -272,10 +274,16 @@ class FruitQrPlannerNode(Node):
         for barcode in self._decode_barcodes(image):
             if barcode.type != "QRCODE":
                 continue
+            text = None
             try:
-                payloads.append(barcode.data.decode("utf-8"))
-            except UnicodeDecodeError as exc:
-                raise ValueError("QR payload is not valid UTF-8") from exc
+                text = barcode.data.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    text = barcode.data.decode("gbk")
+                except UnicodeDecodeError:
+                    pass
+            if text is not None and text.strip():
+                payloads.append(text)
         return select_unique_payload(payloads)
 
 
