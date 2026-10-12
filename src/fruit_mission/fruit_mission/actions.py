@@ -11,11 +11,15 @@ from fruit_mission.decisions import spoken_model_type
 from fruit_qr_planner.planner import build_b_plan, build_c_plan
 
 
-def navigate(ctx, waypoints, *, side=None):
-    """Navigate with optional concurrent Look; failed handoffs get one safe Home."""
-    if side is None and not (ctx._arm_home_confirmed or ctx._arm_shenzhi_confirmed):
+def navigate(ctx, waypoints, *, side=None, preset=None):
+    """Navigate with optional concurrent Look or preset; failed handoffs get one safe Home."""
+    if (
+        side is None
+        and preset is None
+        and not (ctx._arm_home_confirmed or ctx._arm_shenzhi_confirmed)
+    ):
         ctx.recover_home()
-    if ctx.navigate_named(waypoints, observation_side=side):
+    if ctx.navigate_named(waypoints, observation_side=side, arm_preset=preset):
         return True
     ctx.node.get_logger().warning(f"导航失败，跳过当前动作: {' -> '.join(waypoints)}")
     ctx.recover_home()

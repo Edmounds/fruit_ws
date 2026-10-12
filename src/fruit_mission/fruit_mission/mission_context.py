@@ -102,6 +102,7 @@ class MissionContext:
         self._latest_b_plan: Optional[Dict[str, Any]] = None
         self._latest_c_plan: Optional[Dict[str, Any]] = None
         self._pending_observation = None
+        self._pending_arm_preset: Optional[tuple[str, Any, str]] = None
         self._arm_home_confirmed = False
         self._arm_shenzhi_confirmed = False
         self._shenzhi_required = False
@@ -174,9 +175,14 @@ class MissionContext:
         return bool(self.config.get("open_loop", False))
 
     def navigate_named(
-        self, waypoint_names: Sequence[str], observation_side: Optional[str] = None,
+        self,
+        waypoint_names: Sequence[str],
+        observation_side: Optional[str] = None,
+        arm_preset: Optional[str] = None,
     ) -> bool:
         """Send exactly the requested names, without YAML-order expansion."""
+        if observation_side is not None and arm_preset is not None:
+            raise ValueError("Cannot specify both observation_side and arm_preset")
         names = [str(name) for name in waypoint_names]
         if not names:
             return True
@@ -188,10 +194,21 @@ class MissionContext:
             return False
         if observation_side is not None:
             self.start_observation(observation_side)
+        if arm_preset is not None:
+            self.start_arm_preset(arm_preset)
         if not self._send_waypoint_names(names):
+            if arm_preset is not None:
+                self.finish_arm_preset()
             return False
         self._current_waypoint_name = names[-1]
         self._current_route_yaw = self._waypoint_yaw(names[-1])
+        if arm_preset is not None:
+            result = self.finish_arm_preset()
+            if not result.completed:
+                self.node.get_logger().warning(
+                    f"并发机械臂预设执行失败: {result.reason_code}"
+                )
+                return False
         return True
 
     def navigate_c_position(self, position_id: int) -> Dict[str, Any]:
@@ -316,13 +333,19 @@ class MissionContext:
     ) -> bool:
         if not names:
             return True
-        if self._shenzhi_required or not self._navigation_stopped or not (
+        has_pending_motion = (
+            (self._pending_observation is not None and self._pending_observation[1] is not None)
+            or (self._pending_arm_preset is not None and self._pending_arm_preset[1] is not None)
+        )
+        arm_safe = (
             ((self._arm_home_confirmed or self._arm_shenzhi_confirmed)
-             and self._camera_planner.wait_stationary(self._wait_until)) or (
-                self._pending_observation is not None
-                and self._pending_observation[1] is not None
-            )
-        ):
+             and self._camera_planner.wait_stationary(self._wait_until))
+            or has_pending_motion
+        )
+        shenzhi_blocked = self._shenzhi_required and not (
+            self._pending_arm_preset is not None and self._pending_arm_preset[0] == "shenzhi"
+        )
+        if shenzhi_blocked or not self._navigation_stopped or not arm_safe:
             self.node.get_logger().warning('Skipping navigation: safe motion handoff unconfirmed')
             return False
         try:
@@ -612,26 +635,82 @@ class MissionContext:
                 self._arm_shenzhi_confirmed = False
         self._pending_observation = (side, future, reason)
 
-    def _observation_failed(self) -> bool:
-        if self._pending_observation is None:
+    def _arm_preset_failed(self) -> bool:
+        if self._pending_arm_preset is None:
             return False
-        _side, future, _reason = self._pending_observation
+        _name, future, _reason = self._pending_arm_preset
         if future is None:
-            return False  # No motion submitted; navigation can still reach this point.
+            return False
         if future.cancelled():
             return True
         if not future.done():
             return False
         try:
             response = future.result()
-            # A rejected plan (ID=0) submitted no trajectory. Reach the point,
-            # then recover once, instead of turning a Look rejection into a skip.
             return response is None or (not response.success and (
                 response.trajectory_id != 0 or response.message == 'Arm planner is busy'
                 or not self._camera_planner.is_stationary(
                     self.config['stationary']['joint_speed_rps'])))
         except Exception:
             return True
+
+    def _observation_failed(self) -> bool:
+        if self._pending_observation is None:
+            return self._arm_preset_failed()
+        _side, future, _reason = self._pending_observation
+        if future is None:
+            return self._arm_preset_failed()
+        if future.cancelled():
+            return True
+        if not future.done():
+            return self._arm_preset_failed()
+        try:
+            response = future.result()
+            # A rejected plan (ID=0) submitted no trajectory. Reach the point,
+            # then recover once, instead of turning a Look rejection into a skip.
+            rejected = response is None or (not response.success and (
+                response.trajectory_id != 0 or response.message == 'Arm planner is busy'
+                or not self._camera_planner.is_stationary(
+                    self.config['stationary']['joint_speed_rps'])))
+            return rejected or self._arm_preset_failed()
+        except Exception:
+            return True
+
+    def start_arm_preset(self, preset_name: str) -> None:
+        """Submit arm preset asynchronously to run concurrently with navigation."""
+        if not preset_name or not isinstance(preset_name, str):
+            raise ValueError("preset_name must be a non-empty string")
+        if self._pending_arm_preset is not None:
+            raise RuntimeError("Previous arm preset has not been consumed")
+        future = None
+        reason = "arm_pose_unavailable"
+        if (not self._shenzhi_required or preset_name == "shenzhi") and (
+            self._arm_home_confirmed
+            or self._arm_shenzhi_confirmed
+            or (self.is_open_loop and self._current_area in ("A", "C"))
+            or self.recover_home()
+        ) and self._camera_planner.wait_stationary(self._wait_until):
+            future = self._camera_planner.start_preset(preset_name)
+            reason = "arm_endpoints_not_ready"
+            if future is not None:
+                self._arm_home_confirmed = False
+                self._arm_shenzhi_confirmed = False
+        self._pending_arm_preset = (preset_name, future, reason)
+
+    def finish_arm_preset(self) -> _ArmMotionResult:
+        """Wait for the pending preset to finish and update confirmed status."""
+        if self._pending_arm_preset is None:
+            return _ArmMotionResult(True, "no_pending_preset")
+        preset_name, future, reason = self._pending_arm_preset
+        self._pending_arm_preset = None
+        if future is None:
+            return _ArmMotionResult(False, reason)
+        completed, reason = self._camera_planner.finish_motion(future, self._wait_until)
+        self._arm_home_confirmed = (preset_name == "home" or "store" in preset_name) and completed
+        self._arm_shenzhi_confirmed = preset_name == "shenzhi" and completed
+        if self._arm_shenzhi_confirmed:
+            self._shenzhi_required = False
+        return _ArmMotionResult(completed, reason)
 
     def camera_target_request(self, point: PointStamped):
         """Freeze a camera point using the shared measured-joint transform."""
@@ -666,6 +745,7 @@ class MissionContext:
     def recover_home(self) -> bool:
         """One recovery, not a retry loop; unsafe physical motion stays inhibited."""
         self._pending_observation = None
+        self._pending_arm_preset = None
         # Do not automatically clear a hardware emergency lock with STOP.
         status = self._camera_planner._status
         if status is not None and status.task_status == status.STATUS_EMERGENCY:

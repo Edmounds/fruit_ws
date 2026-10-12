@@ -15,7 +15,7 @@ def main(ctx):
     """Full competition: A -> B QR and work -> C QR and work."""
     run_a(ctx)
 
-    arrived = navigate(ctx, ["to_B_QR_waypoint", "B_QR"])
+    arrived = navigate(ctx, ["to_B_QR_waypoint", "B_QR"], preset="shenzhi")
     b_plan = scan_b_qr(ctx, arrived=arrived)
     run_b(ctx, b_plan)
 
@@ -53,11 +53,8 @@ def run_a(ctx):
         enter_shenzhi(ctx, completed=False)
 
     if navigate(ctx, ["A4"], side="left"):
-        left = pick_a(ctx, side="left")
-        right = pick_a(ctx, side="right")
-        enter_shenzhi(ctx, completed=left.success and right.success)
-    else:
-        enter_shenzhi(ctx, completed=False)
+        pick_a(ctx, side="left")
+        pick_a(ctx, side="right")
 
 
 def run_b(ctx, plan):
@@ -105,7 +102,7 @@ def run_c(ctx, plan):
 def debug_a(ctx):
     """A-only entry, ending at the same existing A exit waypoint."""
     run_a(ctx)
-    navigate(ctx, ["to_B_QR_waypoint"])
+    navigate(ctx, ["to_B_QR_waypoint"], preset="shenzhi")
 
 
 def debug_b(ctx):
@@ -127,7 +124,7 @@ def debug_c(ctx):
 def run_ac(ctx):
     """Existing AC entry, composed from the same blocks without mode branches."""
     run_a(ctx)
-    arrived = navigate(ctx, ["to_B_QR_waypoint", "B_QR"])
+    arrived = navigate(ctx, ["to_B_QR_waypoint", "B_QR"], preset="shenzhi")
     scan_b_qr(ctx, arrived=arrived)
     arrived = navigate(ctx, [
         "to_C_waypoint_1", "C_QR",

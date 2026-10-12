@@ -25,7 +25,7 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 
 | 积木 | 参数与职责 |
 | --- | --- |
-| `navigate(ctx, waypoints, side=None)` | 明确导航点；有 side 时导航与 Look 并行。失败清理待消费 Look，安全恢复并返回 False。 |
+| `navigate(ctx, waypoints, side=None, preset=None)` | 明确导航点；有 side 时导航与 Look 并行，有 preset 时导航与指定机械臂预设（如 A 结束前往 B 扫码的 `shenzhi`）并行。失败清理待消费动作，安全恢复并返回 False。 |
 | `pick_a(ctx, side=...)` | 区域 Look/OPEN → 实测停稳 → harvest 窗口 → 成熟目标 → CLOSE/驻留 → 区域 Store/OPEN/驻留。正常不追加 Home，无重复抓取。 |
 | `pick_b_tree(ctx, tree_name=..., target=..., side=...)` | 每树观察一次、张爪并停稳后比较二维码品种，选择最多两个成熟目标，首次抓取前冻结全部基座请求并关闭窗口，再逐个抓取/区域 Store。 |
 | `navigate_c(ctx, task)` | 复用现有 C 几何规划，记录路线和 camera_side；失败的记录在恢复前由分区流程保存。 |
