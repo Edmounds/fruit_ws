@@ -4,6 +4,8 @@ set -u
 set -o pipefail
 
 target_pids=()
+competition=0
+dry_run=0
 
 # These tokens cover the launch files and executable nodes in the current
 # perception, odometry, navigation, and teleop design.
@@ -109,7 +111,7 @@ target_tokens=(
 
 usage() {
   cat <<'EOF'
-Usage: ./kill_fruit_processes.sh [--dry-run]
+Usage: ./kill_fruit_processes.sh [--competition] [--dry-run]
 
 Stop task scripts, helper processes, nodes, and launch processes in the current
 fruit robot project design. This includes perception, odometry, navigation,
@@ -118,14 +120,87 @@ foxglove_bridge, and the system-managed waypoint editor are intentionally
 excluded.
 
 --dry-run  Print matching processes without sending signals.
+--competition  Stop only competition stacks and motion clients. Preserve
+               independent RobViz, waypoint recorder, and rosbag processes.
+               The caller and its ancestors are never targets.
 EOF
 }
 
+
+is_competition_process() {
+  local command_line=$1
+  local pid=$2
+  local executable package script
+  local -a words
+  read -r -a words <<< "$command_line"
+  ((${#words[@]})) || return 1
+  executable=${words[0]}
+  case "${executable##*/}" in
+    bash|python3|python3.*)
+      executable=${words[1]:-}
+      words=("${words[@]:1}")
+      ;;
+  esac
+  case "$executable" in
+    /home/rc4/fruit_ws/install/*)
+      for package in fruit_mission fruit_arm_planner fruit_perception fruit_qr_planner \
+        auto_serial_bridge livox_ros_driver2 fruit_navigation point_lio loam_interface joy_linux; do
+        [[ "$executable" == */lib/"$package"/* ]] && return 0
+      done
+      ;;
+    /opt/ros/humble/lib/twist_mux/twist_mux) return 0 ;;
+    /opt/ros/humble/lib/rclcpp_components/component_container*)
+      [[ " $command_line " == *" __node:=fruit_perception_container "* \
+        || " $command_line " == *" __node:=auto_serial_bridge_container "* \
+        || " $command_line " == *" __node:=joy_container "* ]] && return 0
+      ;;
+    /opt/ros/humble/lib/tf2_ros/static_transform_publisher)
+      [[ " $command_line " == *" __node:=base_to_lidar "* \
+        || " $command_line " == *" __node:=lidar_to_imu "* ]] && return 0
+      ;;
+    ros2|/opt/ros/humble/bin/ros2)
+      case "${words[1]:-}" in
+        launch|run)
+          case "${words[2]:-}" in
+            fruit_mission|fruit_arm_planner|fruit_perception|fruit_qr_planner|\
+            auto_serial_bridge|livox_ros_driver2|fruit_navigation|fruit_nav_bringup|\
+            point_lio|loam_interface|joy_linux) return 0 ;;
+            /home/rc4/fruit_ws/src/*/launch/*.launch.py)
+              for package in fruit_mission fruit_arm_planner fruit_perception fruit_qr_planner \
+                auto_serial_bridge livox_ros_driver2 fruit_navigation fruit_nav_bringup \
+                point_lio loam_interface joy_linux; do
+                [[ "${words[2]}" == */"$package"/launch/* ]] && return 0
+              done
+              ;;
+          esac
+          ;;
+      esac
+      ;;
+  esac
+  for script in start_fruit_mission.sh start_fruit_perception.sh start_navigation.sh \
+    start_tele.sh waypoints_maker.sh test_camera_arm_target.sh; do
+    [[ "$executable" == "/home/rc4/fruit_ws/$script" ]] && return 0
+    if [[ "$executable" == "./$script" || "$executable" == "$script" ]]; then
+      [[ "$(readlink "/proc/$pid/cwd")" == /home/rc4/fruit_ws ]] && return 0
+    fi
+  done
+  case "$executable" in
+    /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py) return 0 ;;
+    src/fruit_arm_planner/test/cartesian_console.py|./src/fruit_arm_planner/test/cartesian_console.py)
+      [[ "$(readlink "/proc/$pid/cwd")" == /home/rc4/fruit_ws ]] && return 0
+      ;;
+  esac
+  return 1
+}
 
 is_target_process() {
   local command_line=$1
   local token
 
+  if ((competition)); then
+    is_competition_process "$command_line" "$2"
+    return
+  fi
   for token in "${target_tokens[@]}"; do
     if [[ "$command_line" == *"$token"* ]]; then
       return 0
@@ -140,10 +215,9 @@ collect_target_pids() {
 
   while read -r pid command_line; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
-    [[ "$pid" == "$$" ]] && continue
-    [[ "$pid" == "$PPID" ]] && continue
+    [[ " $protected_pids " == *" $pid "* ]] && continue
 
-    if is_target_process "$command_line"; then
+    if is_target_process "$command_line" "$pid"; then
       printf '%s\n' "$pid"
     fi
   done < <(ps -eo pid=,args=)
@@ -163,7 +237,7 @@ is_live_target() {
   local command_line
 
   command_line=$(get_target_command "$pid") || return 1
-  is_target_process "$command_line"
+  is_target_process "$command_line" "$pid"
 }
 
 print_targets() {
@@ -180,7 +254,7 @@ signal_targets() {
 
   for pid in "${target_pids[@]}"; do
     command_line=$(get_target_command "$pid") || continue
-    is_target_process "$command_line" || continue
+    is_target_process "$command_line" "$pid" || continue
 
     printf 'Sending SIG%s to PID %s\n' "$signal" "$pid"
     kill "-$signal" "$pid" 2>/dev/null || true
@@ -214,8 +288,9 @@ stop_ros_daemon() {
   fi
 }
 
-case "${1:-}" in
-  "") ;;
+while (($#)); do
+case "$1" in
+  --competition) competition=1 ;;
   --dry-run) dry_run=1 ;;
   --help|-h)
     usage
@@ -226,11 +301,24 @@ case "${1:-}" in
     exit 2
     ;;
 esac
+shift
+done
+
+protected_pids="$$"
+ancestor=$PPID
+while [[ "$ancestor" =~ ^[0-9]+$ ]] && ((ancestor > 0)); do
+  protected_pids+=" $ancestor"
+  ancestor=$(ps -p "$ancestor" -o ppid=) || break
+  ancestor=${ancestor//[[:space:]]/}
+done
 
 if command -v systemctl >/dev/null 2>&1 && \
   systemctl is-active --quiet fruit-perception.service 2>/dev/null; then
   printf 'Warning: fruit-perception.service is active and may restart the launch.\n' >&2
   printf 'Stop it separately with: sudo systemctl stop fruit-perception.service\n' >&2
+  if ((competition && !dry_run)); then
+    exit 1
+  fi
 fi
 
 refresh_targets
@@ -250,8 +338,9 @@ if ((${dry_run:-0} == 1)); then
   exit 0
 fi
 
-signal_targets CONT
+# Queue interruption before resuming suspended scripts, so they cannot submit another motion first.
 signal_targets INT
+signal_targets CONT
 if wait_for_targets 50; then
   printf 'All matching processes stopped gracefully.\n'
   stop_ros_daemon

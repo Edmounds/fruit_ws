@@ -8,7 +8,7 @@ import json
 import math
 from pathlib import Path
 import time
-from typing import Any, Dict, Mapping, Optional, Sequence, Union
+from typing import Any, Dict, Mapping, Optional, Sequence
 import uuid
 
 from action_msgs.msg import GoalStatus
@@ -84,7 +84,6 @@ class MissionContext:
             str(config.get("mission_flow", "full")),
             str(config["map_frame"]),
         )
-        self._route_cursor = 0
         self._current_waypoint_name: Optional[str] = None
         self._current_route_yaw: Optional[float] = None
         self._current_area: Optional[str] = None
@@ -103,8 +102,6 @@ class MissionContext:
         self._latest_b_plan: Optional[Dict[str, Any]] = None
         self._latest_c_plan: Optional[Dict[str, Any]] = None
         self._pending_observation = None
-        self._observation_side = None
-        self._gripper_is_open = False
         self._arm_home_confirmed = False
         self._arm_shenzhi_confirmed = False
         self._shenzhi_required = False
@@ -145,6 +142,7 @@ class MissionContext:
             target_offset_ac_m=config.get("target_offset_ac_m", (0.0, 0.0, 0.0)),
             target_offset_b_up_m=config.get("target_offset_b_up_m", (0.0, 0.0, 0.0)),
             target_offset_b_down_m=config.get("target_offset_b_down_m", (0.0, 0.0, 0.0)),
+            max_joint_speed_rps=config['stationary']['joint_speed_rps'],
         )
         self._follow_waypoints_client = ActionClient(
             node,
@@ -175,27 +173,6 @@ class MissionContext:
         """Whether open-loop picking is enabled for AC zones."""
         return bool(self.config.get("open_loop", False))
 
-    def go_to(self, waypoint_names: Union[str, Sequence[str]]) -> bool:
-        """Reach one or more named waypoints through /follow_waypoints."""
-        requested_names = (
-            [waypoint_names]
-            if isinstance(waypoint_names, str)
-            else list(waypoint_names)
-        )
-        if not requested_names:
-            return True
-        try:
-            names, next_cursor = self._expand_waypoint_names(requested_names)
-        except KeyError as error:
-            self.node.get_logger().error(str(error))
-            return False
-        if not self._send_waypoint_names(names):
-            return False
-        self._route_cursor = next_cursor
-        self._current_waypoint_name = names[-1]
-        self._current_route_yaw = self._waypoint_yaw(names[-1])
-        return True
-
     def navigate_named(
         self, waypoint_names: Sequence[str], observation_side: Optional[str] = None,
     ) -> bool:
@@ -215,39 +192,6 @@ class MissionContext:
             return False
         self._current_waypoint_name = names[-1]
         self._current_route_yaw = self._waypoint_yaw(names[-1])
-        self._route_cursor = self.route.pose(names[-1]).order + 1
-        return True
-
-    def go_through(self, waypoint_names: Sequence[str]) -> bool:
-        """Reach explicit C-route points using their saved YAML yaw."""
-        names = (
-            [waypoint_names]
-            if isinstance(waypoint_names, str)
-            else [str(name) for name in waypoint_names]
-        )
-        if not names:
-            return True
-        if self._current_waypoint_name is None:
-            self.node.get_logger().error(
-                "Cannot set C-route yaw before reaching a known waypoint"
-            )
-            return False
-        try:
-            targets, final_name, final_yaw = self.route.waypoint_yaw_targets(
-                self._current_waypoint_name,
-                names,
-                self._current_route_yaw,
-            )
-        except KeyError as error:
-            self.node.get_logger().error(str(error))
-            return False
-        target_names = [name for name, _yaw in targets]
-        target_yaws = [yaw for _name, yaw in targets]
-        if target_names and not self._send_waypoint_names(target_names, target_yaws):
-            return False
-        self._current_waypoint_name = final_name
-        self._current_route_yaw = final_yaw
-        self._route_cursor = self.route.pose(final_name).order + 1
         return True
 
     def navigate_c_position(self, position_id: int) -> Dict[str, Any]:
@@ -312,10 +256,6 @@ class MissionContext:
         result["reason"] = None
         self._current_waypoint_name = plan.goal_name
         self._current_route_yaw = plan.navigation_yaws[-1]
-        self._route_cursor = max(
-            self._route_cursor,
-            self.route.pose(plan.goal_name).order + 1,
-        )
         return result
 
     def _previous_target_pose(self) -> Optional[tuple[float, float, float]]:
@@ -369,17 +309,6 @@ class MissionContext:
         )
         return None
 
-    def _expand_waypoint_names(
-        self,
-        requested_names: Sequence[str],
-    ) -> tuple[list[str], int]:
-        names: list[str] = []
-        cursor = self._route_cursor
-        for name in requested_names:
-            segment, cursor = self.route.ordered_names_to(str(name), cursor)
-            names.extend(segment)
-        return names, cursor
-
     def _send_waypoint_names(
         self,
         names: Sequence[str],
@@ -389,8 +318,7 @@ class MissionContext:
             return True
         if self._shenzhi_required or not self._navigation_stopped or not (
             ((self._arm_home_confirmed or self._arm_shenzhi_confirmed)
-             and self._camera_planner.is_stationary(
-                self.config['stationary']['joint_speed_rps'])) or (
+             and self._camera_planner.wait_stationary(self._wait_until)) or (
                 self._pending_observation is not None
                 and self._pending_observation[1] is not None
             )
@@ -647,37 +575,18 @@ class MissionContext:
         return None
 
     def finish_observation(self, side: str) -> _ArmMotionResult:
-        """Consume the matching Look request, open gripper, and wait for hardware completion."""
+        """Consume Look/OPEN and confirm measured standstill through the shared client."""
         if side not in ("left", "right"):
             raise ValueError("side must be left or right")
         if self._pending_observation is None:
             self.start_observation(side)
-        pending_side, future = self._pending_observation
+        pending_side, future, reason = self._pending_observation
         self._pending_observation = None
         if pending_side != side:
             raise ValueError('Observation side must match the navigation plan')
-        completed, reason = self._camera_planner.finish_motion(future, self._wait_until)
-        if not completed:
-            self._observation_side = None
+        if future is None:
             return _ArmMotionResult(False, reason)
-        self._observation_side = side
-        self._gripper_is_open = True
-        gripper_result = self.open_gripper()
-        if not gripper_result.completed:
-            self._observation_side = None
-            return gripper_result
-        return _ArmMotionResult(True, 'completed')
-
-    def open_gripper(self) -> _ArmMotionResult:
-        """OPEN at measured raw joints, then HOLD for the configured gripper dwell."""
-        if self._gripper_is_open:
-            return _ArmMotionResult(True, 'completed')
-        self._arm_home_confirmed = False
-        self._arm_shenzhi_confirmed = False
-        completed, reason = self._camera_planner.open_gripper(
-            self._wait_until, self.config['stationary']['joint_speed_rps'])
-        if completed:
-            self._gripper_is_open = True
+        completed, reason = self._camera_planner.finish_motion(future, self._wait_until)
         return _ArmMotionResult(completed, reason)
 
     def start_observation(self, side: str) -> None:
@@ -689,23 +598,24 @@ class MissionContext:
         if self._pending_observation is not None:
             raise RuntimeError('Previous observation has not been consumed')
         future = None
+        reason = 'arm_pose_unavailable'
         if (not self._shenzhi_required
                 and (self._arm_home_confirmed or self._arm_shenzhi_confirmed
                      or (self.is_open_loop and self._current_area in ("A", "C"))
                      or self.recover_home())
-                and self._camera_planner.is_stationary(
-                    self.config['stationary']['joint_speed_rps'])):
+                and self._camera_planner.wait_stationary(self._wait_until)):
             name = f'{side}_look_{self._current_area.lower()}'
             future = self._camera_planner.start_preset(name)
+            reason = 'arm_endpoints_not_ready'
             if future is not None:
                 self._arm_home_confirmed = False
                 self._arm_shenzhi_confirmed = False
-        self._pending_observation = (side, future)
+        self._pending_observation = (side, future, reason)
 
     def _observation_failed(self) -> bool:
         if self._pending_observation is None:
             return False
-        _side, future = self._pending_observation
+        _side, future, _reason = self._pending_observation
         if future is None:
             return False  # No motion submitted; navigation can still reach this point.
         if future.cancelled():
@@ -714,7 +624,12 @@ class MissionContext:
             return False
         try:
             response = future.result()
-            return response is None or not response.success
+            # A rejected plan (ID=0) submitted no trajectory. Reach the point,
+            # then recover once, instead of turning a Look rejection into a skip.
+            return response is None or (not response.success and (
+                response.trajectory_id != 0 or response.message == 'Arm planner is busy'
+                or not self._camera_planner.is_stationary(
+                    self.config['stationary']['joint_speed_rps'])))
         except Exception:
             return True
 
@@ -726,14 +641,12 @@ class MissionContext:
 
     def move_to_base_target(self, request) -> _ArmMotionResult:
         """One planner CLOSE/dwell request, starting only with stationary feedback."""
-        if not self._camera_planner.is_stationary(self.config['stationary']['joint_speed_rps']):
+        if not self._navigation_stopped:
             return _ArmMotionResult(False, 'arm_pose_unavailable')
         self._arm_home_confirmed = False
         self._arm_shenzhi_confirmed = False
         completed, reason = self._camera_planner.move_to_base_target(
             request, self._wait_until, self.config['stationary']['joint_speed_rps'])
-        if completed:
-            self._gripper_is_open = False
         return _ArmMotionResult(completed, reason)
 
     def set_expected_fruit_type(self, expected_type: Optional[str]) -> None:
@@ -849,11 +762,11 @@ class MissionContext:
 
     def close(self) -> None:
         """Release mission runtime helpers."""
-        self.close_observation_window()
-        self._camera_planner.request_stop()
-        self.cancel_navigation()
-        # Drain the STOP service request before tearing down its ROS client.
         if rclpy.ok():
+            self.close_observation_window()
+            self._camera_planner.request_stop()
+            self.cancel_navigation()
+            # Drain STOP before tearing down its ROS client.
             rclpy.spin_once(self.node, timeout_sec=0.2)
         close = getattr(self.speaker, "close", None)
         if callable(close):
@@ -885,27 +798,15 @@ class MissionContext:
 
     def execute_arm_preset(self, preset_name: str) -> _ArmMotionResult:
         """Execute a preset directly from arm_presets.yaml and wait for completion."""
-        if (not self._navigation_stopped or not self._camera_planner.is_stationary(
-                self.config['stationary']['joint_speed_rps'])):
+        if not self._navigation_stopped:
             self._arm_home_confirmed = False
             self._arm_shenzhi_confirmed = False
             return _ArmMotionResult(False, 'arm_pose_unavailable')
         self._arm_home_confirmed = False
         self._arm_shenzhi_confirmed = False
         completed, reason = self._camera_planner.execute_preset(preset_name, self._wait_until)
-        if completed and preset_name == 'home':
-            completed_at = time.monotonic()
-            completed = self._wait_until(
-                lambda: self._camera_planner.is_stationary(
-                    self.config['stationary']['joint_speed_rps'],
-                    received_after=completed_at),
-                10.0)
-            if not completed:
-                reason = 'home_not_stationary'
         self._arm_home_confirmed = (preset_name == 'home' or 'store' in preset_name) and completed
         self._arm_shenzhi_confirmed = preset_name == 'shenzhi' and completed
-        if completed and ('store' in preset_name or 'look' in preset_name):
-            self._gripper_is_open = True
         if self._arm_shenzhi_confirmed:
             self._shenzhi_required = False
         return _ArmMotionResult(completed, reason)

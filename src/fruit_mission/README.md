@@ -26,8 +26,8 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 | 积木 | 参数与职责 |
 | --- | --- |
 | `navigate(ctx, waypoints, side=None)` | 明确导航点；有 side 时导航与 Look 并行。失败清理待消费 Look，安全恢复并返回 False。 |
-| `pick_a(ctx, side=...)` | 区域 Look 完成 → 实测静止后 OPEN/HOLD → harvest 窗口 → 成熟目标 → CLOSE/驻留 → 区域 Store/OPEN/驻留 → Home。无导航、无重复抓取。 |
-| `pick_b_tree(ctx, tree_name=..., target=..., side=...)` | 每树观察一次、张爪后开启 harvest 窗口比较二维码品种、选择最多两个成熟目标，首次抓取前冻结全部基座请求并关闭窗口，再逐个抓取/区域 Store/Home。 |
+| `pick_a(ctx, side=...)` | 区域 Look/OPEN → 实测停稳 → harvest 窗口 → 成熟目标 → CLOSE/驻留 → 区域 Store/OPEN/驻留。正常不追加 Home，无重复抓取。 |
+| `pick_b_tree(ctx, tree_name=..., target=..., side=...)` | 每树观察一次、张爪并停稳后比较二维码品种，选择最多两个成熟目标，首次抓取前冻结全部基座请求并关闭窗口，再逐个抓取/区域 Store。 |
 | `navigate_c(ctx, task)` | 复用现有 C 几何规划，记录路线和 camera_side；失败的记录在恢复前由分区流程保存。 |
 | `pick_c(ctx, task, side=...)` | 当前二维码项的单次识别/采摘、结果记录和播报；不增加方向复核。 |
 | `scan_b_qr / scan_c_qr(ctx, arrived=...)` | 已到点且 QR 姿态执行完成后开启 QR 扫码窗口；到点/扫码失败均用 mission 自有固定计划，保存、播报并恢复。B扫码后进入B1～B8，B完成后再前往C扫码点。 |
@@ -41,7 +41,15 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 `/fruit_mission/current_area` 仍发布任务状态，但感知不再订阅。
 参数失败只告警并推进流程，不重试。区域不匹配的 harvest 窗口不产生抓取目标。
 `start_fruit_mission.sh` 继续直接启动感知 launch，不调用调试入口，并启动或复用
-RobViz 预览桥。`start_fruit_mission.sh` 支持 `--open-loop` 参数：开启后 A/C 区使用开环预设抓取（`left/right_pick_openloop_a/c`），在感知输出决策后直接抓取，且左右观察姿态间直接切换，不穿插中间 Home 复归。
+RobViz 预览桥。正式入口不复用导航、感知、planner 或串口桥。
+它先调用 `kill_fruit_processes.sh --competition` 清理旧栈和运动客户端，再启动自己的组件。
+启动前由操作者保证机器人安全静止。重启导航会重建启动相对 `odom` 原点。
+清理使用明确进程身份，并排除调用者及祖先进程。
+独立可视化、录点器和录包保留。旧启动脚本管理的附属进程可能随父启动脚本退出。
+仍有冲突节点，或 `fruit-perception.service` 会自动重启旧栈时，入口退出并提示处理。
+`--reuse-navigation` 已删除，`--flow`、`--open-loop` 和 `--debug` 保留。
+`--open-loop` 在 A/C 均调用已有 `left_pick_openloop_a` 或 `right_pick_openloop_a`。
+左右观察姿态直接切换，不穿插正常 Home 或新过渡动作。
 比赛入口会并行启动导航、感知和 planner；调试录包在感知就绪后后台启动。
 使用 `--debug` 时，入口还会在启动 ROS 子系统前记录内核 USB 事件和 udev 事件，文件分别为
 当前运行目录的 `kernel.log` 和 `udev.log`。退出时监控进程与其他调试进程一起停止。
@@ -52,14 +60,23 @@ RobViz 预览桥。`start_fruit_mission.sh` 支持 `--open-loop` 参数：开启
 
 调用处只显示比赛参数。超时在 `config/fruit_mission.yaml`；预设名称直接遵循
 planner YAML，姿态、速度、标定在对应 planner/相机源码 YAML，
-不把这些值复制进比赛主流程。开窗前及窗口内的底盘与机械臂静止由现场物理保证，
-移除了原开窗前的 `stable_stop` 阻塞等待；未知运动结果时保留 STOP 与取消。
-恢复在 STOP 确认后等待新鲜 `STATUS_IDLE`，Home 完成后等待新鲜低速反馈；Home/QR 等预设入口继续检查当前新鲜有效的低速反馈，
-不满足即跳过，planner 仍保留运动占用与 STOP 后 IDLE 保护。A 左右调用顺序直接在 `Logic.py`，不再使用
+不把这些值复制进比赛主流程。导航与 Look 继续并行。
+共用客户端等待 planner 的本次轨迹完成后，确认匹配轨迹的新鲜实测低速反馈。
+停稳确认最多 2 秒，满足即继续，不固定 sleep。
+初次动作提交前也限时取得有效静止反馈，超时报告 `arm_pose_unavailable`。
+识别和后续运动不再因旧缓存的瞬时抽检而跳过。
+正常 Look 的 OPEN 由预设负责，不追加冗余 OPEN/HOLD 或 Home。
+底盘终态仍使用导航结果，实际底盘停稳仍须现场确认。
+恢复在 STOP 确认后等待新鲜 `STATUS_IDLE`，planner 保留运动占用与 STOP 后 IDLE 保护。
+A 左右调用顺序直接在 `Logic.py`，不再使用
 `a_observation_order` 配置。
 
 窗口结果在入缓存前核对 ID、用途及合法窗后图像时间；扫码计划另核对区域，非对象 JSON 与非法时间忽略后继续等待或使用既有固定兜底。
-姿态统一遵循 planner 的 `arm_presets.yaml` 名称定义，无中间映射：观察调用 `left_look_a/b/c` 或 `right_look_a/b/c`，放果调用 `left_store_a/b/c` 或 `right_store_a/b/c`，扫码直接调用 `qr_scan`，复归调用 `home`。Look 完成后复用共享客户端等待新鲜静止反馈，执行 OPEN/HOLD 后才开窗；张爪失败走既有一次 Home，不再即时检查旧 RUNNING 缓存而提前拒绝。
+姿态统一遵循 planner 的 `arm_presets.yaml` 名称定义，无中间映射：观察调用 `left_look_a/b/c` 或 `right_look_a/b/c`，放果调用 `left_store_a/b/c` 或 `right_store_a/b/c`，扫码直接调用 `qr_scan`，复归调用 `home`。
+Look 已明确拒绝且未下发轨迹（`trajectory_id=0`），并有有效静止反馈时，不再取消导航。
+到点后消费失败结果，恢复一次 Home，再推进任务。
+请求异常、取消、planner 被占用或已下发轨迹的失败仍保留必要停止和导航取消。
+移除了无调用者的旧 `go_to`、`go_through` 和 YAML 顺序游标。
 
 旧正常 `retract` 边界改用 `shenzhi`：A 每点结束、B/C 扫码后、B 每树结束、C 每项结束，以及对应区域出口；最后一个点/树/项与出口重合时不重复执行。失败操作只沿用已有一次 Home，不追加保护动作。边界仍要求保护位，未确认 `shenzhi` 不放行后续导航，即使恢复 Home 成功也不冒充保护位；软件继续推进。已完成且当前实测静止的 `shenzhi` 可用于导航交接或直接启动并行 Look，不强制先回 Home。
 
@@ -109,7 +126,7 @@ source scripts/setup_fruit_runtime.bash
 源码修改后需重新构建 `fruit_mission` 并重启节点。配置继续从源码路径读取，
 不用修改 install 中的副本。
 
-启动脚本统一通过 `stack_readiness_client bridge-start-required` 检查串口桥：
+独立导航和单点调试脚本通过 `stack_readiness_client bridge-start-required` 检查串口桥：
 标准输出为 `true`（缺失，需要启动）或 `false`（已存在，复用）。节点、
 ArmStatus 或 ready 发布者均可识别已有桥，`ready=false` 不代表缺失；
 重复节点/发布者或错误消息类型会让检查失败。检查只读，不命令硬件。

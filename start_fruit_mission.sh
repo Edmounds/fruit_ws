@@ -17,17 +17,16 @@ ODOM_FRAME="odom"
 
 MISSION_FLOW="full"
 DEBUG_RECORD_ENABLED=0
-REUSE_NAVIGATION=false
 OPEN_LOOP=false
 
 usage() {
   cat <<'EOF'
-Usage: ./start_fruit_mission.sh [--reuse-navigation] [--flow full|ac|a|b|c] [--open-loop] [--debug]
+Usage: ./start_fruit_mission.sh [--flow full|ac|a|b|c] [--open-loop] [--debug]
 
 Start the complete perception, arm planner, odometry navigation, and mission stack in the
 startup-relative odom frame.
-Use --reuse-navigation after start_navigation.sh to keep its navigation
-and serial bridge running while starting perception, arm planner, and mission.
+Start only from a safe stationary robot. Existing competition stacks and motion
+clients are stopped before this runner starts its own stack and odom origin.
 --flow selects a Logic.py entry function; B/C-only entries also scan their QR.
 Use --open-loop to perform open-loop picking in Zones A and C using direct presets without 3D depth closure.
 Use --debug to record the mission profile under rosbags/. The profile includes
@@ -46,10 +45,6 @@ while (($# > 0)); do
       (($# >= 2)) || { usage >&2; exit 2; }
       MISSION_FLOW=$2
       shift 2
-      ;;
-    --reuse-navigation)
-      REUSE_NAVIGATION=true
-      shift
       ;;
     --open-loop)
       OPEN_LOOP=true
@@ -77,8 +72,6 @@ esac
 
 child_pids=()
 child_names=()
-child_logs=()
-debug_pids=()
 readiness_pid=""
 stopped=0
 
@@ -117,11 +110,6 @@ check_file() {
   [[ -r "$path" ]] || die "required file is unavailable: $path"
 }
 
-check_device() {
-  local path=$1
-  [[ -e "$path" ]] || die "required device is unavailable: $path"
-}
-
 check_no_existing_nodes() {
   local -a arguments=(nodes-absent)
   local node_name
@@ -152,9 +140,6 @@ run_readiness_client() {
     --ros-args --params-file "$SCRIPT_CLIENT_CONFIG" \
     > >(tee -a "$ORCHESTRATOR_LOG") 2>&1 &
   readiness_pid=$!
-  while process_alive "$readiness_pid"; do
-    sleep 0.2
-  done
   wait "$readiness_pid" || status=$?
   readiness_pid=""
   return "$status"
@@ -178,28 +163,6 @@ start_process() {
   pid=$!
   child_pids+=("$pid")
   child_names+=("$name")
-  child_logs+=("$log_file")
-  printf '%s\t%s\t%s\n' "$name" "$pid" "$log_file" >> "$RUN_DIR/processes.tsv"
-  log "STARTED $name pid=$pid log=$log_file"
-}
-
-start_debug_process() {
-  local name=$1
-  shift
-  local log_file="$RUN_DIR/$name.log"
-  local pid
-  local filter_script="$WORKSPACE/scripts/runtime_log_filter.py"
-
-  : > "$log_file"
-  log "START $name: $(command_string "$@")"
-  setsid env "FRUIT_SUBSYSTEM_LOG=$log_file" "DEBUG_OPT=$DEBUG_RECORD_ENABLED" bash -c '
-    set -o pipefail
-    filter_args=(--output-file "$FRUIT_SUBSYSTEM_LOG" --component "'"$name"'")
-    [[ "$DEBUG_OPT" == "1" ]] && filter_args+=(--debug)
-    stdbuf -oL -eL "$@" 2>&1 | /usr/bin/python3 "'"$filter_script"'" "${filter_args[@]}"
-  ' fruit-stack "$@" &
-  pid=$!
-  debug_pids+=("$pid")
   printf '%s\t%s\t%s\n' "$name" "$pid" "$log_file" >> "$RUN_DIR/processes.tsv"
   log "STARTED $name pid=$pid log=$log_file"
 }
@@ -220,19 +183,11 @@ start_usb_debug_monitors() {
     privilege=(sudo -n)
   fi
 
-  start_debug_process "kernel" "${privilege[@]}" \
+  start_process "kernel" "${privilege[@]}" \
     journalctl -k -f -o short-iso
-  start_debug_process "udev" "${privilege[@]}" \
+  start_process "udev" "${privilege[@]}" \
     udevadm monitor --kernel --udev
   log "RUN USB diagnostics: kernel.log and udev.log"
-}
-
-wait_for_node() {
-  local label=$1
-  local node_name=$2
-  local timeout_sec=$3
-
-  wait_for_nodes "$label" "$timeout_sec" "$node_name"
 }
 
 wait_for_nodes() {
@@ -342,14 +297,6 @@ wait_for_serial_bridge_running() {
   log "WARNING: serial bridge unavailable; see $log_file; mission remains bounded"
 }
 
-log_recent_child_output() {
-  local name=$1
-  local log_file=$2
-
-  [[ -r "$log_file" ]] || return 0
-  log "EXIT $name output recorded at $log_file"
-}
-
 stop_child_by_name() {
   local wanted_name=$1
   local index
@@ -368,8 +315,7 @@ stop_child_by_name() {
 }
 
 stop_children() {
-  local pid
-  local index
+  local exit_status=$?
 
   trap - EXIT INT TERM
   if ((stopped)); then
@@ -384,8 +330,10 @@ stop_children() {
   fi
 
   # Ensure arm motion is stopped if planner is available.
-  timeout --foreground 2s ros2 service call /arm_planner_node/stop std_srvs/srv/Trigger '{}' \
-    >/dev/null 2>&1 || true
+  if [[ " ${child_names[*]} " == *" arm_planner "* ]]; then
+    timeout --foreground 2s ros2 service call /arm_planner_node/stop std_srvs/srv/Trigger '{}' \
+      >/dev/null 2>&1 || true
+  fi
 
   # Stop the mission before its dependencies. This closes observation windows
   # and releases ROS camera subscribers before the camera container exits.
@@ -403,20 +351,20 @@ stop_children() {
 
   local -a remaining_pids=()
   local pid
-  for pid in "${child_pids[@]}" "${debug_pids[@]}"; do
+  for pid in "${child_pids[@]}"; do
     if process_alive "$pid"; then
       remaining_pids+=("$pid")
     fi
   done
 
   if ((${#remaining_pids[@]} == 0)); then
-    fruit_logging_close 0
+    fruit_logging_close "$exit_status"
     return 0
   fi
 
   log "STOP stopping remaining launched child process groups"
   fruit_stop_all_process_groups "${remaining_pids[@]}"
-  fruit_logging_close 0
+  fruit_logging_close "$exit_status"
   log "STOP complete; logs kept at $RUN_DIR"
 }
 
@@ -436,7 +384,8 @@ required_files=(
   "$MISSION_LAUNCH" \
   "$ARM_LAUNCH" \
   "$MISSION_CONFIG" \
-  "$SCRIPT_CLIENT_CONFIG"
+  "$SCRIPT_CLIENT_CONFIG" \
+  "$WORKSPACE/kill_fruit_processes.sh"
 )
 for required_file in "${required_files[@]}"; do
   check_file "$required_file"
@@ -492,54 +441,7 @@ log "RUN mission flow: $MISSION_FLOW"
 log "RUN open loop: $OPEN_LOOP"
 log "RUN branch: $(git -C "$WORKSPACE" branch --show-current)"
 log "RUN commit: $(git -C "$WORKSPACE" rev-parse --short HEAD)"
-# Check for existing stack components to reuse
-if [[ "$REUSE_NAVIGATION" != true ]]; then
-  if run_readiness_client node-running \
-    --node /laserMapping --node /loam_interface --node /axis_waypoint_action_server \
-    --match all >/dev/null 2>&1; then
-    REUSE_NAVIGATION=true
-    log "DETECT: navigation nodes are already running; automatically reusing existing navigation stack"
-  fi
-fi
-
-REUSE_PERCEPTION=false
-if run_readiness_client node-running \
-  --node /fruit_perception_node --node /camera \
-  --match all >/dev/null 2>&1; then
-  REUSE_PERCEPTION=true
-  log "DETECT: perception nodes are already running; automatically reusing existing perception stack"
-fi
-
-REUSE_ARM_PLANNER=false
-if run_readiness_client node-running \
-  --node /arm_planner_node \
-  --match all >/dev/null 2>&1; then
-  REUSE_ARM_PLANNER=true
-  log "DETECT: arm planner is already running; automatically reusing existing arm planner"
-fi
-
-REUSE_ROBVIZ_BRIDGE=false
-if run_readiness_client node-running \
-  --node /fruit_robviz_image_bridge \
-  --match any >/dev/null 2>&1; then
-  REUSE_ROBVIZ_BRIDGE=true
-  log "DETECT: robviz bridge is already running; automatically reusing existing robviz bridge"
-fi
-
-if [[ "$REUSE_NAVIGATION" == true ]]; then
-  log "RUN mode: reuse existing navigation"
-else
-  log "RUN navigation: Point-LIO in odom"
-fi
-if [[ "$REUSE_PERCEPTION" == true ]]; then
-  log "RUN mode: reuse existing perception"
-fi
-if [[ "$REUSE_ARM_PLANNER" == true ]]; then
-  log "RUN mode: reuse existing arm planner"
-fi
-if [[ "$REUSE_ROBVIZ_BRIDGE" == true ]]; then
-  log "RUN mode: reuse existing robviz bridge"
-fi
+log "RUN navigation: fresh Point-LIO in odom"
 if ((DEBUG_RECORD_ENABLED)); then
   log "RUN debug rosbag: mission profile enabled; output is under $WORKSPACE/rosbags"
 fi
@@ -551,68 +453,41 @@ if ! python3 -c \
 fi
 log "READY mission waypoint schema and required A/C points"
 
-# Verify no duplicate or conflicting instances for components that need to be launched
-nodes_to_check_absent=(/fruit_mission)
-if [[ "$REUSE_NAVIGATION" != true ]]; then
-  nodes_to_check_absent+=(
-    /livox_ros_driver2
-    /laserMapping
-    /loam_interface
-    /axis_waypoint_action_server
-    /twist_mux
-  )
-fi
-if [[ "$REUSE_PERCEPTION" != true ]]; then
-  nodes_to_check_absent+=(
-    /fruit_perception_container
-    /camera
-    /fruit_perception_node
-    /fruit_qr_planner
-  )
-fi
-if [[ "$REUSE_ARM_PLANNER" != true ]]; then
-  nodes_to_check_absent+=(/arm_planner_node)
-fi
+log "STOP existing competition stacks and motion clients (safe stationary startup required)"
+bash "$WORKSPACE/kill_fruit_processes.sh" --competition \
+  >> "$ORCHESTRATOR_LOG" 2>&1 || die "could not stop existing competition processes"
 
-check_no_existing_nodes "${nodes_to_check_absent[@]}"
+# A remote or unidentified node must not cause duplicate hardware ownership.
+check_no_existing_nodes \
+    /fruit_mission \
+    /livox_ros_driver2 \
+    /laserMapping \
+    /loam_interface \
+    /axis_waypoint_action_server \
+    /twist_mux \
+    /fruit_perception_container \
+    /camera \
+    /fruit_perception_node \
+    /fruit_qr_planner \
+    /arm_planner_node \
+    /serial_controller \
+    /auto_serial_bridge_container \
+    /camera_arm_target_client \
+    /joy_linux_node \
+    /joy_convert_node
 
-if [[ "$REUSE_NAVIGATION" != true ]]; then
-  start_process "navigation" \
-    ros2 launch "$NAV_LAUNCH"
-fi
+# Visualization is not a motion controller and can remain independently owned.
+START_ROBVIZ_BRIDGE=$(run_readiness_client robviz-bridge-start-required)
 
-START_SERIAL_BRIDGE=$(run_readiness_client bridge-start-required)
-if [[ "$START_SERIAL_BRIDGE" == false ]]; then
-  log "RUN reuse: existing serial bridge remains owned by its original launcher"
-fi
-if [[ "$REUSE_NAVIGATION" == true ]]; then
-  START_SERIAL_BRIDGE=false
-  log "RUN reuse: existing navigation and serial bridge remain owned by original launcher"
-fi
-
-START_ROBVIZ_BRIDGE=true
-if [[ "$REUSE_ROBVIZ_BRIDGE" == true ]] || ! run_readiness_client robviz-bridge-start-required >/dev/null 2>&1; then
-  START_ROBVIZ_BRIDGE=false
-  log "RUN reuse: existing robviz bridge remains owned by original launcher"
-fi
-
-if [[ "$REUSE_PERCEPTION" != true ]]; then
-  start_process "perception" \
-    ros2 launch "$PERCEPTION_LAUNCH" \
-      "use_sim_time:=false" \
-      "serial_debug_raw_frame:=$([[ $DEBUG_RECORD_ENABLED -eq 1 ]] && echo 'true' || echo 'false')" \
-      "start_serial_bridge:=$START_SERIAL_BRIDGE" \
-      "start_robviz_bridge:=$START_ROBVIZ_BRIDGE"
-else
-  log "RUN reuse: existing perception stack remains owned by original launcher"
-fi
-
-if [[ "$REUSE_ARM_PLANNER" != true ]]; then
-  start_process "arm_planner" \
-    ros2 launch "$ARM_LAUNCH" "use_sim_time:=false"
-else
-  log "RUN reuse: existing arm planner remains owned by original launcher"
-fi
+start_process "navigation" ros2 launch "$NAV_LAUNCH"
+start_process "perception" \
+  ros2 launch "$PERCEPTION_LAUNCH" \
+    "use_sim_time:=false" \
+    "serial_debug_raw_frame:=$([[ $DEBUG_RECORD_ENABLED -eq 1 ]] && echo 'true' || echo 'false')" \
+    "start_serial_bridge:=true" \
+    "start_robviz_bridge:=$START_ROBVIZ_BRIDGE"
+start_process "arm_planner" \
+  ros2 launch "$ARM_LAUNCH" "use_sim_time:=false"
 
 # Start all independent stacks before waiting. Navigation localization continues
 # while the camera and planner initialize.
@@ -637,7 +512,7 @@ fi
 wait_for_nodes "arm planner readiness" 10 /arm_planner_node
 wait_for_arm_planner 10
 
-log "READY navigation, perception, and arm planner stack; starting mission"
+log "RUN starting mission; unavailable operations will be skipped"
 start_process "mission" \
   ros2 launch "$MISSION_LAUNCH" \
     "use_sim_time:=false" \
@@ -645,11 +520,7 @@ start_process "mission" \
     "mission_flow:=$MISSION_FLOW" \
     "open_loop:=$OPEN_LOOP"
 
-if [[ "$REUSE_NAVIGATION" == true ]]; then
-  log "RUN mission started; Ctrl-C stops mission, arm planner, and perception but keeps the reused navigation stack running"
-else
-  log "RUN mission started; press Ctrl-C to stop launched processes (reused bridge stays running)"
-fi
+log "RUN mission started; press Ctrl-C to stop launched processes"
 set +e
 # A dead perception/QR/planner process must not tear down the competition.
 mission_pid=${child_pids[${#child_pids[@]}-1]}

@@ -109,14 +109,13 @@ B 区固定访问 1～8 号树，C 区按二维码顺序访问。B/C 单区调�
 # 指定局部流程（例如仅执行 AC 区）
 ./start_fruit_mission.sh --flow ac
 
-# 复用已有 start_navigation.sh 运行实例
-./start_fruit_mission.sh --reuse-navigation
-
 # 开启调试录包
 ./start_fruit_mission.sh --debug
 ```
 
 比赛入口会先启动导航、感知和机械臂规划器，再等待里程计定位与任务必需服务。
+启动前须保证机器人安全静止。入口先清理旧比赛栈及运动客户端，不复用它们。
+`--reuse-navigation` 已删除。导航重启会重建启动相对 `odom` 原点。
 三套子系统并行初始化，定位建立期间同时启动相机和规划器。
 调试录包在感知节点就绪后后台启动，不阻塞任务开始。
 感知启动同时启动或复用 RobViz 预览桥。
@@ -126,6 +125,9 @@ B 区固定访问 1～8 号树，C 区按二维码顺序访问。B/C 单区调�
 ```bash
 ./kill_fruit_processes.sh
 ```
+比赛入口使用 `--competition`，只清理比赛组件和运动客户端。
+独立 RobViz、录点器和录包保留。可用 `--competition --dry-run` 只查看清理范围。
+调用者及祖先进程不在清理范围内。进程终止不等于硬件停稳。
 
 ---
 

@@ -278,7 +278,8 @@ class ArmPlannerNode(Node):
             self.latest_status = msg
             self._status_received_at = time.monotonic()
             self.current_joints = joints if valid else None
-            if valid and msg.task_status == ArmStatus.STATUS_IDLE:
+            if (valid and msg.task_status == ArmStatus.STATUS_IDLE
+                    and msg.error_code == ArmStatus.ERROR_NONE):
                 self._require_idle = False
         if not valid:
             self.get_logger().warn('Ignoring arm status with invalid joint feedback')
@@ -326,11 +327,23 @@ class ArmPlannerNode(Node):
                 return False, 0, 'Arm planner is busy'
             self._motion_active = True
             self._interrupt_reason = None
-            status = self.latest_status
-            age = time.monotonic() - self._status_received_at
-            start = self.current_joints
-            require_idle = self._require_idle
         try:
+            # STOP returns on publication. Wait for this node's own IDLE
+            # callback while retaining motion ownership and STOP interruption.
+            deadline = time.monotonic() + 2.0
+            while True:
+                with self._state_lock:
+                    if self._interrupt_reason:
+                        return False, 0, self._interrupt_reason
+                    status = self.latest_status
+                    age = time.monotonic() - self._status_received_at
+                    start = self.current_joints
+                    require_idle = self._require_idle
+                if not require_idle or not rclpy.ok() or time.monotonic() >= deadline:
+                    break
+                if status is not None and status.task_status == ArmStatus.STATUS_EMERGENCY:
+                    break
+                time.sleep(0.01)
             if status is None or start is None or age > self.status_max_age_sec:
                 return False, 0, 'Fresh valid four-joint feedback is required'
             if require_idle or status.task_status not in (ArmStatus.STATUS_IDLE, ArmStatus.STATUS_COMPLETED):

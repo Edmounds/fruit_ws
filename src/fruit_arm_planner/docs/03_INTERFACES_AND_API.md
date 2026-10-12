@@ -187,10 +187,11 @@ service 请求不开放该字段，`move_cartesian` 和 `move_joints` 的最终�
 - **请求字段**：`joints_deg[4]` 为四个原始硬件角（度），不应用连杆零位偏置；另有 `duration_ms`、`gripper_action`。planner 会先把 ROS 数组元素规范化为 Python 浮点数，再执行有限值、长度和关节限位校验。控制台 `joints` 是连杆角，`motors` 才与本服务语义一致。
 - **应答字段**：`success`, `message`, `trajectory_id`
 
-正式 mission 和相机单点调试客户端在区域 Look 后、开启识别前，以新鲜且静止的实测四轴硬件角调用本服务，
-先 `gripper_action=1`（OPEN），再以更新的实测角调用 `gripper_action=0`（HOLD）驻留；
-两次请求均无限等待下位机执行结果，失败不继续目标运动；端点与实测反馈取得仍分别
-限幅到 10 秒，较短配置不变。此流程不修改 Look 预设，不引入直接串口或原始轨迹控制。
+相机单点调试客户端在 Look 后，以新鲜静止的实测四轴硬件角调用本服务，
+先 `gripper_action=1`（OPEN），再 `gripper_action=0`（HOLD）驻留。
+正式 mission 的 Look/OPEN 由预设负责，不追加重复 OPEN/HOLD。
+共用客户端确认每次运动完成后的实测低速反馈，最多 2 秒，满足即继续。
+轨迹执行仍等待下位机结果，失败不继续目标运动，不引入原始轨迹或串口控制。
 
 ---
 
@@ -205,6 +206,11 @@ service 请求不开放该字段，`move_cartesian` 和 `move_joints` 的最终�
 - `~/home` (`std_srvs/srv/Trigger`)：执行同名 `home` 预设快捷服务
 - `~/stop` (`std_srvs/srv/Trigger`)：平滑受控停止 (mode=1)
 - `~/emergency_stop` (`std_srvs/srv/Trigger`)：硬件最高优先级急停 (mode=2)
+
+STOP 发布后，下一次运动请求最多等待 2 秒，让 planner 收到新的有效、无故障 `STATUS_IDLE`。
+条件满足立即规划，不固定延时。旧 IDLE 缓存不能解除 STOP 门槛。
+超时或急停锁定仍拒绝运动，不重试轨迹。
+此等待只处理 STOP 交接，不改变轨迹执行完成的 service 语义。
 
 ---
 
@@ -282,8 +288,12 @@ ros2 topic echo --once /arm_planner_node/joint_states fruit_interfaces/msg/ArmTe
 6. 正式 mission 的观察、二维码、放果与恢复均调用 `execute_preset`，名称直接遵循
    `arm_presets.yaml` 姿态定义：`<side>_look_<zone>`、`<side>_store_<zone>`（side 为 left/right，A/C 为小写 a/c，B 区细分为 `<side>_store_b_up` 与 `<side>_store_b_down`）、`qr_scan`、`shenzhi`、`home`，不使用中间映射字典。
    预设缺失/失败不能视为动作完成。导航可与 Look 并行，其余运动仍受有效反馈、
-   导航终态和 planner 占用保护。恢复只尝试一次 Home，不设独立停稳循环，
-   未取得有效低速反馈则跳过；不因 STOP 已发布而放行。旧正常 retract 边界改为 shenzhi，重合出口不重复执行；失败仍只恢复 Home，不能将 Home 冒充所需保护姿态后放行转场。
+   导航终态和 planner 占用保护。
+   共用客户端在 service 成功后确认同轨迹的新鲜有效低速反馈，最多 2 秒，满足即继续。
+   运动提交前也取得有效静止反馈，不再零等待抽检。
+   停稳超时返回失败并请求 STOP，不将 `COMPLETED` 单独等同于实测停稳。
+   恢复只尝试一次 Home，不因 STOP 已发布而放行。
+   旧正常 retract 边界改为 shenzhi，重合出口不重复执行；失败仍只恢复 Home，不能将 Home 冒充所需保护姿态后放行转场。
    区域话题仅发布任务状态。感知模型由 `fruit_perception_node` 的动态参数 `zone` 选择。
    mission 和单点客户端核对参数服务结果，harvest 窗口区域必须匹配 `zone`。
    不走下位机旧 task/callback 协议；扫码区域由 QR 窗口指定，无 B→C 状态推进。
