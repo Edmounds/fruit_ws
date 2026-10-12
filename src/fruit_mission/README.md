@@ -8,7 +8,7 @@
 - `run_a(ctx)`：A1、A2、A3、A4 逐点展开；每点先导航并并行启动左 Look，
   然后调用左、右 `pick_a`。导航与采摘是独立积木，不用循环隐藏固定路线。
 - `run_b(ctx, plan)`：固定按 B1～B8 导航，使用二维码给每棵树指定的目标品种和左右侧，
-  调用一次 `pick_b_tree` 完成该树工序。
+  调用一次 `pick_b_tree` 完成该树工序。树间转场边走边切对侧 Look，单树结束后不执行伸直，B 区全部完成后前往 C 区途中边走边伸直。
 - `run_c(ctx, plan)`：按二维码项序导航，用路线规划器确定的侧调用 `pick_c`；
   导航失败记录并跳过，不在未到达的位置抓取。
 - 分区间固定通道点直接列在调用处，不再通过隐藏的 transition 名称展开。
@@ -25,12 +25,12 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 
 | 积木 | 参数与职责 |
 | --- | --- |
-| `navigate(ctx, waypoints, side=None, preset=None)` | 明确导航点；有 side 时导航与 Look 并行，有 preset 时导航与指定机械臂预设（如 A 结束前往 B 扫码的 `shenzhi`）并行。失败清理待消费动作，安全恢复并返回 False。 |
+| `navigate(ctx, waypoints, side=None, preset=None)` | 明确导航点；有 side 时导航与 Look 并行，有 preset 时导航与指定机械臂预设（如 A 结束前往 B 扫码、以及 B 结束前往 C 扫码的 `shenzhi`）并行。失败清理待消费动作，安全恢复并返回 False。 |
 | `pick_a(ctx, side=...)` | 区域 Look/OPEN → 实测停稳 → harvest 窗口 → 成熟目标 → CLOSE/驻留 → 区域 Store/OPEN/驻留。正常不追加 Home，无重复抓取。 |
 | `pick_b_tree(ctx, tree_name=..., target=..., side=...)` | 每树观察一次、张爪并停稳后比较二维码品种，选择最多两个成熟目标，首次抓取前冻结全部基座请求并关闭窗口，再逐个抓取/区域 Store。 |
 | `navigate_c(ctx, task)` | 复用现有 C 几何规划，记录路线和 camera_side；失败的记录在恢复前由分区流程保存。 |
 | `pick_c(ctx, task, side=...)` | 当前二维码项的单次识别/采摘、结果记录和播报；不增加方向复核。 |
-| `scan_b_qr / scan_c_qr(ctx, arrived=...)` | 已到点且 QR 姿态执行完成后开启 QR 扫码窗口；到点/扫码失败均用 mission 自有固定计划，保存、播报并恢复。B扫码后进入B1～B8，B完成后再前往C扫码点。 |
+| `scan_b_qr / scan_c_qr(ctx, arrived=...)` | 已到点且 QR 姿态执行完成后开启 QR 扫码窗口；到点/扫码失败均用 mission 自有固定计划，保存、播报并恢复。B 扫码后不切伸直直接保持姿态，进入 B1～B8 并边走边切首树 Look，B 完成后再前往 C 扫码点途中边走边伸直。 |
 
 `arrived` 使用前一个 `navigate` 的返回值；导航失败已经执行过一次安全恢复，
 扫码函数只使用兜底计划，不再为同一导航失败重复尝试 Home。

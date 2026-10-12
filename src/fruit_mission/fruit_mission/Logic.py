@@ -21,7 +21,7 @@ def main(ctx):
 
     arrived = navigate(ctx, [
         "to_C_waypoint_1", "C_QR",
-    ])
+    ], preset="shenzhi")
     c_plan = scan_c_qr(ctx, arrived=arrived)
     run_c(ctx, c_plan)
     # TODO: append the verified return-to-start waypoint after field testing.
@@ -58,17 +58,15 @@ def run_b(ctx, plan):
         side = "right" if position % 2 == 1 else "left"
         waypoint = waypoints[position - 1]
         if navigate(ctx, [waypoint], side=side):
-            completed = pick_b_tree(
+            pick_b_tree(
                 ctx,
                 tree_name=tree_name,
                 target=str(task["target"]),
                 side=side,
                 waypoint=waypoint,
             )
-            enter_shenzhi(ctx, completed=completed)
         else:
             ctx.announce(f"B区{tree_name}导航失败，跳过。")
-            enter_shenzhi(ctx, completed=False)
 
 
 def run_c(ctx, plan):
@@ -97,9 +95,8 @@ def debug_b(ctx):
     """B-only entry: scan the real QR before the same B work function."""
     arrived = navigate(ctx, ["B_QR"])
     plan = scan_b_qr(ctx, arrived=arrived)
-    navigate(ctx, ["B1"])
     run_b(ctx, plan)
-    navigate(ctx, ["to_C_waypoint_1"])
+    navigate(ctx, ["to_C_waypoint_1"], preset="shenzhi")
 
 
 def debug_c(ctx):
@@ -116,6 +113,6 @@ def run_ac(ctx):
     scan_b_qr(ctx, arrived=arrived)
     arrived = navigate(ctx, [
         "to_C_waypoint_1", "C_QR",
-    ])
+    ], preset="shenzhi")
     plan = scan_c_qr(ctx, arrived=arrived)
     run_c(ctx, plan)

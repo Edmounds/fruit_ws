@@ -340,8 +340,12 @@ class MissionContext:
             (self._pending_observation is not None and self._pending_observation[1] is not None)
             or (self._pending_arm_preset is not None and self._pending_arm_preset[1] is not None)
         )
+        is_already_at_look = (
+            self._pending_observation is not None
+            and self._pending_observation[2] == 'already_completed'
+        )
         arm_safe = (
-            ((self._arm_home_confirmed or self._arm_shenzhi_confirmed)
+            ((self._arm_home_confirmed or self._arm_shenzhi_confirmed or is_already_at_look)
              and self._camera_planner.wait_stationary(self._wait_until))
             or has_pending_motion
         )
@@ -644,7 +648,7 @@ class MissionContext:
         reason = 'arm_pose_unavailable'
         if (not self._shenzhi_required
                 and (self._arm_home_confirmed or self._arm_shenzhi_confirmed
-                     or self._current_area in ("A", "C")
+                     or self._current_area in ("A", "B", "C")
                      or self.recover_home())
                 and self._camera_planner.wait_stationary(self._wait_until)):
             future = self._camera_planner.start_preset(name)
@@ -706,7 +710,8 @@ class MissionContext:
         if (not self._shenzhi_required or preset_name == "shenzhi") and (
             self._arm_home_confirmed
             or self._arm_shenzhi_confirmed
-            or self._current_area in ("A", "C")
+            or self._current_area in ("A", "B", "C")
+            or preset_name == "shenzhi"
             or self.recover_home()
         ) and self._camera_planner.wait_stationary(self._wait_until):
             future = self._camera_planner.start_preset(preset_name)
