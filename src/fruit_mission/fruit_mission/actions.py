@@ -22,7 +22,8 @@ def navigate(ctx, waypoints, *, side=None, preset=None):
     if ctx.navigate_named(waypoints, observation_side=side, arm_preset=preset):
         return True
     ctx.node.get_logger().warning(f"导航失败，跳过当前动作: {' -> '.join(waypoints)}")
-    ctx.recover_home()
+    if ctx._current_area != "A":
+        ctx.recover_home()
     return False
 
 
@@ -137,14 +138,16 @@ def observe_and_pick(ctx, *, side, expected_type):
         return PickExecutionResult(True, "store_completed", selection.matched_type)
 
     if selection.target is None:
-        ctx.recover_home()
+        if area != "A":
+            ctx.recover_home()
         return PickExecutionResult(
             False, selection.reason_code, selection.matched_type)
     try:
         request, layer = ctx.camera_target_request(selection.target.point)
     except ValueError as error:
         ctx.node.get_logger().warning(str(error))
-        ctx.recover_home()
+        if area != "A":
+            ctx.recover_home()
         return PickExecutionResult(
             False, "camera_target_invalid", selection.matched_type)
     store_preset = store_preset_name(side, area, layer)

@@ -28,33 +28,21 @@ def main(ctx):
 
 
 def run_a(ctx):
-    """Fixed A route; navigation and single-side picking are separate blocks."""
+    """Alternating zigzag observation and picking across Zone A waypoints."""
     ctx.report_current_area("A")
+    side = "left"
+    a_waypoints = ["A1", "A2", "A3", "A4"]
 
-    if navigate(ctx, ["A1"], side="left"):
-        left = pick_a(ctx, side="left")
-        right = pick_a(ctx, side="right")
-        enter_shenzhi(ctx, completed=left.success and right.success)
-    else:
-        enter_shenzhi(ctx, completed=False)
-
-    if navigate(ctx, ["A2"], side="left"):
-        left = pick_a(ctx, side="left")
-        right = pick_a(ctx, side="right")
-        enter_shenzhi(ctx, completed=left.success and right.success)
-    else:
-        enter_shenzhi(ctx, completed=False)
-
-    if navigate(ctx, ["A3"], side="left"):
-        left = pick_a(ctx, side="left")
-        right = pick_a(ctx, side="right")
-        enter_shenzhi(ctx, completed=left.success and right.success)
-    else:
-        enter_shenzhi(ctx, completed=False)
-
-    if navigate(ctx, ["A4"], side="left"):
-        pick_a(ctx, side="left")
-        pick_a(ctx, side="right")
+    for wp in a_waypoints:
+        other_side = "right" if side == "left" else "left"
+        if navigate(ctx, [wp], side=side):
+            pick_a(ctx, side=side)
+            pick_a(ctx, side=other_side)
+            side = other_side
+        else:
+            ctx.node.get_logger().warning(
+                f"A区点位 {wp} 导航失败，跳过并保持当前侧 {side}"
+            )
 
 
 def run_b(ctx, plan):

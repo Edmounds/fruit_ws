@@ -105,6 +105,7 @@ class MissionContext:
         self._pending_arm_preset: Optional[tuple[str, Any, str]] = None
         self._arm_home_confirmed = False
         self._arm_shenzhi_confirmed = False
+        self._last_completed_preset: Optional[str] = None
         self._shenzhi_required = False
         self._navigation_stopped = True
         self._navigation_handle = None
@@ -197,6 +198,8 @@ class MissionContext:
         if arm_preset is not None:
             self.start_arm_preset(arm_preset)
         if not self._send_waypoint_names(names):
+            if observation_side is not None:
+                self._pending_observation = None
             if arm_preset is not None:
                 self.finish_arm_preset()
             return False
@@ -608,8 +611,20 @@ class MissionContext:
         if pending_side != side:
             raise ValueError('Observation side must match the navigation plan')
         if future is None:
+            if reason == 'already_completed':
+                stationary = self._camera_planner.wait_stationary(self._wait_until)
+                if not stationary:
+                    return _ArmMotionResult(False, 'arm_pose_unavailable')
+                return _ArmMotionResult(True, 'already_completed')
             return _ArmMotionResult(False, reason)
         completed, reason = self._camera_planner.finish_motion(future, self._wait_until)
+        if completed:
+            name = f'{side}_look_{self._current_area.lower()}'
+            self._last_completed_preset = name
+            self._arm_home_confirmed = False
+            self._arm_shenzhi_confirmed = False
+        else:
+            self._last_completed_preset = None
         return _ArmMotionResult(completed, reason)
 
     def start_observation(self, side: str) -> None:
@@ -620,14 +635,18 @@ class MissionContext:
             raise ValueError('Observation requires an A/B/C area')
         if self._pending_observation is not None:
             raise RuntimeError('Previous observation has not been consumed')
+        name = f'{side}_look_{self._current_area.lower()}'
+        if self._last_completed_preset == name:
+            self._pending_observation = (side, None, 'already_completed')
+            return
+
         future = None
         reason = 'arm_pose_unavailable'
         if (not self._shenzhi_required
                 and (self._arm_home_confirmed or self._arm_shenzhi_confirmed
-                     or (self.is_open_loop and self._current_area in ("A", "C"))
+                     or self._current_area in ("A", "C")
                      or self.recover_home())
                 and self._camera_planner.wait_stationary(self._wait_until)):
-            name = f'{side}_look_{self._current_area.lower()}'
             future = self._camera_planner.start_preset(name)
             reason = 'arm_endpoints_not_ready'
             if future is not None:
@@ -687,7 +706,7 @@ class MissionContext:
         if (not self._shenzhi_required or preset_name == "shenzhi") and (
             self._arm_home_confirmed
             or self._arm_shenzhi_confirmed
-            or (self.is_open_loop and self._current_area in ("A", "C"))
+            or self._current_area in ("A", "C")
             or self.recover_home()
         ) and self._camera_planner.wait_stationary(self._wait_until):
             future = self._camera_planner.start_preset(preset_name)
@@ -706,6 +725,10 @@ class MissionContext:
         if future is None:
             return _ArmMotionResult(False, reason)
         completed, reason = self._camera_planner.finish_motion(future, self._wait_until)
+        if completed:
+            self._last_completed_preset = preset_name
+        else:
+            self._last_completed_preset = None
         self._arm_home_confirmed = (preset_name == "home" or "store" in preset_name) and completed
         self._arm_shenzhi_confirmed = preset_name == "shenzhi" and completed
         if self._arm_shenzhi_confirmed:
@@ -724,6 +747,7 @@ class MissionContext:
             return _ArmMotionResult(False, 'arm_pose_unavailable')
         self._arm_home_confirmed = False
         self._arm_shenzhi_confirmed = False
+        self._last_completed_preset = None
         completed, reason = self._camera_planner.move_to_base_target(
             request, self._wait_until, self.config['stationary']['joint_speed_rps'])
         return _ArmMotionResult(completed, reason)
@@ -885,6 +909,10 @@ class MissionContext:
         self._arm_home_confirmed = False
         self._arm_shenzhi_confirmed = False
         completed, reason = self._camera_planner.execute_preset(preset_name, self._wait_until)
+        if completed:
+            self._last_completed_preset = preset_name
+        else:
+            self._last_completed_preset = None
         self._arm_home_confirmed = (preset_name == 'home' or 'store' in preset_name) and completed
         self._arm_shenzhi_confirmed = preset_name == 'shenzhi' and completed
         if self._arm_shenzhi_confirmed:
