@@ -28,7 +28,8 @@ set -u
 
 # 检查相机节点是否已有外部发布者
 CAMERA_RUNNING=0
-if ros2 node list 2>/dev/null | grep -q "^/camera$"; then
+if ros2 node list 2>/dev/null | grep -q "^/camera$" || \
+   ros2 topic list --no-daemon 2>/dev/null | grep -q "^/camera/color/image_raw$"; then
   CAMERA_RUNNING=1
 fi
 
@@ -37,7 +38,7 @@ if (( CAMERA_RUNNING )); then
 else
   printf '[test_qr] 启动 RealSense RGB 相机 (1280x720 @ 30FPS, 仅开彩色)...\n'
   ros2 run realsense2_camera realsense2_camera_node \
-    --ros-args -r __node:=camera \
+    --ros-args -r __ns:=/ -r __node:=camera \
     -p enable_color:=true \
     -p rgb_camera.color_profile:='1280x720x30' \
     -p rgb_camera.color_format:='RGB8' \
@@ -52,13 +53,14 @@ else
     -p pointcloud.enable:=false \
     -p enable_sync:=false \
     -p publish_tf:=false \
-    > /dev/null 2>&1 &
+    > /tmp/test_qr_camera.log 2>&1 &
   CAMERA_PID=$!
 
   # 等待相机进程初始化并确认运行
-  sleep 2.0
+  sleep 2.5
   if ! kill -0 "$CAMERA_PID" 2>/dev/null; then
-    printf '\n[test_qr] 错误: 相机进程启动失败，请检查 USB 连接。\n' >&2
+    printf '\n[test_qr] 错误: 相机进程启动失败，请检查 USB 连接。详细日志:\n' >&2
+    tail -n 15 /tmp/test_qr_camera.log >&2 || true
     exit 1
   fi
 fi
@@ -82,4 +84,4 @@ printf '[test_qr] RobViz 标注压缩话题: /fruit_perception/camera/annotated_
 printf '[test_qr] RobViz WebRTC 端口: http://<机器人IP>:8787\n\n'
 
 # 启动比赛同款检验终端
-/usr/bin/python3 "$WORKSPACE/scripts/check_qr_terminal.py"
+/usr/bin/python3 -u "$WORKSPACE/scripts/check_qr_terminal.py"

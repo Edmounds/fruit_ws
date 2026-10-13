@@ -34,9 +34,16 @@ RESET = "\033[0m"
 class QrTerminalMonitor(Node):
     def __init__(self) -> None:
         super().__init__("qr_terminal_monitor")
+        self._image_topic = "/camera/color/image_raw"
         self._subscription = self.create_subscription(
             Image,
-            "/camera/color/image_raw",
+            self._image_topic,
+            self._on_image,
+            qos_profile_sensor_data,
+        )
+        self._fallback_sub = self.create_subscription(
+            Image,
+            "/camera/camera/color/image_raw",
             self._on_image,
             qos_profile_sensor_data,
         )
@@ -54,17 +61,28 @@ class QrTerminalMonitor(Node):
         self._last_report_time: float = 0.0
         self._last_compress_pub_time: float = 0.0
         self._frame_count = 0
+        self._total_frames = 0
         self._last_fps_time = time.time()
         self._fps = 0.0
         self._last_heartbeat_time = 0.0
+        self._start_time = time.time()
+        self._status_timer = self.create_timer(1.0, self._on_status_timer)
 
         sep = "=" * 70
         print(f"\n{BOLD}{CYAN}{sep}{RESET}")
         print(f"{BOLD}{CYAN} [Fruit QR Test] 比赛流程同款二维码检验终端{RESET}")
-        print(f"{CYAN} 监听话题: /camera/color/image_raw{RESET}")
+        print(f"{CYAN} 监听话题: {self._image_topic}{RESET}")
         print(f"{CYAN} 检验规则: B区严格8棵树(苹果/梨子) | C区严格8点位(1~12不重复){RESET}")
         print(f"{CYAN} 提示: 请将二维码置于摄像头正前方 (建议距离 30~50cm, 避免反光/虚焦){RESET}")
         print(f"{BOLD}{CYAN}{sep}{RESET}\n")
+
+    def _on_status_timer(self) -> None:
+        now = time.time()
+        if self._total_frames == 0 and now - self._start_time >= 1.5:
+            sys.stdout.write(
+                f"\r\033[K{YELLOW}[等待中]{RESET} 正在等待相机图像流 ({self._image_topic})... 请确认摄像头正常连接"
+            )
+            sys.stdout.flush()
 
     def _decode_and_annotate(self, image: Any) -> Tuple[Optional[str], Any]:
         payloads = []
@@ -113,10 +131,14 @@ class QrTerminalMonitor(Node):
         msg.header.frame_id = "camera_color_optical_frame"
         msg.format = "jpeg"
         msg.data = encoded.tobytes()
-        self._compressed_pub.publish(msg)
-        self._annotated_compressed_pub.publish(msg)
+        try:
+            self._compressed_pub.publish(msg)
+            self._annotated_compressed_pub.publish(msg)
+        except Exception:
+            pass
 
     def _on_image(self, message: Image) -> None:
+        self._total_frames += 1
         self._frame_count += 1
         now = time.time()
         if now - self._last_fps_time >= 1.0:
