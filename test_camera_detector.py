@@ -79,6 +79,11 @@ EXTRINSIC_CONFIG_PATH = WORKSPACE / 'src/fruit_mission/config/camera_extrinsic.y
 TMP_DIR = WORKSPACE / 'tmp'
 MODEL_INPUT_SIZE = 640
 PAD_COLOR = 114
+_OWNED_PROCESS_GROUPS: dict[int, int] = {}
+_SHUTDOWN_SIGNALS = tuple(
+    signum for signum in (signal.SIGINT, signal.SIGTERM, getattr(signal, 'SIGHUP', None))
+    if signum is not None
+)
 
 
 @dataclass(frozen=True)
@@ -412,16 +417,17 @@ def launch_background_process(
 ) -> tuple[subprocess.Popen, Path]:
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     log_path = TMP_DIR / log_filename
-    log_file = log_path.open('w', encoding='utf-8')
-    log_file.write('$ ' + ' '.join(command) + '\n')
-    log_file.flush()
-    process = subprocess.Popen(
-        command,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        text=True,
-        start_new_session=True,
-    )
+    with log_path.open('w', encoding='utf-8') as log_file:
+        log_file.write('$ ' + ' '.join(command) + '\n')
+        log_file.flush()
+        process = subprocess.Popen(
+            command,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+    _register_process_group(process)
     return process, log_path
 
 
@@ -606,7 +612,6 @@ def append_component_params(command: list[str], parameters: dict[str, Any]) -> N
 def start_camera(selection: CameraSelection) -> tuple[subprocess.Popen, Path]:
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     log_path = TMP_DIR / f'test_camera_detector_{selection.name}.log'
-    log_file = log_path.open('w', encoding='utf-8')
     params_path = write_ros_params_file(selection)
 
     command = [
@@ -624,35 +629,83 @@ def start_camera(selection: CameraSelection) -> tuple[subprocess.Popen, Path]:
     ]
 
     append_component_params(command, selection.parameters)
-    log_file.write('$ ' + ' '.join(command) + '\n')
-    log_file.write(f'# params snapshot: {params_path}\n')
-    log_file.flush()
-    process = subprocess.Popen(
-        command,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        text=True,
-        start_new_session=True,
-    )
+    with log_path.open('w', encoding='utf-8') as log_file:
+        log_file.write('$ ' + ' '.join(command) + '\n')
+        log_file.write(f'# params snapshot: {params_path}\n')
+        log_file.flush()
+        process = subprocess.Popen(
+            command,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+    _register_process_group(process)
     return process, log_path
 
 
-def stop_process(process: subprocess.Popen | None) -> None:
-    if process is None or process.poll() is not None:
-        return
+def _register_process_group(process: subprocess.Popen) -> None:
     try:
-        os.killpg(os.getpgid(process.pid), signal.SIGINT)
-        process.wait(timeout=5.0)
-    except Exception:  # noqa: BLE001
+        process_group_id = os.getpgid(process.pid)
+    except ProcessLookupError:
+        process_group_id = process.pid
+    _OWNED_PROCESS_GROUPS[process.pid] = process_group_id
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def stop_process(process: subprocess.Popen | None) -> None:
+    if process is None:
+        return
+
+    process_group_id = _OWNED_PROCESS_GROUPS.get(process.pid)
+    if process_group_id is None:
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-            process.wait(timeout=2.0)
-        except Exception:  # noqa: BLE001
-            try:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-            except Exception:  # noqa: BLE001
-                pass
-            process.wait(timeout=1.0)
+            process_group_id = os.getpgid(process.pid)
+        except ProcessLookupError:
+            return
+
+    for stop_signal, wait_timeout in (
+        (signal.SIGINT, 5.0),
+        (signal.SIGTERM, 2.0),
+        (signal.SIGKILL, 1.0),
+    ):
+        if not _process_group_exists(process_group_id):
+            break
+        try:
+            os.killpg(process_group_id, stop_signal)
+        except ProcessLookupError:
+            break
+        try:
+            process.wait(timeout=wait_timeout)
+        except subprocess.TimeoutExpired:
+            continue
+        if not _process_group_exists(process_group_id):
+            break
+
+    _OWNED_PROCESS_GROUPS.pop(process.pid, None)
+
+
+def _raise_shutdown_signal(_signum: int, _frame: Any) -> None:
+    raise KeyboardInterrupt
+
+
+def _install_shutdown_handlers() -> None:
+    for signum in _SHUTDOWN_SIGNALS:
+        signal.signal(signum, _raise_shutdown_signal)
+
+
+def _ignore_shutdown_signals() -> None:
+    for signum in _SHUTDOWN_SIGNALS:
+        signal.signal(signum, signal.SIG_IGN)
 
 
 def parse_nms_output(
@@ -2428,8 +2481,13 @@ def run() -> int:
                 print(f'>>> Switched to Model {current_model}: {model_path.name}', flush=True)
 
     finally:
+        _ignore_shutdown_signals()
         if control_panel is not None:
             control_panel.close()
+        try:
+            cv2.destroyAllWindows()
+        except Exception:  # noqa: BLE001
+            pass
         if control_service is not None:
             control_service.destroy()
         try:
@@ -2448,12 +2506,12 @@ def run() -> int:
         if owned_arm_debug is not None:
             stop_process(owned_arm_debug)
         stop_process(camera_process)
-        cv2.destroyAllWindows()
 
     return 0
 
 
 def main() -> None:
+    _install_shutdown_handlers()
     try:
         raise SystemExit(run())
     except KeyboardInterrupt:

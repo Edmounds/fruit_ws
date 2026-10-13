@@ -85,7 +85,8 @@ python3 test_camera_detector.py --model B --conf 0.60 --iou 0.45
 两个命令行参数只影响当前进程，不会修改 YAML。省略参数时继续使用 YAML 中的值，当前默认值为 `conf=0.50`、`iou=0.45`。
 
 脚本默认把窗口显示到机器人连接的桌面屏幕。检测窗口按 `q` 或 `Esc`，或者关闭任一窗口（检测画面、原生深度画面或参数窗口），即可退出。
-正常退出会停止脚本自己启动的相机进程，绝不终止复用的外部感知或桥接节点。如果窗口或父脚本被强制终止，独立的
+正常退出会停止脚本自己启动的相机、机械臂调试 launch 及其子进程组，绝不终止复用的外部感知或桥接节点。
+关闭终端或收到 `SIGTERM` 时也会执行同样的清理。使用 `SIGKILL`、断电或系统崩溃后，独立的
 `test_camera_detector_*_container` 可能继续占用摄像头；返回工作空间根目录执行
 `./kill_fruit_processes.sh` 可清理该容器及其 `ros2 component standalone` 包装进程。
 
