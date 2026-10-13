@@ -255,14 +255,21 @@ class StreamChannel:
             self.latest_msg = msg
 
     def add_viewer(
-        self, viewer_id: str, send_callback: Callable[[dict], None], requested_fps: float
+        self,
+        viewer_id: str,
+        send_callback: Callable[[dict], None],
+        requested_fps: float,
+        requested_topic: str = "",
     ) -> None:
+        target_topic = requested_topic if requested_topic else self.raw_topic
         if viewer_id in self.viewers:
             self.viewers[viewer_id]["targetFps"] = requested_fps
+            self.viewers[viewer_id]["topic"] = target_topic
             return
         self.viewers[viewer_id] = {
             "targetFps": requested_fps,
             "send": send_callback,
+            "topic": target_topic,
             "webrtc": None,
             "queue": None,
             "capsfilter": None,
@@ -270,7 +277,13 @@ class StreamChannel:
             "pending_ice": [],
             "remote_description_set": False,
         }
-        logger.info("[%s] Added viewer %s (total: %d)", self.name, viewer_id, len(self.viewers))
+        logger.info(
+            "[%s] Added viewer %s for topic %s (total: %d)",
+            self.name,
+            viewer_id,
+            target_topic,
+            len(self.viewers),
+        )
         self.update_demand()
         if self.transport == "webrtc" and self.pipeline:
             self.attach_viewer(viewer_id)
@@ -310,7 +323,7 @@ class StreamChannel:
         for viewer in targets:
             payload = {
                 "type": "error",
-                "topic": self.raw_topic,
+                "topic": viewer.get("topic", self.raw_topic),
                 "message": message,
             }
             asyncio.run_coroutine_threadsafe(viewer["send"](payload), self.loop)
@@ -477,7 +490,7 @@ class StreamChannel:
             return
         payload = {
             "type": "ice",
-            "topic": self.raw_topic,
+            "topic": viewer.get("topic", self.raw_topic),
             "candidate": candidate,
             "sdpMLineIndex": mline_index,
         }
@@ -499,9 +512,10 @@ class StreamChannel:
                 self.notify_error("GStreamer failed to generate SDP offer", viewer_id)
                 return
             webrtc.emit("set-local-description", offer, Gst.Promise.new())
+            offer_topic = current.get("topic", self.raw_topic)
             payload = {
                 "type": "offer",
-                "topic": self.raw_topic,
+                "topic": offer_topic,
                 "sdp": offer.sdp.as_text(),
                 "encoder": "x264",
                 "targetFps": self.max_fps,
@@ -607,14 +621,15 @@ class StreamChannel:
                 worst_rtt * 1000,
             )
 
-        payload = {
-            "type": "stats",
-            "topic": self.raw_topic,
-            "encoderBitrateKbps": self.current_bitrate_kbps,
-            "targetFps": self.max_fps,
-            "encoder": "x264",
-        }
-        self.notify_all(payload)
+        for viewer in list(self.viewers.values()):
+            payload = {
+                "type": "stats",
+                "topic": viewer.get("topic", self.raw_topic),
+                "encoderBitrateKbps": self.current_bitrate_kbps,
+                "targetFps": self.max_fps,
+                "encoder": "x264",
+            }
+            asyncio.run_coroutine_threadsafe(viewer["send"](payload), self.loop)
 
     async def frame_push_loop(self) -> None:
         pts = 0

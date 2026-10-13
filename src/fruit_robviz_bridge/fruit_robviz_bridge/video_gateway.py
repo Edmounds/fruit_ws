@@ -597,6 +597,12 @@ class VideoGatewayServer:
                             capture_registered = True
 
                         msg, recv_time = capture_channel.get_latest_raw_frame()
+                        if msg is None:
+                            for _ in range(6):
+                                await asyncio.sleep(0.05)
+                                msg, recv_time = capture_channel.get_latest_raw_frame()
+                                if msg is not None:
+                                    break
                         now = time.monotonic()
                         has_frame = msg is not None and (now - recv_time <= 1.0)
                         frame_age = (now - recv_time) if msg is not None else -1.0
@@ -816,13 +822,19 @@ class VideoGatewayServer:
 
                     if mtype == "watch":
                         requested_fps = float(data.get("targetFps", channel.max_fps))
-                        channel.add_viewer(ws_id, send_json_cb, requested_fps)
+                        channel.add_viewer(
+                            ws_id,
+                            send_json_cb,
+                            requested_fps,
+                            requested_topic=topic,
+                        )
                         watched_channels.add(channel)
                         # Notify client of channel's mode
                         await ws.send_json(
                             {
                                 "type": "meta",
-                                "topic": channel.raw_topic,
+                                "topic": topic,
+                                "rawTopic": channel.raw_topic,
                                 "transport": channel.transport,
                                 "compressedTopic": channel.compressed_topic,
                                 "maxFps": channel.max_fps,
