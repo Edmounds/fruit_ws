@@ -62,6 +62,10 @@ def scan_b_qr(ctx, *, arrived):
     ctx.announce(format_b_announcement(plan))
     if arrived and not decoded:  # Failed navigation already recovered once.
         ctx.recover_home()
+    else:
+        motion = ctx.execute_arm_preset('home')
+        if not motion.completed:
+            ctx.recover_home()
     return plan
 
 
@@ -195,6 +199,9 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
         except ValueError as error:
             ctx.node.get_logger().warning(f"Skipping invalid B target: {error}")
     if not requests:
+        motion = ctx.execute_arm_preset("home")
+        if not motion.completed:
+            ctx.recover_home()
         return False
     success = True
     for request, store_preset, model_type in requests:
@@ -204,6 +211,9 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
         if not result.success:
             reason = _b_arm_failure_text(result.reason_code)
             ctx.announce(f"B区{label}，{reason}，继续下一个目标。")
+    motion = ctx.execute_arm_preset("home")
+    if not motion.completed:
+        ctx.recover_home()
     return success
 
 

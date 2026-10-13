@@ -91,6 +91,13 @@ Tests are restricted to pure mathematical algorithms and communication protocols
 - Point-LIO extrinsics specify MID-360 range-to-IMU parameters, not chassis mounting transforms.
 - Maintain system OpenCV 4.5.4 ABI compatibility across all vision components. Never link against `/usr/local/lib/libopencv*`.
 
+### Anti-Overengineering and KISS Directives
+
+- **Call-Site First**: Implement flow modifications directly at the call site (`Logic.py` or `actions.py`). Do not push domain-specific flow logic down into infrastructure or context layers (`mission_context.py`).
+- **No Speculative Concurrency**: Default to straightforward sequential blocking calls (e.g. executing presets synchronously). Never introduce multi-step concurrent state machines, background sequence runners, or chained future trackers unless explicitly commanded.
+- **Minimal Blast Radius**: Keep routine flow modifications localized within the target function (typically <= 15 lines of diff). If a proposal introduces a new class, edits multiple unrelated files, or modifies lower-level API contracts, reject it as over-engineering.
+- **Fail-Fast and Single Recovery**: Adhere to the project rule: one safe `recover_home()` recovery and skip to the next step. Do not build elaborate retry loops, speculative fallback policies, or defensive status polling.
+
 ### Git Workflow
 
 - Automatically commit task changes upon completing a task. Stage only task-related files explicitly.
