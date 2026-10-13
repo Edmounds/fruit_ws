@@ -274,6 +274,29 @@ class MissionContext:
         self._current_route_yaw = plan.navigation_yaws[-1]
         return result
 
+    def navigate_c_waypoint(self, name: str) -> bool:
+        """Follow the C graph to a named waypoint without submitting arm motion."""
+        start = self._lookup_map_pose()
+        if start is None:
+            start = self._previous_target_pose()
+        if start is None:
+            return False
+        try:
+            names, yaws = self.route.plan_c_waypoint(
+                *start,
+                name,
+                float(self.config["c_graph_max_start_distance"]),
+                allow_qr_exit=self._current_waypoint_name == "C_QR",
+            )
+        except (KeyError, ValueError) as error:
+            self.node.get_logger().error(str(error))
+            return False
+        if not self._send_waypoint_names(names, yaws):
+            return False
+        self._current_waypoint_name = name
+        self._current_route_yaw = yaws[-1]
+        return True
+
     def _previous_target_pose(self) -> Optional[tuple[float, float, float]]:
         """Return the last mission target pose for C-route recovery."""
         if self._current_waypoint_name is None:

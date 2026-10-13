@@ -255,35 +255,9 @@ class MissionWaypointRoute:
                     candidate.goal_name,
                     float(max_start_distance),
                 )
-            navigation_names = [
-                name
-                for name in graph_path
-                if self.pose(name).point_type == "waypoint"
-            ]
-            if rejoin_point is not None:
-                rejoin_x, rejoin_y, _rejoin_yaw = rejoin_point
-                first_target = self.pose(graph_path[0])
-                rejoin_yaw = math.atan2(
-                    first_target.y - rejoin_y,
-                    first_target.x - rejoin_x,
-                )
-                rejoin_name = f"__c_route_rejoin__{candidate.goal_name}"
-                rejoin_point = (rejoin_x, rejoin_y, rejoin_yaw)
-                self._runtime_poses[rejoin_name] = WaypointPose(
-                    name=rejoin_name,
-                    point_type="waypoint",
-                    order=-1,
-                    x=rejoin_x,
-                    y=rejoin_y,
-                    z=0.0,
-                    qx=0.0,
-                    qy=0.0,
-                    qz=math.sin(rejoin_yaw * 0.5),
-                    qw=math.cos(rejoin_yaw * 0.5),
-                )
-                navigation_names.insert(0, rejoin_name)
-            navigation_names.append(candidate.goal_name)
-            navigation_names = _without_consecutive_duplicates(navigation_names)
+            navigation_names, rejoin_point = self._c_navigation_names(
+                graph_path, candidate.goal_name, rejoin_point,
+            )
             navigation_yaws = self._navigation_yaws_from_waypoints(
                 float(start_x),
                 float(start_y),
@@ -318,6 +292,67 @@ class MissionWaypointRoute:
         if best is None:
             raise ValueError(f"Could not plan a route to C position {position_id}")
         return best[1]
+
+    def plan_c_waypoint(
+        self,
+        start_x: float,
+        start_y: float,
+        start_yaw: float,
+        target_name: str,
+        max_start_distance: float,
+        allow_qr_exit: bool = False,
+    ) -> tuple[List[str], List[float]]:
+        """Plan a C graph route ending at the waypoint's saved yaw."""
+        if target_name not in _c_waypoint_names(self._c_entrance_1):
+            raise ValueError(f"not a C graph waypoint: {target_name}")
+        if not all(math.isfinite(value) for value in (
+            start_x, start_y, start_yaw, max_start_distance,
+        )) or max_start_distance <= 0.0:
+            raise ValueError("C route start must be finite and distance limit positive")
+        shortest_path = (
+            self._shortest_c_path_from_qr if allow_qr_exit else self._shortest_c_path
+        )
+        _distance, graph_path, rejoin_point = shortest_path(
+            start_x, start_y, target_name, max_start_distance,
+        )
+        names, _rejoin_point = self._c_navigation_names(
+            graph_path, target_name, rejoin_point,
+        )
+        return names, self._navigation_yaws_from_waypoints(
+            start_x, start_y, start_yaw, names,
+        )
+
+    def _c_navigation_names(
+        self,
+        graph_path: Sequence[str],
+        target_name: str,
+        rejoin_point: Optional[tuple[float, float, float]],
+    ) -> tuple[List[str], Optional[tuple[float, float, float]]]:
+        """Keep transit waypoints and an optional projected route rejoin."""
+        names = [name for name in graph_path if self.pose(name).point_type == "waypoint"]
+        if rejoin_point is not None:
+            rejoin_x, rejoin_y, _rejoin_yaw = rejoin_point
+            first_target = self.pose(graph_path[0])
+            rejoin_yaw = math.atan2(
+                first_target.y - rejoin_y, first_target.x - rejoin_x,
+            )
+            rejoin_name = f"__c_route_rejoin__{target_name}"
+            rejoin_point = (rejoin_x, rejoin_y, rejoin_yaw)
+            self._runtime_poses[rejoin_name] = WaypointPose(
+                name=rejoin_name,
+                point_type="waypoint",
+                order=-1,
+                x=rejoin_x,
+                y=rejoin_y,
+                z=0.0,
+                qx=0.0,
+                qy=0.0,
+                qz=math.sin(rejoin_yaw * 0.5),
+                qw=math.cos(rejoin_yaw * 0.5),
+            )
+            names.insert(0, rejoin_name)
+        names.append(target_name)
+        return _without_consecutive_duplicates(names), rejoin_point
 
     def _validate_required_points(self) -> None:
         flow = self._required_flow

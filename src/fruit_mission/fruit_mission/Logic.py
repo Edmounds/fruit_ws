@@ -24,7 +24,8 @@ def main(ctx):
     ], preset="shenzhi")
     c_plan = scan_c_qr(ctx, arrived=arrived)
     run_c(ctx, c_plan)
-    # TODO: append the verified return-to-start waypoint after field testing.
+    if not ctx.navigate_c_waypoint("C_top_waypoint_1"):
+        ctx.node.get_logger().warning("结束航点导航失败，直接播报采摘汇总")
 
 
 def run_a(ctx):
