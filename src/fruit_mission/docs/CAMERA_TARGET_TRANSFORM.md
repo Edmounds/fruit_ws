@@ -151,7 +151,7 @@ sleep，处理 STOP 派发应答后只尝试一次 Home。预设入口直接检�
 - B：每树只观察一次，8 帧预热后冻结独立确认的候选，异类或未确认候选不阻塞其他目标。按品种、成熟度、基座高度和三维距离筛选，再按检测置信度中位数选最多两个。在首次观察姿态下一次性保存基座坐标/绝对 pitch。第二抓直接用已保存请求，不重新 Look、识别或换算，同树成功抓取之间不回 Home。失败只恢复一次 Home，成功后继续下一冻结目标；恢复失败则跳过剩余目标。树末尾回 Home，最后一次失败已恢复时不重复 Home。
 - C：二维码任务顺序、路线与左右侧使用现有规划结果，导航时提前 Look。C_QR 可直达任一入口 waypoint，通行 waypoint 选择路径所需的前进或倒车朝向，采摘 goal 保留标定朝向。导航失败跳过当前项，不在未到达的位置抓取。
 - 局部失败跳过当前项，A 左右侧继续，B 恢复成功后继续下一冻结目标。失败只做一次必要 Home；状态未知仍取消导航并请求 STOP，未获有效实测反馈时跳过危险动作。导航每路点最多 10 秒，上层不重发且底层重试配置为 0；goal 应答与取消仍独立限时。识别、抓取和姿态不重试。
-- 二维码导航、姿态或识别失败均使用 `config/qr_fallback.yaml`，仍推进软件流程；物理动作受反馈及保护姿态门控。扫码直接执行 `qr_scan`，QR 解析只按当前窗口 B/C 区域，不维护扫码顺序状态机。
+- 二维码导航、姿态或识别失败均使用 `config/qr_fallback.yaml`，仍推进软件流程；物理动作受反馈及保护姿态门控。扫码直接执行 `qr_scan_b` 或 `qr_scan_c`，QR 解析只按当前窗口 B/C 区域，不维护扫码顺序状态机。
 - B 扫码及每树结束使用 Home，树间导航同时切对侧 Look；B→C 转场和 C 显式保护边界保留 `shenzhi`。失败仍一次 Home，不追加保护动作；必要保护位未确认时不放行转场。
 - B 在第 8 帧结束判断，无已确认候选也返回完成的空结果。树间 Home 未确认时，调用处跳过下一树导航和 Look，不追加恢复重试。
 
@@ -241,7 +241,7 @@ source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
 启动检查覆盖 move_cartesian、move_joints、execute_preset、STOP 服务及轨迹 Header/Point/Mode 订阅、ArmStatus 发布端点，不再等待旧 task/callback 端点。每项启动等待不超过 10 秒；就绪超时告警，不因外围节点退出直接结束 mission。
 
 正式 mission 统一直接使用 `arm_presets.yaml` 姿态定义，删除中间映射字典：
-观察入口 `start_observation` 直接调用 `<side>_look_<zone>`，放果调用 `<side>_store_<zone>`（left/right，a/b/c），复归 `home`，扫码 `qr_scan`，正常转场保护 `shenzhi`。任务配置不含 `arm_presets` 映射键。这里姿态名称与 planner YAML 统一；各姿态的真实关节轨迹均在
+观察入口 `start_observation` 直接调用 `<side>_look_<zone>`，放果调用 `<side>_store_<zone>`（left/right，a/b/c），复归 `home`，扫码 `qr_scan_b/c`，正常转场保护 `shenzhi`。任务配置不含 `arm_presets` 映射键。这里姿态名称与 planner YAML 统一；各姿态的真实关节轨迹均在
 planner 的 `arm_presets.yaml` 中定义与维护。不补假姿态。缺失、越限或硬件执行失败均返回失败。
 真实姿态及已定义名称以源码 YAML 为准；操作者须检查并补齐所用预设。客户端不覆盖已有坐标，不补空轨迹或回退到 A 区姿态。区域话题供感知模型选择；QR 区域由窗口指定，不发送下位机区域命令。
 

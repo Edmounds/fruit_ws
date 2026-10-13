@@ -48,9 +48,9 @@ def enter_shenzhi(ctx, *, completed):
 
 
 def scan_b_qr(ctx, *, arrived):
-    """qr_scan -> QR window -> plan/fallback -> announcement -> Home."""
+    """qr_scan_b -> QR window -> plan/fallback -> announcement -> Home."""
     ctx.report_current_area("B")
-    ready = arrived and ctx.execute_arm_preset('qr_scan').completed
+    ready = arrived and ctx.execute_arm_preset('qr_scan_b').completed
     plan = None
     if ready:
         window_id = ctx.open_observation_window("B", "qr")
@@ -76,9 +76,9 @@ def scan_b_qr(ctx, *, arrived):
 
 
 def scan_c_qr(ctx, *, arrived):
-    """qr_scan -> QR window -> plan/fallback -> task table -> shenzhi."""
+    """qr_scan_c -> QR window -> plan/fallback -> task table -> shenzhi."""
     ctx.report_current_area("C")
-    ready = arrived and ctx.execute_arm_preset('qr_scan').completed
+    ready = arrived and ctx.execute_arm_preset('qr_scan_c').completed
     plan = None
     if ready:
         window_id = ctx.open_observation_window("C", "qr")

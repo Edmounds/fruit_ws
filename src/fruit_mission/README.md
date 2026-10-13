@@ -85,7 +85,7 @@ A 左右调用顺序直接在 `Logic.py`，不再使用
 `a_observation_order` 配置。
 
 窗口结果在入缓存前核对 ID、用途及合法窗后图像时间；扫码计划另核对区域，非对象 JSON 与非法时间忽略后继续等待或使用既有固定兜底。
-姿态统一遵循 planner 的 `arm_presets.yaml` 名称定义，无中间映射：观察调用 `left_look_a/b/c` 或 `right_look_a/b/c`，放果调用 `left_store_a/b/c` 或 `right_store_a/b/c`，扫码直接调用 `qr_scan`，复归调用 `home`。
+姿态统一遵循 planner 的 `arm_presets.yaml` 名称定义，无中间映射：观察调用 `left_look_a/b/c` 或 `right_look_a/b/c`，放果调用 `left_store_a/b/c` 或 `right_store_a/b/c`，扫码调用 `qr_scan_b/c`，复归调用 `home`。
 Look 已明确拒绝且未下发轨迹（`trajectory_id=0`），并有有效静止反馈时，不再取消导航。
 到点后消费失败结果，恢复一次 Home，再推进任务。
 请求异常、取消、planner 被占用或已下发轨迹的失败仍保留必要停止和导航取消。
