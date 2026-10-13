@@ -15,7 +15,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from fruit_robviz_bridge.runtime_manager import (
     RuntimeErrorBase,
@@ -51,20 +51,30 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _cors_headers(self) -> None:
+    def _allowed_origin(self) -> bool:
         origin = self.headers.get("Origin")
-        parsed = urlparse(origin) if origin else None
-        host = self.headers.get("Host", "").split(":", 1)[0]
+        if not origin:
+            return True
+        try:
+            parsed = urlparse(origin)
+            port = parsed.port
+            host = urlparse("//" + self.headers.get("Host", "")).hostname
+        except ValueError:
+            return False
         local = {"localhost", "127.0.0.1", "::1"}
         is_local_pair = (
             parsed is not None and parsed.hostname in local and host in local
         )
-        if (
+        return (
             parsed is not None
             and parsed.scheme in ("http", "https")
             and (parsed.hostname == host or is_local_pair)
-            and parsed.port in (None, 8000)
-        ):
+            and port in (None, 8000)
+        )
+
+    def _cors_headers(self) -> None:
+        origin = self.headers.get("Origin")
+        if origin and self._allowed_origin():
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
         self.send_header(
@@ -83,8 +93,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         task_id = suffix
         return task_id or None
 
-    def _operation(self) -> tuple[str | None, str | None]:
-        prefix = "/api/runtime/tasks/"
+    def _operation(self, prefix: str = "/api/runtime/tasks/") -> tuple[str | None, str | None]:
         path = unquote(urlparse(self.path).path)
         if not path.startswith(prefix):
             return None, None
@@ -103,6 +112,19 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path
             if path == "/health":
                 self._send(HTTPStatus.OK, {"status": "ok"})
+                return
+            if path == "/api/runtime/scripts":
+                self._send(HTTPStatus.OK, self.server.manager.scripts())
+                return
+            if path == "/api/runtime/scripts/log":
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    cursor = int(query.get("cursor", ["0"])[0])
+                except ValueError as error:
+                    raise RuntimeErrorBase("日志 cursor 无效") from error
+                self._send(HTTPStatus.OK, self.server.manager.script_log(
+                    cursor, query.get("run_id", [""])[0]
+                ))
                 return
             if path == "/api/runtime/tasks":
                 self._send(HTTPStatus.OK, self.server.manager.status())
@@ -123,6 +145,38 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         task_id, operation = self._operation()
         try:
+            if not self._allowed_origin():
+                self._send(HTTPStatus.FORBIDDEN, {"error": "不允许的 Origin"})
+                return
+            path = urlparse(self.path).path
+            if path.startswith("/api/runtime/scripts/"):
+                if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
+                    raise RuntimeErrorBase("请求必须使用 application/json", 415)
+                try:
+                    size = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < size <= 16384:
+                        raise ValueError("body size")
+                    body = json.loads(self.rfile.read(size))
+                except (ValueError, UnicodeDecodeError) as error:
+                    raise RuntimeErrorBase("请求 JSON 无效或超过大小限制") from error
+                if not isinstance(body, dict):
+                    raise RuntimeErrorBase("请求必须为 JSON object")
+                if path == "/api/runtime/scripts/kill":
+                    if body:
+                        raise RuntimeErrorBase("Kill 不接受参数")
+                    result = self.server.manager.kill_scripts()
+                else:
+                    script_id, action = self._operation("/api/runtime/scripts/")
+                    if script_id is None or action != "start":
+                        self._send(HTTPStatus.NOT_FOUND, {"error": "接口不存在"})
+                        return
+                    if body.keys() - {"parameters"}:
+                        raise RuntimeErrorBase("存在未知请求字段")
+                    result = self.server.manager.start_script(
+                        script_id, body.get("parameters", {})
+                    )
+                self._send(HTTPStatus.OK, result)
+                return
             if task_id is None or operation not in ("start", "stop"):
                 self._send(HTTPStatus.NOT_FOUND, {"error": "接口不存在"})
                 return

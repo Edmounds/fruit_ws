@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import codecs
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import fcntl
@@ -51,6 +52,9 @@ class Task:
     stop_command: str | None
     timeout_sec: float
     log_file: str
+    script: str | None = None
+    parameters: dict[str, Any] | None = None
+    note: str = ""
 
 
 @dataclass
@@ -111,6 +115,8 @@ class RuntimeManager:
         self.lock_path = lock_path
         self._processes: dict[str, ManagedProcess] = {}
         self._operation_lock = threading.RLock()
+        self._script_operation: str | None = None
+        self._current_script: dict[str, Any] | None = None
         self.tasks = self._load_tasks(config_path)
 
     @staticmethod
@@ -150,6 +156,9 @@ class RuntimeManager:
                 stop_command=raw.get("stop_command"),
                 timeout_sec=timeout_sec,
                 log_file=str(raw.get("log_file", f"{task_id}.log")),
+                script=raw.get("script"),
+                parameters=raw.get("parameters", {}),
+                note=str(raw.get("note", "")),
             )
         for task in tasks.values():
             for dependency in task.dependencies:
@@ -294,14 +303,26 @@ class RuntimeManager:
                 "tasks": [self._status(item) for item in self.tasks],
             }
 
-    def _launch(self, task: Task) -> None:
+    def _launch(self, task: Task, script_args: list[str] | None = None) -> None:
         if task.command is None:
             raise RuntimeErrorBase(f"任务 {task.task_id} 没有启动命令")
         self.log_root.mkdir(parents=True, exist_ok=True)
         log_path = self.log_root / Path(task.log_file).name
+        entry = task.command
+        environment = None
+        if script_args is not None:
+            entry = shlex.join([
+                "/bin/bash", str(self.workspace_root / task.script), *script_args
+            ])
+            runtime_dir = f"/run/user/{os.getuid()}"
+            environment = {
+                **os.environ, "PYTHONUNBUFFERED": "1", "RCUTILS_COLORIZED_OUTPUT": "1",
+                "DISPLAY": ":0", "XDG_RUNTIME_DIR": runtime_dir,
+                "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime_dir}/bus",
+            }
         command = (
             f"source {shlex.quote(str(self.runtime_setup_path))} && "
-            f"exec {task.command}"
+            f"exec {entry}"
         )
         output = log_path.open("a", encoding="utf-8")
         output.write(f"\n--- start {task.task_id} {_now()} ---\n")
@@ -314,11 +335,170 @@ class RuntimeManager:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
                 text=True,
+                env=environment,
             )
         except Exception:
             output.close()
             raise
         self._processes[task.task_id] = ManagedProcess(process, log_path)
+        output.close()
+
+    def _script_task(self, task_id: str) -> Task:
+        task = self._task(task_id)
+        if not isinstance(task.script, str) or Path(task.script).name != task.script:
+            raise RuntimeErrorBase(f"任务 {task_id} 不是脚本任务", 404)
+        return task
+
+    def script_arguments(self, task_id: str, parameters: Any) -> list[str]:
+        """Translate structured browser values into allowlisted argument tokens."""
+        task = self._script_task(task_id)
+        definitions = task.parameters or {}
+        if not isinstance(parameters, dict) or parameters.keys() - definitions.keys():
+            raise RuntimeErrorBase("存在未知脚本参数")
+        arguments: list[str] = []
+        for name, definition in definitions.items():
+            value = parameters.get(name, definition.get("default"))
+            if value is None:
+                if definition.get("required"):
+                    raise RuntimeErrorBase(f"必须选择参数 {name}")
+                if name in parameters:
+                    raise RuntimeErrorBase(f"参数 {name} 的值无效")
+                continue
+            choices = definition.get("choices")
+            flag = definition.get("flag", "")
+            if choices is None:
+                if not isinstance(value, bool):
+                    raise RuntimeErrorBase(f"参数 {name} 必须为布尔值")
+                if value:
+                    arguments.append(flag)
+            else:
+                if not isinstance(value, str) or value not in choices:
+                    raise RuntimeErrorBase(f"参数 {name} 的值无效")
+                if flag.endswith(":="):
+                    arguments.append(flag + value)
+                elif flag:
+                    arguments.extend([flag, value])
+                else:
+                    arguments.append(value)
+        return arguments
+
+    @staticmethod
+    def _script_status(current: dict[str, Any] | None) -> dict[str, Any] | None:
+        if current is None:
+            return None
+        tracked = current.get("process")
+        process = tracked.process if tracked else None
+        exit_code = process.poll() if process else current.get("exit_code")
+        return {
+            "id": current["id"], "run_id": current["run_id"],
+            "state": "RUNNING" if process and exit_code is None else "EXITED",
+            "exit_code": exit_code, "pid": process.pid if process else None,
+        }
+
+    def scripts(self) -> dict[str, Any]:
+        return {
+            "scripts": [{"id": task.task_id, "script": task.script,
+                         "parameters": task.parameters or {}, "note": task.note}
+                        for task in self.tasks.values() if task.script],
+            "current": self._script_status(self._current_script),
+            "operation": self._script_operation,
+        }
+
+    def _kill_scripts(self) -> None:
+        self.log_root.mkdir(parents=True, exist_ok=True)
+        if self._current_script is None:
+            self._current_script = {
+                "id": "kill", "run_id": _now(), "start": 0,
+                "log_path": self.log_root / "kill.log",
+            }
+            self._current_script["log_path"].write_bytes(b"")
+        with self._current_script["log_path"].open("ab") as output:
+            output.write(b"\n\x1b[33m[Kill] Stopping project processes...\x1b[0m\n")
+            output.flush()
+            kill_path = shlex.quote(str(self.workspace_root / 'kill_fruit_processes.sh'))
+            try:
+                result = subprocess.run(
+                    ["/bin/bash", "-lc",
+                     f"source {shlex.quote(str(self.runtime_setup_path))} && "
+                     f"exec /bin/bash {kill_path}"],
+                    cwd=str(self.workspace_root), stdout=output,
+                    stderr=subprocess.STDOUT, timeout=10.0, check=False,
+                )
+            except subprocess.TimeoutExpired as error:
+                output.write(b"\x1b[31m[Kill] Cleanup timed out. New script NOT started.\x1b[0m\n")
+                raise RuntimeConflict("Kill 清理超时，未启动新脚本") from error
+            tracked = self._current_script.get("process")
+            if tracked is None:
+                self._current_script["exit_code"] = result.returncode
+            if result.returncode != 0:
+                raise RuntimeConflict("Kill 清理失败，未启动新脚本。请检查当前日志")
+            # A stopped process must be reaped before replacing its tracking record.
+            if tracked and tracked.process.poll() is None:
+                raise RuntimeConflict("当前脚本仍在退出，未启动新脚本")
+            output.write(b"\x1b[32m[Kill] Cleanup completed.\x1b[0m\n")
+
+    def start_script(self, task_id: str, parameters: Any) -> dict[str, Any]:
+        arguments = self.script_arguments(task_id, parameters)
+        task = self._script_task(task_id)
+        if not (self.workspace_root / task.script).is_file():
+            raise RuntimeErrorBase(f"脚本文件不存在: {task.script}", 404)
+        with self._lock():
+            self._script_operation = "KILLING"
+            try:
+                self._kill_scripts()
+                self._script_operation = "STARTING"
+                log_path = self.log_root / Path(task.log_file).name
+                start = log_path.stat().st_size if log_path.exists() else 0
+                self._launch(task, arguments)
+                self._current_script = {
+                    "id": task_id, "run_id": _now(), "start": start,
+                    "log_path": log_path, "process": self._processes[task_id],
+                }
+                return {"current": self._script_status(self._current_script)}
+            finally:
+                self._script_operation = None
+
+    def kill_scripts(self) -> dict[str, Any]:
+        with self._lock():
+            self._script_operation = "KILLING"
+            try:
+                self._kill_scripts()
+                return {"current": self._script_status(self._current_script)}
+            finally:
+                self._script_operation = None
+
+    def script_log(self, cursor: int, run_id: str) -> dict[str, Any]:
+        """Read bounded byte chunks. Preserve ANSI and incomplete UTF-8 sequences."""
+        if cursor < 0:
+            raise RuntimeErrorBase("日志 cursor 必须非负")
+        current = self._current_script
+        payload = {"current": self._script_status(current), "operation": self._script_operation,
+                   "run_id": current["run_id"] if current else "", "cursor": 0,
+                   "data": "", "reset": False}
+        if current is None:
+            return payload
+        try:
+            with current["log_path"].open("rb") as stream:
+                size = os.fstat(stream.fileno()).st_size
+                start = current["start"]
+                reset = run_id != current["run_id"] or cursor < start or cursor > size
+                position = max(start, size - 256 * 1024) if reset else cursor
+                stream.seek(position)
+                data = stream.read(64 * 1024)
+                if reset and position > start:
+                    # A tail restore may start inside a multi-byte character.
+                    while data and data[0] & 0xc0 == 0x80:
+                        data = data[1:]
+                        position += 1
+                decoder = codecs.getincrementaldecoder("utf-8")("replace")
+                ended = payload['current']['state'] == 'EXITED' and stream.tell() == size
+                text = decoder.decode(data, final=ended)
+                pending = len(decoder.getstate()[0])
+                payload.update(cursor=position + len(data) - pending,
+                               data=text, reset=reset)
+        except FileNotFoundError:
+            pass
+        return payload
 
     def _start(self, task_id: str, stack: set[str]) -> list[str]:
         if task_id in stack:

@@ -38,6 +38,14 @@ tasks:
     readiness:
       process_pattern: "/home/rc4/fruit_ws/start_fruit_perception.sh"
     log_file: perception.log
+    script: start_fruit_perception.sh
+    parameters:
+      zone: {flag: --zone, choices: [A, B, C], required: true}
+      debug: {flag: --debug, default: false}
+      ripeness_model: {flag: 'ripeness_model:=', choices: [edge, yolo], default: edge}
+      performance_hint: {flag: 'performance_hint:=', choices: [latency, throughput], default: latency}
+      perception_log_level: {flag: 'perception_log_level:=', choices: [debug, info, warn, error, fatal], default: warn}
+      use_sim_time: {flag: 'use_sim_time:=', choices: ['true', 'false'], default: 'false'}
 
   navigation:
     command: "/home/rc4/fruit_ws/start_navigation.sh"
@@ -50,9 +58,43 @@ tasks:
     readiness:
       process_pattern: "/home/rc4/fruit_ws/start_fruit_mission.sh"
     log_file: mission.log
+    script: start_fruit_mission.sh
+    parameters:
+      flow: {flag: --flow, choices: [full, ac, a, b, c], default: full}
+      open_loop: {flag: --open-loop, default: false}
+      debug: {flag: --debug, default: false}
 
   waypoint_recording:
     command: "/home/rc4/fruit_ws/waypoints_maker.sh"
     readiness:
       process_pattern: "/home/rc4/fruit_ws/waypoints_maker.sh"
     log_file: waypoint_recording.log
+    script: waypoints_maker.sh
+    note: '--tele 已默认启用，不需要传入。'
+    parameters:
+      debug: {flag: --debug, default: false}
+
+  teleop:
+    command: /home/rc4/fruit_ws/start_tele.sh
+    readiness: {process_pattern: /home/rc4/fruit_ws/start_tele.sh}
+    script: start_tele.sh
+    parameters:
+      debug: {flag: --debug, default: false}
+
+  camera_arm_target:
+    command: /home/rc4/fruit_ws/test_camera_arm_target.sh
+    readiness: {process_pattern: /home/rc4/fruit_ws/test_camera_arm_target.sh}
+    script: test_camera_arm_target.sh
+    parameters:
+      zone: {flag: --zone, choices: [A, B, C], required: true}
+      side: {choices: [--left, --right], required: true}
+      debug: {flag: --debug, default: false}
+
+  voice_test:
+    command: /home/rc4/fruit_ws/test_voice.sh
+    script: test_voice.sh
+
+  qr_test:
+    command: /home/rc4/fruit_ws/test_qr.sh
+    readiness: {process_pattern: /home/rc4/fruit_ws/test_qr.sh}
+    script: test_qr.sh

@@ -4,6 +4,7 @@ set -u
 set -o pipefail
 
 target_pids=()
+declare -A matched_commands=()
 competition=0
 dry_run=0
 
@@ -39,6 +40,13 @@ target_tokens=(
   "bash ./test_camera_arm_target.sh"
   "bash test_camera_arm_target.sh"
   "bash /home/rc4/fruit_ws/test_camera_arm_target.sh"
+  "./test_qr.sh"
+  "bash test_qr.sh"
+  "/home/rc4/fruit_ws/test_qr.sh"
+  "./test_voice.sh"
+  "bash test_voice.sh"
+  "/home/rc4/fruit_ws/test_voice.sh"
+  "/home/rc4/fruit_ws/scripts/check_qr_terminal.py"
   "ros2 topic pub --once /fruit_mission/observation_window"
   "ros2 bag record "
   "/lib/rosbag2_transport/record"
@@ -115,7 +123,8 @@ Usage: ./kill_fruit_processes.sh [--competition] [--dry-run]
 
 Stop task scripts, helper processes, nodes, and launch processes in the current
 fruit robot project design. This includes perception, odometry, navigation,
-teleop, camera tuning, direct serial diagnostics, and rosbag recording. RViz,
+teleop, camera tuning, QR tests, voice tests and their children, direct serial
+diagnostics, and rosbag recording. RViz,
 foxglove_bridge, and the system-managed waypoint editor are intentionally
 excluded.
 
@@ -195,12 +204,14 @@ is_competition_process() {
 
 is_target_process() {
   local command_line=$1
+  local pid=$2
   local token
 
   if ((competition)); then
     is_competition_process "$command_line" "$2"
     return
   fi
+  [[ -n "${matched_commands[$pid]:-}" && "${matched_commands[$pid]}" == "$command_line" ]] && return 0
   for token in "${target_tokens[@]}"; do
     if [[ "$command_line" == *"$token"* ]]; then
       return 0
@@ -225,6 +236,27 @@ collect_target_pids() {
 
 refresh_targets() {
   mapfile -t target_pids < <(collect_target_pids | sort -n -u)
+  # Retain exact command lines before parents exit. Include only their descendants,
+  # never unrelated audio players or independently owned Web/Foxglove services.
+  local pid parent command_line changed=1
+  local snapshot
+  snapshot=$(ps -eo pid=,ppid=,args=)
+  for pid in "${target_pids[@]}"; do
+    command_line=$(get_target_command "$pid") || continue
+    matched_commands[$pid]=$command_line
+  done
+  if ((competition == 0)); then
+    while ((changed)); do
+      changed=0
+      while read -r pid parent command_line; do
+        [[ -n "${matched_commands[$parent]:-}" && -z "${matched_commands[$pid]:-}" ]] || continue
+        [[ " $protected_pids " == *" $pid "* ]] && continue
+        matched_commands[$pid]=$command_line
+        target_pids+=("$pid")
+        changed=1
+      done <<< "$snapshot"
+    done
+  fi
 }
 
 get_target_command() {
