@@ -211,23 +211,11 @@ public:
 
     const auto b_target_acquisition_frames =
       declare_parameter<std::int64_t>("camera_b_target_acquisition_frames", 8);
-    const auto b_target_max_count =
-      declare_parameter<std::int64_t>("camera_b_target_max_count", 2);
     if (b_target_acquisition_frames <= 0) {
       throw std::invalid_argument("camera_b_target_acquisition_frames must be positive");
     }
-    if (b_target_max_count <= 0) {
-      throw std::invalid_argument("camera_b_target_max_count must be positive");
-    }
-    if (b_target_max_count > 2) {
-      RCLCPP_WARN(
-        get_logger(),
-        "camera_b_target_max_count is set to %ld (> 2). Proceeding without throwing; mission will select top 2 ripe targets.",
-        b_target_max_count);
-    }
     b_target_selector_config_ = BTargetSelectorConfig{
       static_cast<std::size_t>(b_target_acquisition_frames),
-      static_cast<std::size_t>(b_target_max_count),
       declare_parameter("camera_b_target_association_radius_m", 0.03),
       declare_parameter("camera_b_target_outlier_sigma", 2.0)};
     b_target_selector_config_.min_observations = target_selector_config_.min_observations;
@@ -983,7 +971,7 @@ private:
   float target_confidence_weight_{0.70F};
   float target_score_close_threshold_{0.05F};
   CameraTargetSelectorConfig target_selector_config_{8U, 0.03, 2.0, 8U, 0.70, 0.05};
-  BTargetSelectorConfig b_target_selector_config_{8U, 2U, 0.03, 2.0};
+  BTargetSelectorConfig b_target_selector_config_{8U, 0.03, 2.0};
   std::atomic<std::uint64_t> target_selection_generation_{0U};
   std::atomic<bool> stopping_{false};
   std::atomic<char> zone_{'A'};

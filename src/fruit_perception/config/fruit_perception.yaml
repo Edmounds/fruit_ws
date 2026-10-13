@@ -64,6 +64,5 @@ fruit_perception_node:
     camera_target_outlier_sigma: 2.0
     camera_target_lock_miss_frames: 8
     camera_b_target_acquisition_frames: 8
-    camera_b_target_max_count: 2
     camera_b_target_association_radius_m: 0.03
     camera_b_target_outlier_sigma: 2.0

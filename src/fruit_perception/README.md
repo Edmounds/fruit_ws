@@ -120,7 +120,7 @@ Open a new matching window after a successful parameter response.
   bare `ripe/unripe` labels. Only `ripe` enters single-target locking.
 - Area `B`: `fruit_type/best.onnx` plus ripeness classification; publishes
   `apple_ripe/apple_unripe/pear_ripe/pear_unripe` and diagnostic `bad`,
-  with up to 2 stable candidates.
+  with independently confirmed candidates.
 - Area `C`: the same vegetable detector as A, plus ripeness classification;
   publishes species/maturity labels and locks mature targets matching the expected
   type. Model-internal `pepper` is normalized to business label `chili` **after**
@@ -152,7 +152,7 @@ The decision stream on `/fruit_perception/decision` contains:
 - detected fruit `types` in confidence order
 - all detections in confidence order (`detections`), including ROI and optional 3D points
 - `has_target` and `target_point` when single-target lock is acquired within a valid window (Areas A/C), or when targets are ready (Area B)
-- B zone `targets_ready` and up to two aggregated `targets`
+- B zone `targets_ready` and all confirmed aggregated `targets`
 - annotated RGB8 image on `/fruit_perception/camera/annotated_image`
 
 The target point is the `target_point` field in the decision message and uses
@@ -176,7 +176,7 @@ starting values, **not measured calibration or a one-second latency guarantee**:
 | Parameter | Starting value | Meaning |
 | --- | --- | --- |
 | `camera_target_acquisition_frames` | 8 | A/C rolling evidence window in processed frames |
-| `camera_b_target_acquisition_frames` | 8 | B rolling window and minimum tree-observation warmup |
+| `camera_b_target_acquisition_frames` | 8 | B observation length in processed frames |
 | `camera_target_min_observations` | 6 | Minimum supporting observations of one species/maturity label |
 | `camera_target_type_support_ratio` | 0.75 | Minimum supporting fraction of that track's observations |
 | `camera_target_max_missed_frames` | 2 | Tolerated consecutive missing frames during confirmation |
@@ -203,16 +203,17 @@ single target, and the existing eight-frame lock-loss threshold is unchanged.
 Matching uses the frozen aggregate as its spatial anchor, so successive small
 displacements cannot keep republishing an arbitrarily old location.
 
-B observes once per tree. After the short warmup, all live candidates must be
-confirmed and currently visible; conflicting confirmed species keep observation
-pending rather than selecting a species from a single high score. Both ripe and
-unripe labels need evidence. Confirmed targets are sorted prioritizing ripe targets;
-up to `camera_b_target_max_count` (warns if > 2) are frozen together and
-repeated until the next observation reset. The mission client selects at most two
-highest-scoring ripe targets for execution. A fully empty window can return ready
-with no targets; uncertain tracks remain pending until confirmation, expiry or
-the client's existing per-operation timeout. No additional observation retries
-are introduced.
+B observes once per tree. After the eight-frame warmup, independently confirmed,
+currently visible candidates are frozen together. Unconfirmed or mixed-species
+tracks do not block confirmed candidates. Both ripe and unripe labels need evidence.
+Confirmed targets are sorted prioritizing ripe targets and detector-confidence median.
+All confirmed targets are published and repeated until the next observation reset.
+The early `camera_b_target_max_count` cap is removed. Mission filters species,
+maturity and raw arm-base height/distance before selecting at most two targets
+by descending detector confidence. The observation completes after eight processed
+frames, including when no track qualifies. Unconfirmed tracks are discarded for
+this observation rather than extending the window. Missing frames still use the
+client's existing per-operation timeout. No observation retries are introduced.
 
 At an actual processing rate F, clean A/C needs roughly 6/F seconds and clean B
 roughly 8/F seconds, plus capture/startup/transport costs. Occasional misses or

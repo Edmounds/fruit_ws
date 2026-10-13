@@ -55,7 +55,7 @@ $(X, Y)$ 并减速停车后，原地调整到航点保存的目标偏航角，�
 - 线速度同时受现有速度范围、接近目标的比例减速、制动距离与角速度上限约束；保留底盘最低线速度和现有加速度限制。
 - `lookahead_distance` 替代旧 `lateral_gain`。较大值通常转向更柔和、纠偏更慢；较小值纠偏更快，也更敏感。调整前视距离后应重启导航节点。
 - 位置阶段只检查既有 `forward_tolerance` / `lateral_tolerance`；位置到位后先将速度指令减到零，再由既有 `_rotate_to` 检查目标 yaw。位置进度使用平面距离，转向进度使用角度误差，避免原地调朝向时被位置 watchdog 误报失败。
-- `waypoint_retry_attempts` 和 `waypoint_pass_tolerance` 的既有恢复语义不变，失败兜底仍仅用于非最终航点；不新增 mission 特判或扩大容差。控制器仍按收到的目标 pose 在位置到达后调整车体朝向。C 区 Mission 会为通行 waypoint 发送当前路径所需的前进或倒车朝向，C 采摘 goal 仍发送 YAML 保存的最终朝向。
+- 每个航点的转向、直行和最终朝向调整共用 10 秒期限；到期发布零速并终止当前目标，不再放宽容差通过。`waypoint_retry_attempts` 默认值及源码配置均为 `0`，Mission 也不重发失败目标。非超时失败保留非最终航点的既有 `waypoint_pass_tolerance` 判断。C 区通行 waypoint 使用当前路径所需的前进或倒车朝向，采摘 goal 使用 YAML 标定朝向。
 
 此控制器没有 costmap、避障或整机轮廓碰撞检查，前视点跟踪不构成安全走廊保证；必须验证转弯和纠偏时的整机扫掠空间。速度指令归零也不等于实测底盘已经静止。
 源码变更后需构建 `fruit_navigation` 并重启导航；纯运动学检查不代表实机比赛验收。

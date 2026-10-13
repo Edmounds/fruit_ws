@@ -2,7 +2,6 @@
 
 from fruit_mission.camera_target_planner_client import store_preset_name
 from fruit_mission.decisions import PickExecutionResult
-from fruit_mission.decisions import decide_b_tree_targets
 from fruit_mission.decisions import expected_ripe_type
 from fruit_mission.decisions import format_b_announcement
 from fruit_mission.decisions import format_c_announcement
@@ -13,17 +12,21 @@ from fruit_qr_planner.planner import build_b_plan, build_c_plan
 
 def navigate(ctx, waypoints, *, side=None, preset=None):
     """Navigate with optional concurrent Look or preset; failed handoffs get one safe Home."""
+    if side is not None and ctx._current_area == "B" and not ctx._arm_home_confirmed:
+        ctx.node.get_logger().warning('B区转场 Home 未确认，跳过当前导航和 Look')
+        return False
     if (
         side is None
         and preset is None
         and not (ctx._arm_home_confirmed or ctx._arm_shenzhi_confirmed)
     ):
-        ctx.recover_home()
+        if not ctx.recover_home():
+            ctx.node.get_logger().warning('安全 Home 未确认，跳过当前导航')
+            return False
     if ctx.navigate_named(waypoints, observation_side=side, arm_preset=preset):
         return True
     ctx.node.get_logger().warning(f"导航失败，跳过当前动作: {' -> '.join(waypoints)}")
-    if ctx._current_area != "A":
-        ctx.recover_home()
+    ctx.recover_home()
     return False
 
 
@@ -44,7 +47,7 @@ def enter_shenzhi(ctx, *, completed):
 
 
 def scan_b_qr(ctx, *, arrived):
-    """qr_scan -> QR window -> plan/fallback -> announcement -> shenzhi."""
+    """qr_scan -> QR window -> plan/fallback -> announcement -> Home."""
     ctx.report_current_area("B")
     ready = arrived and ctx.execute_arm_preset('qr_scan').completed
     plan = None
@@ -60,7 +63,9 @@ def scan_b_qr(ctx, *, arrived):
         plan = build_b_plan("\n".join(ctx.config["qr_fallback"]["b_targets"]))
     ctx.save_b_plan(plan)
     ctx.announce(format_b_announcement(plan))
-    if arrived and not decoded:  # Failed navigation already recovered once.
+    if not arrived:  # Failed navigation already recovered once.
+        return plan
+    if not decoded:
         ctx.recover_home()
     else:
         motion = ctx.execute_arm_preset('home')
@@ -196,6 +201,8 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
             req, layer = ctx.camera_target_request(item.point)
             store_preset = store_preset_name(side, "B", layer)
             requests.append((req, store_preset, item.model_type))
+            if len(requests) == 2:
+                break
         except ValueError as error:
             ctx.node.get_logger().warning(f"Skipping invalid B target: {error}")
     if not requests:
@@ -203,6 +210,8 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
         if not motion.completed:
             ctx.recover_home()
         return False
+    ctx.announce(
+        f"B区{label}，识别到{target}，和二维码一致，开始抓成熟{target}。")
     success = True
     for request, store_preset, model_type in requests:
         result = _grasp_and_collect(
@@ -210,39 +219,28 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
         success = result.success and success
         if not result.success:
             reason = _b_arm_failure_text(result.reason_code)
+            if not ctx._arm_home_confirmed:
+                ctx.announce(f"B区{label}，{reason}，跳过。")
+                return False
             ctx.announce(f"B区{label}，{reason}，继续下一个目标。")
-    motion = ctx.execute_arm_preset("home")
-    if not motion.completed:
-        ctx.recover_home()
+    if result.success:  # The last failed grasp already recovered Home once.
+        motion = ctx.execute_arm_preset("home")
+        if not motion.completed:
+            return ctx.recover_home() and success
     return success
 
 
 def _select_b_targets(ctx, label, target, targets):
-    if len(targets) > 2:
-        ctx.node.get_logger().warning(
-            f"B区{label}检测到 {len(targets)} 个目标 (>2)，将按评分只抓取前两个成熟目标。"
-        )
-    decision = decide_b_tree_targets(
-        target, expected_ripe_type(target),
-        ((item.model_type, item.pixel_x, item.pixel_y, item.image_width) for item in targets),
-    )
-    if decision.reason_code == "no_detection":
+    if not targets:
         ctx.announce(f"B区{label}，没有识别到果实，跳过。")
         return []
-    if decision.reason_code == "inconsistent_types":
-        ctx.announce(f"B区{label}，识别结果不一致，跳过。")
-        return []
-    if decision.reason_code == "type_mismatch":
-        ctx.announce(f"B区{label}，识别到{decision.observed_name}，和二维码不一致，跳过。")
-        return []
-    if decision.target_index is None:
-        ctx.announce(
-            f"B区{label}，识别到{decision.observed_name}，和二维码一致，"
-            f"没有成熟{target}，跳过。")
-        return []
-    ctx.announce(
-        f"B区{label}，识别到{decision.observed_name}，和二维码一致，开始抓成熟{target}。")
-    return [targets[index] for index in decision.target_indices]
+    expected_type = expected_ripe_type(target)
+    selected = sorted(
+        (item for item in targets if item.model_type == expected_type),
+        key=lambda item: item.confidence, reverse=True)
+    if not selected:
+        ctx.announce(f"B区{label}，没有识别到成熟{target}，跳过。")
+    return selected
 
 
 def navigate_c(ctx, task):

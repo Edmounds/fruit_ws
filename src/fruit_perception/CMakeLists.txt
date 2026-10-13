@@ -105,6 +105,12 @@ ament_python_install_package(fruit_perception_geometry)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
+  ament_add_gtest(test_b_target_selector
+    test/test_b_target_selector.cpp src/b_target_selector.cpp)
+  target_include_directories(test_b_target_selector PRIVATE include ${OpenCV_INCLUDE_DIRS})
+  target_compile_features(test_b_target_selector PUBLIC cxx_std_17)
+  target_link_libraries(test_b_target_selector ${OpenCV_LIBRARIES})
+
   ament_add_gtest(test_detection_parser test/test_detection_parser.cpp)
   target_link_libraries(test_detection_parser detection_parser)
 

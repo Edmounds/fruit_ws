@@ -30,7 +30,8 @@ motion:
   pitch_b_down_deg: -15.0  # B 下层抓取绝对俯仰角（度）；B 偏置仍按 0 度旋转，独立于抓取俯仰角
   duration_ms: 1500  # 1500ms 平滑探出抓取
   linear_path: false  # false: 关节空间 PTP 平滑规划
-b_height:
+b_limits:
   min_m: -0.01
   split_m: 0.12
   max_m: 0.30
+  max_distance_m: 1.0  # 未叠加抓取偏置的目标到机械臂基座原点的三维距离

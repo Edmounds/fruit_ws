@@ -23,7 +23,6 @@ struct BTargetCandidate
 struct BTargetSelectorConfig
 {
   std::size_t acquisition_frames;
-  std::size_t max_targets;
   double association_radius_m;
   double outlier_sigma;
   std::size_t min_observations{6U};
@@ -88,7 +87,6 @@ private:
 
   BTargetSelectorConfig config_;
   std::size_t frame_count_{0U};
-  std::size_t last_candidate_frame_{0U};
   std::vector<Track> tracks_;
   bool ready_{false};
   std::vector<BTargetResult> locked_targets_;

@@ -29,18 +29,10 @@ double median(std::vector<double> values)
   return (lower + upper) * 0.5;
 }
 
-std::string fruit_species(const std::string & type)
-{
-  return type.substr(0, type.find('_'));
-}
-
 void validate_config(const BTargetSelectorConfig & config)
 {
   if (config.acquisition_frames == 0U) {
     throw std::invalid_argument("camera_b_target_acquisition_frames must be positive");
-  }
-  if (config.max_targets == 0U) {
-    throw std::invalid_argument("camera_b_target_max_count must be positive");
   }
   if (!std::isfinite(config.association_radius_m) || config.association_radius_m <= 0.0) {
     throw std::invalid_argument(
@@ -78,15 +70,8 @@ BTargetUpdate BTargetSelector::update(const std::vector<BTargetCandidate> & cand
   if (frame_count_ < config_.acquisition_frames) {
     return {};
   }
-  if (tracks_.empty() && frame_count_ - last_candidate_frame_ < config_.acquisition_frames) {
-    return {};
-  }
-
   auto statistics = select_tracks();
-  // Freeze a tree only when every live candidate has enough consistent evidence.
-  if (statistics.size() != tracks_.size()) {
-    return {};
-  }
+  // Freeze only independently confirmed tracks when the observation window ends.
   std::stable_sort(
     statistics.begin(), statistics.end(),
     [](const auto & left, const auto & right) {
@@ -95,26 +80,9 @@ BTargetUpdate BTargetSelector::update(const std::vector<BTargetCandidate> & cand
       if (left_ripe != right_ripe) {
         return left_ripe;
       }
-      if (left.confidence != right.confidence) {
-        return left.confidence > right.confidence;
-      }
-      return left.result.observation_count > right.result.observation_count;
+      return left.confidence > right.confidence;
     });
-  if (!statistics.empty()) {
-    // Conflicting stable species are not a confirmed tree observation.
-    const auto dominant_species = fruit_species(statistics.front().result.type);
-    if (std::any_of(
-        statistics.begin(), statistics.end(), [&dominant_species](const auto & statistic) {
-          return fruit_species(statistic.result.type) != dominant_species;
-        }))
-    {
-      return {};
-    }
-  }
-  if (statistics.size() > config_.max_targets) {
-    statistics.resize(config_.max_targets);
-  }
-
+  // Mission applies species and arm-base limits before selecting at most two.
   locked_targets_.reserve(statistics.size());
   for (const auto & statistic : statistics) {
     locked_targets_.push_back(statistic.result);
@@ -126,7 +94,6 @@ BTargetUpdate BTargetSelector::update(const std::vector<BTargetCandidate> & cand
 void BTargetSelector::reset()
 {
   frame_count_ = 0U;
-  last_candidate_frame_ = 0U;
   tracks_.clear();
   ready_ = false;
   locked_targets_.clear();
@@ -140,9 +107,6 @@ cv::Point3d BTargetSelector::mean_point(const Track & track)
 void BTargetSelector::add_frame(const std::vector<BTargetCandidate> & candidates)
 {
   ++frame_count_;
-  if (!candidates.empty()) {
-    last_candidate_frame_ = frame_count_;
-  }
   for (auto & track : tracks_) {
     auto & observations = track.observations;
     observations.erase(

@@ -156,7 +156,7 @@ camera 的固定原生流开启同步、深度对齐与 RGBD（Color 为 `1280x7
    C++ 标注保留品种，并显示熟度百分比、检测分数、中心深度和准星。
 4. `/fruit_perception/decision` 发布单相机决策消息，携带 `observation_window_id`、一帧内的全部目标及原图 ROI，中心深度无效时保留二维结果。窗口外 `observation_window_id` 为空且不输出抓取目标。
 5. A/C 区使用单目标锁定器（8 帧短窗口，A 区只锁定成熟 ripe 目标，C 区按期望品种过滤成熟目标），在有效 harvest 窗口内锁定后发布 `has_target=true` 和 `target_point`。
-6. B 区使用多候选选择器（8 帧短窗口，最多输出 2 个稳定候选），在有效 harvest 窗口内发布 `targets_ready=true` 和 `targets` 列表。
+6. B 区使用多候选选择器（8 帧短窗口，输出独立确认的候选），在有效 harvest 窗口内发布 `targets_ready=true` 和 `targets` 列表。Mission 完成品种、成熟度和空间筛选后最多选两个。
 7. 任务节点等待携带当前 `observation_window_id` 的有效 `decision`，在 mission 内将 RGB 光学点转换到夹爪系，再用 planner 的新鲜实测 TCP/模型偏航转到机械臂固定基座系，应用 `target_offset_m` 后调用 `/arm_planner_node/move_cartesian` 并检查执行结果。偏置单位为米，当前 `[0.0, 0.03, -0.015]`；X/Z 直接相加，Y 幅值按原 Base Y 正负自动变号，为零则不加。正式任务与单点调试共用校验和调用链，不重复应用工具几何偏移。观测及提交前由现场物理保证机构静止；CLOSE/HOLD、Harvest、Home 均完成才记录工序成功。外参毫米/ROS 米边界及剩余集成限制见 [mission 坐标换算文档](../src/fruit_mission/docs/CAMERA_TARGET_TRANSFORM.md)。
 
 4DOF 机械臂不按通用 6DOF 位姿设计。现有解析 FK/IK、PTP/LIN 与限位检查在
@@ -215,7 +215,7 @@ RGBD 复合消息、camera_info 和 `compressed`/`compressedDepth`/`theora` 派�
 | 启动节点/服务/端点 | 每项不超过 10 秒 | 告警继续启动 mission，外围子进程退出不终止整场；仍禁止重复控制节点 |
 | planner 目标、驻留与预设执行 | 无前端执行期限；端点发现最多 10 秒 | 等待下位机结果或主动 STOP/取消；失败局部跳过，未知运动仍取消/STOP |
 | camera 目标识别、二维码计划 | 各 10 秒 | 识别失败局部跳过；QR 任一步失败使用独立固定计划，不跳过区域 |
-| `FollowWaypoints` action server | 5 秒；goal 应答与取消各最多 10 秒 | 已接受 goal 的执行等待终态，无推进期限；Look 失败可触发取消，仅导航保留既有重试 |
+| `FollowWaypoints` action server | 5 秒；goal 应答与取消各最多 10 秒 | 每路点执行最多 10 秒；整个目标结果等待最多路点数 × 10 秒；失败不重发，底层重试配置为 0 |
 | 串口可靠消息 ACK | 每 1 秒重发 | 收到 ACK 或进程退出前持续重发；`reliable_max_retries=3` 只是每累计三次输出告警，不是停止重发 |
 
 局部失败不提前结束 A/B/C 软件流程，A 左右侧和 B 冻结目标按顺序处理，不跨层传播 `safe_to_continue`。未知运动先取消导航并 STOP，确认派发应答后只尝试一次 Home；恢复不做独立停稳循环或用 sleep 放行。预设入口直接检查导航终态、新鲜无错误、有限且在限位内的低速四轴反馈，不满足即跳过；planner 仍拒绝忙状态及 STOP 后未恢复 IDLE 的请求。不得自动清除 EMERGENCY。没有非导航重试，也没有到点侧向复核。
@@ -310,8 +310,8 @@ READ_C_QR
 - 不成熟或种类不符时不调用目标运动；左右观察姿态仍通过 planner 预设执行。
 - C 区每项开始沿用实时 TF/既有历史位姿规划逻辑；无法规划时记录、播报并跳过当前项，不无限停留。
 - FollowWaypoints 失败时记录状态并跳过当前项，不在未到达的位置识别/抓取，继续按二维码顺序推进。
-- C 区 `axis_waypoint_action_server` 将中间 waypoint 视为通行参考点：横向误差超限时先以低速继续修正，并允许一次从实时位姿重试；重试后距离 waypoint 不超过 `waypoint_pass_tolerance` 时容错通过。最终 goal 仍使用严格位置和方向收敛。
-- FollowWaypoints 已接受但执行为 `ABORTED` 时，Mission 按 `missed_waypoints` 截取未完成路线后缀重试，最多使用既有的三次 action 尝试，不重复经过已完成 waypoint。TF 不可用或取消请求仍保持停车和恢复边界。
+- 每个 waypoint 的转向和直行共用 10 秒期限，到期停车并中止，不进行底层重试或超时容差放行。非超时失败保留中间 waypoint 的既有距离容差；最终 goal 仍使用严格位置和方向收敛。
+- FollowWaypoints 失败后 Mission 不重发目标或路线后缀，恢复一次 Home 并跳过当前动作。TF、取消、晚到目标和必要保护姿态检查保留。
 - `axis_waypoint_action_server` 读到超过 `tf_timeout_sec` 的瞬时陈旧 TF 时，先发布零速度，再在同一个 `tf_timeout_sec` 窗口内等待新变换；新鲜 TF 到达后才恢复控制，窗口结束后仍没有新鲜 TF 则保持停车并将 action 标记为 `ABORTED`，避免发布周期边界上的单次陈旧采样立即终止导航，也禁止等待期间沿用上一条速度命令。
 - 每项任务开始时记录 task index；正式任务使用每次服务结果，planner 校验新收到的匹配轨迹 ID 终态，不依赖旧方向回调。
 - C 区局部姿态、识别或目标运动失败后安全恢复/跳过，不提前结束整个比赛流程。
@@ -328,20 +328,21 @@ USE_SAVED_B_PLAN
        ANNOUNCE_RECOGNITION_AND_QR_MATCH
        FREEZE_UP_TO_TWO_MATCHED_RIPE_BASE_TARGETS
        for frozen_target:
-         CLOSE/DWELL -> HARVEST_OPEN/DWELL -> HOME
-       [normal work completed] -> SHENZHI
+         CLOSE/DWELL -> STORE_OPEN/DWELL
+         [failed] -> RECOVER_HOME_ONCE -> CONTINUE_ONLY_IF_HOME_CONFIRMED
+       HOME_UNLESS_LAST_FAILURE_ALREADY_RECOVERED
        ADVANCE_ONCE
   -> CLOSE_OBSERVATION_WINDOW
   -> END_MISSION_FLOW
 ```
 
 - B 计划在首次经过 B 入口时已经扫码保存，完成 C 后由晚启动订阅者读取。
-- 每棵树完成 50 帧统计后，以置信度最高的稳定物理目标确定整树为苹果或梨；不同品种的稳定目标在感知侧丢弃，同品种最多保留两个目标，成熟度仍分别保留。
+- 每棵树观察一次，保留 8 帧预热及单目标多帧确认。异类和未确认候选不阻塞独立确认的目标，不以最高分目标否定整树。
 - 无效中心深度的检测保留二维证据，但不得生成三维抓取点。
 - B 区机械臂目标由 mission 转为固定基座坐标，调用 `move_cartesian` 并等待服务执行结果，不再发送 `ArmTarget(0x13)` 或等待目标 `callback_id=3`。
-- B 区 camera 固定采集 50 帧，按 3D 轨迹输出最多两个稳定目标；原始类型、检测框和标注图保留误识别证据。二维码期望类型不传入感知节点，mission 做品种匹配、成熟筛选。
-- 成熟且匹配目标按既有原像素 `score = abs(pixel_x - image_width / 2) - pixel_y` 排序，同分保留原顺序，最多取两个。首次观察姿态下将两个目标一次性转换为基座坐标/绝对 pitch，并根据未补偿 Base Z 判定 Up/Down 层级与对应的 `left_store_b_up/down` 或 `right_store_b_up/down` 预设，后续直接用冻结请求与 Store 名称，不重新观察/换算。越界目标跳过。每抓一次都完成对应 Store 和 Home。
-- 第一抓失败也推进第二个冻结目标，未获有效反馈时该次物理动作被拒绝，不重试抓取或重新观察。
+- 感知输出全部已确认候选，原始类型、检测框和标注图保留诊断证据。Mission 只采摘匹配二维码的成熟目标。
+- 按检测置信度中位数降序处理候选，再排除未补偿 Base Z 越界及基座三维距离超过 1m 的目标，最多冻结两个请求。`b_limits` 与 Up/Down 配置同组。同分保留原顺序，不再使用外侧像素评分。
+- 同树成功抓取之间直接 Store→下一冻结目标，不重新观察、换算或穿插 Home。第一抓失败恢复一次 Home，确认成功后抓第二个；恢复失败跳过剩余目标。树末尾回 Home，最后失败已恢复时不重复调用；下一树导航同时切对侧 Look。
 - `test_camera_arm_target.sh --zone A|B|C --left|--right [--debug]` 专用于单点联调，旧 `--model` 删除：先可靠交付区域，Home→区域 Look→新鲜静止角 OPEN/HOLD→识别→CLOSE/HOLD→区域 Store。A/C 用蔬菜模型，B 用水果模型且只选成熟目标；不调用跨区 `shenzhi`。端点与识别独立限时，运动等待下位机结果。脚本会驱动硬件，不是自动验证工具。
 
 ### 7.4 语音时序

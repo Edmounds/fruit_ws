@@ -39,9 +39,6 @@ from fruit_mission.waypoint_route import WaypointPose
 from fruit_qr_planner.planner import build_b_plan, build_c_plan
 
 
-NAV_GOAL_ATTEMPTS = 3
-
-
 @dataclass(frozen=True)
 class _CameraTarget:
     point: PointStamped
@@ -66,9 +63,7 @@ class BTreeTarget:
 
     model_type: str
     point: PointStamped
-    pixel_x: float
-    pixel_y: float
-    image_width: int
+    confidence: float
 
 
 class MissionContext:
@@ -110,6 +105,7 @@ class MissionContext:
         self._navigation_stopped = True
         self._navigation_handle = None
         self._navigation_result = None
+        self._navigation_timeout_sec = 10.0
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(
             self._tf_buffer,
@@ -372,7 +368,13 @@ class MissionContext:
             self._pending_arm_preset is not None and self._pending_arm_preset[0] == "shenzhi"
         )
         if shenzhi_blocked or not self._navigation_stopped or not arm_safe:
-            self.node.get_logger().warning('Skipping navigation: safe motion handoff unconfirmed')
+            if shenzhi_blocked:
+                reason = 'required shenzhi unconfirmed'
+            elif not self._navigation_stopped:
+                reason = 'previous navigation has not stopped'
+            else:
+                reason = 'arm safe handoff unconfirmed'
+            self.node.get_logger().warning(f'Skipping navigation: {reason}')
             return False
         try:
             if yaws is not None and len(yaws) != len(names):
@@ -388,108 +390,65 @@ class MissionContext:
             )
             return False
 
-        pending_names = list(names)
-        pending_yaws = None if yaws is None else list(yaws)
-        for attempt in range(1, NAV_GOAL_ATTEMPTS + 1):
-            if not pending_names:
-                return True
-            try:
-                poses = [
-                    self._pose_stamped(
-                        self.route.pose(name),
-                        None if pending_yaws is None else pending_yaws[index],
-                    )
-                    for index, name in enumerate(pending_names)
-                ]
-            except (IndexError, KeyError) as error:
-                self.node.get_logger().error(str(error))
-                return False
+        goal = FollowWaypoints.Goal()
+        try:
+            goal.poses = [
+                self._pose_stamped(
+                    self.route.pose(name), None if yaws is None else yaws[index])
+                for index, name in enumerate(names)
+            ]
+        except (IndexError, KeyError) as error:
+            self.node.get_logger().error(str(error))
+            return False
 
-            goal = FollowWaypoints.Goal()
-            goal.poses = poses
-            route_text = " -> ".join(pending_names)
-            self.node.get_logger().info(
-                f"Navigating through {route_text} "
-                f"attempt={attempt}/{NAV_GOAL_ATTEMPTS}"
-            )
-            try:
-                future = self._follow_waypoints_client.send_goal_async(goal)
-            except Exception as error:
-                self.node.get_logger().warning(f'Navigation submission failed: {error}')
-                return False
-            self._navigation_stopped = False
-            self._navigation_handle = None
-            self._navigation_result = None
-            if not self._wait_future(future):
-                # A late accepted goal must not start after this step has been skipped.
-                future.add_done_callback(self._cancel_late_navigation)
-                return False
-            try:
-                candidate_handle = future.result()
-            except Exception as error:
-                self.node.get_logger().warning(f'Navigation response unknown: {error}')
-                return False
-            if not candidate_handle.accepted:
-                self._navigation_stopped = True
-                self.node.get_logger().warning(
-                    f"FollowWaypoints goal rejected "
-                    f"attempt={attempt}/{NAV_GOAL_ATTEMPTS}: {route_text}"
-                )
-                if attempt < NAV_GOAL_ATTEMPTS:
-                    time.sleep(0.3)
-                continue
+        route_text = " -> ".join(names)
+        self.node.get_logger().info(f"Navigating through {route_text}")
+        try:
+            future = self._follow_waypoints_client.send_goal_async(goal)
+        except Exception as error:
+            self.node.get_logger().warning(f'Navigation submission failed: {error}')
+            return False
+        self._navigation_stopped = False
+        self._navigation_handle = None
+        self._navigation_result = None
+        if not self._wait_future(future):
+            # A late accepted goal must not start after this step has been skipped.
+            future.add_done_callback(self._cancel_late_navigation)
+            return False
+        try:
+            candidate_handle = future.result()
+        except Exception as error:
+            self.node.get_logger().warning(f'Navigation response unknown: {error}')
+            return False
+        if not candidate_handle.accepted:
+            self._navigation_stopped = True
+            self.node.get_logger().warning(f"FollowWaypoints goal rejected: {route_text}")
+            return False
 
-            self._navigation_handle = candidate_handle
-            result_future = candidate_handle.get_result_async()
-            self._navigation_result = result_future
-            result_future.add_done_callback(self._on_navigation_result)
-            if not self._wait_future(result_future, watch_observation=True):
-                if not self.cancel_navigation():
-                    return False
-                if self._observation_failed():
-                    return False
-                continue
-            try:
-                wrapped_result = result_future.result()
-            except Exception as error:
-                self.node.get_logger().warning(f'Navigation result unknown: {error}')
-                self.cancel_navigation()
-                return False
-            result = wrapped_result.result
-            missed = list(result.missed_waypoints)
-            self._on_navigation_result(result_future)
-            if wrapped_result.status == GoalStatus.STATUS_CANCELED:
-                self.node.get_logger().error(
-                    f"FollowWaypoints canceled: {route_text}"
-                )
-                return False
-            if wrapped_result.status == GoalStatus.STATUS_SUCCEEDED and not missed:
-                return True
-
-            next_index = missed[0] if missed else 0
-            if attempt == NAV_GOAL_ATTEMPTS:
-                self.node.get_logger().error(
-                    "FollowWaypoints retries exhausted: "
-                    f"status={wrapped_result.status} "
-                    f"missed={missed} route={route_text}"
-                )
-                return False
-            if 0 <= next_index < len(pending_names):
-                pending_names = pending_names[next_index:]
-                if pending_yaws is not None:
-                    pending_yaws = pending_yaws[next_index:]
-                self.node.get_logger().warning(
-                    "FollowWaypoints did not finish; retrying unfinished "
-                    f"suffix from index={next_index}: {' -> '.join(pending_names)}"
-                )
-            else:
-                self.node.get_logger().error(
-                    f"FollowWaypoints returned invalid missed index {missed}: "
-                    f"{route_text}"
-                )
-                return False
-            if attempt < NAV_GOAL_ATTEMPTS:
-                time.sleep(0.3)
+        self._navigation_handle = candidate_handle
+        result_future = candidate_handle.get_result_async()
+        self._navigation_result = result_future
+        # The server limits each waypoint to 10 s; also bound a lost result reply.
+        self._navigation_timeout_sec = 10.0 * len(names)
+        result_future.add_done_callback(self._on_navigation_result)
+        if not self._wait_future(result_future, watch_observation=True):
+            self.node.get_logger().warning(
+                f'Navigation wait interrupted or timed out: {route_text}')
+            self.cancel_navigation()
+            return False
+        try:
+            wrapped_result = result_future.result()
+        except Exception as error:
+            self.node.get_logger().warning(f'Navigation result unknown: {error}')
+            self.cancel_navigation()
+            return False
+        missed = list(wrapped_result.result.missed_waypoints)
+        self._on_navigation_result(result_future)
+        if wrapped_result.status == GoalStatus.STATUS_SUCCEEDED and not missed:
+            return True
+        self.node.get_logger().error(
+            f"FollowWaypoints failed: status={wrapped_result.status} "
+            f"missed={missed} route={route_text}")
         return False
 
     def _on_navigation_result(self, future) -> None:
@@ -666,9 +625,6 @@ class MissionContext:
         future = None
         reason = 'arm_pose_unavailable'
         if (not self._shenzhi_required
-                and (self._arm_home_confirmed or self._arm_shenzhi_confirmed
-                     or self._current_area in ("A", "B", "C")
-                     or self.recover_home())
                 and self._camera_planner.wait_stationary(self._wait_until)):
             future = self._camera_planner.start_preset(name)
             reason = 'arm_endpoints_not_ready'
@@ -731,7 +687,6 @@ class MissionContext:
             or self._arm_shenzhi_confirmed
             or self._current_area in ("A", "B", "C")
             or preset_name == "shenzhi"
-            or self.recover_home()
         ) and self._camera_planner.wait_stationary(self._wait_until):
             future = self._camera_planner.start_preset(preset_name)
             reason = "arm_endpoints_not_ready"
@@ -791,6 +746,7 @@ class MissionContext:
         # Do not automatically clear a hardware emergency lock with STOP.
         status = self._camera_planner._status
         if status is not None and status.task_status == status.STATUS_EMERGENCY:
+            self._arm_home_confirmed = False
             self.cancel_navigation()
             return False
         stop_future = None
@@ -806,6 +762,7 @@ class MissionContext:
         else:
             stop_requested_at = 0.0
         if not self.cancel_navigation():
+            self._arm_home_confirmed = False
             return False
         if self._arm_home_confirmed:
             return True
@@ -1208,18 +1165,12 @@ class MissionContext:
         self._latest_b_targets_header = None
         self._latest_b_targets_stamp_ns = 0
         timeout_sec = float(self.config.get("camera_detection_timeout_sec", 10.0))
-        empty_timeout_sec = float(self.config.get("camera_empty_detection_timeout_sec", 2.5))
-        start_time = time.monotonic()
-        deadline = start_time + timeout_sec
-        empty_deadline = start_time + empty_timeout_sec
-        seen_any_detection = False
+        deadline = time.monotonic() + timeout_sec
 
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self.node, timeout_sec=0.1)
             if self._active_window_id != window_id:
                 break
-            if self._latest_camera_types:
-                seen_any_detection = True
             if self._latest_b_targets is not None:
                 targets = []
                 for item in self._latest_b_targets:
@@ -1234,28 +1185,20 @@ class MissionContext:
                         point.point.x,
                         point.point.y,
                         point.point.z,
-                        float(item.pixel_x),
-                        float(item.pixel_y),
                     )
                     if (
-                        int(item.image_width) > 0
+                        point.point.z > 0
+                        and 0.0 <= float(item.confidence) <= 1.0
                         and all(math.isfinite(value) for value in coordinates)
                     ):
                         targets.append(
                             BTreeTarget(
                                 str(item.type),
                                 point,
-                                float(item.pixel_x),
-                                float(item.pixel_y),
-                                int(item.image_width),
+                                float(item.confidence),
                             )
                         )
                 return targets
-            if time.monotonic() >= empty_deadline and not seen_any_detection:
-                self.node.get_logger().info(
-                    f"Empty B observation window timeout after {empty_timeout_sec:.1f}s"
-                )
-                return []
         return None
 
     def _wait_until(self, predicate, timeout_sec: Optional[float] = None) -> bool:
@@ -1269,7 +1212,7 @@ class MissionContext:
     def _wait_future(self, future, watch_observation=False) -> bool:
         ready = self._wait_until(
             lambda: future.done() or (watch_observation and self._observation_failed()),
-            None if watch_observation else 10.0,
+            self._navigation_timeout_sec if watch_observation else 10.0,
         )
         return ready and future.done()
 

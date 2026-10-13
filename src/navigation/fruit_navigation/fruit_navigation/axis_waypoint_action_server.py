@@ -52,7 +52,7 @@ class AxisWaypointActionServer(Node):
         self.declare_parameter("yaw_gain", 1.8)
         self.declare_parameter("lookahead_distance", 0.3)
         self.declare_parameter("tf_timeout_sec", 0.5)
-        self.declare_parameter("waypoint_retry_attempts", 1)
+        self.declare_parameter("waypoint_retry_attempts", 0)
         self.declare_parameter("waypoint_pass_tolerance", 0.08)
 
         self._map_frame = self.get_parameter("map_frame").value
@@ -91,6 +91,7 @@ class AxisWaypointActionServer(Node):
         self._last_linear_command = 0.0
         self._last_angular_command = 0.0
         self._active_goal = False
+        self._waypoint_deadline = 0.0
 
         self._validate_parameters()
         self._tf_buffer = Buffer()
@@ -180,6 +181,7 @@ class AxisWaypointActionServer(Node):
         result = FollowWaypoints.Result()
         try:
             for index, target in enumerate(goal_handle.request.poses):
+                self._waypoint_deadline = time.monotonic() + 10.0
                 feedback = FollowWaypoints.Feedback()
                 feedback.current_waypoint = index
                 goal_handle.publish_feedback(feedback)
@@ -216,7 +218,7 @@ class AxisWaypointActionServer(Node):
         for attempt in range(attempts):
             if self._follow_one(goal_handle, target, is_final_goal):
                 return True
-            if goal_handle.is_cancel_requested:
+            if goal_handle.is_cancel_requested or time.monotonic() >= self._waypoint_deadline:
                 return False
             if attempt + 1 < attempts:
                 self.get_logger().warning(
@@ -411,10 +413,14 @@ class AxisWaypointActionServer(Node):
             goal_handle.canceled()
             self._publish_stop_burst()
             return True
+        if time.monotonic() >= self._waypoint_deadline:
+            self.get_logger().error('Aborting waypoint goal: waypoint exceeded 10 seconds')
+            self._publish_stop_burst()
+            return True
         return False
 
     def _lookup_pose(self) -> Optional[AxisPose]:
-        deadline = time.monotonic() + self._tf_timeout_sec
+        deadline = min(time.monotonic() + self._tf_timeout_sec, self._waypoint_deadline)
         transform = None
         last_error = None
         last_transform_age = None

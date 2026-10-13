@@ -159,26 +159,29 @@ class CameraTargetPlannerClient:
                                       or not isinstance(pitch, (int, float))
                                       or not math.isfinite(pitch)):
                 raise ValueError(f'{name} must be null or a finite number')
-        b_height = self.config.get('b_height')
-        if not isinstance(b_height, dict):
-            raise ValueError('b_height must be a mapping')
-        for name in ('min_m', 'split_m', 'max_m'):
-            if name not in b_height:
-                raise ValueError(f'{name} missing in b_height configuration')
-            val = b_height[name]
+        b_limits = self.config.get('b_limits')
+        if not isinstance(b_limits, dict):
+            raise ValueError('b_limits must be a mapping')
+        for name in ('min_m', 'split_m', 'max_m', 'max_distance_m'):
+            if name not in b_limits:
+                raise ValueError(f'{name} missing in b_limits configuration')
+            val = b_limits[name]
             if (isinstance(val, bool) or not isinstance(val, (int, float))
                     or not math.isfinite(val)):
-                raise ValueError(f'b_height.{name} must be a finite number')
-        min_m = float(b_height['min_m'])
-        split_m = float(b_height['split_m'])
-        max_m = float(b_height['max_m'])
+                raise ValueError(f'b_limits.{name} must be a finite number')
+        min_m = float(b_limits['min_m'])
+        split_m = float(b_limits['split_m'])
+        max_m = float(b_limits['max_m'])
         if not (min_m < split_m < max_m):
             raise ValueError(
-                f'b_height bounds must strictly satisfy min_m < split_m < max_m, got '
+                f'b_limits bounds must strictly satisfy min_m < split_m < max_m, got '
                 f'{min_m} < {split_m} < {max_m}')
         self.b_height_min_m = min_m
         self.b_height_split_m = split_m
         self.b_height_max_m = max_m
+        self.b_max_distance_m = float(b_limits['max_distance_m'])
+        if self.b_max_distance_m <= 0:
+            raise ValueError('b_limits.max_distance_m must be positive')
         self._pose = None
         self._latest_received_at = 0.0
         self._status = None
@@ -284,6 +287,11 @@ class CameraTargetPlannerClient:
             raw_base_z_m = base_mm[2] / 1000.0
             layer = None
             if area == 'B':
+                distance_m = math.hypot(*base_mm) / 1000.0
+                if distance_m > self.b_max_distance_m:
+                    raise ValueError(
+                        f'Target base distance ({distance_m:.4f}m) exceeds B limit '
+                        f'({self.b_max_distance_m:.4f}m)')
                 if raw_base_z_m < self.b_height_min_m or raw_base_z_m > self.b_height_max_m:
                     raise ValueError(
                         f'Target base Z ({raw_base_z_m:.4f}m) out of B area height bounds '

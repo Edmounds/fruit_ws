@@ -19,5 +19,5 @@ axis_waypoint_action_server:
     yaw_gain: 2.0
     lookahead_distance: 0.3
     tf_timeout_sec: 0.5
-    waypoint_retry_attempts: 1
+    waypoint_retry_attempts: 0
     waypoint_pass_tolerance: 0.08
