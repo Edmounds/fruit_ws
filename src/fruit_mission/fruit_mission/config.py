@@ -114,6 +114,16 @@ def validate_config(params: Mapping[str, Any]) -> None:
         raise ValueError("c_qr_announce_lead_sec must not be negative")
     if not str(params.get("decision_topic", "")).strip():
         raise ValueError("decision_topic must not be empty")
+    if not str(params.get("dataset_output_dir", "")).strip():
+        raise ValueError("dataset_output_dir must not be empty")
+    if not str(params.get("dataset_image_topic", "")).strip():
+        raise ValueError("dataset_image_topic must not be empty")
+    if int(params.get("dataset_frames_per_look", 0)) <= 0:
+        raise ValueError("dataset_frames_per_look must be positive")
+    if float(params.get("dataset_frame_interval_sec", 0.0)) <= 0.0:
+        raise ValueError("dataset_frame_interval_sec must be positive")
+    if float(params.get("dataset_shutdown_timeout_sec", 0.0)) <= 0.0:
+        raise ValueError("dataset_shutdown_timeout_sec must be positive")
     if not str(params.get("camera_extrinsic_config", "")).strip():
         raise ValueError("camera_extrinsic_config must not be empty")
     if "target_offset_ac_m" not in params:

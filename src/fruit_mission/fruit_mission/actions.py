@@ -131,6 +131,7 @@ def observe_and_pick(ctx, *, side, expected_type):
 
     if ctx.is_open_loop and area in ("A", "C"):
         if selection.reason_code != "matched":
+            ctx.stop_dataset_capture()
             ctx.node.get_logger().info(
                 f"{area}区开环跳过抓取: {selection.reason_code} (type={selection.matched_type})"
             )
@@ -138,6 +139,7 @@ def observe_and_pick(ctx, *, side, expected_type):
                 False, selection.reason_code, selection.matched_type)
         preset_name = f"{side}_pick_openloop_{area.lower()}"
         ctx.node.get_logger().info(f"{area}区开环执行抓取预设: {preset_name}")
+        ctx.stop_dataset_capture()
         motion = ctx.execute_arm_preset(preset_name)
         if not motion.completed:
             ctx.recover_home()
@@ -146,6 +148,7 @@ def observe_and_pick(ctx, *, side, expected_type):
         return PickExecutionResult(True, "store_completed", selection.matched_type)
 
     if selection.target is None:
+        ctx.stop_dataset_capture()
         if area != "A":
             ctx.recover_home()
         return PickExecutionResult(
@@ -153,6 +156,7 @@ def observe_and_pick(ctx, *, side, expected_type):
     try:
         request, layer = ctx.camera_target_request(selection.target.point)
     except ValueError as error:
+        ctx.stop_dataset_capture()
         ctx.node.get_logger().warning(str(error))
         if area != "A":
             ctx.recover_home()
@@ -165,6 +169,7 @@ def observe_and_pick(ctx, *, side, expected_type):
 
 def _grasp_and_collect(ctx, request, *, store_preset, matched_type=None):
     """One CLOSE/dwell -> side Store/OPEN; failure recovers once."""
+    ctx.stop_dataset_capture()
     motion = ctx.move_to_base_target(request)
     if motion.completed:
         motion = ctx.execute_arm_preset(store_preset)
@@ -192,6 +197,7 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
     finally:
         ctx.close_observation_window()
     if targets is None:
+        ctx.stop_dataset_capture()
         ctx.recover_home()
         ctx.announce(f"B区{label}，识别超时，跳过。")
         return False
@@ -207,6 +213,7 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
         except ValueError as error:
             ctx.node.get_logger().warning(f"Skipping invalid B target: {error}")
     if not requests:
+        ctx.stop_dataset_capture()
         motion = ctx.execute_arm_preset("home")
         if not motion.completed:
             ctx.recover_home()

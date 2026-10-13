@@ -167,6 +167,24 @@ source scripts/setup_fruit_runtime.bash
 源码修改后需重新构建 `fruit_mission` 并重启节点。配置继续从源码路径读取，
 不用修改 install 中的副本。
 
+## 自动采集 Look 图像
+
+每个 A、B、C 区成功完成的 Look 会从 `/camera/color/image_raw` 采集一组
+RGB8 原始图像。每组最多保存 5 张不同时间戳的 PNG，间隔 100 ms。采集和 PNG
+写盘在后台线程执行，不等待磁盘操作，也不阻塞导航、识别或机械臂流程。
+
+运行目录按 mission 启动时间创建，例如：
+
+```text
+data/20261013_200507/A/look_001_f01.png
+data/20261013_200507/A/look_001_f02.png
+data/20261013_200507/B/look_001_f01.png
+```
+
+抓取命令开始或当前 Look 被跳过时停止获取新帧。已经获取的图像继续后台重试写盘，
+mission 退出时最多等待 10 秒。输出根目录、图像话题、帧数和间隔在
+`config/fruit_mission.yaml` 中配置。
+
 独立导航和单点调试脚本通过 `stack_readiness_client bridge-start-required` 检查串口桥：
 标准输出为 `true`（缺失，需要启动）或 `false`（已存在，复用）。节点、
 ArmStatus 或 ready 发布者均可识别已有桥，`ready=false` 不代表缺失；

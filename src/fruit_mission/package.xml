@@ -19,6 +19,7 @@
   <depend>fruit_interfaces</depend>
   <exec_depend>fruit_arm_planner</exec_depend>
   <depend>sensor_msgs</depend>
+  <depend>cv_bridge</depend>
   <depend>std_srvs</depend>
   <exec_depend>fruit_qr_planner</exec_depend>
   <exec_depend>auto_serial_bridge</exec_depend>
