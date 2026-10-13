@@ -913,7 +913,7 @@ class MissionContext:
         self._latest_camera_types_stamp_ns = 0
         seen_types: list[str] = []
         timeout_sec = float(self.config.get("camera_detection_timeout_sec", 10.0))
-        empty_timeout_sec = float(self.config.get("camera_empty_detection_timeout_sec", 2.5))
+        empty_timeout_sec = float(self.config.get("camera_empty_detection_timeout_sec", 1.5))
         confirm_frames = int(self.config.get("camera_early_exit_confirm_frames", 3))
 
         start_time = time.monotonic()
@@ -1052,7 +1052,7 @@ class MissionContext:
         self._latest_camera_types_stamp_ns = 0
         seen_types: list[str] = []
         timeout_sec = float(self.config.get("camera_detection_timeout_sec", 10.0))
-        empty_timeout_sec = float(self.config.get("camera_empty_detection_timeout_sec", 2.5))
+        empty_timeout_sec = float(self.config.get("camera_empty_detection_timeout_sec", 1.5))
         confirm_frames = int(self.config.get("camera_early_exit_confirm_frames", 3))
 
         start_time = time.monotonic()

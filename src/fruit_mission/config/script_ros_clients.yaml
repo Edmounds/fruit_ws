@@ -9,6 +9,8 @@
     bridge_ready_timeout_sec: 10.0
     endpoint_timeout_sec: 10.0
     detection_timeout_sec: 10.0
+    perception_heartbeat_topic: "/fruit_perception/camera/rgbd_heartbeat"
+    perception_readiness_timeout_sec: 35.0
     perception_zone_delivery_timeout_sec: 1.0
     graph_discovery_timeout_sec: 1.0
     camera_conflicting_nodes:

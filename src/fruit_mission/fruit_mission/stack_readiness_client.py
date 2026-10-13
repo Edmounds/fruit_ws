@@ -12,8 +12,9 @@ from fruit_interfaces.srv import ExecuteArmPreset, MoveArmCartesian, MoveArmJoin
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Header
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer
 from tf2_ros import TransformException
@@ -32,6 +33,11 @@ class StackReadinessClient(Node):
         )
         self.declare_parameter("follow_waypoints_action", "/follow_waypoints")
         self.declare_parameter("graph_discovery_timeout_sec", 1.0)
+        self.declare_parameter(
+            "perception_heartbeat_topic",
+            "/fruit_perception/camera/rgbd_heartbeat",
+        )
+        self.declare_parameter("perception_readiness_timeout_sec", 35.0)
 
         self.bridge_ready_topic = self._string_parameter(
             "bridge_ready_topic"
@@ -41,6 +47,12 @@ class StackReadinessClient(Node):
         )
         self.graph_discovery_timeout_sec = float(
             self.get_parameter("graph_discovery_timeout_sec").value
+        )
+        self.perception_heartbeat_topic = self._string_parameter(
+            "perception_heartbeat_topic"
+        )
+        self.perception_readiness_timeout_sec = float(
+            self.get_parameter("perception_readiness_timeout_sec").value
         )
 
         self._bridge_ready = False
@@ -136,8 +148,10 @@ class StackReadinessClient(Node):
             ("navigation TF", lambda: self.wait_for_transform(
                 "odom", "base_link", 5.0, 1.0)),
             ("perception nodes", lambda: self.wait_for_nodes([
-                "/serial_controller", "/fruit_perception_node", "/fruit_qr_planner",
+                "/serial_controller", "/fruit_qr_planner",
             ], 10.0)),
+            ("perception pipeline", lambda: self.wait_for_perception_heartbeat(
+                self.perception_heartbeat_topic, self.perception_readiness_timeout_sec)),
             ("serial bridge", lambda: self.wait_for_bridge(10.0)),
             ("planner node", lambda: self.wait_for_nodes(["/arm_planner_node"], 10.0)),
             ("planner services", lambda: self.wait_for_planner(10.0)),
@@ -234,6 +248,32 @@ class StackReadinessClient(Node):
             self.get_logger().error(
                 f"Timed out waiting for valid odometry on {topic}: "
                 f"{latest_detail}"
+            )
+        return ready
+
+    def wait_for_perception_heartbeat(
+        self,
+        topic: str,
+        timeout_sec: float,
+    ) -> bool:
+        """Wait for the first RGBD heartbeat indicating model compilation and camera streaming are ready."""
+        received = False
+
+        def on_heartbeat(_message: Header) -> None:
+            nonlocal received
+            received = True
+
+        subscription = self.create_subscription(
+            Header,
+            topic,
+            on_heartbeat,
+            qos_profile_sensor_data,
+        )
+        ready = self.wait_until(lambda: received, timeout_sec)
+        self.destroy_subscription(subscription)
+        if not ready:
+            self.get_logger().error(
+                f"Timed out waiting for perception heartbeat on {topic}"
             )
         return ready
 
@@ -382,6 +422,10 @@ def _parser() -> argparse.ArgumentParser:
     odometry = commands.add_parser("odometry")
     odometry.add_argument("--topic", required=True)
     odometry.add_argument("--timeout", type=float, required=True)
+
+    perception = commands.add_parser("perception")
+    perception.add_argument("--topic", default="/fruit_perception/camera/rgbd_heartbeat")
+    perception.add_argument("--timeout", type=float, default=35.0)
     return parser
 
 
@@ -429,6 +473,8 @@ def main(args=None) -> None:
             )
         elif options.command == "odometry":
             ready = node.wait_for_odometry(options.topic, options.timeout)
+        elif options.command == "perception":
+            ready = node.wait_for_perception_heartbeat(options.topic, options.timeout)
     except KeyboardInterrupt:
         ready = False
     finally:
