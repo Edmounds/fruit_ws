@@ -29,7 +29,7 @@ fruit_mission:
     # Target offset relative to gripper frame (meters): [x, y, z]
     # Local +X is gripper forward, +Y is gripper left, +Z is gripper up.
     # Applied relative to arm end-effector orientation before MoveArmCartesian.
-    target_offset_ac_m: [0.0, 0.03, -0.035]
+    target_offset_ac_m: [0.0, 0.0, -0.035]
     target_offset_b_up_m: [0.026, 0.0, -0.01]
     target_offset_b_down_m: [0.050, 0.0, -0.025]
 

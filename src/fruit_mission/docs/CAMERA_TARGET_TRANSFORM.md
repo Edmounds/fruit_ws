@@ -90,7 +90,7 @@ R_offset = Rz(yaw_offset) * Ry(-pitch_offset)
 P_request_mm = P_B_mm + R_offset * (1000 * offset_local_m)
 ```
 
-A/C 沿用历史数值但物理含义调整为末端局部坐标（局部左移 3 cm、局部下移 1.5 cm），非零局部 Y 在偏置后会导致最终 yaw 发生微调；
+A/C 当前使用局部 X/Z 偏置，局部 Y 默认 0；局部 Y 可按区域独立标定，非零局部 Y 会使偏置后的最终 yaw 发生微调；
 B 采用水平参考下的深入与下移，不随抓取 pitch 旋转。因此对同一视觉点和实测姿态，修改 B 抓取 pitch 不改变补偿后的 XYZ。
 正式任务使用 `MissionContext._current_area`，单点调试客户端使用 `--zone` 参数。
 各项配置均须存在并独立验证三个有限数，缺失或非法直接报错，不跨区跨层回退。
