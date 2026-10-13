@@ -4,17 +4,6 @@ import re
 from typing import Any, Dict, List, Tuple
 
 
-B_STAGES = ["navigate", "identify", "announce", "pick_or_skip", "advance"]
-C_STAGES = [
-    "navigate",
-    "stable_stop",
-    "identify",
-    "announce",
-    "pick_or_skip",
-    "advance",
-]
-
-
 B_VALID_TARGETS = {"苹果", "梨子"}
 C_VALID_TARGETS = {"南瓜", "西红柿", "辣椒", "洋葱"}
 
@@ -33,11 +22,10 @@ def normalize_payload(payload: str) -> str:
     return "\n".join(_normalized_lines(payload))
 
 
-def _plan(zone: str, scan_index: int, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _plan(zone: str, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "schema_version": 1,
         "zone": zone,
-        "scan_index": scan_index,
         "task_count": len(tasks),
         "tasks": tasks,
     }
@@ -72,11 +60,10 @@ def build_b_plan(payload: str) -> Dict[str, Any]:
             "sequence": index,
             "position_id": index,
             "target": name,
-            "stages": list(B_STAGES),
         }
         for index, name in enumerate(names, start=1)
     ]
-    return _plan("B", 1, tasks)
+    return _plan("B", tasks)
 
 
 def build_c_plan(payload: str) -> Dict[str, Any]:
@@ -110,11 +97,10 @@ def build_c_plan(payload: str) -> Dict[str, Any]:
             "sequence": index,
             "position_id": position,
             "target": name,
-            "stages": list(C_STAGES),
         }
         for index, (name, position) in enumerate(tasks_data, start=1)
     ]
-    return _plan("C", 2, tasks)
+    return _plan("C", tasks)
 
 
 def _parse_c_task_lines(lines: List[str]) -> List[Tuple[str, int]]:

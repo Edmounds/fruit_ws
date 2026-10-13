@@ -43,9 +43,8 @@ from fruit_robviz_bridge.recorder import (
     mean_pose,
     yaw_from_quaternion,
 )
-from fruit_robviz_bridge.robviz_web_server import (
+from fruit_robviz_bridge.waypoint_files import (
     EditorFile,
-    RequestError,
     document_version,
     load_waypoint_document,
     load_waypoint_snapshot,
@@ -305,7 +304,7 @@ class WaypointRecorderNode(Node):
             elif command == "save":
                 try:
                     self._save_waypoints()
-                except (OSError, TypeError, ValueError, RequestError) as error:
+                except (OSError, TypeError, ValueError) as error:
                     self._reject_command(str(error))
             elif command in ("run_next_test", "run_next_goal"):
                 self._run_next_test_segment(payload)
@@ -362,7 +361,7 @@ class WaypointRecorderNode(Node):
                 return response
             try:
                 self._save_waypoints()
-            except (OSError, TypeError, ValueError, RequestError) as error:
+            except (OSError, TypeError, ValueError) as error:
                 response.success = False
                 response.message = str(error)
             else:
@@ -901,15 +900,39 @@ class WaypointRecorderNode(Node):
         if not isinstance(names, list) or not names:
             self._reject_command("names must be a non-empty list of strings")
             return
-        cleaned = [str(n).strip() for n in names if str(n).strip()]
-        if not cleaned:
-            self._reject_command("names list contains no valid waypoint names")
-            return
+        cleaned = []
+        for index, item in enumerate(names, start=1):
+            if not isinstance(item, str) or not item.strip():
+                self._reject_command(
+                    f"Waypoint name at index {index} must be a non-empty string"
+                )
+                return
+            cleaned.append(item.strip())
         self._run_route_points(cleaned, payload)
 
     def _run_route_points(self, names: list[str], payload: dict) -> None:
         if self._is_busy():
             self._reject_command("A route segment or sampling is already running")
+            return
+        file_id = payload.get("file_id")
+        version = payload.get("version")
+        if (
+            not isinstance(file_id, str)
+            or not file_id.strip()
+            or not isinstance(version, str)
+            or not version.strip()
+        ):
+            self._reject_command("file_id and version must be non-empty strings")
+            return
+        if file_id.strip() != self._file_id:
+            self._reject_command(
+                f"Command file_id '{file_id.strip()}' does not match loaded file '{self._file_id}'"
+            )
+            return
+        if version.strip() != self._document_version:
+            self._reject_command(
+                "Command document version does not match loaded version"
+            )
             return
         editor_file = self._file_catalog[self._file_id]
         disk_ver = document_version(editor_file.waypoint_file)

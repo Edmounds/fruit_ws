@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import unittest
 
-from fruit_mission.camera_target_transform import (
+from fruit_perception_geometry.camera_target_transform import (
     apply_target_offset_mm,
 )
 

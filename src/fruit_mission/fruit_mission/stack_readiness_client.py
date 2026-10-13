@@ -124,6 +124,35 @@ class StackReadinessClient(Node):
                 return False
         return True
 
+    def wait_for_stack(self) -> bool:
+        """Run the existing independent, bounded mission startup checks once."""
+        checks = (
+            ("navigation nodes", lambda: self.wait_for_nodes([
+                "/axis_waypoint_action_server", "/laserMapping", "/loam_interface",
+            ], 10.0)),
+            ("navigation action", lambda: self.wait_for_action(
+                self.follow_waypoints_action, 10.0)),
+            ("odometry", lambda: self.wait_for_odometry("/odometry", 10.0)),
+            ("navigation TF", lambda: self.wait_for_transform(
+                "odom", "base_link", 5.0, 1.0)),
+            ("perception nodes", lambda: self.wait_for_nodes([
+                "/serial_controller", "/fruit_perception_node", "/fruit_qr_planner",
+            ], 10.0)),
+            ("serial bridge", lambda: self.wait_for_bridge(10.0)),
+            ("planner node", lambda: self.wait_for_nodes(["/arm_planner_node"], 10.0)),
+            ("planner services", lambda: self.wait_for_planner(10.0)),
+        )
+        for label, check in checks:
+            if not rclpy.ok():
+                return False
+            if check():
+                self.get_logger().info(f"Startup ready: {label}")
+            else:
+                self.get_logger().warning(
+                    f"Startup unavailable: {label}; mission will skip unavailable work"
+                )
+        return rclpy.ok()
+
     def wait_for_transform(
         self,
         parent_frame: str,
@@ -331,6 +360,7 @@ def _parser() -> argparse.ArgumentParser:
 
     commands.add_parser("bridge-start-required")
     commands.add_parser("robviz-bridge-start-required")
+    commands.add_parser("stack")
 
     planner = commands.add_parser("planner")
     planner.add_argument("--timeout", type=float, required=True)
@@ -381,6 +411,8 @@ def main(args=None) -> None:
             ready = True
         elif options.command == "planner":
             ready = node.wait_for_planner(options.timeout)
+        elif options.command == "stack":
+            ready = node.wait_for_stack()
         elif options.command == "endpoint":
             ready = node.wait_for_endpoint(
                 options.topic,

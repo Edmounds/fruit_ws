@@ -10,13 +10,11 @@ from __future__ import annotations
 
 import argparse
 import copy
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import hashlib
 import logging
 import math
 import mimetypes
@@ -28,20 +26,27 @@ import stat
 import tempfile
 import threading
 import uuid
-from typing import Any, Dict, List, Mapping, Tuple
+from typing import Any, Dict, List, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 
 import yaml
 
-from fruit_robviz_bridge.recorder import yaw_from_quaternion
+from fruit_robviz_bridge.waypoint_files import (
+    EditorFile,
+    VersionConflict,
+    _document_lock,
+    document_version,
+    load_template_geometry,
+    load_waypoint_snapshot,
+    order_actual_points,
+    save_waypoint_document,
+)
 
 
 DEFAULT_CONFIG = Path(
     "/home/rc4/fruit_ws/src/fruit_robviz_bridge/config/"
     "robviz_web.yaml"
 )
-VALID_POINT_TYPES = ("waypoint", "goal")
-MAX_POINT_COUNT = 5000
 DEFAULT_IMAGE_SETTINGS = {
     "version": 1,
     "rgb": {
@@ -74,13 +79,6 @@ class RequestError(Exception):
         self.message = message
 
 
-class VersionConflict(RequestError):
-    """The client edited a document that changed after it was loaded."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__(HTTPStatus.CONFLICT, message)
-
-
 @dataclass(frozen=True)
 class EditorConfig:
     """Runtime configuration loaded from the source workspace."""
@@ -95,26 +93,6 @@ class EditorConfig:
     backup_dir: Path
     max_request_bytes: int
     arm_config_path: Path | None = None
-
-
-@dataclass(frozen=True)
-class EditorFile:
-    """One waypoint YAML exposed by the editor API."""
-
-    file_id: str
-    profile: str
-    mode: str
-    frame_id: str
-    waypoint_file: Path
-    template_file: Path
-    reference_file: Path
-    formal: bool
-
-    @property
-    def label(self) -> str:
-        if self.mode == "template":
-            return f"模板 / {self.waypoint_file.name}"
-        return f"里程计 / {self.waypoint_file.name}"
 
 
 @dataclass
@@ -284,15 +262,6 @@ def load_file_catalog(config: EditorConfig) -> Dict[str, EditorFile]:
     }
 
 
-def document_version(path: Path) -> str:
-    """Return a content version that changes for every external edit."""
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _default_image_settings() -> dict:
     return copy.deepcopy(DEFAULT_IMAGE_SETTINGS)
 
@@ -423,21 +392,6 @@ def _atomic_save_json(path: Path, payload: Mapping[str, Any], backup_root: Path)
     return backup_path
 
 
-@contextmanager
-def _document_lock(path: Path):
-    """Serialize editor and recorder writes on Linux."""
-    import fcntl
-
-    lock_path = path.with_name(f".{path.name}.lock")
-    lock_path.touch(exist_ok=True)
-    with lock_path.open("r+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-
 def _finite_number(value: Any, label: str) -> float:
     if isinstance(value, bool):
         raise ValueError(f"{label} 必须是有限数值")
@@ -448,423 +402,6 @@ def _finite_number(value: Any, label: str) -> float:
     if not math.isfinite(parsed):
         raise ValueError(f"{label} 必须是有限数值")
     return parsed
-
-
-def _point_yaw(item: Mapping[str, Any], name: str) -> float:
-    if "yaw" in item:
-        return _finite_number(item["yaw"], f"点 {name} 的 yaw")
-    orientation = _required_mapping(
-        item.get("orientation"), f"点 {name} 的 orientation"
-    )
-    return yaw_from_quaternion(
-        _finite_number(orientation.get("x"), f"点 {name} 的 orientation.x"),
-        _finite_number(orientation.get("y"), f"点 {name} 的 orientation.y"),
-        _finite_number(orientation.get("z"), f"点 {name} 的 orientation.z"),
-        _finite_number(orientation.get("w"), f"点 {name} 的 orientation.w"),
-    )
-
-
-def load_waypoint_document(
-    editor_file: EditorFile, content: bytes | None = None
-) -> Tuple[dict, List[dict]]:
-    """Parse one allowlisted waypoint YAML into browser-facing point data."""
-    if editor_file.mode == "template":
-        if content is None:
-            content = editor_file.waypoint_file.read_bytes()
-        document = _required_mapping(
-            yaml.safe_load(content), f"{editor_file.waypoint_file.name}"
-        )
-        if document.get("schema_version") != 1:
-            raise ValueError("template YAML 的 schema_version 必须为 1")
-        raw_points = document.get("points")
-        if not isinstance(raw_points, list):
-            raise ValueError("template YAML 的 points 必须是列表")
-        if len(raw_points) > MAX_POINT_COUNT:
-            raise ValueError(f"waypoint 数量不能超过 {MAX_POINT_COUNT}")
-        points: List[dict] = []
-        names = set()
-        for index, raw_item in enumerate(raw_points, start=1):
-            item = _required_mapping(raw_item, f"第 {index} 个点")
-            name = str(item.get("name", "")).strip()
-            point_type = str(item.get("type", "")).strip()
-            if not name:
-                raise ValueError(f"第 {index} 个点的名称不能为空")
-            if name in names:
-                raise ValueError(f"点名称重复: {name}")
-            if point_type not in VALID_POINT_TYPES:
-                raise ValueError(f"点 {name} 的 type 必须是 waypoint 或 goal")
-            points.append(
-                {
-                    "name": name,
-                    "type": point_type,
-                    "x": 0.0,
-                    "y": 0.0,
-                    "z": 0.0,
-                    "yaw_deg": 0.0,
-                    "extra": {},
-                }
-            )
-            names.add(name)
-        return dict(document), points
-
-    if content is None:
-        content = editor_file.waypoint_file.read_bytes()
-    document = _required_mapping(
-        yaml.safe_load(content), f"{editor_file.waypoint_file.name}"
-    )
-    if document.get("schema_version") != 1:
-        raise ValueError("waypoint YAML 的 schema_version 必须为 1")
-    if document.get("frame_id") != editor_file.frame_id:
-        raise ValueError(
-            f"{editor_file.waypoint_file.name} 的 frame_id 必须为 "
-            f"{editor_file.frame_id}"
-        )
-    raw_points = document.get("points")
-    if not isinstance(raw_points, list):
-        raise ValueError("waypoint YAML 的 points 必须是列表")
-    if len(raw_points) > MAX_POINT_COUNT:
-        raise ValueError(f"waypoint 数量不能超过 {MAX_POINT_COUNT}")
-
-    points: List[dict] = []
-    names = set()
-    for index, raw_item in enumerate(raw_points, start=1):
-        item = _required_mapping(raw_item, f"第 {index} 个点")
-        name = str(item.get("name", "")).strip()
-        point_type = str(item.get("type", "")).strip()
-        if not name:
-            raise ValueError(f"第 {index} 个点的名称不能为空")
-        if name in names:
-            raise ValueError(f"点名称重复: {name}")
-        if point_type not in VALID_POINT_TYPES:
-            raise ValueError(f"点 {name} 的 type 必须是 waypoint 或 goal")
-        position = _required_mapping(
-            item.get("position"), f"点 {name} 的 position"
-        )
-        yaw = _point_yaw(item, name)
-        extra = copy.deepcopy(dict(item))
-        for key in ("name", "type", "position", "orientation", "yaw"):
-            extra.pop(key, None)
-        points.append(
-            {
-                "name": name,
-                "type": point_type,
-                "x": _finite_number(position.get("x"), f"点 {name} 的 x"),
-                "y": _finite_number(position.get("y"), f"点 {name} 的 y"),
-                "z": _finite_number(
-                    position.get("z", 0.0), f"点 {name} 的 z"
-                ),
-                "yaw_deg": math.degrees(yaw),
-                "extra": extra,
-            }
-        )
-        names.add(name)
-    return dict(document), points
-
-
-def load_waypoint_snapshot(editor_file: EditorFile) -> Tuple[dict, List[dict], str]:
-    """Bind parsed points and their version to the same opened byte snapshot."""
-    content = editor_file.waypoint_file.read_bytes()
-    document, points = load_waypoint_document(editor_file, content)
-    return document, points, hashlib.sha256(content).hexdigest()
-
-
-def load_template_geometry(
-    editor_file: EditorFile,
-) -> List[dict]:
-    """Load formal order and optional geometry relative to A1."""
-    if not editor_file.formal:
-        return []
-    with editor_file.template_file.open(encoding="utf-8") as stream:
-        template_document = _required_mapping(
-            yaml.safe_load(stream), "waypoint template"
-        )
-    if template_document.get("schema_version") != 1:
-        raise ValueError("waypoint template 的 schema_version 必须为 1")
-    template_points = template_document.get("points")
-    if not isinstance(template_points, list):
-        raise ValueError("waypoint template 的 points 必须是列表")
-
-    reference_file = EditorFile(
-        file_id="odom:reference",
-        profile="odom",
-        mode="odometry",
-        frame_id="odom",
-        waypoint_file=editor_file.reference_file,
-        template_file=editor_file.template_file,
-        reference_file=editor_file.reference_file,
-        formal=True,
-    )
-    if editor_file.reference_file.is_file():
-        _, reference_points = load_waypoint_document(reference_file)
-    else:
-        reference_points = []
-    reference_by_name = {
-        point["name"]: point for point in reference_points
-    }
-    reference_a1 = reference_by_name.get("A1")
-
-    result: List[dict] = []
-    seen = set()
-    for index, raw_item in enumerate(template_points, start=1):
-        item = _required_mapping(raw_item, f"template 第 {index} 个点")
-        name = str(item.get("name", "")).strip()
-        point_type = str(item.get("type", "")).strip()
-        if not name:
-            raise ValueError(f"template 第 {index} 个点名称不能为空")
-        if name in seen:
-            raise ValueError(f"template 点名称重复: {name}")
-        if point_type not in VALID_POINT_TYPES:
-            raise ValueError(
-                f"template 点 {name} 的 type 必须是 waypoint 或 goal"
-            )
-        reference = reference_by_name.get(name)
-        has_geometry = reference is not None and reference_a1 is not None
-        result.append(
-            {
-                "index": index,
-                "name": name,
-                "type": point_type,
-                "dx": (
-                    reference["x"] - reference_a1["x"]
-                    if has_geometry
-                    else None
-                ),
-                "dy": (
-                    reference["y"] - reference_a1["y"]
-                    if has_geometry
-                    else None
-                ),
-                "dz": (
-                    reference["z"] - reference_a1["z"]
-                    if has_geometry
-                    else None
-                ),
-                "yaw_deg": reference["yaw_deg"] if has_geometry else None,
-            }
-        )
-        seen.add(name)
-
-    extra_reference_names = set(reference_by_name) - seen
-    if extra_reference_names:
-        names = ", ".join(sorted(extra_reference_names))
-        raise ValueError(f"正式 waypoint YAML 存在 template 外名称: {names}")
-    return result
-
-
-def order_actual_points(
-    points: List[dict], template: List[dict], formal: bool = True
-) -> List[dict]:
-    """Validate formal names or preserve user order for debug documents."""
-    if not formal:
-        return list(points)
-    order = {point["name"]: index for index, point in enumerate(template)}
-    unknown = [point["name"] for point in points if point["name"] not in order]
-    if unknown:
-        raise ValueError(f"waypoint 名称不在 template 中: {', '.join(unknown)}")
-    return sorted(points, key=lambda point: order[point["name"]])
-
-
-def _normalize_degrees(value: float) -> float:
-    normalized = (value + 180.0) % 360.0 - 180.0
-    return 0.0 if abs(normalized) < 0.5e-12 else normalized
-
-
-def _serialize_points(
-    raw_points: Any,
-    template: List[dict],
-    formal: bool,
-) -> List[dict]:
-    if not isinstance(raw_points, list):
-        raise ValueError("points 必须是列表")
-    if len(raw_points) > MAX_POINT_COUNT:
-        raise ValueError(f"waypoint 数量不能超过 {MAX_POINT_COUNT}")
-
-    template_order = {
-        point["name"]: index for index, point in enumerate(template)
-    }
-    template_types = {point["name"]: point["type"] for point in template}
-    serialized: List[dict] = []
-    names = set()
-    for index, raw_item in enumerate(raw_points, start=1):
-        item = _required_mapping(raw_item, f"第 {index} 个点")
-        name = str(item.get("name", "")).strip()
-        point_type = str(item.get("type", "")).strip()
-        if not name:
-            raise ValueError(f"第 {index} 个点的名称不能为空")
-        if len(name) > 200:
-            raise ValueError(f"点 {name[:40]} 的名称不能超过 200 个字符")
-        if name in names:
-            raise ValueError(f"点名称重复: {name}")
-        if formal and name not in template_order:
-            raise ValueError(f"点名称不在 template 中: {name}")
-        if point_type not in VALID_POINT_TYPES:
-            raise ValueError(f"点 {name} 的 type 必须是 waypoint 或 goal")
-        if formal and template_types[name] != point_type:
-            raise ValueError(f"点 {name} 的 type 与 template 不一致")
-
-        x = _finite_number(item.get("x"), f"点 {name} 的 x")
-        y = _finite_number(item.get("y"), f"点 {name} 的 y")
-        z = _finite_number(item.get("z", 0.0), f"点 {name} 的 z")
-        yaw_degrees = _normalize_degrees(
-            _finite_number(item.get("yaw_deg"), f"点 {name} 的 yaw")
-        )
-        yaw = round(math.radians(yaw_degrees), 6)
-        half_yaw = yaw * 0.5
-
-        raw_extra = item.get("extra", {})
-        extra = copy.deepcopy(
-            _required_mapping(raw_extra, f"点 {name} 的 extra")
-        )
-        point = dict(extra)
-        for key in ("name", "type", "position", "orientation", "yaw"):
-            point.pop(key, None)
-        point["name"] = name
-        point["position"] = {"x": x, "y": y, "z": z}
-        point["orientation"] = {
-            "x": 0.0,
-            "y": 0.0,
-            "z": math.sin(half_yaw),
-            "w": math.cos(half_yaw),
-        }
-        point["yaw"] = yaw
-        point["type"] = point_type
-        serialized.append(point)
-        names.add(name)
-    if formal:
-        return sorted(
-            serialized,
-            key=lambda point: template_order[point["name"]],
-        )
-    return serialized
-
-
-def save_waypoint_document(
-    editor_file: EditorFile,
-    backup_root: Path,
-    raw_points: Any,
-    expected_version: str | None = None,
-) -> Tuple[Path | None, str]:
-    """Validate, back up, and atomically replace one waypoint YAML."""
-    if editor_file.mode == "template":
-        with _document_lock(editor_file.waypoint_file):
-            document, _, current_version = load_waypoint_snapshot(editor_file)
-            if expected_version is not None and expected_version != current_version:
-                raise VersionConflict("template 文件已被其他进程修改，请重新加载")
-            if not isinstance(raw_points, list):
-                raise ValueError("points 必须是列表")
-            if len(raw_points) > MAX_POINT_COUNT:
-                raise ValueError(f"waypoint 数量不能超过 {MAX_POINT_COUNT}")
-            serialized_points: List[dict] = []
-            names = set()
-            for index, raw_item in enumerate(raw_points, start=1):
-                item = _required_mapping(raw_item, f"第 {index} 个点")
-                name = str(item.get("name", "")).strip()
-                point_type = str(item.get("type", "")).strip()
-                if not name:
-                    raise ValueError(f"第 {index} 个点的名称不能为空")
-                if len(name) > 200:
-                    raise ValueError(f"点 {name[:40]} 的名称不能超过 200 个字符")
-                if name in names:
-                    raise ValueError(f"模板点名称重复: {name}")
-                if point_type not in VALID_POINT_TYPES:
-                    raise ValueError(f"点 {name} 的 type 必须是 waypoint 或 goal")
-                serialized_points.append(
-                    {
-                        "name": name,
-                        "type": point_type,
-                    }
-                )
-                names.add(name)
-            document["points"] = serialized_points
-
-            profile_backup_dir = backup_root / editor_file.profile
-            profile_backup_dir.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
-            backup_path = profile_backup_dir / (
-                f"{editor_file.waypoint_file.stem}_{stamp}"
-                f"{editor_file.waypoint_file.suffix}"
-            )
-            shutil.copy2(editor_file.waypoint_file, backup_path)
-
-            target_dir = editor_file.waypoint_file.parent
-            file_mode = stat.S_IMODE(editor_file.waypoint_file.stat().st_mode)
-            file_descriptor, temporary_name = tempfile.mkstemp(
-                prefix=f".{editor_file.waypoint_file.name}.",
-                suffix=".tmp",
-                dir=target_dir,
-                text=True,
-            )
-            temporary_path = Path(temporary_name)
-            try:
-                with os.fdopen(file_descriptor, "w", encoding="utf-8") as output:
-                    yaml.safe_dump(
-                        document,
-                        output,
-                        allow_unicode=True,
-                        sort_keys=False,
-                    )
-                    output.flush()
-                    os.fsync(output.fileno())
-                temporary_path.chmod(file_mode)
-                os.replace(temporary_path, editor_file.waypoint_file)
-                directory_fd = os.open(target_dir, os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
-            except Exception:
-                temporary_path.unlink(missing_ok=True)
-                raise
-            return backup_path, document_version(editor_file.waypoint_file)
-
-    with _document_lock(editor_file.waypoint_file):
-        document, _, current_version = load_waypoint_snapshot(editor_file)
-        if expected_version is not None and expected_version != current_version:
-            raise VersionConflict("waypoint 文件已被其他进程修改，请重新加载")
-        template = load_template_geometry(editor_file)
-        document["points"] = _serialize_points(
-            raw_points, template, editor_file.formal
-        )
-
-        profile_backup_dir = backup_root / editor_file.profile
-        profile_backup_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
-        backup_path = profile_backup_dir / (
-            f"{editor_file.waypoint_file.stem}_{stamp}"
-            f"{editor_file.waypoint_file.suffix}"
-        )
-        shutil.copy2(editor_file.waypoint_file, backup_path)
-
-        target_dir = editor_file.waypoint_file.parent
-        file_mode = stat.S_IMODE(editor_file.waypoint_file.stat().st_mode)
-        file_descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{editor_file.waypoint_file.name}.",
-            suffix=".tmp",
-            dir=target_dir,
-            text=True,
-        )
-        temporary_path = Path(temporary_name)
-        try:
-            with os.fdopen(file_descriptor, "w", encoding="utf-8") as output:
-                yaml.safe_dump(
-                    document,
-                    output,
-                    allow_unicode=True,
-                    sort_keys=False,
-                )
-                output.flush()
-                os.fsync(output.fileno())
-            temporary_path.chmod(file_mode)
-            os.replace(temporary_path, editor_file.waypoint_file)
-            directory_fd = os.open(target_dir, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except Exception:
-            temporary_path.unlink(missing_ok=True)
-            raise
-        return backup_path, document_version(editor_file.waypoint_file)
 
 
 def load_map_info(editor_file: EditorFile) -> dict:
@@ -955,6 +492,9 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
 
     def _send_error(self, error: RequestError) -> None:
         self._send_json(error.status, {"error": error.message})
+
+    def _send_version_conflict(self, error: VersionConflict) -> None:
+        self._send_json(HTTPStatus.CONFLICT, {"error": str(error)})
 
     def _send_file(self, path: Path) -> None:
         content_type = mimetypes.guess_type(path.name)[0]
@@ -1124,6 +664,8 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                 self._send_file(static_file)
                 return
             raise RequestError(HTTPStatus.NOT_FOUND, "接口不存在")
+        except VersionConflict as error:
+            self._send_version_conflict(error)
         except RequestError as error:
             self._send_error(error)
         except (OSError, TypeError, ValueError, yaml.YAMLError) as error:
@@ -1198,6 +740,8 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                     "version": new_version,
                 },
             )
+        except VersionConflict as error:
+            self._send_version_conflict(error)
         except RequestError as error:
             self._send_error(error)
         except (OSError, TypeError, ValueError, yaml.YAMLError) as error:
@@ -1238,6 +782,8 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                     "version": settings["version"],
                 },
             )
+        except VersionConflict as error:
+            self._send_version_conflict(error)
         except RequestError as error:
             self._send_error(error)
         except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as error:

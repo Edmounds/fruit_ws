@@ -278,22 +278,6 @@ public:
         return result;
       });
 
-    const auto expected_fruit_type_topic = declare_parameter(
-      "expected_fruit_type_topic", "/fruit_mission/expected_fruit_type");
-    rclcpp::SubscriptionOptions expected_fruit_type_options;
-    expected_fruit_type_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
-    expected_fruit_type_subscription_ = create_subscription<std_msgs::msg::String>(
-      expected_fruit_type_topic, rclcpp::QoS(1).reliable().transient_local(),
-      [this](std_msgs::msg::String::ConstSharedPtr message) {
-        std::lock_guard<std::mutex> lock(expected_fruit_type_mutex_);
-        if (expected_fruit_type_ == message->data) {
-          return;
-        }
-        expected_fruit_type_ = message->data;
-        target_selection_generation_.fetch_add(1U);
-      },
-      expected_fruit_type_options);
-
     const auto decision_topic = declare_parameter(
       "decision_topic", "/fruit_perception/decision");
     decision_publisher_ = create_publisher<msg::FruitDecision>(decision_topic, rclcpp::QoS(10));
@@ -590,7 +574,6 @@ private:
         } else {
           context.window_id = "";
           context.is_harvest_window = false;
-          context.expected_type = expected_fruit_type();
         }
         context.area = zone_.load();
       }
@@ -933,12 +916,6 @@ private:
     return stream.request_slots.back().get();
   }
 
-  std::string expected_fruit_type() const
-  {
-    std::lock_guard<std::mutex> lock(expected_fruit_type_mutex_);
-    return expected_fruit_type_;
-  }
-
   Stream::RequestSlot * select_camera_request(Stream & stream, char area) const
   {
     if (area == 'A' || area == 'C') {
@@ -1029,9 +1006,6 @@ private:
   rclcpp::Publisher<msg::FruitDetections>::SharedPtr preview_detections_publisher_;
   rclcpp::Publisher<std_msgs::msg::Header>::SharedPtr rgbd_heartbeat_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr observation_window_subscription_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr expected_fruit_type_subscription_;
-  mutable std::mutex expected_fruit_type_mutex_;
-  std::string expected_fruit_type_;
   std::vector<std::unique_ptr<Stream>> streams_;
   std::vector<rclcpp::SubscriptionBase::SharedPtr> subscriptions_;
 };

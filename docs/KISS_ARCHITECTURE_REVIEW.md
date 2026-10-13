@@ -210,7 +210,7 @@ planner 已有只读 [get_configuration](../src/fruit_arm_planner/docs/03_INTERF
 | 候选 | 静态证据 | 删除边界 |
 | --- | --- | --- |
 | 导航 `progress_timeout_sec`、`progress_min_delta` | 当前服务器只声明、读取和校验，没有用于进度判断 | 删除无效选项及误导说明，不借此新增看门狗 |
-| planner `mode_start_delay_ms` 和注释中的启动 Mode 代码 | 当前发布 Header/Points，启动 Mode 被注释 | 先确认固件自动启动契约，不擅自改通信时序 |
+| planner `mode_start_delay_ms` 和注释中的启动 Mode 代码 | 当前发布 Header/Points，启动 Mode 被注释；无用配置项已清除 | 先确认固件自动启动契约，不擅自改通信时序 |
 | `waypoint_route.py` 的 `ordered_names_to`、`a_goal_names`、QR 名称属性等旧便利 API | 本次工作区搜索只找到定义 | 确认外部脚本没有调用后删除 |
 | mission 安装的 C++ 相机变换头文件 | 本次搜索只有定义和文档，实际客户端用 Python | 确认没有外部 C++ 客户端后删除，不新增绑定框架 |
 | `FruitTypes.msg` | 仍注册生成，本次未找到类型消费者 | 确认外部订阅者和录包要求后删除 |

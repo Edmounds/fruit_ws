@@ -21,6 +21,9 @@
   <depend>sensor_msgs</depend>
   <depend>std_srvs</depend>
   <exec_depend>fruit_qr_planner</exec_depend>
+  <exec_depend>auto_serial_bridge</exec_depend>
+  <exec_depend>fruit_nav_bringup</exec_depend>
+  <exec_depend>fruit_robviz_bridge</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

@@ -20,11 +20,108 @@ from fruit_arm_planner.planning_api import (
 from fruit_arm_planner.trajectory_planner import TrajectoryPlanner
 
 
+def parse_preset_order(source):
+    text = source.decode('utf-8') if isinstance(source, bytes) else source
+    root = yaml.compose(text)
+    if not isinstance(root, yaml.MappingNode):
+        return []
+    node = root
+    for key in ('arm_planner_node', 'ros__parameters', 'presets'):
+        node = next(
+            (v for k, v in node.value if isinstance(k, yaml.ScalarNode) and k.value == key),
+            None,
+        )
+        if node is None or not isinstance(node, yaml.MappingNode):
+            return []
+    return [k.value for k, v in node.value if isinstance(k, yaml.ScalarNode)]
+
+
+def reorder_presets_blocks(text, preset_order):
+    root = yaml.compose(text)
+    node = root
+    presets_key_node = None
+    for name_key in ('arm_planner_node', 'ros__parameters', 'presets'):
+        for k, v in node.value:
+            if isinstance(k, yaml.ScalarNode) and k.value == name_key:
+                presets_key_node = k
+                node = v
+                break
+        else:
+            raise ValueError(f'Cannot find node {name_key}')
+    presets_node = node
+    if not isinstance(presets_node, yaml.MappingNode) or presets_node.flow_style:
+        raise ValueError('presets is not a block mapping')
+    visited_ids = set()
+    for k, v in presets_node.value:
+        if id(k) in visited_ids or id(v) in visited_ids:
+            raise ValueError('Aliases not supported')
+        visited_ids.add(id(k))
+        visited_ids.add(id(v))
+        if not isinstance(k, yaml.ScalarNode):
+            raise ValueError('Non-scalar key in presets')
+        if k.value == '<<':
+            raise ValueError('Merge key << not supported')
+
+    keys = [k.value for k, v in presets_node.value]
+    if len(keys) != len(set(keys)):
+        raise ValueError('Duplicate keys in presets')
+    if set(keys) != set(preset_order) or len(keys) != len(preset_order):
+        raise ValueError('preset_order mismatch')
+
+    if keys == preset_order or not presets_node.value:
+        return text
+
+    preset_indent = presets_node.value[0][0].start_mark.column
+    if preset_indent <= presets_key_node.start_mark.column:
+        raise ValueError('Invalid preset indentation')
+
+    start_positions = {}
+    for k, v in presets_node.value:
+        if k.start_mark.column != preset_indent:
+            raise ValueError(f'Inconsistent indentation for preset {k.value}')
+        line_start = text.rfind('\n', 0, k.start_mark.index) + 1
+        prefix = text[line_start:k.start_mark.index]
+        if prefix != ' ' * k.start_mark.column:
+            raise ValueError(f'Preset key {k.value} not at beginning of line after indentation')
+        start_positions[k.value] = line_start
+
+    end_positions = {}
+    for i in range(len(keys) - 1):
+        end_positions[keys[i]] = start_positions[keys[i + 1]]
+
+    last_val = presets_node.value[-1][1]
+    idx = last_val.end_mark.index
+    curr = text.rfind('\n', 0, idx) + 1
+    while curr < len(text):
+        nl = text.find('\n', curr)
+        line = text[curr:] if nl == -1 else text[curr:nl]
+        stripped = line.strip()
+        if stripped and not stripped.startswith('#'):
+            indent = len(line) - len(line.lstrip(' '))
+            if indent <= presets_key_node.start_mark.column or stripped in ('...', '---'):
+                last_end = curr
+                break
+        curr = len(text) if nl == -1 else nl + 1
+    else:
+        last_end = len(text)
+    end_positions[keys[-1]] = last_end
+
+    blocks = {k: text[start_positions[k]:end_positions[k]] for k in keys}
+    orig_slice = text[start_positions[keys[0]]:end_positions[keys[-1]]]
+    if ''.join(blocks[k] for k in keys) != orig_slice:
+        raise ValueError('Block slice reconstruction failed')
+
+    new_middle = ''.join(blocks[k] for k in preset_order)
+    return text[:start_positions[keys[0]]] + new_middle + text[end_positions[keys[-1]]:]
+
+
 def document(path):
     content = path.read_bytes()
     params = configuration(yaml.safe_load(content)['arm_planner_node']['ros__parameters'])
+    preset_order = parse_preset_order(content)
     return {'version': hashlib.sha256(content).hexdigest(),
             'revision': revision(params), 'configuration': params,
+            'preset_order': preset_order,
             'presets_revision': revision(params['presets']), 'file': str(path)}
 
 
@@ -80,7 +177,12 @@ def patch_yaml(text, node, old, new):
         rendered = rendered.replace('\n', '\n' + indent)
         if isinstance(item, (yaml.MappingNode, yaml.SequenceNode)) and not item.flow_style:
             rendered += '\n'
-        edits.append((item.start_mark.index, item.end_mark.index, rendered))
+        end_idx = item.end_mark.index
+        if not flow and item.end_mark.column > 0:
+            prefix = text[item.end_mark.index - item.end_mark.column:item.end_mark.index]
+            if prefix == ' ' * item.end_mark.column:
+                end_idx -= item.end_mark.column
+        edits.append((item.start_mark.index, end_idx, rendered))
 
     def walk(item, before, after):
         if before == after:
@@ -107,6 +209,18 @@ def save_presets(path, backup_dir, payload, lock, conflict):
         raise ValueError('Missing arm file version')
     presets = copy.deepcopy(payload.get('presets'))
     validate_presets(presets)
+    preset_order = None
+    if 'preset_order' in payload:
+        order = payload['preset_order']
+        if (not isinstance(order, list)
+                or not all(isinstance(k, str) and k for k in order)
+                or len(order) != len(set(order))
+                or set(order) != set(presets.keys())):
+            raise ValueError(
+                'Invalid preset_order: must match preset keys exactly without duplicates'
+            )
+        preset_order = order
+        presets = {k: presets[k] for k in preset_order}
     for preset in presets.values():
         for waypoint in preset['waypoints']:
             waypoint['target'] = [float(v) for v in waypoint['target']]
@@ -122,11 +236,15 @@ def save_presets(path, backup_dir, payload, lock, conflict):
         original = yaml.safe_load(text)
         old = original['arm_planner_node']['ros__parameters']['presets']
         updated = patch_yaml(text, node, old, presets)
+        if preset_order is not None and parse_preset_order(updated) != preset_order:
+            updated = reorder_presets_blocks(updated, preset_order)
         parsed = yaml.safe_load(updated)
         expected_document = copy.deepcopy(original)
         expected_document['arm_planner_node']['ros__parameters']['presets'] = presets
         if parsed != expected_document:
             raise ValueError('Cannot preserve YAML structure safely; file unchanged')
+        if preset_order is not None and parse_preset_order(updated) != preset_order:
+            raise ValueError('Preset order in saved file does not match requested order')
         configuration(parsed['arm_planner_node']['ros__parameters'])
         backup_dir.mkdir(parents=True, exist_ok=True)
         backup = backup_dir / (path.name + '.' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))

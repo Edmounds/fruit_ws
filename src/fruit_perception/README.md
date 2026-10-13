@@ -47,6 +47,8 @@ continues to publish 2D/3D raw detections and annotated images for diagnostics, 
 Target locking and candidate accumulation only occur within a valid harvest window.
 
 Closing a window (`valid: 0`) immediately revokes evidence accumulation and resets selectors.
+The window's `expected_type` is the only target-filter input.
+The duplicate `/fruit_mission/expected_fruit_type` topic and unused `FruitTypes.msg` are removed.
 
 The camera node synchronizes color and depth, aligns depth to color, and publishes
 both aligned images in one RGBD message (`/camera/rgbd`). Color profile is configured to
@@ -64,10 +66,12 @@ actual rates without subscribing to the RGBD message outside the container.
 
 ## Runtime
 
-The project launch starts the camera component, OpenVINO detector, RobViz image
-bridge, and serial bridge together. Perception results remain on ROS topics for
-the mission node and are not forwarded directly to the lower controller. The
-serial device is fixed to `/dev/ttyACM0`.
+`fruit_perception_geometry` installs shared pure camera/target geometry for mission and RobViz.
+It does not initialize ROS nodes or control the arm.
+
+The project launch starts the camera component, OpenVINO detector, and QR decoding only.
+It does not start the serial bridge or RobViz.
+Perception results remain on ROS topics for the mission node.
 
 ```bash
 source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
@@ -77,11 +81,12 @@ colcon build --packages-up-to fruit_robviz_bridge \
 ros2 launch fruit_perception fruit_perception.launch.py
 ```
 
-The RobViz bridge nodes run alongside the perception stack. When a RobViz
-bridge is already running, `fruit_perception.launch.py` accepts
-`start_robviz_bridge:=false` to reuse the existing instance.
-`start_fruit_perception.sh` and `start_fruit_mission.sh` detect running RobViz
-bridge nodes automatically and set this flag to avoid port 8787 conflicts.
+`start_fruit_perception.sh` starts RobViz through its own launch, or reuses an existing instance.
+If its owned RobViz process exits while perception continues, the script reports the exit status
+and keeps the perception process running.
+`fruit_mission.launch.py` composes the complete competition stack.
+Neither the perception launch nor its script starts a serial bridge.
+The camera-arm debug script separately starts or reuses the bridge.
 
 It publishes JPEG previews on `/fruit_perception/camera/annotated_image/compressed`
 and `/fruit_perception/camera/native_depth/compressed`. The RGB stream forwards
@@ -100,8 +105,8 @@ ros2 param set /fruit_perception_node zone B
 
 The service template supplies `--zone A`. Update an existing installed unit before
 using the new script. Do not restart camera services during an active mission.
-`start_fruit_mission.sh` launches `fruit_perception.launch.py` directly, not this
-debug script. Mission clients set `zone` through `SetParametersAtomically` and
+`start_fruit_mission.sh` uses the complete mission launch, not this debug script.
+Mission clients set `zone` through `SetParametersAtomically` and
 check the response before observation. The mission area topic remains state only.
 
 The validated string parameter `zone` selects the model and candidate selection.

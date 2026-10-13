@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Fetch and configure RobViz image settings for the image bridge on startup."""
+"""Run independent RobViz base-preview and image-settings modules."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import rclpy
 import yaml
 from std_srvs.srv import Trigger
 from fruit_interfaces.msg import ArmStatus, ArmTelemetry
-from fruit_mission.camera_target_transform import (
+from fruit_perception_geometry.camera_target_transform import (
     load_camera_extrinsic,
     transform_camera_to_end_effector_mm,
     transform_end_to_base_mm,
@@ -51,10 +51,27 @@ STREAM_FIELDS = (
 
 
 class RobvizConfigClient(Node):
-    """Fetch RobViz image settings and apply them to the image bridge."""
+    """Keep recoverable module failures local to their module."""
 
     def __init__(self) -> None:
         super().__init__("fruit_robviz_config_client")
+        self._callback_group = ReentrantCallbackGroup()
+        self._startup_timer = None
+        self._base_preview_enabled = False
+        for name, initialize in (
+            ("image settings", self._init_image_settings),
+            ("base preview", self._init_base_preview),
+        ):
+            try:
+                initialize()
+                if name == "base preview":
+                    self._base_preview_enabled = True
+            except Exception as error:
+                self.get_logger().error(
+                    f"RobViz {name} disabled until restart: {error}"
+                )
+
+    def _init_image_settings(self) -> None:
         self.declare_parameter(
             "config_url", "http://127.0.0.1:8000/api/image-settings"
         )
@@ -65,7 +82,6 @@ class RobvizConfigClient(Node):
             raise ValueError("request_timeout_sec must be in [0.1, 10]")
         self._config_url = str(self.get_parameter("config_url").value)
         self._timeout = timeout
-        self._callback_group = ReentrantCallbackGroup()
         self._started = False
         self.declare_parameter("startup_timeout_sec", 10.0)
         startup_timeout = float(self.get_parameter("startup_timeout_sec").value)
@@ -87,11 +103,37 @@ class RobvizConfigClient(Node):
         )
         self._startup_timer = self.create_timer(
             0.1,
-            self._on_startup_poll,
+            self._on_image_startup,
             callback_group=self._callback_group,
             clock=Clock(clock_type=ClockType.STEADY_TIME),
         )
-        self._init_base_preview()
+
+    async def _on_image_startup(self) -> None:
+        try:
+            await self._on_startup_poll()
+        except Exception as error:
+            if self._startup_timer is not None:
+                self._startup_timer.cancel()
+            self.get_logger().error(
+                f"RobViz image settings startup disabled until restart: {error}"
+            )
+
+    def _base_callback(self, callback):
+        def receive(message):
+            if not self._base_preview_enabled:
+                return
+            try:
+                callback(message)
+            except Exception as error:
+                self._base_preview_enabled = False
+                invalid = FruitDetections()
+                invalid.header.frame_id = self._arm_frame
+                invalid.header.stamp = self.get_clock().now().to_msg()
+                self._base_publisher.publish(invalid)
+                self.get_logger().error(
+                    f"RobViz base preview disabled until restart: {error}"
+                )
+        return receive
 
     def _read_config(self, parameter: str, default: str, node: str) -> dict:
         path = self.declare_parameter(parameter, default).value
@@ -152,18 +194,19 @@ class RobvizConfigClient(Node):
         self._preview_subscriptions = [
             self.create_subscription(
                 ArmTelemetry, "/arm_planner_node/joint_states",
-                self._on_arm, 1,
+                self._base_callback(self._on_arm), 1,
             ),
             self.create_subscription(
                 ArmStatus, "/fruit_hardware_bridge/arm/status",
-                self._on_status, 1,
+                self._base_callback(self._on_status), 1,
             ),
             self.create_subscription(
-                Odometry, "/odometry", self._on_odom, qos_profile_sensor_data,
+                Odometry, "/odometry", self._base_callback(self._on_odom),
+                qos_profile_sensor_data,
             ),
             self.create_subscription(
                 FruitDetections, "/fruit_perception/camera/preview_detections",
-                self._on_detections, qos_profile_sensor_data,
+                self._base_callback(self._on_detections), qos_profile_sensor_data,
             ),
         ]
 

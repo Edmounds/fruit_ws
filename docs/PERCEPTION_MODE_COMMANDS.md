@@ -46,6 +46,8 @@ ros2 topic pub --once /fruit_mission/observation_window std_msgs/msg/String \
 - `purpose`：`"harvest"`（累积采摘目标证据）或 `"qr"`（二维码解码）。
 - `expected_type`：期望采摘标签（如 `"ripe"`、`"pumpkin_ripe"` 等），空字符串表示不指定。
 
+期望类型只由观察窗口提供。已删除重复 `/fruit_mission/expected_fruit_type` 话题。
+
 ### 2. 关闭观察窗口 (valid=0)
 
 ```bash
@@ -93,7 +95,10 @@ RobViz “图像采集”页支持一键/空格保存 NUC 原始帧为无损 PNG
 
 ```bash
 # 启动感知与扫码（不启动串口桥与任务）
-ros2 launch fruit_perception fruit_perception.launch.py zone:=A start_serial_bridge:=false
+ros2 launch fruit_perception fruit_perception.launch.py zone:=A
+
+# 需要预览时单独启动 RobViz，或使用 start_fruit_perception.sh --zone A
+ros2 launch fruit_robviz_bridge fruit_robviz_bridge.launch.py
 
 # 打印当前决策消息
 ros2 topic echo /fruit_perception/decision

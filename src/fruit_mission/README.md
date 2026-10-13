@@ -40,8 +40,10 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 区域切换通过 `/fruit_perception_node/set_parameters_atomically` 设置 `zone` 并核对返回结果。
 `/fruit_mission/current_area` 仍发布任务状态，但感知不再订阅。
 参数失败只告警并推进流程，不重试。区域不匹配的 harvest 窗口不产生抓取目标。
-`start_fruit_mission.sh` 继续直接启动感知 launch，不调用调试入口，并启动或复用
-RobViz 预览桥。正式入口不复用导航、感知、planner 或串口桥。
+`start_fruit_mission.sh` 调用 `fruit_mission.launch.py`，不调用感知调试入口。
+顶层 launch include 串口、planner-only、导航、感知和 RobViz 基础 launch。
+感知 launch 只拥有相机、检测和 QR。正式入口不复用导航、感知、planner 或串口桥。
+独立 RobViz 可复用，退出时不停止该外部实例。
 它先调用 `kill_fruit_processes.sh --competition` 清理旧栈和运动客户端，再启动自己的组件。
 启动前由操作者保证机器人安全静止。重启导航会重建启动相对 `odom` 原点。
 清理使用明确进程身份，并排除调用者及祖先进程。
@@ -50,10 +52,14 @@ RobViz 预览桥。正式入口不复用导航、感知、planner 或串口桥�
 `--reuse-navigation` 已删除，`--flow`、`--open-loop` 和 `--debug` 保留。
 `--open-loop` 在 A/C 均调用已有 `left_pick_openloop_a` 或 `right_pick_openloop_a`。
 左右观察姿态直接切换，不穿插正常 Home 或新过渡动作。
-比赛入口会并行启动导航、感知和 planner；调试录包在感知就绪后后台启动。
+独立依赖并行初始化。顶层 launch 的唯一门控复用 `stack_readiness_client stack`。
+各项保留原 10 秒超时，TF 保留 5 秒，超时告警后启动 mission。
+不使用固定 sleep，外围节点退出不终止 mission。
+调试录包仍由 shell 在相机检查后后台启动，不阻塞 launch 的 mission 门控。
 使用 `--debug` 时，入口还会在启动 ROS 子系统前记录内核 USB 事件和 udev 事件，文件分别为
 当前运行目录的 `kernel.log` 和 `udev.log`。退出时监控进程与其他调试进程一起停止。
-任务退出时先停止 mission 和录包，再依次停止感知相机、机械臂 planner 和导航，释放相机订阅后再下电设备。
+mission 退出触发本次 launch 的整栈关闭。Ctrl-C 也关闭本次拥有的子进程。
+shell 保留 STOP 请求和录包、USB 监控清理。进程关闭和 STOP 发布都不是硬件停稳证明。
 单点调试入口传递 `--zone`，客户端使用同一参数服务，不再等待区域话题订阅者。
 独立单点调试入口 `test_camera_arm_target.sh`（`camera_arm_target_client`）不依赖导航，只接受 `--zone A|B|C --left|--right`（可加 `--debug`），不再接受 `--model`。区域同时选择模型（A/C 蔬菜、B 水果）和 `<side>_look_<zone>` / `<side>_store_<zone>`（B 根据目标基座高度自动选择 `_store_b_up` 或 `_store_b_down`）；例如 `--zone C --left` 使用 `left_look_c`、`left_store_c`。工序为 Home→区域 Look→OPEN/HOLD→识别→CLOSE/HOLD→区域 Store，不加入跨区保护动作。它是人工硬件工具，不能作为自动测试运行。
 原 `mission_flow.py` 和作为判断帮助文件的 `logic.py` 已移除，避免两个主流程来源。
@@ -77,6 +83,8 @@ Look 已明确拒绝且未下发轨迹（`trajectory_id=0`），并有有效静�
 到点后消费失败结果，恢复一次 Home，再推进任务。
 请求异常、取消、planner 被占用或已下发轨迹的失败仍保留必要停止和导航取消。
 移除了无调用者的旧 `go_to`、`go_through` 和 YAML 顺序游标。
+已删除无调用者的旧路线查询 API。当前 A/B/C 路线规划和结果记录保留。
+期望类型只随观察窗口发布，不再维护重复品种话题。
 
 旧正常 `retract` 边界改用 `shenzhi`：A 每点结束、B/C 扫码后、B 每树结束、C 每项结束，以及对应区域出口；最后一个点/树/项与出口重合时不重复执行。失败操作只沿用已有一次 Home，不追加保护动作。边界仍要求保护位，未确认 `shenzhi` 不放行后续导航，即使恢复 Home 成功也不冒充保护位；软件继续推进。已完成且当前实测静止的 `shenzhi` 可用于导航交接或直接启动并行 Look，不强制先回 Home。
 

@@ -44,7 +44,6 @@ arm_planner_node:
       interpolation_step_ms: 200   # 约5Hz 插值周期 (ms)
       default_dwell_ms: 500       # 夹爪动作路点未写 dwell_ms 时的驻留时间 (ms)
       status_max_age_sec: 0.25    # 接受四轴实测反馈的最大接收时延 (s)
-      mode_start_delay_ms: 300    # 调试缓冲：路点发布后等待再发送启动 Mode (ms)
       hover_height_m: 0.06        # 安全悬停提升高度 (m)
 
     # ------------------------------------------------------------------------
@@ -128,17 +127,95 @@ arm_planner_node:
           duration_ms: 1000
           gripper: 1
           dwell_ms: 0
+      left_pick_openloop_a:
+        description: 左方开环控制抓取
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.0
+          - 0.42
+          - -0.13
+          - 0.0
+          duration_ms: 2000
+          gripper: 2
+        - target:
+          - 0.0
+          - 0.15
+          - 0.16
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+          linear: false
+        - target:
+          - -0.18
+          - 0.01
+          - 0.23
+          - 0.0
+          duration_ms: 1000
+          gripper: 1
+        - target:
+          - 0.0
+          - 0.22
+          - 0.23
+          - 0.0
+          duration_ms: 600
+          gripper: 0
+      right_pick_openloop_a:
+        description: 右方开环控制抓取
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.0
+          - -0.42
+          - -0.13
+          - 0.0
+          duration_ms: 2000
+          gripper: 2
+        - target:
+          - 0.0
+          - -0.15
+          - 0.16
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+          linear: false
+        - target:
+          - -0.18
+          - -0.01
+          - 0.23
+          - 0.0
+          duration_ms: 1000
+          gripper: 1
+        - target:
+          - 0.0
+          - -0.22
+          - 0.23
+          - 0.0
+          duration_ms: 600
+          gripper: 0
       left_store_a:
         description: 左方抓取完毕后存储并回到原位
         coordinate_frame: cartesian
         waypoints:
-        - target: [0.0, 0.29, 0.23, 0.0]
+        - target:
+          - 0.0
+          - 0.29
+          - 0.23
+          - 0.0
           duration_ms: 1000
           gripper: 0
-        - target: [-0.18, 0.01, 0.23, 0.0]
+        - target:
+          - -0.18
+          - 0.01
+          - 0.23
+          - 0.0
           duration_ms: 996
           gripper: 1
-        - target: [0.0, 0.22, 0.23, 0.0]
+        - target:
+          - 0.0
+          - 0.22
+          - 0.23
+          - 0.0
           duration_ms: 1000
           gripper: 0
           is_via_point: true
@@ -274,6 +351,72 @@ arm_planner_node:
           - 0.0
           duration_ms: 2000
           gripper: 0
+      left_pick_openloop_c:
+        description: 左方开环控制抓取
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.0
+          - 0.37
+          - -0.13
+          - 0.0
+          duration_ms: 2000
+          gripper: 2
+        - target:
+          - 0.0
+          - 0.15
+          - 0.16
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+          linear: false
+        - target:
+          - -0.18
+          - 0.01
+          - 0.23
+          - 0.0
+          duration_ms: 1000
+          gripper: 1
+        - target:
+          - 0.0
+          - 0.22
+          - 0.23
+          - 0.0
+          duration_ms: 600
+          gripper: 0
+      right_pick_openloop_c:
+        description: 右方开环控制抓取
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.0
+          - -0.37
+          - -0.13
+          - 0.0
+          duration_ms: 2000
+          gripper: 2
+        - target:
+          - 0.0
+          - -0.15
+          - 0.16
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+          linear: false
+        - target:
+          - -0.18
+          - -0.01
+          - 0.23
+          - 0.0
+          duration_ms: 1000
+          gripper: 1
+        - target:
+          - 0.0
+          - -0.22
+          - 0.23
+          - 0.0
+          duration_ms: 600
+          gripper: 0
       left_look_b:
         description: 机械臂左侧观察位姿
         coordinate_frame: cartesian
@@ -302,36 +445,15 @@ arm_planner_node:
         description: 左方抓取完毕后存储并回到原位
         coordinate_frame: cartesian
         waypoints:
-        - target:
-          - 0.0417
-          - 0.137
-          - 0.176
-          - 0.0
+        - target: [0.0417, 0.137, 0.176, 0.0]
           duration_ms: 1000
           gripper: 0
           linear: true
-        - target:
-          - -0.1962624798929228
-          - 0.00965640213802654
-          - 0.2506981509144537
-          - -5.973156743762218
+        - target: [-0.1962624798929228, 0.00965640213802654, 0.2506981509144537, -5.973156743762218]
           duration_ms: 1000
           gripper: 1
           linear: true
-        - target:
-          - 0.042288450212795675
-          - 0.15905864173713108
-          - 0.3536682379281416
-          - -4.166016328536959
-          duration_ms: 1000
-          gripper: 0
-          linear: true
-          is_via_point: true
-        - target:
-          - 0.1202
-          - 0.0
-          - 0.55
-          - 0.0
+        - target: [0.042288450212795675, 0.15905864173713108, 0.3536682379281416, -4.166016328536959]
           duration_ms: 1000
           gripper: 0
           linear: true
@@ -340,36 +462,15 @@ arm_planner_node:
         description: 右方抓取完毕后存储并回到原位
         coordinate_frame: cartesian
         waypoints:
-        - target:
-          - 0.0417
-          - -0.137
-          - 0.176
-          - 0.0
+        - target: [0.0417, -0.137, 0.176, 0.0]
           duration_ms: 1000
           gripper: 0
           linear: true
-        - target:
-          - -0.1962624798929228
-          - -0.00965640213802654
-          - 0.2506981509144537
-          - -5.973156743762218
+        - target: [-0.1962624798929228, -0.00965640213802654, 0.2506981509144537, -5.973156743762218]
           duration_ms: 1000
           gripper: 1
           linear: true
-        - target:
-          - 0.042288450212795675
-          - -0.15905864173713108
-          - 0.3536682379281416
-          - -4.166016328536959
-          duration_ms: 1000
-          gripper: 0
-          linear: true
-          is_via_point: true
-        - target:
-          - 0.1202
-          - 0.0
-          - 0.55
-          - 0.0
+        - target: [0.042288450212795675, -0.15905864173713108, 0.3536682379281416, -4.166016328536959]
           duration_ms: 1000
           gripper: 0
           linear: true
@@ -378,44 +479,19 @@ arm_planner_node:
         description: 左方抓取完毕后存储并回到原位
         coordinate_frame: cartesian
         waypoints:
-        - target:
-          - 0.06
-          - 0.2586
-          - -0.0104
-          - -18.54
+        - target: [0.06, 0.2586, -0.0104, -18.54]
           duration_ms: 1000
           gripper: 0
           linear: true
-        - target:
-          - 0.04
-          - 0.16
-          - 0.1659
-          - 0.0
+        - target: [0.04, 0.16, 0.1659, 0.0]
           duration_ms: 2000
           gripper: 0
           linear: true
-        - target:
-          - -0.1962624798929228
-          - 0.00965640213802654
-          - 0.2506981509144537
-          - -5.973156743762218
+        - target: [-0.1962624798929228, 0.00965640213802654, 0.2506981509144537, -5.973156743762218]
           duration_ms: 1000
           gripper: 1
           linear: true
-        - target:
-          - 0.042288450212795675
-          - 0.15905864173713108
-          - 0.3536682379281416
-          - -4.166016328536959
-          duration_ms: 1000
-          gripper: 0
-          linear: true
-          is_via_point: true
-        - target:
-          - 0.1202
-          - 0.0
-          - 0.55
-          - 0.0
+        - target: [0.042288450212795675, 0.15905864173713108, 0.3536682379281416, -4.166016328536959]
           duration_ms: 1000
           gripper: 0
           linear: true
@@ -424,109 +500,20 @@ arm_planner_node:
         description: 右方抓取完毕后存储并回到原位
         coordinate_frame: cartesian
         waypoints:
-        - target:
-          - 0.06
-          - -0.2586
-          - -0.0104
-          - -18.54
+        - target: [0.06, -0.2586, -0.0104, -18.54]
           duration_ms: 1000
           gripper: 0
           linear: true
-        - target:
-          - 0.04
-          - -0.16
-          - 0.1659
-          - 0.0
+        - target: [0.04, -0.16, 0.1659, 0.0]
           duration_ms: 2000
           gripper: 0
           linear: true
-        - target:
-          - -0.1962624798929228
-          - -0.00965640213802654
-          - 0.2506981509144537
-          - -5.973156743762218
+        - target: [-0.1962624798929228, -0.00965640213802654, 0.2506981509144537, -5.973156743762218]
           duration_ms: 1000
           gripper: 1
           linear: true
-        - target:
-          - 0.042288450212795675
-          - -0.15905864173713108
-          - 0.3536682379281416
-          - -4.166016328536959
+        - target: [0.042288450212795675, -0.15905864173713108, 0.3536682379281416, -4.166016328536959]
           duration_ms: 1000
           gripper: 0
           linear: true
           is_via_point: true
-        - target:
-          - 0.1202
-          - 0.0
-          - 0.55
-          - 0.0
-          duration_ms: 1000
-          gripper: 0
-          linear: true
-          is_via_point: true
-      left_pick_openloop_a:
-        description: 左方开环控制抓取
-        coordinate_frame: cartesian
-        waypoints:
-        - target:
-          - 0.0
-          - 0.42
-          - -0.12
-          - 0.0
-          duration_ms: 2500
-          gripper: 2
-        - target:
-          - 0.0
-          - 0.29
-          - 0.23
-          - 0.0
-          duration_ms: 1000
-          gripper: 0
-        - target:
-          - -0.18
-          - 0.01
-          - 0.23
-          - 0.0
-          duration_ms: 1000
-          gripper: 1
-        - target:
-          - 0.0
-          - 0.22
-          - 0.23
-          - 0.0
-          duration_ms: 1000
-          gripper: 0
-      right_pick_openloop_a:
-        description: 右方开环控制抓取
-        coordinate_frame: cartesian
-        waypoints:
-        - target:
-          - 0.0
-          - -0.42
-          - -0.12
-          - 0.0
-          duration_ms: 2500
-          gripper: 2
-        - target:
-          - 0.0
-          - -0.29
-          - 0.23
-          - 0.0
-          duration_ms: 1000
-          gripper: 0
-        - target:
-          - -0.18
-          - -0.01
-          - 0.23
-          - 0.0
-          duration_ms: 1000
-          gripper: 1
-        - target:
-          - 0.0
-          - -0.22
-          - 0.23
-          - 0.0
-          duration_ms: 1000
-          gripper: 0

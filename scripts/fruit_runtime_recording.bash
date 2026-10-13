@@ -58,7 +58,6 @@ EOF
 /fruit_perception/camera/rgbd_heartbeat
 /fruit_mission/observation_window
 /fruit_mission/current_area
-/fruit_mission/expected_fruit_type
 /fruit/b_pick_plan
 /fruit/c_pick_plan
 /fruit_hardware_bridge/arm/status

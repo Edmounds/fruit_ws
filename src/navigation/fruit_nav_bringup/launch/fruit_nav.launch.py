@@ -15,7 +15,7 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -80,24 +80,17 @@ def generate_launch_description():
                     "use_sim_time": use_sim_time,
                 }.items(),
             ),
-            Node(
-                package="fruit_navigation",
-                executable="axis_waypoint_action_server",
-                name="axis_waypoint_action_server",
-                parameters=[
-                    axis_params_file,
-                    {
-                        "use_sim_time": use_sim_time,
-                    },
-                ],
-                arguments=[
-                    "--ros-args",
-                    "--log-level",
-                    LaunchConfiguration("axis_log_level"),
-                ],
-                output="screen",
-                emulate_tty=True,
-            ),
+            GroupAction(actions=[IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    "/home/rc4/fruit_ws/src/navigation/fruit_navigation/launch/"
+                    "axis_navigation.launch.py"
+                ),
+                launch_arguments={
+                    "params_file": axis_params_file,
+                    "log_level": LaunchConfiguration("axis_log_level"),
+                    "use_sim_time": use_sim_time,
+                }.items(),
+            )]),
             Node(
                 package="twist_mux",
                 executable="twist_mux",

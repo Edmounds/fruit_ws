@@ -61,7 +61,7 @@ colcon build --packages-select fruit_perception --symlink-install \
   --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 source scripts/setup_fruit_runtime.bash
 ros2 launch fruit_perception fruit_perception.launch.py \
-  zone:=A ripeness_model:=edge start_serial_bridge:=false perception_log_level:=info
+  zone:=A ripeness_model:=edge perception_log_level:=info
 ros2 param set /fruit_perception_node zone B
 # 比较统一分类器：停掉上一次 launch 后使用 ripeness_model:=yolo
 ```

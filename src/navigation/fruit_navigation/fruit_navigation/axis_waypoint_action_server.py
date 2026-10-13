@@ -52,8 +52,6 @@ class AxisWaypointActionServer(Node):
         self.declare_parameter("yaw_gain", 1.8)
         self.declare_parameter("lookahead_distance", 0.3)
         self.declare_parameter("tf_timeout_sec", 0.5)
-        self.declare_parameter("progress_timeout_sec", 5.0)
-        self.declare_parameter("progress_min_delta", 0.01)
         self.declare_parameter("waypoint_retry_attempts", 1)
         self.declare_parameter("waypoint_pass_tolerance", 0.08)
 
@@ -82,10 +80,6 @@ class AxisWaypointActionServer(Node):
         self._yaw_gain = float(self.get_parameter("yaw_gain").value)
         self._lookahead_distance = float(self.get_parameter("lookahead_distance").value)
         self._tf_timeout_sec = float(self.get_parameter("tf_timeout_sec").value)
-        self._progress_timeout_sec = float(
-            self.get_parameter("progress_timeout_sec").value
-        )
-        self._progress_min_delta = float(self.get_parameter("progress_min_delta").value)
         self._waypoint_retry_attempts = int(
             self.get_parameter("waypoint_retry_attempts").value
         )
@@ -140,10 +134,8 @@ class AxisWaypointActionServer(Node):
             raise ValueError("reverse_yaw_tolerance must be positive")
         if not math.isfinite(self._lookahead_distance) or self._lookahead_distance <= 0.0:
             raise ValueError("lookahead_distance must be finite and positive")
-        if self._tf_timeout_sec <= 0.0 or self._progress_timeout_sec <= 0.0:
+        if self._tf_timeout_sec <= 0.0:
             raise ValueError("timeouts must be positive")
-        if self._progress_min_delta <= 0.0:
-            raise ValueError("progress_min_delta must be positive")
         if self._waypoint_retry_attempts < 0:
             raise ValueError("waypoint_retry_attempts must not be negative")
         if self._waypoint_pass_tolerance <= 0.0:

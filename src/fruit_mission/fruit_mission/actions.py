@@ -105,7 +105,6 @@ def pick_a(ctx, *, side):
 
 def observe_and_pick(ctx, *, side, expected_type):
     """Look (open gripper) -> harvest window -> fresh target -> CLOSE/Store/Home."""
-    ctx.set_expected_fruit_type(expected_type)
     look = ctx.finish_observation(side)
     if not look.completed:
         ctx.recover_home()

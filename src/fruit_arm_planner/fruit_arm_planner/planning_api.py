@@ -60,8 +60,7 @@ def configuration(params):
             raise ValueError(f'Invalid joint_mapping.{key}')
     JointTransformer.from_config_dict(result['joint_mapping'])
     planning = result['planning']
-    for key in ('default_duration_ms', 'interpolation_step_ms', 'default_dwell_ms',
-                'mode_start_delay_ms'):
+    for key in ('default_duration_ms', 'interpolation_step_ms', 'default_dwell_ms'):
         value = planning[key]
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f'planning.{key} must be an integer')
@@ -69,7 +68,6 @@ def configuration(params):
             or not 0 < planning['interpolation_step_ms'] <= 0xFFFFFFFF
             or not 0 <= planning['default_dwell_ms'] <= 0xFFFFFFFF
             or not 0 < float(planning['status_max_age_sec']) < 10
-            or not 0 <= planning['mode_start_delay_ms'] <= 10000
             or not math.isfinite(float(planning['hover_height_m']))):
         raise ValueError('Invalid planning parameters')
     validate_presets(result['presets'])

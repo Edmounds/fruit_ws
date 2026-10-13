@@ -1,17 +1,28 @@
+"""Compose the owned competition stack and gate only the mission entry."""
+
 import os
 from pathlib import Path
 
 import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument, EmitEvent, GroupAction, IncludeLaunchDescription,
+    LogInfo, OpaqueFunction, RegisterEventHandler, SetLaunchConfiguration,
+)
+from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
-MISSION_CONFIG = "/home/rc4/fruit_ws/src/fruit_mission/config/fruit_mission.yaml"
+WORKSPACE = Path("/home/rc4/fruit_ws")
+MISSION_CONFIG = str(WORKSPACE / "src/fruit_mission/config/fruit_mission.yaml")
+CLIENT_CONFIG = str(WORKSPACE / "src/fruit_mission/config/script_ros_clients.yaml")
 
 
-def _validated_node(context):
+def _validate_waypoints(context):
     with Path(MISSION_CONFIG).open(encoding="utf-8") as stream:
         document = yaml.safe_load(stream) or {}
     params = document["fruit_mission"]["ros__parameters"]
@@ -31,66 +42,82 @@ def _validated_node(context):
         waypoint_document = yaml.safe_load(stream) or {}
     if waypoint_document.get("frame_id") != map_frame:
         raise RuntimeError(f"waypoint YAML frame_id must be {map_frame}")
-
-    log_level = LaunchConfiguration("log_level").perform(context).strip()
-
-    return [
-        Node(
-            package="fruit_mission",
-            executable="fruit_mission_node",
-            name="fruit_mission",
-            output="screen",
-            emulate_tty=True,
-            arguments=["--ros-args", "--log-level", log_level],
-            parameters=[
-                MISSION_CONFIG,
-                {
-                    "use_sim_time": LaunchConfiguration("use_sim_time"),
-                    "waypoint_file": waypoint_file,
-                    "mission_flow": LaunchConfiguration("mission_flow"),
-                    "map_frame": map_frame,
-                    "open_loop": LaunchConfiguration("open_loop"),
-                },
-            ],
-        )
-    ]
+    return [SetLaunchConfiguration("waypoint_file", waypoint_file)]
 
 
 def generate_launch_description():
-    return LaunchDescription(
-        [
-            DeclareLaunchArgument(
-                "use_sim_time",
-                default_value="false",
-                description="Use simulation clock if true",
-            ),
-            DeclareLaunchArgument(
-                "waypoint_file",
-                default_value="",
-                description="Configured waypoint YAML file",
-            ),
-            DeclareLaunchArgument(
-                "mission_flow",
-                default_value="full",
-                description="Logic.py entry: full, ac, a, b, or c; B/C debug also scans QR",
-            ),
-            DeclareLaunchArgument(
-                "map_frame",
-                default_value="odom",
-                description="Coordinate frame used by mission waypoints",
-            ),
-            DeclareLaunchArgument(
-                "log_level",
-                default_value="info",
-                choices=["debug", "info", "warn", "error", "fatal"],
-                description="Logging level for fruit_mission_node",
-            ),
-            DeclareLaunchArgument(
-                "open_loop",
-                default_value="false",
-                description="Enable open-loop picking in Zones A and C using direct presets",
-            ),
+    # 1. 全局配置区
+    use_sim_time = LaunchConfiguration("use_sim_time")
 
-            OpaqueFunction(function=_validated_node),
-        ]
+    # 2. 节点清单
+    modules = (
+        ("src/auto_serial_bridge/launch/auto_serial_bridge.launch.py", {
+            "log_level": LaunchConfiguration("serial_log_level"),
+        }, "start_serial_bridge"),
+        ("src/fruit_arm_planner/launch/fruit_arm_planner.launch.py", {
+            "log_level": LaunchConfiguration("arm_log_level"),
+        }, None),
+        ("src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.py", {}, None),
+        ("src/fruit_perception/launch/fruit_perception.launch.py", {}, None),
+        ("src/fruit_robviz_bridge/launch/fruit_robviz_bridge.launch.py", {},
+         "start_robviz_bridge"),
     )
+    readiness = Node(
+        package="fruit_mission", executable="stack_readiness_client",
+        name="stack_readiness_client", output="screen", emulate_tty=True,
+        arguments=["stack"], parameters=[CLIENT_CONFIG, {"use_sim_time": use_sim_time}],
+    )
+    mission = Node(
+        package="fruit_mission", executable="fruit_mission_node", name="fruit_mission",
+        output="screen", emulate_tty=True,
+        arguments=["--ros-args", "--log-level", LaunchConfiguration("log_level")],
+        parameters=[MISSION_CONFIG, {
+            "use_sim_time": use_sim_time,
+            "waypoint_file": LaunchConfiguration("waypoint_file"),
+            "mission_flow": LaunchConfiguration("mission_flow"),
+            "map_frame": LaunchConfiguration("map_frame"),
+            "open_loop": LaunchConfiguration("open_loop"),
+        }],
+    )
+
+    # 3. 声明 Launch 参数
+    arguments = [
+        DeclareLaunchArgument("use_sim_time", default_value="false"),
+        DeclareLaunchArgument("waypoint_file", default_value=""),
+        DeclareLaunchArgument("mission_flow", default_value="full",
+                              choices=["full", "ac", "a", "b", "c"]),
+        DeclareLaunchArgument("map_frame", default_value="odom"),
+        DeclareLaunchArgument("log_level", default_value="info"),
+        DeclareLaunchArgument("arm_log_level", default_value="info"),
+        DeclareLaunchArgument("serial_log_level", default_value="info"),
+        DeclareLaunchArgument("open_loop", default_value="false"),
+        DeclareLaunchArgument("start_serial_bridge", default_value="true"),
+        DeclareLaunchArgument("start_robviz_bridge", default_value="true"),
+    ]
+
+    # 4. 自动生成动作列表
+    def start_mission(event, launch_context):
+        if launch_context.is_shutdown:
+            return []
+        message = "Mission startup readiness checks finished"
+        if event.returncode != 0:
+            message += f" (status={event.returncode}); unavailable operations will be skipped"
+        return [LogInfo(msg=message), mission]
+
+    actions = [
+        *arguments,
+        OpaqueFunction(function=_validate_waypoints),
+        RegisterEventHandler(OnProcessExit(target_action=readiness, on_exit=start_mission)),
+        RegisterEventHandler(OnProcessExit(
+            target_action=mission,
+            on_exit=[EmitEvent(event=Shutdown(reason="Mission process exited"))],
+        )),
+    ]
+    for relative_path, module_arguments, condition in modules:
+        module_arguments = {"use_sim_time": use_sim_time, **module_arguments}
+        actions.append(GroupAction(actions=[IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(str(WORKSPACE / relative_path)),
+            launch_arguments=module_arguments.items(),
+            condition=IfCondition(LaunchConfiguration(condition)) if condition else None,
+        )]))
+    return LaunchDescription([*actions, readiness])

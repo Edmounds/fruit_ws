@@ -44,7 +44,7 @@
 
 **现有限制：**planner 按 Header → Points 发布，串口桥可靠队列按消息 ID 独立处理。
 Header/Point 传输顺序仍须验证，尚无 planner 可用的装载确认。
-`mode_start_delay_ms` 当前不触发启动 Mode，也不能证明装载完成。
+已删除无效 `mode_start_delay_ms` 参数。轨迹发送行为不变，仍不发送启动 Mode。
 ACK 也不是电机到位确认。详细线布局与时序见[通信文档](../src/fruit_arm_planner/docs/02_COMMUNICATION_PROTOCOL.md)。
 
 `reliable_retry_interval_ms` 当前为 1000，`reliable_max_retries=3` 表示每累计三次告警，

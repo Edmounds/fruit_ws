@@ -147,7 +147,7 @@ def test_test_point_store_does_not_advance_without_success(tmp_path):
 
 
 def test_template_document_load_and_save(tmp_path):
-    from fruit_robviz_bridge.robviz_web_server import (
+    from fruit_robviz_bridge.waypoint_files import (
         EditorFile,
         load_waypoint_document,
         save_waypoint_document,

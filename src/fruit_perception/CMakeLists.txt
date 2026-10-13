@@ -6,6 +6,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(
   OpenCV 4.5.4 EXACT REQUIRED
@@ -29,7 +30,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FruitDetections.msg"
   "msg/FruitDecision.msg"
   "msg/FruitTarget.msg"
-  "msg/FruitTypes.msg"
   DEPENDENCIES geometry_msgs sensor_msgs std_msgs
 )
 
@@ -99,6 +99,8 @@ install(DIRECTORY include/
 install(DIRECTORY config launch model
   DESTINATION share/${PROJECT_NAME}
 )
+
+ament_python_install_package(fruit_perception_geometry)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)

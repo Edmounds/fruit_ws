@@ -35,7 +35,7 @@ recording requires the camera and perception publishers. Recording starts in
 the background after perception is ready and does not delay the mission. Debug
 mode also records kernel USB events in kernel.log and udev events in udev.log.
 It may request sudo once before starting these monitors.
-The perception launch also starts or reuses the RobViz bridge.
+The mission launch starts the stack and reuses an independently owned RobViz bridge.
 EOF
 }
 
@@ -154,10 +154,11 @@ start_process() {
 
   : > "$log_file"
   log "START $name: $(command_string "$@")"
-  setsid env "FRUIT_SUBSYSTEM_LOG=$log_file" "DEBUG_OPT=$DEBUG_RECORD_ENABLED" bash -c '
+  setsid env "FRUIT_SUBSYSTEM_LOG=$log_file" "DEBUG_OPT=$DEBUG_RECORD_ENABLED" "STACK_LOG_DIR=$RUN_DIR" bash -c '
     set -o pipefail
     filter_args=(--output-file "$FRUIT_SUBSYSTEM_LOG" --component "'"$name"'")
     [[ "$DEBUG_OPT" == "1" ]] && filter_args+=(--debug)
+    [[ "'"$name"'" == "mission" ]] && filter_args+=(--stack-log-dir "$STACK_LOG_DIR")
     stdbuf -oL -eL "$@" 2>&1 | /usr/bin/python3 "'"$filter_script"'" "${filter_args[@]}"
   ' fruit-stack "$@" &
   pid=$!
@@ -211,92 +212,6 @@ wait_for_nodes() {
   log "WARNING: $label not ready (status=$status); mission will skip unavailable work"
 }
 
-wait_for_action() {
-  local label=$1
-  local action_name=$2
-  local timeout_sec=$3
-  local status
-
-  log "WAIT $label action=$action_name timeout=${timeout_sec}s"
-  if run_readiness_client action \
-    --name "$action_name" \
-    --timeout "$timeout_sec"; then
-    log "READY $label action=$action_name"
-    return 0
-  else
-    status=$?
-  fi
-  log "WARNING: $label action unavailable; mission will skip unavailable work"
-}
-
-wait_for_arm_planner() {
-  local timeout_sec=$1
-  local status
-
-  log "WAIT arm planner motion/preset/STOP services timeout=${timeout_sec}s"
-  if run_readiness_client planner --timeout "$timeout_sec"; then
-    log "READY arm planner motion/preset/STOP services"
-    return 0
-  else
-    status=$?
-  fi
-  log "WARNING: arm planner unavailable; no unsafe arm motion will be submitted"
-}
-
-wait_for_tf() {
-  local label=$1
-  local parent_frame=$2
-  local child_frame=$3
-  local timeout_sec=$4
-  local status
-
-  log "WAIT $label tf=$parent_frame->$child_frame timeout=${timeout_sec}s"
-  if run_readiness_client tf \
-    --parent "$parent_frame" \
-    --child "$child_frame" \
-    --timeout "$timeout_sec" \
-    --max-age 1; then
-    log "READY $label tf=$parent_frame->$child_frame"
-    return 0
-  else
-    status=$?
-  fi
-  log "WARNING: $label TF unavailable; mission will skip unavailable work"
-}
-
-wait_for_odometry() {
-  local label=$1
-  local topic=$2
-  local timeout_sec=$3
-  local status
-
-  log "WAIT $label topic=$topic timeout=${timeout_sec}s"
-  if run_readiness_client odometry \
-    --topic "$topic" \
-    --timeout "$timeout_sec"; then
-    log "READY $label topic=$topic"
-    return 0
-  else
-    status=$?
-  fi
-  log "WARNING: $label odometry unavailable; navigation requires odometry"
-}
-
-wait_for_serial_bridge_running() {
-  local timeout_sec=$1
-  local log_file="$RUN_DIR/perception.log"
-  local status
-
-  log "WAIT serial bridge RUNNING timeout=${timeout_sec}s"
-  if run_readiness_client bridge --timeout "$timeout_sec"; then
-    log "READY serial bridge RUNNING"
-    return 0
-  else
-    status=$?
-  fi
-  log "WARNING: serial bridge unavailable; see $log_file; mission remains bounded"
-}
-
 stop_child_by_name() {
   local wanted_name=$1
   local index
@@ -330,24 +245,14 @@ stop_children() {
   fi
 
   # Ensure arm motion is stopped if planner is available.
-  if [[ " ${child_names[*]} " == *" arm_planner "* ]]; then
+  if [[ " ${child_names[*]} " == *" mission "* ]]; then
     timeout --foreground 2s ros2 service call /arm_planner_node/stop std_srvs/srv/Trigger '{}' \
       >/dev/null 2>&1 || true
   fi
 
-  # Stop the mission before its dependencies. This closes observation windows
-  # and releases ROS camera subscribers before the camera container exits.
-  stop_child_by_name mission
-
-  # Stop the recorder before the camera stack so it releases image subscriptions.
+  # Release recorder subscriptions before closing the composed task stack.
   fruit_recording_stop
-
-  # Stop camera/perception before arm and navigation. Do this sequentially so
-  # hardware-backed processes finish teardown before lower-level devices may be
-  # powered down by the operator.
-  stop_child_by_name perception
-  stop_child_by_name arm_planner
-  stop_child_by_name navigation
+  stop_child_by_name mission
 
   local -a remaining_pids=()
   local pid
@@ -479,46 +384,21 @@ check_no_existing_nodes \
 # Visualization is not a motion controller and can remain independently owned.
 START_ROBVIZ_BRIDGE=$(run_readiness_client robviz-bridge-start-required)
 
-start_process "navigation" ros2 launch "$NAV_LAUNCH"
-start_process "perception" \
-  ros2 launch "$PERCEPTION_LAUNCH" \
-    "use_sim_time:=false" \
-    "serial_debug_raw_frame:=$([[ $DEBUG_RECORD_ENABLED -eq 1 ]] && echo 'true' || echo 'false')" \
-    "start_serial_bridge:=true" \
-    "start_robviz_bridge:=$START_ROBVIZ_BRIDGE"
-start_process "arm_planner" \
-  ros2 launch "$ARM_LAUNCH" "use_sim_time:=false"
-
-# Start all independent stacks before waiting. Navigation localization continues
-# while the camera and planner initialize.
-wait_for_nodes "odometry navigation readiness" 10 \
-  /axis_waypoint_action_server \
-  /laserMapping \
-  /loam_interface
-wait_for_action "waypoint navigation" "/follow_waypoints" 10
-wait_for_odometry "base odometry" /odometry 10
-wait_for_tf "stable odometry origin" odom base_link 5
-
-wait_for_nodes "perception readiness" 10 \
-  /serial_controller \
-  /fruit_perception_node \
-  /fruit_qr_planner
-wait_for_serial_bridge_running 10
-
-if ((DEBUG_RECORD_ENABLED)); then
-  fruit_recording_start "$RECORD_SCRIPT" mission
-fi
-
-wait_for_nodes "arm planner readiness" 10 /arm_planner_node
-wait_for_arm_planner 10
-
-log "RUN starting mission; unavailable operations will be skipped"
+log "RUN starting composed task stack; launch gates mission readiness"
 start_process "mission" \
   ros2 launch "$MISSION_LAUNCH" \
     "use_sim_time:=false" \
     "waypoint_file:=$WAYPOINT_FILE" \
     "mission_flow:=$MISSION_FLOW" \
-    "open_loop:=$OPEN_LOOP"
+    "open_loop:=$OPEN_LOOP" \
+    "start_robviz_bridge:=$START_ROBVIZ_BRIDGE" \
+    "serial_log_level:=$([[ $DEBUG_RECORD_ENABLED -eq 1 ]] && echo debug || echo info)"
+
+if ((DEBUG_RECORD_ENABLED)); then
+  # Recording readiness is not a second mission startup gate.
+  wait_for_nodes "debug recording camera" 10 /camera /fruit_perception_node
+  fruit_recording_start "$RECORD_SCRIPT" mission
+fi
 
 log "RUN mission started; press Ctrl-C to stop launched processes"
 set +e

@@ -58,7 +58,7 @@ import yaml  # noqa: E402
 from cv_bridge import CvBridge  # noqa: E402
 from fruit_interfaces.msg import ArmTelemetry  # noqa: E402
 from fruit_arm_planner.joint_transformer import JointTransformer  # noqa: E402
-from fruit_mission.camera_target_transform import (  # noqa: E402
+from fruit_perception_geometry.camera_target_transform import (  # noqa: E402
     load_camera_extrinsic,
     transform_camera_to_end_effector_mm,
     transform_end_to_base_mm,

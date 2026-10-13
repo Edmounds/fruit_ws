@@ -1,4 +1,4 @@
-"""Standalone RGB-optical -> gripper-centre transform; input/output in mm."""
+"""Shared RGB-optical, gripper-centre and arm-base geometry in millimetres."""
 
 from __future__ import annotations
 

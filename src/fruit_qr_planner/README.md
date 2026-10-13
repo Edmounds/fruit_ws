@@ -15,6 +15,7 @@ can be processed without restarting the node.
 
 Decoding only occurs during an active observation window with `purpose="qr"` and for frames whose capture timestamp is at or after the window's start time. Outside a valid QR window, frames are immediately dropped to minimize CPU overhead.
 Each plan published includes `observation_window_id`, `image_stamp_sec`, and `image_stamp_nanosec`.
+Plans retain tasks and area metadata, without unused `stages` or `scan_index` fields.
 Window commands accept areas A/B/C only. Mission consumers reject non-object plan JSON,
 invalid integer image timestamps, wrong window IDs, and mismatched QR purpose or B/C area.
 

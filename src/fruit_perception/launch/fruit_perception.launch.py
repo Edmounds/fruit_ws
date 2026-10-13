@@ -1,11 +1,10 @@
 import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction
-from launch.conditions import IfCondition, UnlessCondition
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import ComposableNodeContainer, Node
+from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
-from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -18,21 +17,7 @@ def generate_launch_description():
     )
     with open(common_config, encoding='utf-8') as config_file:
         camera_config = yaml.safe_load(config_file)
-    qr_config = (
-        '/home/rc4/fruit_ws/src/fruit_qr_planner/config/'
-        'fruit_qr_planner.yaml'
-    )
-    serial_config_path = (
-        '/home/rc4/fruit_ws/src/auto_serial_bridge/config/protocol.yaml'
-    )
-    robviz_config_path = (
-        '/home/rc4/fruit_ws/src/fruit_robviz_bridge/config/robviz_bridge.yaml'
-    )
-    with open(serial_config_path, encoding='utf-8') as config_file:
-        serial_config = yaml.safe_load(config_file)
-    serial_parameters = dict(
-        serial_config['serial_controller']['ros__parameters']
-    )
+    qr_launch = '/home/rc4/fruit_ws/src/fruit_qr_planner/launch/fruit_qr_planner.launch.py'
     perception_parameters = camera_config[
         'fruit_perception_node'
     ]['ros__parameters']
@@ -66,31 +51,10 @@ def generate_launch_description():
     # 3. 声明 Launch 参数
     # ========================================================================
     use_sim_time = LaunchConfiguration('use_sim_time')
-    serial_debug_raw_frame = LaunchConfiguration('serial_debug_raw_frame')
-    start_serial_bridge = LaunchConfiguration('start_serial_bridge')
-    start_robviz_bridge = LaunchConfiguration('start_robviz_bridge')
     declare_use_sim_time = DeclareLaunchArgument(
         'use_sim_time',
         default_value='false',
         description='Use simulation clock if true',
-    )
-    declare_serial_debug_raw_frame = DeclareLaunchArgument(
-        'serial_debug_raw_frame',
-        default_value='false',
-        description=(
-            'Enable auto_serial_bridge debug log if true '
-            '(raw frame dump is deprecated and disabled)'
-        ),
-    )
-    declare_start_serial_bridge = DeclareLaunchArgument(
-        'start_serial_bridge',
-        default_value='true',
-        description='Start auto_serial_bridge as part of this launch',
-    )
-    declare_start_robviz_bridge = DeclareLaunchArgument(
-        'start_robviz_bridge',
-        default_value='true',
-        description='Start fruit_robviz_bridge as part of this launch',
     )
     declare_ripeness_model = DeclareLaunchArgument(
         'ripeness_model',
@@ -152,74 +116,17 @@ def generate_launch_description():
         ],
     )
 
-    qr_planner = Node(
-        package='fruit_qr_planner',
-        executable='fruit_qr_planner_node',
-        name='fruit_qr_planner',
-        output='screen',
-        emulate_tty=True,
-        parameters=[qr_config, {'use_sim_time': use_sim_time}],
-    )
-    serial_parameters['debug_raw_frame'] = ParameterValue(
-        serial_debug_raw_frame,
-        value_type=bool,
-    )
-    serial_bridge = Node(
-        package='auto_serial_bridge',
-        executable='serial_node',
-        name='serial_controller',
-        output='screen',
-        emulate_tty=True,
-        parameters=[serial_parameters, {'use_sim_time': use_sim_time}],
-        condition=UnlessCondition(serial_debug_raw_frame),
-    )
-    serial_bridge_debug = Node(
-        package='auto_serial_bridge',
-        executable='serial_node',
-        name='serial_controller',
-        output='screen',
-        emulate_tty=True,
-        parameters=[serial_parameters, {'use_sim_time': use_sim_time}],
-        arguments=[
-            '--ros-args', '--log-level', 'serial_controller:=debug',
-        ],
-        condition=IfCondition(serial_debug_raw_frame),
-    )
-    robviz_image_bridge = Node(
-        package='fruit_robviz_bridge',
-        executable='fruit_robviz_image_bridge',
-        name='fruit_robviz_image_bridge',
-        output='screen',
-        emulate_tty=True,
-        parameters=[robviz_config_path, {'use_sim_time': use_sim_time}],
-    )
-    robviz_config_client = Node(
-        package='fruit_robviz_bridge',
-        executable='robviz_config_client.py',
-        name='fruit_robviz_config_client',
-        output='screen',
-        emulate_tty=True,
-        parameters=[robviz_config_path, {'use_sim_time': use_sim_time}],
-    )
-    robviz_bridge_group = GroupAction(
-        actions=[robviz_image_bridge, robviz_config_client],
-        condition=IfCondition(start_robviz_bridge),
+    qr_planner = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(qr_launch),
+        launch_arguments={'use_sim_time': use_sim_time}.items(),
     )
 
     return LaunchDescription([
         declare_use_sim_time,
-        declare_serial_debug_raw_frame,
-        declare_start_serial_bridge,
-        declare_start_robviz_bridge,
         declare_ripeness_model,
         declare_zone,
         declare_performance_hint,
         declare_perception_log_level,
         container,
-        robviz_bridge_group,
         qr_planner,
-        GroupAction(
-            actions=[serial_bridge, serial_bridge_debug],
-            condition=IfCondition(start_serial_bridge),
-        ),
     ])

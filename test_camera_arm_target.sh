@@ -11,6 +11,7 @@ readonly LOGGING_HELPER="${WORKSPACE_DIR}/scripts/fruit_runtime_logging.bash"
 
 LAUNCH_PID=""
 PLANNER_PID=""
+SERIAL_PID=""
 STOPPING=0
 ZONE=""
 DIRECTION=""
@@ -131,15 +132,18 @@ cleanup()
     >/dev/null 2>&1 || true
 
   while read -r job_pid; do
-    [[ -n "${job_pid}" && "${job_pid}" != "${LAUNCH_PID}" && "${job_pid}" != "${PLANNER_PID}" ]] || continue
+    [[ -n "${job_pid}" && "${job_pid}" != "${LAUNCH_PID}" && "${job_pid}" != "${PLANNER_PID}" && "${job_pid}" != "${SERIAL_PID}" ]] || continue
     kill -TERM "${job_pid}" 2>/dev/null || true
   done < <(jobs -pr)
 
+  if [[ -n "${PLANNER_PID}" ]]; then
+    fruit_stop_process_group "${PLANNER_PID}" "arm_planner" 5 2
+  fi
   if [[ -n "${LAUNCH_PID}" ]]; then
     fruit_stop_process_group "${LAUNCH_PID}" "perception" 5 2
   fi
-  if [[ -n "${PLANNER_PID}" ]]; then
-    fruit_stop_process_group "${PLANNER_PID}" "arm_planner" 5 2
+  if [[ -n "${SERIAL_PID}" ]]; then
+    fruit_stop_process_group "${SERIAL_PID}" "serial" 5 2
   fi
   fruit_recording_stop
   fruit_logging_close "${status}"
@@ -241,6 +245,21 @@ main()
 
   local filter_script="${WORKSPACE_DIR}/scripts/runtime_log_filter.py"
   local client_log="${FRUIT_RUNTIME_SESSION_DIR}/client.log"
+
+  local start_serial
+  start_serial=$(ros2 run fruit_mission stack_readiness_client bridge-start-required \
+    --ros-args --params-file "${CLIENT_CONFIG}")
+  if [[ "$start_serial" == true ]]; then
+    local serial_log="${FRUIT_RUNTIME_SESSION_DIR}/serial.log"
+    setsid bash -c '
+      set -o pipefail
+      ros2 launch auto_serial_bridge auto_serial_bridge.launch.py log_level:=debug 2>&1 |
+        /usr/bin/python3 "'"${filter_script}"'" --output-file "'"${serial_log}"'" --component serial
+    ' &
+    SERIAL_PID=$!
+  else
+    log "Reusing existing serial bridge; it will not be stopped on exit"
+  fi
 
   if [[ "$reuse_perception" != true ]]; then
     local perception_log="${FRUIT_RUNTIME_SESSION_DIR}/perception.log"

@@ -9,6 +9,9 @@
    运行在 Python/GStreamer，经批准跨进程订阅本机 raw image，提供标注 RGB、原始 RGB (`/camera/color/image_raw`) 与 Native Depth 三路 WebRTC (H.264) 及可选 JPEG 压缩流。保持输入原尺寸传输，不进行降采样。提供 NUC 本地单张无损 PNG 采集服务端协议。原始 RGB 共用 `rgb.*` 传输设置。
 2. **配置重载客户端 (`RobvizConfigClient`)**：
    在启动时及接收到 `/fruit_robviz_bridge/reload_image_settings` Trigger 请求时从 HTTP 服务获取最新图像设置，并通过 ROS 参数原子应用到图像网关节点。
+   同节点中的图像配置与 Base 预览分别初始化。初始化失败只停用该模块，修复后重启。
+   Base 回调异常停用 Base，并发布空检测撤销旧预览。图像配置功能继续运行。
+   保留现有图像配置重载服务，不新增重载、重试或进程监督。进程崩溃不属于隔离范围。
 3. **RobViz Web 服务 (`robviz_web_server`)**：
    常驻 HTTP 服务（默认端口 8000），承载 RobViz 静态页面资源、图像设置、航点和机械臂预设读写。
    `/api/arm/pose` 与 `/api/arm/preview` 复用 planner 纯计算，不执行运动。
@@ -16,6 +19,11 @@
    按需由 `./waypoints_maker.sh` 启动，负责 TF 采样、停稳校验、航点 MarkerArray 锁存发布与 `/follow_waypoints` Action 调试客户端。
 5. **运行任务控制服务 (`fruit_runtime_server`)**：
    由 `fruit-runtime.service` 常驻监听端口 8001，按配置启动、停止和查询机械臂、感知、导航、Mission 与打点任务。
+
+`waypoint_files.py` 提供普通航点文件能力。HTTP 服务与 ROS 录点器直接复用。
+录点器不再导入 HTTP 模块。模板和普通航点共用校验、锁、版本检查、备份和原子写入。
+文件版本冲突由 HTTP 层映射为 409，ROS 层返回失败，不覆盖外部修改。
+Base 预览从感知包的 `fruit_perception_geometry` 导入共享纯几何，不再依赖 mission 包。
 
 ## 端点与传输
 
@@ -70,6 +78,28 @@ Native Depth 预览读取 `/camera/depth/image_rect_raw` (16UC1 毫米语义)，
 - WebRTC 在 GStreamer 通知协商就绪后生成 offer，避免初始 RTP caps 尚未就绪时生成空视频协商。
 
 ## 运行与验证
+
+### 模块故障隔离检查
+
+先构建更新后的 `fruit_perception` 和 `fruit_robviz_bridge`。
+在隔离 ROS 域运行只读配置节点，不启动串口、机械臂或导航：
+
+```bash
+cd /home/rc4/fruit_ws
+source scripts/setup_fruit_runtime.bash
+ROS_DOMAIN_ID=197 ros2 run fruit_robviz_bridge robviz_config_client.py \
+  --ros-args -p camera_extrinsic_config:=/nonexistent/preview.yaml
+```
+
+在另一个已加载运行环境的终端检查节点：
+
+```bash
+ROS_DOMAIN_ID=197 ros2 node info --no-daemon /fruit_robviz_config_client
+```
+
+Base 初始化失败时，图像配置重载服务仍存在。按 Ctrl-C 停止该检查节点。
+将失败参数换成 `-p request_timeout_sec:=-1.0`，Base 预览发布端仍存在。
+这些检查不证明有有效 Base 坐标，也不证明完整采摘或进程崩溃隔离。
 
 构建并 source 当前工作区：
 

@@ -221,7 +221,6 @@ class ArmPlannerNode(Node):
             self.default_dwell_ms = int(planning_cfg['default_dwell_ms'])
             self.hover_height_m = float(planning_cfg['hover_height_m'])
             self.status_max_age_sec = float(planning_cfg['status_max_age_sec'])
-            self.mode_start_delay_ms = int(planning_cfg['mode_start_delay_ms'])
 
             # 4. 预设工序与固定轨迹
             presets_data = params['presets']
@@ -414,14 +413,7 @@ class ArmPlannerNode(Node):
                     return False, traj_id, self._interrupt_reason
                 self._point_pub.publish(hw_pt)
 
-        # 3. 下位机收到完整点位后自动启动，暂不发送 MODE_TRAJECTORY。
-        # mode = ArmControlMode()
-        # mode.control_mode = ArmControlMode.MODE_TRAJECTORY
-        # if self.mode_start_delay_ms:
-        #     self.get_logger().info(
-        #         f'Waiting {self.mode_start_delay_ms}ms before publishing TRAJECTORY mode'
-        #     )
-        #     time.sleep(self.mode_start_delay_ms / 1000.0)
+        # 下位机收到完整点位后自动启动，不发送 MODE_TRAJECTORY。
         with self._state_lock:
             if self._interrupt_reason:
                 return False, traj_id, self._interrupt_reason

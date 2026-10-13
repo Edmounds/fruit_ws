@@ -12,11 +12,26 @@ import re
 import sys
 
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+STACK_LOGS = {
+    "arm_planner": ("arm_planner_node",),
+    "client": ("fruit_mission_node", "fruit_mission", "camera_target_planner_client"),
+    "navigation": ("livox_ros_driver2_node", "livox_ros_driver2", "pointlio_mapping",
+                   "laserMapping", "loam_interface_node", "loam_interface",
+                   "axis_waypoint_action_server", "twist_mux", "static_transform_publisher"),
+    "perception": ("component_container", "fruit_perception_container", "camera",
+                   "fruit_perception_node", "fruit_qr_planner_node", "fruit_qr_planner",
+                   "serial_node", "serial_controller", "fruit_robviz_image_bridge",
+                   "robviz_config_client.py", "fruit_robviz_config_client"),
+    "orchestrator": ("stack_readiness_client", "launch"),
+}
 
 # Patterns that should NEVER be logged to file nor displayed on terminal (pure middleware noise).
 DISCARD_PATTERNS = [
     re.compile(r"\[DEBUG\].*?\[(?:rcl|rclpy|rcutils|rmw_cyclonedds_cpp)\]:"),
-    re.compile(r"\[rcl\]:\s+(?:Initializing wait set|Subscription taking message|Subscription take succeeded)"),
+    re.compile(
+        r"\[rcl\]:\s+(?:Initializing wait set|Subscription taking message|"
+        r"Subscription take succeeded)"
+    ),
     # RealSense emits these after the USB device has already disappeared. They
     # are teardown noise and can be emitted thousands of times per second.
     re.compile(
@@ -80,7 +95,8 @@ ALWAYS_SHOW_MARKERS = [
 
 
 class LogFilter:
-    def __init__(self, output_path: str, component: str, debug_mode: bool = False):
+    def __init__(self, output_path: str, component: str, debug_mode: bool = False,
+                 stack_log_dir: str = ""):
         self.output_path = output_path
         self.component = component
         self.debug_mode = debug_mode
@@ -90,8 +106,18 @@ class LogFilter:
         if parent_dir and not os.path.exists(parent_dir):
             os.makedirs(parent_dir, exist_ok=True)
         self.log_file = open(output_path, "a", encoding="utf-8", errors="replace")
+        self.stack_files = {}
+        if stack_log_dir:
+            os.makedirs(stack_log_dir, exist_ok=True)
+            for name in STACK_LOGS:
+                self.stack_files[name] = open(
+                    os.path.join(stack_log_dir, f"{name}.log"),
+                    "a", encoding="utf-8", errors="replace",
+                )
 
     def close(self):
+        for stream in self.stack_files.values():
+            stream.close()
         if self.log_file and not self.log_file.closed:
             self.log_file.flush()
             self.log_file.close()
@@ -108,6 +134,14 @@ class LogFilter:
         try:
             self.log_file.write(raw_line)
             self.log_file.flush()
+            if self.stack_files:
+                labels = re.findall(r"\[([\w./]+?)(?:-\d+)?\]", clean_line)
+                for name, prefixes in STACK_LOGS.items():
+                    if any(label == prefix or label.startswith(prefix + ".")
+                           for label in labels for prefix in prefixes):
+                        self.stack_files[name].write(raw_line)
+                        self.stack_files[name].flush()
+                        break
         except Exception as e:
             sys.stderr.write(f"[log_filter] Write error: {e}\n")
 
@@ -168,7 +202,8 @@ class LogFilter:
             if pat.search(clean_line):
                 return
 
-        # 9. Everything else (lifecycle events, targets, coordinates, results, completions) is displayed.
+        # 9. Normal events (lifecycle events, targets, coordinates, results,
+        # completions) are displayed.
         sys.stdout.write(raw_line)
         sys.stdout.flush()
 
@@ -178,9 +213,13 @@ def main():
     parser.add_argument("--output-file", "-o", required=True, help="Destination log file path")
     parser.add_argument("--component", "-c", default="app", help="Component name")
     parser.add_argument("--debug", action="store_true", help="Enable debug level terminal output")
+    parser.add_argument(
+        "--stack-log-dir", default="",
+        help="Also archive composed stack logs by subsystem")
     args = parser.parse_args()
 
-    filter_instance = LogFilter(args.output_file, args.component, debug_mode=args.debug)
+    filter_instance = LogFilter(args.output_file, args.component, debug_mode=args.debug,
+                                stack_log_dir=args.stack_log_dir)
     try:
         for line in sys.stdin:
             filter_instance.process_line(line)
