@@ -213,6 +213,7 @@ class WaypointRecorderNode(Node):
         self._standstill_timer = None
         self._standstill_deadline = 0.0
         self._pending_test_cursor = None
+        self._active_route_description = ""
         self._last_message = f"Loaded waypoint file {waypoint_path}"
         self._last_odom_velocity = None
         self._last_odom_wall_time = 0.0
@@ -308,6 +309,10 @@ class WaypointRecorderNode(Node):
                     self._reject_command(str(error))
             elif command in ("run_next_test", "run_next_goal"):
                 self._run_next_test_segment(payload)
+            elif command in ("run_to_waypoint", "run_to_point"):
+                self._run_to_waypoint(payload)
+            elif command in ("run_route", "run_waypoints_queue"):
+                self._run_route(payload)
             elif command in ("reset_test_cursor", "reset_run_cursor"):
                 self._test_store.reset_cursor()
                 self._publish_state("Reset route run cursor")
@@ -871,8 +876,83 @@ class WaypointRecorderNode(Node):
         self._navigation_unknown = False
         self._waiting_standstill = False
         self._pending_test_cursor = after_cursor
+        self._active_route_description = segment[-1].name
         self._publish_state(
             f"Running route segment to {segment[-1].name} with {FINAL_YAW_MODE}"
+        )
+        try:
+            send_goal_future = self._follow_waypoints_client.send_goal_async(goal)
+            send_goal_future.add_done_callback(
+                partial(self._on_test_goal_response, run_id=run_id)
+            )
+        except Exception as error:
+            self._navigation_unknown = True
+            self._publish_state(f"Goal dispatch unknown; next segment blocked: {error}")
+
+    def _run_to_waypoint(self, payload: dict) -> None:
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            self._reject_command("name must be a non-empty string")
+            return
+        self._run_route_points([name.strip()], payload)
+
+    def _run_route(self, payload: dict) -> None:
+        names = payload.get("names")
+        if not isinstance(names, list) or not names:
+            self._reject_command("names must be a non-empty list of strings")
+            return
+        cleaned = [str(n).strip() for n in names if str(n).strip()]
+        if not cleaned:
+            self._reject_command("names list contains no valid waypoint names")
+            return
+        self._run_route_points(cleaned, payload)
+
+    def _run_route_points(self, names: list[str], payload: dict) -> None:
+        if self._is_busy():
+            self._reject_command("A route segment or sampling is already running")
+            return
+        editor_file = self._file_catalog[self._file_id]
+        disk_ver = document_version(editor_file.waypoint_file)
+        if disk_ver != self._document_version:
+            self._reject_command(
+                f"Waypoint file was modified on disk (version {disk_ver[:8]} != "
+                f"loaded {self._document_version[:8]}); please reload waypoints first"
+            )
+            return
+
+        points_by_name = {
+            point.name: (index, point)
+            for index, point in enumerate(self._test_store.points)
+        }
+        resolved_points = []
+        last_index = 0
+        for name in names:
+            if name not in points_by_name:
+                self._reject_command(f"Waypoint not found in recorded points: {name}")
+                return
+            idx, pt = points_by_name[name]
+            resolved_points.append(pt)
+            last_index = idx
+
+        if not self._follow_waypoints_client.wait_for_server(timeout_sec=0.5):
+            self._reject_command("FollowWaypoints action server is unavailable")
+            return
+
+        goal = FollowWaypoints.Goal()
+        goal.poses = [self._pose_stamped(pt.pose) for pt in resolved_points]
+        self._nav_run_id += 1
+        run_id = self._nav_run_id
+        self._active_test_goal = True
+        self._active_goal_handle = None
+        self._cancel_requested = False
+        self._cancel_request_time = None
+        self._navigation_unknown = False
+        self._waiting_standstill = False
+        self._pending_test_cursor = last_index + 1
+        route_text = " -> ".join(names)
+        self._active_route_description = route_text
+        self._publish_state(
+            f"Running route {route_text} with {FINAL_YAW_MODE}"
         )
         try:
             send_goal_future = self._follow_waypoints_client.send_goal_async(goal)
@@ -941,7 +1021,12 @@ class WaypointRecorderNode(Node):
                 return
             if status == GoalStatus.STATUS_SUCCEEDED and not missed:
                 self._test_store.advance_cursor(int(self._pending_test_cursor))
-                self._finish_test_goal("Route segment reached next goal", True)
+                msg = (
+                    f"Route reached target: {self._active_route_description}"
+                    if self._active_route_description
+                    else "Route segment reached next goal"
+                )
+                self._finish_test_goal(msg, True)
             else:
                 self._finish_test_goal(
                     f"Route segment finished with status {status}, missed: {missed}",
@@ -959,6 +1044,7 @@ class WaypointRecorderNode(Node):
         self._navigation_unknown = False
         self._waiting_standstill = False
         self._pending_test_cursor = None
+        self._active_route_description = ""
         self._publish_state(message)
 
     def _on_cancel(self, _request, response):
