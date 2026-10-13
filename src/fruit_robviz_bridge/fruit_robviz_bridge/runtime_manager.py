@@ -422,7 +422,7 @@ class RuntimeManager:
                      f"source {shlex.quote(str(self.runtime_setup_path))} && "
                      f"exec /bin/bash {kill_path}"],
                     cwd=str(self.workspace_root), stdout=output,
-                    stderr=subprocess.STDOUT, timeout=10.0, check=False,
+                    stderr=subprocess.STDOUT, timeout=30.0, check=False,
                 )
             except subprocess.TimeoutExpired as error:
                 output.write(b"\x1b[31m[Kill] Cleanup timed out. New script NOT started.\x1b[0m\n")
