@@ -34,11 +34,8 @@ points:
 启动打点工具（若导航已启动，脚本自动复用导航；若未启动，则完整拉起导航）：
 
 ```bash
-# 启动基础录制（包含雷达、Point-LIO、recorder 与 RobViz Web 面板）
+# 启动航点录制工具（默认包含雷达、Point-LIO、手柄遥控 teleop、recorder 与 RobViz Web 面板）
 ./waypoints_maker.sh
-
-# 若需配合手柄遥控移动车体打点：
-./waypoints_maker.sh --tele
 
 # 也可以直接在启动导航时附带录点器：
 ./start_navigation.sh --recorder
@@ -141,7 +138,7 @@ B 区观察方向按车辆视角交替：B1、B3、B5、B7 使用 `right`，B2�
 
 ## 7. Waypoint Maker 录点流程
 
-1. 使用 `./waypoints_maker.sh`（需要手柄时加 `--tele`），启动后保持机器人静止，脚本确认稳定 `odom -> base_link` 后才启动录点器。
+1. 使用 `./waypoints_maker.sh`（默认拉起手柄遥控），启动后保持机器人静止，脚本确认稳定 `odom -> base_link` 后才启动录点器。
 2. 在 RobViz 的 **航点 Maker** 区块中选择正式或调试文件。状态从 recorder 的本地话题恢复，不从浏览器缓存重放命令。
 3. 录点前节点检查 TF 新鲜度、非零四元数、连续采样和采样窗口内的 TF 位姿包络。窗口内相对首个样本的平面位移超过 0.05 m 或 yaw 超过 0.10 rad 时拒绝录点。
 4. 正式文件的名称和类型只能来自 `waypoints/template.yaml`。调试文件允许自由名称，但不能通过命令切换到任意路径。

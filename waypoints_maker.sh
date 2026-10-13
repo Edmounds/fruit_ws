@@ -8,7 +8,7 @@ HARDWARE_LAUNCH="$WORKSPACE/src/auto_serial_bridge/launch/auto_serial_bridge.lau
 RECORDER_LAUNCH="$WORKSPACE/src/fruit_robviz_bridge/launch/waypoint_recorder.launch.py"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
 WEB_URL="http://127.0.0.1:8000/"
-USE_TELEOP=false
+USE_TELEOP=true
 DEBUG=0
 
 pids=()
@@ -16,11 +16,10 @@ stopped=0
 
 usage() {
   cat <<'EOF'
-Usage: ./waypoints_maker.sh [--tele] [--debug]
+Usage: ./waypoints_maker.sh [--debug]
 
-Start Point-LIO odometry navigation and the waypoint recorder in the
-startup-relative odom frame. Use RobViz at http://127.0.0.1:8000/ for editing.
-Use --tele when joystick teleop is needed.
+Start Point-LIO odometry navigation, joystick teleop, and the waypoint recorder
+in the startup-relative odom frame. Use RobViz at http://127.0.0.1:8000/ for editing.
 Use --debug to also start the waypoint recording profile.
 EOF
 }
@@ -87,7 +86,7 @@ trap stop_children INT TERM EXIT
 while (($# > 0)); do
   case "$1" in
     --tele)
-      USE_TELEOP=true
+      # Retained for backward compatibility (teleop is now enabled by default)
       shift
       ;;
     --debug)
@@ -112,11 +111,7 @@ set -u
 
 fruit_logging_init "waypoints_maker" "${DEBUG}"
 if (( DEBUG )); then
-  if [[ "$USE_TELEOP" == true ]]; then
-    fruit_recording_prepare waypoints_tele
-  else
-    fruit_recording_prepare waypoints
-  fi
+  fruit_recording_prepare waypoints_tele
 fi
 
 required_files=(
@@ -160,11 +155,7 @@ else
     printf '[waypoints-maker] reusing existing serial bridge; it will not be stopped on exit\n'
   fi
 
-  if [[ "$USE_TELEOP" == true ]]; then
-    nav_process_name="axis navigation, odometry, and teleop"
-  else
-    nav_process_name="axis navigation and odometry"
-  fi
+  nav_process_name="axis navigation, odometry, and teleop"
 
   start_process "$nav_process_name" \
     ros2 launch "$NAV_LAUNCH" \
@@ -174,11 +165,7 @@ fi
 wait_for_odom_tf
 
 if (( DEBUG )); then
-  if [[ "$USE_TELEOP" == true ]]; then
-    fruit_recording_start "$WORKSPACE/record_rosbag.sh" waypoints_tele
-  else
-    fruit_recording_start "$WORKSPACE/record_rosbag.sh" waypoints
-  fi
+  fruit_recording_start "$WORKSPACE/record_rosbag.sh" waypoints_tele
   fruit_recording_wait_ready 10 || true
 fi
 
@@ -193,10 +180,8 @@ elif [[ "$nav_running" == true ]]; then
   printf '[waypoints-maker] waypoint recorder started (reusing running navigation).\n'
 elif [[ "$recorder_running" == true ]]; then
   printf '[waypoints-maker] odometry started (reusing running waypoint recorder).\n'
-elif [[ "$USE_TELEOP" == true ]]; then
-  printf '[waypoints-maker] odometry, teleop, and waypoint recorder started.\n'
 else
-  printf '[waypoints-maker] odometry and waypoint recorder started.\n'
+  printf '[waypoints-maker] odometry, teleop, and waypoint recorder started.\n'
 fi
 printf '[waypoints-maker] use RobViz at %s to record, save, undo, and run the next goal.\n' "$WEB_URL"
 printf '[waypoints-maker] Press Ctrl-C to stop.\n'
