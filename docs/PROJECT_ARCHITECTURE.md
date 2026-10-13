@@ -2,6 +2,18 @@
 
 本文是持续维护的模块与集成参考，不是历史实施计划。现场操作与包级接口入口见[文档导航](README.md)。
 
+## 启动职责
+
+`start_fruit_mission.sh` 保留正式入口、运行环境、启动前冲突检查、日志、录包和 USB 诊断。
+`fruit_mission.launch.py` include 串口、planner-only、完整导航、感知和 RobViz 基础 launch。
+独立依赖并行初始化。唯一就绪门控复用已有检查，保留各项超时及告警后继续。
+mission 退出或 Ctrl-C 关闭本次拥有的整栈，不停止复用的独立 RobViz。
+`fruit_perception.launch.py` 只启动同容器相机与检测，以及 QR 基础 launch。
+感知调试脚本独立启动或复用 RobViz。相机机械臂调试脚本独立启动或复用串口桥。
+导航集成复用 Point-LIO 与轴导航基础 launch，不重复定义轴导航节点。
+日志过滤器保留完整 `mission.log`，并按组件分写原有子系统日志。
+进程退出、STOP 发布和静态验证都不证明硬件停稳。
+
 ## 1. 当前目标
 
 省级选拔赛范围为 A、B、C 区，D 区暂不接入。当前固定流程契约为：
@@ -37,7 +49,7 @@ camera 识别/深度目标 ->| 顺序、播报、日志、决策  |
 | 偏航角控制         |   +-----------+------------+
 +---------+---------+               |
           |                         v
-          | cmd_vel_nav             | Header / Points / Mode
+          | cmd_vel_nav             | Header / Points, STOP/ESTOP Mode
           v                         v
 +-------------------+       +------------------------+
 | twist_mux         |       | auto_serial_bridge     |
@@ -167,7 +179,7 @@ RGBD 复合消息、camera_info 和 `compressed`/`compressedDepth`/`theora` 派�
 调试监视器通过 color/depth metadata 与进程内 RGBD 回调产生的轻量 Header heartbeat 计算
 相机的实际频率和最后帧时间，不直接订阅高带宽 RGBD 消息。
 所有 debug 入口会在相关节点就绪后启动对应 profile 的录包，并输出最终话题清单。
-确认 `/rosbag2_recorder` 就绪后，任务入口才启动 mission，避免录包初始化与任务启动争抢资源。
+录包不构成 mission 启动条件，录包故障不阻断比赛流程。
 嵌套脚本由共享录包 helper 仲裁，只保留一个 recorder。检测到已有 `/rosbag2_recorder` 时跳过自动录包并继续入口流程。
 
 ## 6. 上下位机接口
@@ -188,7 +200,7 @@ RGBD 复合消息、camera_info 和 `compressed`/`compressedDepth`/`theora` 派�
 ```
 
 - 新串口协议将机械臂运动学逆解与轨迹生成交给上位机，不再定义旧的 `ArmTarget(0x13)` 与 `StateMachineCommand(0x11)` 报文。正式 mission 与相机调试客户端共用 planner 编排，区域通知只发 ROS String，不让下位机执行比赛策略。
-- 轨迹下发时序：上位机先发送 `TrajectoryHeader(0x10)` 声明点数，随后发送 N 个 `TrajectoryPoint(0x11)` 写入下位机缓冲区，最后发送 `ArmControlMode(0x12)` 启动执行。
+- 当前轨迹下发为 Header → Points，不发送启动 Mode。planner 假定完整点位后自动启动，仍须核对固件。
 - 状态与遥测：下位机以 20Hz (50ms) 周期主动上报 `ArmStatus(0x20)`，包含当前任务状态码、进度、4关节角度/角速度、夹爪状态与错误码。
 - 停止与急停：平滑停止 `STOP` (mode=1) 清除未走完轨迹并恢复 IDLE；急停 `ESTOP` (mode=2) 切断电机脉冲进入 EMERGENCY 锁定，需先发 STOP 指令解除锁定。
 - Header、Point、Mode 使用可靠消息传输 (Reliable ACK)；底盘速度 `ChassisVelocity(0x01)` 高频刷新，不做重传。导航与 Look 并行；开窗要求两者成功完成，观测到目标冻结/提交之间的双机构静止由现场保证，不设置独立静止等待。运动入口仍检查新鲜有效反馈，不能仅凭 planner 的单运动占用权认定整机安全。
@@ -290,7 +302,7 @@ READ_C_QR
   -> LEAVE_C
 ```
 
-- C 区导航目标及 Look 侧向由现有路线规划结果提供；不增加到点方向复核。
+- C 区导航目标及 Look 侧向由路线规划结果提供。C_QR 可直达任一入口 waypoint，通行 waypoint 按当前路径选择前进或倒车朝向，采摘 goal 保留标定的最终朝向。
 - 二维码输出只决定严格任务序列，不允许按路线距离重排。
 - 到位后即使没有目标，也完成稳定停车、识别、播报和推进。
 - 导航时提前调用规划侧的 Look；到点并确认双机构静止后，把 `expected_ripe_type` 交给感知节点过滤坐标，继续使用现有跨帧聚类和评分。

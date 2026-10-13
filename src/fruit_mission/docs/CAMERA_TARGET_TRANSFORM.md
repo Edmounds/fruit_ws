@@ -147,7 +147,7 @@ sleep，处理 STOP 派发应答后只尝试一次 Home。预设入口直接检�
 - 导航与相应 Look 并行；导航成功、Look 成功后开窗。观察期间至目标冻结/提交之前，底盘和机械臂静止由现场物理保证，不增加开窗前或窗口内的独立静止等待。运动入口仍检查原始 ArmStatus 的新鲜、有限、限位内低速反馈；关节阈值取 mission `stationary.joint_speed_rps`，不把非有限速度伪造为零。
 - A：导航与 `left_look_a` 并行 → OPEN/HOLD → 左侧识别/抓取/`left_store_a`/Home → `right_look_a`/OPEN/HOLD → 右侧对应工序。
 - B：每树只观察一次，按既有像素评分选择最多两个匹配且成熟的目标。在首次观察姿态下，一次性转换并保存两个基座坐标/绝对 pitch。第二抓直接用已保存请求，不重新 Look、识别或换算；第一抓失败也推进下一冻结目标，实际运动仍受反馈与 planner 保护。
-- C：二维码任务顺序、路线与左右侧使用现有规划结果，导航时提前 Look，不增加到点方向复核。导航失败跳过当前项，不在未到达的位置抓取。
+- C：二维码任务顺序、路线与左右侧使用现有规划结果，导航时提前 Look。C_QR 可直达任一入口 waypoint，通行 waypoint 选择路径所需的前进或倒车朝向，采摘 goal 保留标定朝向。导航失败跳过当前项，不在未到达的位置抓取。
 - 局部失败跳过当前项，A 左右侧和 B 冻结目标逐项继续，不跨层传播 `safe_to_continue`。失败只做一次必要 Home；状态未知仍取消导航并请求 STOP，未获有效实测反馈时跳过危险动作。除既有导航重试外，没有识别/抓取/姿态重试。底盘已接受 goal 后等待终态，不再以 10 秒执行期限中断；goal 应答与取消仍独立限时。
 - 二维码导航、姿态或识别失败均使用 `config/qr_fallback.yaml`，仍推进软件流程；物理动作受反馈及保护姿态门控。扫码直接执行 `qr_scan`，QR 解析只按当前窗口 B/C 区域，不维护扫码顺序状态机。
 - 旧正常 retract 边界使用 `shenzhi`：A 每点、B/C 扫码、B 每树、C 每项结束及区域出口，重合出口不重复调用。失败仍一次 Home，不追加保护动作；必要保护位未确认时不放行转场。新鲜静止的已确认 shenzhi 可以用于导航交接及启动并行 Look。
@@ -157,7 +157,7 @@ sleep，处理 STOP 派发应答后只尝试一次 Home。预设入口直接检�
 ```bash
 cd /home/rc4/fruit_ws
 source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash
-python3 src/fruit_mission/fruit_mission/camera_target_transform.py 0 0 500
+python3 src/fruit_perception/fruit_perception_geometry/camera_target_transform.py 0 0 500
 ```
 
 当前外参输出：
@@ -176,7 +176,7 @@ end_effector_mm = [434.728894, 31.255715, 80.525996]
 /usr/bin/python3 - <<'PY'
 import math
 import numpy as np
-from fruit_mission.camera_target_transform import (
+from fruit_perception_geometry.camera_target_transform import (
     load_camera_extrinsic, transform_camera_to_end_effector_mm,
     transform_end_to_base_mm,
 )
@@ -213,9 +213,9 @@ print('camera/TCP/base geometry checks passed; no motion commanded')
 PY
 ```
 
-C++ 独立头文件为 `include/fruit_mission/camera_target_transform.hpp`，函数
-`fruit_mission::transformCameraToEndEffectorMm(camera_mm, rotation, translation_mm)`；
-只使用标准库，R/t 显式传入，避免复制一套硬编码标定。当前 mission 为 Python，运行链只用 Python 实现。
+未使用的 C++ 变换头文件已删除。正式任务与调试工具复用 Python 变换实现。
+纯几何实现位于感知包的 `fruit_perception_geometry`，不初始化 ROS 或控制机械臂。
+mission、RobViz 和检测工具直接导入该模块，算法与标定语义不变。
 
 纯数学离线单元测试（验证相对末端偏置与姿态旋转计算，不驱动硬件）：
 

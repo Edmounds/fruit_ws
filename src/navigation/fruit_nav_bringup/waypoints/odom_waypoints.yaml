@@ -194,7 +194,7 @@ points:
     w: 0.7108080381020156
   yaw: -1.5603
   type: goal
-- name: C_entrance_passway_1
+- name: C_entrance_waypoint_1
   position:
     x: 0.07561784676661368
     y: -2.66144410866663
@@ -328,13 +328,13 @@ points:
   type: goal
 - name: C_entrance_waypoint_2
   position:
-    x: 0.18001123784725018
-    y: -1.966485348081146
+    x: -0.042
+    y: -1.939
     z: 0.041677067385081576
   orientation:
     x: 0.0
     y: 0.0
-    z: 0.8982345151911768
-    w: 0.4395165022149584
-  yaw: 2.231472
+    z: 0.999999159768538
+    w: 0.0012963264318251843
+  yaw: 3.139
   type: waypoint

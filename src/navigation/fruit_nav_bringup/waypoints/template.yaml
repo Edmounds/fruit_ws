@@ -32,7 +32,7 @@ points:
   type: waypoint
 - name: C_QR
   type: goal
-- name: C_entrance_passway_1
+- name: C_entrance_waypoint_1
   type: waypoint
 - name: C_8_12
   type: goal

@@ -31,6 +31,9 @@ Point-LIO 原生的 `camera_init` / `body` 坐标系也保留；它们属于雷�
 4. **`fruit_navigation`**: 定点导航 Action 服务端（`axis_waypoint_action_server`），执行入段对齐、点间直线跟踪与航点偏航角控制，不在服务端重新拆分 X/Y 路段。
 5. **`fruit_nav_bringup`**: 纯里程计导航集成启动包（位于 `src/navigation/fruit_nav_bringup`）。
 
+导航集成 include Point-LIO 和轴导航基础 launch，不重复定义轴导航节点。
+无实际用途的 `progress_timeout_sec`、`progress_min_delta` 已删除，不新增推进看门狗。
+
 ---
 
 ## 2. 航向角控制模式
@@ -52,7 +55,7 @@ $(X, Y)$ 并减速停车后，原地调整到航点保存的目标偏航角，�
 - 线速度同时受现有速度范围、接近目标的比例减速、制动距离与角速度上限约束；保留底盘最低线速度和现有加速度限制。
 - `lookahead_distance` 替代旧 `lateral_gain`。较大值通常转向更柔和、纠偏更慢；较小值纠偏更快，也更敏感。调整前视距离后应重启导航节点。
 - 位置阶段只检查既有 `forward_tolerance` / `lateral_tolerance`；位置到位后先将速度指令减到零，再由既有 `_rotate_to` 检查目标 yaw。位置进度使用平面距离，转向进度使用角度误差，避免原地调朝向时被位置 watchdog 误报失败。
-- `waypoint_retry_attempts` 和 `waypoint_pass_tolerance` 的既有恢复语义不变，失败兜底仍仅用于非最终航点；不新增 mission 特判或扩大容差。航点位置、最终车体朝向以及机械臂行为不变；所有航点统一在位置到达后原地调整最终车体朝向。
+- `waypoint_retry_attempts` 和 `waypoint_pass_tolerance` 的既有恢复语义不变，失败兜底仍仅用于非最终航点；不新增 mission 特判或扩大容差。控制器仍按收到的目标 pose 在位置到达后调整车体朝向。C 区 Mission 会为通行 waypoint 发送当前路径所需的前进或倒车朝向，C 采摘 goal 仍发送 YAML 保存的最终朝向。
 
 此控制器没有 costmap、避障或整机轮廓碰撞检查，前视点跟踪不构成安全走廊保证；必须验证转弯和纠偏时的整机扫掠空间。速度指令归零也不等于实测底盘已经静止。
 源码变更后需构建 `fruit_navigation` 并重启导航；纯运动学检查不代表实机比赛验收。
@@ -97,7 +100,7 @@ colcon build --base-paths src --packages-select fruit_navigation
 `--flow` 现在选择 `Logic.py` 中的入口函数，完整比赛函数不再混入模式分支。
 固定 A 导航点和区间通道点在调用处可见；完整流程按 A → B → C 执行，
 B 区固定访问 1～8 号树，C 区按二维码顺序访问。B/C 单区调试仍先扫描对应二维码，
-失败则用 mission 自有兜底计划。路线坐标、C 几何规划与停稳/取消门控不变。
+失败则用 mission 自有兜底计划。路线坐标、C 几何规划与停稳/取消门控按 source waypoint 和 Mission 路线规划结果执行。
 编排和重复动作的文件边界见 [fruit_mission README](../src/fruit_mission/README.md)。
 
 任务启动入口负责里程计导航、单 camera 感知、串口桥与任务状态机。以下是脚本使用方法，
@@ -118,7 +121,7 @@ B 区固定访问 1～8 号树，C 区按二维码顺序访问。B/C 单区调�
 `--reuse-navigation` 已删除。导航重启会重建启动相对 `odom` 原点。
 三套子系统并行初始化，定位建立期间同时启动相机和规划器。
 调试录包在感知节点就绪后后台启动，不阻塞任务开始。
-感知启动同时启动或复用 RobViz 预览桥。
+顶层 mission launch 独立 include RobViz，不由感知 launch 启动。
 
 ### 3.4 进程管理与停止 (`kill_fruit_processes.sh`)
 安全终止所有任务进程、感知节点、导航启动栈并清理 ROS 2 守护进程：

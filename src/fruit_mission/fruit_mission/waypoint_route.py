@@ -14,11 +14,10 @@ import yaml
 from fruit_mission.decisions import expected_ripe_type
 
 
-A_GOAL_PATTERN = re.compile(r"^A(\d+)$")
 C_GOAL_PATTERN = re.compile(r"^C_(\d+)_(\d+)$")
 B_QR = "B_QR"
 C_QR = "C_QR"
-C_ENTRANCE_1 = "C_entrance_passway_1"
+C_ENTRANCE_1 = "C_entrance_waypoint_1"
 C_TOP_1 = "C_top_waypoint_1"
 C_TOP_2 = "C_top_waypoint_2"
 C_ENTRANCE_2 = "C_entrance_waypoint_2"
@@ -162,29 +161,6 @@ class MissionWaypointRoute:
         except KeyError as exc:
             raise KeyError(f"unknown waypoint: {name}") from exc
 
-    def ordered_names_to(self, target_name: str, cursor: int) -> tuple[List[str], int]:
-        """Return YAML-order waypoint names from cursor through the target."""
-        target = self.pose(target_name)
-        start = min(max(int(cursor), 0), len(self._points))
-        if target.order < start:
-            return [target.name], start
-        return (
-            [point.name for point in self._points[start:target.order + 1]],
-            target.order + 1,
-        )
-
-    def a_goal_names(self) -> List[str]:
-        """Return A-zone goal names sorted by numeric suffix."""
-        goals = []
-        for point in self._points:
-            match = A_GOAL_PATTERN.match(point.name)
-            if match and point.point_type == "goal":
-                goals.append((int(match.group(1)), point.order, point.name))
-        if not goals:
-            raise ValueError("waypoint YAML must contain A-zone goals")
-        goals.sort()
-        return [name for _number, _order, name in goals]
-
     def b_goal_names(self) -> List[str]:
         """Return B-zone goals in their numeric tree order."""
         goals = []
@@ -199,23 +175,6 @@ class MissionWaypointRoute:
         if len(goals) != 8:
             raise ValueError("waypoint YAML must contain B1 through B8 goals")
         return [name for _number, _order, name in goals]
-
-    @property
-    def b_qr_name(self) -> str:
-        """Return the B QR waypoint name."""
-        return B_QR
-
-    @property
-    def c_qr_name(self) -> str:
-        """Return the C QR waypoint name."""
-        return C_QR
-
-    def c_position_candidates(self) -> Dict[int, List[CStopCandidate]]:
-        """Return C stop candidates keyed by QR position id."""
-        return {
-            position_id: list(candidates)
-            for position_id, candidates in self._c_candidates.items()
-        }
 
     def c_graph_edges(self) -> List[tuple[str, str]]:
         """Return the configured bidirectional C topology edges."""
@@ -273,6 +232,7 @@ class MissionWaypointRoute:
         start_yaw: float,
         position_id: int,
         max_start_distance: float,
+        allow_qr_exit: bool = False,
     ) -> CNavigationPlan:
         """Plan the shortest named C route from one live map pose."""
         candidates = self._c_candidates.get(int(position_id), [])
@@ -281,12 +241,20 @@ class MissionWaypointRoute:
 
         best: Optional[tuple[tuple[float, int, int, str], CNavigationPlan]] = None
         for candidate in candidates:
-            distance, graph_path, rejoin_point = self._shortest_c_path(
-                float(start_x),
-                float(start_y),
-                candidate.goal_name,
-                float(max_start_distance),
-            )
+            if allow_qr_exit:
+                distance, graph_path, rejoin_point = self._shortest_c_path_from_qr(
+                    float(start_x),
+                    float(start_y),
+                    candidate.goal_name,
+                    float(max_start_distance),
+                )
+            else:
+                distance, graph_path, rejoin_point = self._shortest_c_path(
+                    float(start_x),
+                    float(start_y),
+                    candidate.goal_name,
+                    float(max_start_distance),
+                )
             navigation_names = [
                 name
                 for name in graph_path
@@ -317,6 +285,8 @@ class MissionWaypointRoute:
             navigation_names.append(candidate.goal_name)
             navigation_names = _without_consecutive_duplicates(navigation_names)
             navigation_yaws = self._navigation_yaws_from_waypoints(
+                float(start_x),
+                float(start_y),
                 float(start_yaw),
                 navigation_names,
             )
@@ -348,20 +318,6 @@ class MissionWaypointRoute:
         if best is None:
             raise ValueError(f"Could not plan a route to C position {position_id}")
         return best[1]
-
-    def closest_c_graph_distance(self, x: float, y: float) -> float:
-        """Return the distance from a map point to the nearest C graph edge."""
-        return min(
-            _point_to_segment_distance(
-                float(x),
-                float(y),
-                self.pose(first).x,
-                self.pose(first).y,
-                self.pose(second).x,
-                self.pose(second).y,
-            )
-            for first, second in self.c_graph_edges()
-        )
 
     def _validate_required_points(self) -> None:
         flow = self._required_flow
@@ -417,7 +373,8 @@ class MissionWaypointRoute:
 
     def _build_c_adjacency(self) -> Dict[str, List[tuple[str, float]]]:
         adjacency: Dict[str, List[tuple[str, float]]] = {
-            name: [] for name in C_GOAL_NAMES + _c_waypoint_names(self._c_entrance_1)
+            name: []
+            for name in C_GOAL_NAMES + _c_waypoint_names(self._c_entrance_1)
         }
         for first, second in self.c_graph_edges():
             distance = _pose_distance(self.pose(first), self.pose(second))
@@ -514,37 +471,113 @@ class MissionWaypointRoute:
                     )
         raise ValueError(f"C route graph cannot reach {target_name}")
 
+    def _shortest_c_path_from_qr(
+        self,
+        start_x: float,
+        start_y: float,
+        target_name: str,
+        max_start_distance: float,
+    ) -> tuple[float, List[str], Optional[tuple[float, float, float]]]:
+        """Exit C_QR directly through either entrance, then follow the graph."""
+        qr = self.pose(C_QR)
+        qr_distance = math.hypot(start_x - qr.x, start_y - qr.y)
+        if qr_distance > max_start_distance:
+            raise ValueError(
+                f"robot is {qr_distance:.3f} m from C_QR, "
+                f"limit is {max_start_distance:.3f} m"
+            )
+
+        best: Optional[tuple[float, List[str]]] = None
+        for entrance in (self._c_entrance_1, C_ENTRANCE_2):
+            graph_distance, graph_path = self._shortest_graph_path(
+                entrance,
+                target_name,
+            )
+            direct_distance = math.hypot(
+                start_x - self.pose(entrance).x,
+                start_y - self.pose(entrance).y,
+            )
+            candidate = (direct_distance + graph_distance, list(graph_path))
+            if best is None or (candidate[0], tuple(candidate[1])) < (
+                best[0],
+                tuple(best[1]),
+            ):
+                best = candidate
+        if best is None:
+            raise ValueError(f"C route graph cannot reach {target_name} from C_QR")
+        return best[0], best[1], None
+
+    def _shortest_graph_path(
+        self,
+        start_name: str,
+        target_name: str,
+    ) -> tuple[float, List[str]]:
+        """Return the shortest path between named C graph nodes."""
+        start_pose = self.pose(start_name)
+        start_key = (0.0, int(start_pose.point_type == "waypoint"), (start_name,))
+        heap: List[tuple[float, int, tuple[str, ...], str]] = [
+            (*start_key, start_name)
+        ]
+        best: Dict[str, tuple[float, int, tuple[str, ...]]] = {
+            start_name: start_key
+        }
+        while heap:
+            distance, waypoint_count, path, name = heapq.heappop(heap)
+            if best.get(name) != (distance, waypoint_count, path):
+                continue
+            if name == target_name:
+                return distance, list(path)
+            for neighbor, edge_distance in self._c_adjacency[name]:
+                next_distance = distance + edge_distance
+                next_waypoint_count = waypoint_count + int(
+                    self.pose(neighbor).point_type == "waypoint"
+                )
+                next_path = path + (neighbor,)
+                next_key = (next_distance, next_waypoint_count, next_path)
+                if neighbor not in best or next_key < best[neighbor]:
+                    best[neighbor] = next_key
+                    heapq.heappush(
+                        heap,
+                        (next_distance, next_waypoint_count, next_path, neighbor),
+                    )
+        raise ValueError(f"C route graph cannot reach {target_name}")
+
     def _navigation_yaws_from_waypoints(
         self,
+        start_x: float,
+        start_y: float,
         start_yaw: float,
         target_names: Sequence[str],
     ) -> List[float]:
-        """Use saved waypoint yaw; only a temporary rejoin has no saved yaw."""
-        yaws: List[float] = []
-        for name in target_names:
-            pose = self.pose(name)
-            # A temporary rejoin pose is created with the local edge
-            # direction; all other poses use their formal YAML orientation.
-            yaws.append(_pose_yaw(pose))
-        return yaws if yaws else [float(start_yaw)]
+        """Choose efficient transit yaw while preserving the final pick yaw."""
+        if not target_names:
+            return [float(start_yaw)]
 
-    def waypoint_yaw_targets(
-        self,
-        start_name: str,
-        target_names: Iterable[str],
-        start_yaw: Optional[float] = None,
-    ) -> tuple[List[tuple[str, float]], str, float]:
-        """Return existing route points with their saved YAML yaw."""
-        current = self.pose(start_name)
-        current_name = start_name
-        current_yaw = _pose_yaw(current) if start_yaw is None else start_yaw
-        targets: List[tuple[str, float]] = []
-        for name in target_names:
-            target = self.pose(str(name))
-            current_name = target.name
-            current_yaw = _pose_yaw(target)
-            targets.append((target.name, current_yaw))
-        return targets, current_name, current_yaw
+        yaws: List[float] = []
+        current_x = float(start_x)
+        current_y = float(start_y)
+        current_yaw = float(start_yaw)
+        for index, name in enumerate(target_names):
+            pose = self.pose(name)
+            if index == len(target_names) - 1:
+                target_yaw = _pose_yaw(pose)
+            else:
+                path_heading = math.atan2(
+                    pose.y - current_y,
+                    pose.x - current_x,
+                )
+                reverse_heading = _normalize_angle(path_heading + math.pi)
+                target_yaw = min(
+                    (path_heading, reverse_heading),
+                    key=lambda candidate: abs(
+                        _normalize_angle(candidate - current_yaw)
+                    ),
+                )
+            yaws.append(target_yaw)
+            current_x = pose.x
+            current_y = pose.y
+            current_yaw = target_yaw
+        return yaws
 
 
 def _load_points(raw_points: Iterable[Mapping[str, Any]]) -> List[WaypointPose]:
@@ -643,6 +676,11 @@ def _pose_yaw(pose: WaypointPose) -> float:
         2.0 * (pose.qw * pose.qz + pose.qx * pose.qy),
         1.0 - 2.0 * (pose.qy * pose.qy + pose.qz * pose.qz),
     )
+
+
+def _normalize_angle(angle: float) -> float:
+    normalized = (angle + math.pi) % (2.0 * math.pi) - math.pi
+    return -math.pi if normalized == math.pi else normalized
 
 
 def _other_side(side: str) -> str:

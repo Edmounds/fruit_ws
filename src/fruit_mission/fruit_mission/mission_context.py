@@ -126,11 +126,6 @@ class MissionContext:
                 durability=DurabilityPolicy.VOLATILE,
             ),
         )
-        self._expected_fruit_type_publisher = node.create_publisher(
-            String,
-            config["expected_fruit_type_topic"],
-            _latched_qos(),
-        )
         self._current_area_publisher = node.create_publisher(
             String,
             config["current_area_topic"],
@@ -235,6 +230,7 @@ class MissionContext:
                 start_yaw,
                 int(position_id),
                 float(self.config["c_graph_max_start_distance"]),
+                allow_qr_exit=self._current_waypoint_name == "C_QR",
             )
         except ValueError as error:
             self.node.get_logger().error(str(error))
@@ -756,12 +752,6 @@ class MissionContext:
         completed, reason = self._camera_planner.move_to_base_target(
             request, self._wait_until, self.config['stationary']['joint_speed_rps'])
         return _ArmMotionResult(completed, reason)
-
-    def set_expected_fruit_type(self, expected_type: Optional[str]) -> None:
-        """Set the Camera target class; an empty value disables filtering."""
-        message = String()
-        message.data = str(expected_type or "")
-        self._expected_fruit_type_publisher.publish(message)
 
     def require_shenzhi(self) -> None:
         """A planned protection boundary cannot be satisfied by recovery Home."""

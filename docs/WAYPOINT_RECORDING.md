@@ -4,6 +4,10 @@
 
 本项目采用纯 Point-LIO 里程计导航架构，航点全部基于开机 `odom` 坐标系。
 
+HTTP 编辑器与 ROS 录点器共用 `fruit_robviz_bridge.waypoint_files`，录点器不依赖 HTTP 模块。
+共享模块保留校验、文件锁、同字节快照版本、备份、原子替换和 fsync。
+版本冲突拒绝写入，不覆盖外部修改。模板与普通航点共用可靠写入路径。
+
 - **航点文件**: `src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml`
 - **航点模板**: `src/navigation/fruit_nav_bringup/waypoints/template.yaml`
 - **坐标系**: `frame_id: odom`
@@ -70,16 +74,16 @@ C 区不是任意两点直连。二维码只确定 8 个采摘任务的顺序，
 可通行拓扑，点的实际位置全部取自当前 waypoint YAML 的 XY。
 
 ```text
-C_entrance_passway_1 -- C_8_12 -- C_7_11 -- C_6_10 -- C_5_9 -- C_top_waypoint_1
+C_entrance_waypoint_1 -- C_8_12 -- C_7_11 -- C_6_10 -- C_5_9 -- C_top_waypoint_1
           |                                                               |
           |                                                               |
 C_entrance_waypoint_2 -- C_4_8 -- C_3_7 -- C_2_6 -- C_1_5 -- C_top_waypoint_2
 ```
 
-- `C_QR` 只用于到达二维码扫描位置；扫描完成后不属于 C 命名图，也不作为路线锚点。
-- 当前 YAML 中 `C_entrance_passway_1` 和 `C_entrance_waypoint_2` 是二维码附近的两个入口 waypoint。
+- `C_QR` 只用于到达二维码扫描位置；扫描完成后可直接驶向任一入口 waypoint，之后不属于 C 命名图，也不作为通道间路线锚点。
+- 当前 YAML 中 `C_entrance_waypoint_1` 和 `C_entrance_waypoint_2` 是二维码附近的两个入口 waypoint。
 - 每个二维码任务优先从扫描完成后的当前 `odom -> base_link` TF 位置重新规划；TF 暂不可用时回退到上一项目标位姿，首项没有历史目标才停止。
-- 两侧链和 entrance/top 两条横向连接共同组成双向命名图，禁止根据坐标最近邻自动加边。
+- 两侧链和 entrance/top 两条横向连接共同组成双向命名图，禁止根据坐标最近邻自动加边。跨通道只能经过入口 waypoint 对或 top waypoint 对。
 - 图搜索使用 YAML XY 计算边的欧氏距离，选择当前点到候选 goal 的最短路径。
 - 如果实时位置偏离 C 图但仍在 `c_graph_max_start_distance` 内，导航先到最近图边的投影点，再沿命名图继续行驶；不会从偏离位置直接斜穿到图节点。
 - 中间 C goal 参与图搜索，但不会作为 `FollowWaypoints` 停靠点发送。
@@ -104,18 +108,17 @@ C_entrance_waypoint_2 -- C_4_8 -- C_3_7 -- C_2_6 -- C_1_5 -- C_top_waypoint_2
   但不加入 C 动态图。
 - Mission 的命名图仍只使用 YAML 点的 XY 计算边长和最短路径；图搜索不会根据 yaw 猜测
   通道，也不会因为 yaw 改变合法拓扑。
-- 图搜索结果发送给 `fruit_navigation` 时，所有正式 C waypoint 和当前目标 goal 都使用正式 YAML 中
-  保存的 orientation/yaw。车头不要求始终沿着当前 XY 路段正向行驶，轴向导航控制器会在到达各点时
-  收敛到该点要求的 yaw；这对 `C_top_waypoint_1`、`C_top_waypoint_2` 和 C 目标的观察方向
-  尤其重要。
+- 图搜索结果发送给 `fruit_navigation` 时，C 目标 goal 使用正式 YAML 中保存的 orientation/yaw。
+  C 通行 waypoint 根据当前车头和下一段 XY 方向选择前进或倒车朝向，减少无意义的原地转向。
+  这不改变 waypoint 的 XY 路径约束，也不改变 C 目标的观察方向。
 - 当 TF 起点落在命名图的一条边中间时，Mission 会插入一个只存在于本次请求的临时 rejoin
   点。该点没有 YAML 姿态，使用机器人重新接入所选图边的局部行进方向；接入后的正式点仍
   立即恢复使用各自 YAML yaw。
 - 机械臂 `left/right` 由到位后的 `odom -> base_link` yaw 决定；若到位 TF 暂不可用，回退到本次
-  规划的最终 YAML yaw。正方向由 `C_entrance_passway_1 -> C_top_waypoint_1` 的 YAML 几何
+  规划的最终 YAML yaw。正方向由 `C_entrance_waypoint_1 -> C_top_waypoint_1` 的 YAML 几何
   推导，不假设 C 区永远与 odom X 轴平行。
 - C 点的 YAML yaw 不会改变图搜索选中的 waypoint、通道或横向连接；中间 goal 在发送前按设计
-  过滤。临时 rejoin 点的 yaw 只存在于本次导航请求，不回写 YAML。
+  过滤。临时 rejoin 点只用于非 QR 起点偏离命名图的情况，QR 起点直接驶向选中的入口。
 - 录点器的单点/逐段调试仍使用 YAML yaw，因此 orientation 和 yaw 字段继续保留。
 
 ## 6. 正式任务分区流程
@@ -127,7 +130,7 @@ A: A1 -> A2 -> A3 -> A4 -> to_B_QR_waypoint
 B QR: B_QR
 B 树位: B1 -> B2 -> B3 -> B4 -> B5 -> B6 -> B7 -> B8
 B 到 C: to_C_waypoint_1 -> C_QR
-C: C_entrance_passway_1 / C_top_waypoint_1 / C_top_waypoint_2 /
+C: C_entrance_waypoint_1 / C_top_waypoint_1 / C_top_waypoint_2 /
    C_entrance_waypoint_2，以及 C_8_12 ... C_4_8
 ```
 
@@ -147,8 +150,8 @@ B 区观察方向按车辆视角交替：B1、B3、B5、B7 使用 `right`，B2�
 7. Run Next Goal 保留 `next_test_segment()` 的分段逻辑。只有 action 成功才推进游标。
 8. Cancel 只取消当前 action goal。取消期间到达的旧 future 不会启动新目标，节点在实测停稳前保持忙状态。
 9. 浏览器关闭不会自动取消已经接受的导航。现场必须保留显式取消和硬件急停。
-10. 直达目标（`run_to_waypoint`）：支持在 RobViz 中选择任意已录制航点并点击【前往该点】，底盘从当前位置直线导航至目标并对齐 YAML Yaw（`rotate_at_goal`）；成功到达后游标推进至该点之后。
-11. 连续路径队列（`run_route`）：支持自由添加多个已录制航点构建队列并点击【执行连续路径】，完全遵循 Mission 导航策略（中间途经点平滑过渡、最终目标点严格停靠并对齐 Yaw）；成功到达后游标推进至队列末尾点之后。
+10. 直达目标（`run_to_waypoint`）：支持在 RobViz 中选择任意已录制航点并点击【前往该点】。命令必须携带来源 `file_id` 与 `version`，底盘从当前位置直线导航至目标并对齐 YAML Yaw（`rotate_at_goal`）；成功到达后游标推进至该点之后。若文件未加载完成、来源缺失或与内存快照版本不匹配，命令立即整单拒绝且游标不推进。
+11. 连续路径队列（`run_route`）：支持自由添加多个已录制航点构建队列并点击【执行连续路径】。命令必须携带来源 `file_id`、`version` 与点名列表 `names`。列表中的每一项均必须是非空字符串，若存在空项、空白字符串或非字符串项则整单拒绝（不静默剔除或转换）。底盘沿指定序列逐点直线执行并对齐各点 YAML 朝向，成功到达后游标推进至队列末尾点之后。界面队列绑定创建时的文件与版本，切换文件或重载后队列自动失效并清空。
 
 采样期间释放长时间状态锁，里程计和取消回调继续处理。
 停稳证据只使用时间戳严格递增的实际样本，不接受重复旧消息补足窗口。
@@ -157,6 +160,7 @@ B 区观察方向按车辆视角交替：B1、B3、B5、B7 使用 `right`，B2�
 候选文件校验失败保留草稿与 Undo，成功才原子替换内存。
 内容和 SHA-256 版本使用同一字节快照，陈旧保存返回冲突。
 MarkerArray 锁存完整航点快照，浏览器晚连接仍能收到名称和点位。
+导航执行期间不包含自主避障，取消操作仅发送取消请求，底盘实测完全停稳前节点保持忙状态。
 
 Point-LIO 的 `/odometry.twist` 由相邻雷达位姿差分得到，静止时会放大雷达抖动，不能直接作为录点的速度阈值。录点器使用连续 `odom -> base_link` TF 的窗口位姿包络判定运动，并继续检查 TF 时间戳、四元数和采样连续性。导航取消后的安全停稳确认仍使用 `/odometry` 的独立停稳逻辑。
 
@@ -241,7 +245,7 @@ package 入口后先重新构建 `fruit_robviz_bridge`，再重启服务。
 - [ ] 网页始终按 `template.yaml` 显示 33 个名称；缺失点为灰色，补点后占位显示被实际点替换。
 - [ ] 启动 odom 打点后保持机器人静止，终端出现 `stable odom origin is ready` 后再移动或录点。
 - [ ] `C_QR` 的 yaw 能稳定识别二维码。
-- [ ] `C_entrance_passway_1` 和 `C_entrance_waypoint_2` 均位于二维码附近的可通行入口连接处。
+- [ ] `C_entrance_waypoint_1` 和 `C_entrance_waypoint_2` 均位于二维码附近的可通行入口连接处。
 - [ ] 两条 C 通道中的复合采摘点编号与现场位置一致。
 - [ ] `C_top_waypoint_1`、`C_top_waypoint_2` 能安全完成 top 侧换道。
 - [ ] 模拟二维码顺序后，同通道只发送最终 goal，跨通道包含正确的入口或 top waypoint。
