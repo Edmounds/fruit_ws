@@ -13,6 +13,7 @@ from fruit_mission.waypoint_route import (
     OTHER_GOAL_CHAIN,
     MissionWaypointRoute,
     WaypointPose,
+    c_top_transit_end,
 )
 
 
@@ -108,6 +109,39 @@ class TestCWaypointRoute(unittest.TestCase):
                 )
                 self.assertAlmostEqual(plan.rejoin_point[0], 2.0)
                 self.assertAlmostEqual(plan.rejoin_point[1], 0.0)
+
+    def test_top_transit_boundary_preserves_geometric_routes(self):
+        route = rectangle_route()
+        counts = set()
+        for start_x, start_y in (
+            (0.1, 0.0), (3.9, 0.0), (3.9, 1.0), (3.9, -0.15), (4.0, 0.5),
+        ):
+            for position in range(1, 13):
+                with self.subTest(start=(start_x, start_y), position=position):
+                    plan = route.plan_c_navigation(start_x, start_y, 0.0, position, 0.5)
+                    names, yaws = plan.navigation_names, plan.navigation_yaws
+                    boundary = c_top_transit_end(names)
+                    top_names = [name for name in names if name in (C_TOP_1, C_TOP_2)]
+                    counts.add(len(top_names))
+                    if top_names:
+                        self.assertEqual(names[boundary - 1], top_names[-1])
+                    else:
+                        self.assertEqual(boundary, 0)
+                    self.assertFalse(set(names[boundary:]) & {C_TOP_1, C_TOP_2})
+                    self.assertEqual(names[:boundary] + names[boundary:], names)
+                    self.assertEqual(yaws[:boundary] + yaws[boundary:], yaws)
+                    self.assertEqual(len(names[:boundary]), len(yaws[:boundary]))
+                    self.assertEqual(names[-1], plan.goal_name)
+        self.assertEqual(counts, {0, 1, 2})
+
+    def test_closing_top_boundary_covers_entire_route(self):
+        route = rectangle_route()
+        for start_x, start_y in ((2.0, 0.0), (2.0, 1.0), (2.0, -0.15), (4.0, 0.0)):
+            with self.subTest(start=(start_x, start_y)):
+                names, _yaws = route.plan_c_waypoint(
+                    start_x, start_y, 0.0, C_TOP_1, 0.5)
+                self.assertEqual(c_top_transit_end(names), len(names))
+        self.assertEqual(c_top_transit_end(()), 0)
 
 
 if __name__ == "__main__":

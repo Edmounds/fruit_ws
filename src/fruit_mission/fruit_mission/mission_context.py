@@ -28,6 +28,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from fruit_perception.msg import FruitDecision
 
+from fruit_mission.actions import navigate_c_route
 from fruit_mission.camera_target_planner_client import CameraTargetPlannerClient
 from fruit_mission.camera_target_planner_client import DEFAULT_EXTRINSIC_CONFIG
 from fruit_mission.config import _validate_qr_fallbacks
@@ -258,10 +259,11 @@ class MissionContext:
                 "x": plan.rejoin_point[0],
                 "y": plan.rejoin_point[1],
             }
-        self.start_observation(plan.camera_side)
-        if not self._send_waypoint_names(
+        if not navigate_c_route(
+            self,
             plan.navigation_names,
             plan.navigation_yaws,
+            side=plan.camera_side,
         ):
             return result
 
@@ -272,7 +274,7 @@ class MissionContext:
         return result
 
     def navigate_c_waypoint(self, name: str) -> bool:
-        """Follow the C graph to a named waypoint without submitting arm motion."""
+        """Follow the C graph to a named waypoint using the shared transit flow."""
         start = self._lookup_map_pose()
         if start is None:
             start = self._previous_target_pose()
@@ -288,7 +290,7 @@ class MissionContext:
         except (KeyError, ValueError) as error:
             self.node.get_logger().error(str(error))
             return False
-        if not self._send_waypoint_names(names, yaws):
+        if not navigate_c_route(self, names, yaws):
             return False
         self._current_waypoint_name = name
         self._current_route_yaw = yaws[-1]

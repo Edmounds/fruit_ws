@@ -7,6 +7,7 @@ from fruit_mission.decisions import format_b_announcement
 from fruit_mission.decisions import format_c_announcement
 from fruit_mission.decisions import format_position_name
 from fruit_mission.decisions import spoken_model_type
+from fruit_mission.waypoint_route import c_top_transit_end
 from fruit_qr_planner.planner import build_b_plan, build_c_plan
 
 
@@ -241,6 +242,31 @@ def _select_b_targets(ctx, label, target, targets):
     if not selected:
         ctx.announce(f"B区{label}，没有识别到成熟{target}，跳过。")
     return selected
+
+
+def navigate_c_route(ctx, names, yaws, *, side=None):
+    """Run shenzhi through the top connector, then Look along the remaining route."""
+    transit_end = c_top_transit_end(names)
+    if transit_end:
+        ctx.start_arm_preset('shenzhi')
+        motion = None
+        if ctx._pending_arm_preset[1] is None:
+            # No request was submitted. Preserve the existing safe pose handoff.
+            motion = ctx.finish_arm_preset()
+        if not ctx._send_waypoint_names(names[:transit_end], yaws[:transit_end]):
+            return False
+        ctx._current_waypoint_name = names[transit_end - 1]
+        ctx._current_route_yaw = yaws[transit_end - 1]
+        if motion is None:
+            motion = ctx.finish_arm_preset()
+        if not motion.completed:
+            ctx.node.get_logger().warning(
+                f'C区 top 路段伸直失败，继续原导航路线: {motion.reason_code}')
+    if transit_end == len(names):
+        return True
+    if side is not None:
+        ctx.start_observation(side)
+    return ctx._send_waypoint_names(names[transit_end:], yaws[transit_end:])
 
 
 def navigate_c(ctx, task):

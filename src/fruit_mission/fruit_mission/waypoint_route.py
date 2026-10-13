@@ -37,6 +37,14 @@ OTHER_GOAL_CHAIN = (
 C_GOAL_NAMES = ENTRY_GOAL_CHAIN + OTHER_GOAL_CHAIN
 
 
+def c_top_transit_end(names: Sequence[str]) -> int:
+    """Return the route slice boundary after its last top waypoint, or zero."""
+    return max(
+        (index + 1 for index, name in enumerate(names) if name in (C_TOP_1, C_TOP_2)),
+        default=0,
+    )
+
+
 def _c_graph_edges(entrance_1: str) -> tuple[tuple[str, str], ...]:
     """Build the fixed semantic C graph for the resolved entrance name."""
     entry_chain = (entrance_1,) + ENTRY_GOAL_CHAIN + (C_TOP_1,)
