@@ -80,8 +80,7 @@ def run_c(ctx, plan):
             ctx.recover_home()
             enter_shenzhi(ctx, completed=False)
             continue
-        result = pick_c(ctx, task, side=navigation["camera_side"])
-        enter_shenzhi(ctx, completed=result.success)
+        pick_c(ctx, task, side=navigation["camera_side"])
         ctx.save_c_distribution(plan)
     ctx.save_c_distribution(plan)
 
