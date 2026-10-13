@@ -1,4 +1,4 @@
 # Fixed competition fallback when QR acquisition fails; preserve task order.
-b_targets: ["梨子", "苹果", "梨子", "苹果", "苹果", "苹果", "梨子", "梨子"]
+b_targets: ["苹果", "梨子", "梨子", "梨子", "梨子", "梨子", "梨子", "梨子"]
 c_targets: ["南瓜", "西红柿", "辣椒", "洋葱", "辣椒", "南瓜", "西红柿", "洋葱"]
 c_positions: [4, 3, 1, 10, 8, 9, 2, 11]
