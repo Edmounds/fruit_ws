@@ -136,7 +136,7 @@ def observe_and_pick(ctx, *, side, expected_type):
             )
             return PickExecutionResult(
                 False, selection.reason_code, selection.matched_type)
-        preset_name = f"{side}_pick_openloop_a"
+        preset_name = f"{side}_pick_openloop_{area.lower()}"
         ctx.node.get_logger().info(f"{area}区开环执行抓取预设: {preset_name}")
         motion = ctx.execute_arm_preset(preset_name)
         if not motion.completed:

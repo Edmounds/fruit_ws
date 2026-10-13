@@ -56,7 +56,8 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 `none` 表示两区闭环。B 区保持原流程，`--flow` 只选择任务入口。
 单独传 `--open-loop` 或传非法值会在启动前报错。
 ROS 参数 `open_loop` 同样使用上述字符串，launch、节点及源码配置默认均为 `A`。
-开环区域调用已有 `left_pick_openloop_a` 或 `right_pick_openloop_a`，
+A 区开环调用已有 `left_pick_openloop_a` 或 `right_pick_openloop_a`，
+C 区开环调用已有 `left_pick_openloop_c` 或 `right_pick_openloop_c`，
 仍要求成熟度和品种匹配，但不等待三维深度目标。闭环区域保留原视觉目标抓取，C 区转场伸直按路线触发。
 左右观察姿态直接切换，不穿插正常 Home 或新过渡动作。
 独立依赖并行初始化。顶层 launch 的唯一门控复用 `stack_readiness_client stack`。
