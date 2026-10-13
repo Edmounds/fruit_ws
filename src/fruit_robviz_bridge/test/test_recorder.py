@@ -200,3 +200,31 @@ def test_template_document_load_and_save(tmp_path):
     assert [p["name"] for p in saved["points"]] == ["A1", "A2", "to_B"]
     assert [p["type"] for p in saved["points"]] == ["goal", "goal", "waypoint"]
 
+
+@pytest.mark.parametrize("anchor", ["A1", "A_left1"])
+def test_template_geometry_uses_recorded_anchor_without_filling_missing_points(tmp_path, anchor):
+    from fruit_robviz_bridge.waypoint_files import EditorFile, load_template_geometry
+
+    template = tmp_path / "template.yaml"
+    template.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "points": [{"name": name, "type": "goal"}
+                   for name in (anchor, "stop", "missing")],
+    }), encoding="utf-8")
+    store = TestPointStore(tmp_path / "points.yaml", "odom")
+    store.append(anchor, "goal", pose(anchor, 1.0, 2.0))
+    store.append("stop", "goal", pose("stop", 4.0, 6.0, 0.5))
+    store.save()
+    editor_file = EditorFile(
+        "points", "points", "odometry", "odom", store.output_path,
+        template, store.output_path, True,
+    )
+
+    geometry = load_template_geometry(editor_file)
+
+    assert geometry[0]["dx"] == pytest.approx(0.0)
+    assert geometry[1]["dx"] == pytest.approx(3.0)
+    assert geometry[1]["dy"] == pytest.approx(4.0)
+    assert geometry[1]["yaw_deg"] == pytest.approx(math.degrees(0.5))
+    assert geometry[2]["dx"] is None
+    assert geometry[2]["yaw_deg"] is None

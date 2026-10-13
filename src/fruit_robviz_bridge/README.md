@@ -120,6 +120,24 @@ ros2 launch fruit_robviz_bridge fruit_robviz_bridge.launch.py
 航点录制脚本 (`waypoints_maker.sh`) 与导航脚本 (`start_navigation.sh --recorder`)
 也会自动检测并复用已运行的 `fruit_waypoint_recorder` 节点。
 
+### ABC 与 ACB 录点预设
+
+`./waypoints_maker.sh --route abc` 使用原文件，且 ABC 仍为默认值。
+`./waypoints_maker.sh --route acb` 同时选择 `odom_waypoints_acb.yaml` 和 `template_acb.yaml`。
+录点脚本会检查已有录点器的保存文件、模板和自动名称文件。
+文件不匹配或参数读取失败时退出，不静默复用另一套预设。
+切换前保存数据，停止录点器后重新启动。不必重启 Point-LIO。
+
+独立航点编辑器通过 `/api/files` 提供 `odom_acb` 和 `template_acb` 两个文件 ID。
+新文件分别位于已配置路点文件和模板文件的同一目录，无需新增配置项。
+保存复用名称、类型校验、版本冲突、备份和原子写入保护。
+ACB 几何参考使用 `A_left1`，原 `A1` 行为不变。
+未录制 `A_left1` 时，不提供相对几何参考，不补造坐标。
+
+新实际文件初始仅含 13 个 C 点，不能直接用于完整任务。
+现场录点、mission 交接和 worktree 后端配置见
+[ACB 路点预设](../../docs/ACB_WAYPOINT_PRESET_HANDOFF.md)。
+
 ### 离线自检与实时检查
 
 ```bash

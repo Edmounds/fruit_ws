@@ -169,7 +169,7 @@ def load_template_geometry(editor_file: EditorFile) -> list[dict]:
     if editor_file.reference_file.is_file():
         _, reference_points = load_waypoint_document(reference_file)
     references = {point["name"]: point for point in reference_points}
-    a1 = references.get("A1")
+    a1 = references.get("A1") or references.get("A_left1")
     result = []
     seen = set()
     for index, raw_item in enumerate(points, start=1):

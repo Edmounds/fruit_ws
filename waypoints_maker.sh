@@ -2,25 +2,28 @@
 
 set -eo pipefail
 
-WORKSPACE=/home/rc4/fruit_ws
+WORKSPACE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 NAV_LAUNCH="$WORKSPACE/src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.py"
-HARDWARE_LAUNCH="$WORKSPACE/src/auto_serial_bridge/launch/auto_serial_bridge.launch.py"
+# The independently managed serial bridge is not copied into git worktrees.
+HARDWARE_LAUNCH="/home/rc4/fruit_ws/src/auto_serial_bridge/launch/auto_serial_bridge.launch.py"
 RECORDER_LAUNCH="$WORKSPACE/src/fruit_robviz_bridge/launch/waypoint_recorder.launch.py"
 SCRIPT_CLIENT_CONFIG="$WORKSPACE/src/fruit_mission/config/script_ros_clients.yaml"
 WEB_URL="http://127.0.0.1:8000/"
 USE_TELEOP=true
 DEBUG=0
+ROUTE=abc
 
 pids=()
 stopped=0
 
 usage() {
   cat <<'EOF'
-Usage: ./waypoints_maker.sh [--debug]
+Usage: ./waypoints_maker.sh [--route abc|acb] [--debug]
 
 Start Point-LIO odometry navigation, joystick teleop, and the waypoint recorder
 in the startup-relative odom frame. Use RobViz at http://127.0.0.1:8000/ for editing.
 Use --debug to also start the waypoint recording profile.
+Use --route to select the waypoint file and matching template (default: abc).
 EOF
 }
 
@@ -85,6 +88,11 @@ trap stop_children INT TERM EXIT
 
 while (($# > 0)); do
   case "$1" in
+    --route)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      ROUTE=$2
+      shift 2
+      ;;
     --tele)
       # Retained for backward compatibility (teleop is now enabled by default)
       shift
@@ -104,7 +112,23 @@ while (($# > 0)); do
   esac
 done
 
+WAYPOINT_DIR="$WORKSPACE/src/navigation/fruit_nav_bringup/waypoints"
+case "$ROUTE" in
+  abc)
+    WAYPOINT_FILE="$WAYPOINT_DIR/odom_waypoints.yaml"
+    TEMPLATE_FILE="$WAYPOINT_DIR/template.yaml"
+    ;;
+  acb)
+    WAYPOINT_FILE="$WAYPOINT_DIR/odom_waypoints_acb.yaml"
+    TEMPLATE_FILE="$WAYPOINT_DIR/template_acb.yaml"
+    ;;
+  *) usage >&2; exit 2 ;;
+esac
+
 source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
+if [[ -r "$WORKSPACE/install/local_setup.bash" ]]; then
+  source "$WORKSPACE/install/local_setup.bash"
+fi
 source "$WORKSPACE/scripts/fruit_runtime_logging.bash"
 source "$WORKSPACE/scripts/fruit_runtime_recording.bash"
 set -u
@@ -118,6 +142,8 @@ required_files=(
   "$NAV_LAUNCH" \
   "$HARDWARE_LAUNCH" \
   "$RECORDER_LAUNCH" \
+  "$WAYPOINT_FILE" \
+  "$TEMPLATE_FILE" \
   "$SCRIPT_CLIENT_CONFIG"
 )
 for required_file in "${required_files[@]}"; do
@@ -131,6 +157,24 @@ recorder_running=false
 if ros2 run fruit_mission stack_readiness_client node-running \
   --node /fruit_waypoint_recorder \
   --ros-args --params-file "$SCRIPT_CLIENT_CONFIG" 2>/dev/null; then
+  if ! recorder_parameters=$(timeout 10s ros2 param dump /fruit_waypoint_recorder --no-daemon); then
+    printf '[waypoints-maker] cannot verify recorder files; aborting\n' >&2
+    exit 1
+  fi
+  if ! python3 -c '
+from pathlib import Path
+import sys
+import yaml
+
+params = yaml.safe_load(sys.stdin)["/fruit_waypoint_recorder"]["ros__parameters"]
+expected = dict(waypoint_file=sys.argv[1], template_file=sys.argv[2],
+                auto_name_file=sys.argv[2])
+if any(Path(params[key]).resolve() != Path(value).resolve()
+       for key, value in expected.items()):
+    raise SystemExit("Recorder files differ. Save and stop the recorder before switching routes.")
+' "$WAYPOINT_FILE" "$TEMPLATE_FILE" <<< "$recorder_parameters"; then
+    exit 1
+  fi
   recorder_running=true
   printf '[waypoints-maker] reusing existing waypoint recorder; it will not be stopped on exit\n'
 fi
@@ -171,9 +215,16 @@ fi
 
 if [[ "$recorder_running" != true ]]; then
   start_process "waypoint recorder" \
-    ros2 launch "$RECORDER_LAUNCH"
+    ros2 launch "$RECORDER_LAUNCH" \
+      "waypoint_file:=$WAYPOINT_FILE" \
+      "template_file:=$TEMPLATE_FILE" \
+      "auto_name_file:=$TEMPLATE_FILE" \
+      "debug_waypoint_file:=$WAYPOINT_DIR/debug_waypoints.yaml" \
+      "source_root:=$WORKSPACE/src"
 fi
 
+printf '[waypoints-maker] route=%s waypoint_file=%s template_file=%s\n' \
+  "$ROUTE" "$WAYPOINT_FILE" "$TEMPLATE_FILE"
 if [[ "$nav_running" == true && "$recorder_running" == true ]]; then
   printf '[waypoints-maker] reusing running navigation and waypoint recorder.\n'
 elif [[ "$nav_running" == true ]]; then

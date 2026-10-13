@@ -16,9 +16,9 @@ def generate_launch_description():
         "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/template.yaml"
     )
     with open(config_file, encoding="utf-8") as stream:
-        default_waypoint_file = yaml.safe_load(stream)["fruit_waypoint_recorder"][
+        default_parameters = yaml.safe_load(stream)["fruit_waypoint_recorder"][
             "ros__parameters"
-        ]["waypoint_file"]
+        ]
 
     nodes_to_launch = [
         {
@@ -31,6 +31,8 @@ def generate_launch_description():
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     waypoint_file = LaunchConfiguration("waypoint_file")
+    template_file = LaunchConfiguration("template_file")
+    source_root = LaunchConfiguration("source_root")
     debug_waypoint_file = LaunchConfiguration("debug_waypoint_file")
     frame_id = LaunchConfiguration("frame_id")
     auto_name_prefix = LaunchConfiguration("auto_name_prefix")
@@ -42,8 +44,18 @@ def generate_launch_description():
     )
     declare_waypoint_file = DeclareLaunchArgument(
         "waypoint_file",
-        default_value=default_waypoint_file,
+        default_value=default_parameters["waypoint_file"],
         description="Profile-specific waypoint YAML file",
+    )
+    declare_template_file = DeclareLaunchArgument(
+        "template_file",
+        default_value=default_parameters["template_file"],
+        description="Template matching the formal waypoint YAML file",
+    )
+    declare_source_root = DeclareLaunchArgument(
+        "source_root",
+        default_value=default_parameters["source_root"],
+        description="Allowed source directory for recorder YAML files",
     )
     declare_frame_id = DeclareLaunchArgument(
         "frame_id",
@@ -78,6 +90,8 @@ def generate_launch_description():
     launch_actions = [
         declare_use_sim_time,
         declare_waypoint_file,
+        declare_template_file,
+        declare_source_root,
         declare_frame_id,
         declare_debug_waypoint_file,
         declare_auto_name_prefix,
@@ -90,6 +104,8 @@ def generate_launch_description():
             {
                 "use_sim_time": use_sim_time,
                 "waypoint_file": waypoint_file,
+                "template_file": template_file,
+                "source_root": source_root,
                 "debug_waypoint_file": debug_waypoint_file,
                 "frame_id": frame_id,
                 "auto_name_prefix": auto_name_prefix,
