@@ -31,6 +31,8 @@ motion:
   duration_ms: 1500  # 1500ms 平滑探出抓取
   linear_path: false  # false: 关节空间 PTP 平滑规划
 b_limits:
+  x_min_m: -0.15  # 未叠加抓取偏置的 arm_base_link X 下限（米，含边界）
+  x_max_m: 0.35   # X 上限；仅 B 区抓取候选生效，不隐藏检测预览
   min_m: -0.01
   split_m: 0.12
   max_m: 0.30

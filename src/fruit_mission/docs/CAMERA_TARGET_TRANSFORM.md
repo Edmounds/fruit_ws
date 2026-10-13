@@ -80,6 +80,10 @@ B 根据未叠加偏置的目标基座高度 $Z$ 划分层级（配置于 `b_lim
 $[-0.01, 0.12)$ m 为 Down 层，$[0.12, 0.30]$ m 为 Up 层；越界目标直接跳过，不发运动及 Store 指令。
 同组 `max_distance_m: 1.0` 要求未补偿基座坐标满足 `sqrt(x²+y²+z²) <= 1.0m`。
 该距离不是光学深度或基座 Z；抓取偏置不参与距离筛选。
+同组 `x_min_m: -0.15`、`x_max_m: 0.35` 要求未补偿基座 X 位于 `[-0.15, 0.35]` m，含边界。
+此限制仅作用于 B 区抓取候选，不隐藏检测预览，不改变 A/C 或现有 Y、Z、距离限制。
+正式 B 任务跳过越界候选，再继续选择其他候选；越界目标不占用最多两个抓取请求的名额。
+修改此配置后须重启 mission 或相机抓取客户端，预设重载不会刷新该配置。
 偏置计算使用补偿前目标方向 yaw。A/C 使用最终抓取请求 pitch，B 两层固定使用 0° 构建偏置旋转矩阵：
 
 ```text
@@ -118,7 +122,7 @@ B 采用水平参考下的深入与下移，不随抓取 pitch 旋转。因此�
 - `motion.pitch_deg: 0.0`：A/C 抓取的绝对俯仰角（度），0° 表示末端 a4 段水平。
 - `motion.pitch_b_up_deg: 0.0`：B 上层抓取的绝对俯仰角（度）。
 - `motion.pitch_b_down_deg: -30.0`：B 下层抓取的绝对俯仰角（度）。
-- `b_limits`：B 区分层边界（米），`min_m: -0.01`、`split_m: 0.12`、`max_m: 0.30`，及三维距离上限 `max_distance_m: 1.0`。
+- `b_limits`：B 区基座 X 边界 `x_min_m: -0.15`、`x_max_m: 0.35`，分层边界 `min_m: -0.01`、`split_m: 0.12`、`max_m: 0.30`，及三维距离上限 `max_distance_m: 1.0`，单位均为米。X 边界必须为有限数且严格满足 `x_min_m < x_max_m`。
 - 各项 pitch 均要求有限数或 null；null 使用实测观察 pitch。只影响视觉目标抓取，不修改 Look、Store、Home 或其他 preset。
 - `motion.duration_ms: 1500`：抓取探出耗时 1500ms。
 - `motion.linear_path: false`：关节空间 PTP 平滑规划（false 为 PTP，true 为笛卡尔 LIN）。

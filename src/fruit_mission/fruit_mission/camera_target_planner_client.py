@@ -162,7 +162,7 @@ class CameraTargetPlannerClient:
         b_limits = self.config.get('b_limits')
         if not isinstance(b_limits, dict):
             raise ValueError('b_limits must be a mapping')
-        for name in ('min_m', 'split_m', 'max_m', 'max_distance_m'):
+        for name in ('min_m', 'split_m', 'max_m', 'max_distance_m', 'x_min_m', 'x_max_m'):
             if name not in b_limits:
                 raise ValueError(f'{name} missing in b_limits configuration')
             val = b_limits[name]
@@ -179,6 +179,10 @@ class CameraTargetPlannerClient:
         self.b_height_min_m = min_m
         self.b_height_split_m = split_m
         self.b_height_max_m = max_m
+        self.b_x_min_m = float(b_limits['x_min_m'])
+        self.b_x_max_m = float(b_limits['x_max_m'])
+        if self.b_x_min_m >= self.b_x_max_m:
+            raise ValueError('b_limits bounds must strictly satisfy x_min_m < x_max_m')
         self.b_max_distance_m = float(b_limits['max_distance_m'])
         if self.b_max_distance_m <= 0:
             raise ValueError('b_limits.max_distance_m must be positive')
@@ -287,6 +291,12 @@ class CameraTargetPlannerClient:
             raw_base_z_m = base_mm[2] / 1000.0
             layer = None
             if area == 'B':
+                raw_base_x_m = base_mm[0] / 1000.0
+                # Allow only transform roundoff at the inclusive boundaries (1 nm).
+                if not self.b_x_min_m - 1e-9 <= raw_base_x_m <= self.b_x_max_m + 1e-9:
+                    raise ValueError(
+                        f'Target base X ({raw_base_x_m:.4f}m) out of B area X bounds '
+                        f'[{self.b_x_min_m:.4f}, {self.b_x_max_m:.4f}]m')
                 distance_m = math.hypot(*base_mm) / 1000.0
                 if distance_m > self.b_max_distance_m:
                     raise ValueError(
