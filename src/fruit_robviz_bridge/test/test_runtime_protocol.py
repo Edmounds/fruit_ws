@@ -116,13 +116,18 @@ class RuntimeProtocolTest(unittest.TestCase):
         self.assertEqual(self.request('scripts/log?cursor=wrong')[0], 400)
         self.assertEqual(self.request('scripts/unknown/start', {})[0], 404)
 
-    def test_failed_cleanup_never_starts_script(self):
+    def test_start_script_without_cleanup_and_failed_cleanup_aborts_kill(self):
         (self.root / 'sample.sh').write_text('touch script-ran\n')
         (self.root / 'kill_fruit_processes.sh').write_text('echo cleanup-failed\nexit 1\n')
         status, reply = self.request('scripts/sample/start', {'parameters': {'mode': 'one'}})
+        self.assertEqual(status, 200)
+        deadline = time.monotonic() + 2
+        while not (self.root / 'script-ran').exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue((self.root / 'script-ran').exists())
+        status, reply = self.request('scripts/kill', {})
         self.assertEqual(status, 409)
         self.assertIn('Kill', reply['error'])
-        self.assertFalse((self.root / 'script-ran').exists())
         self.assertIn('cleanup-failed', self.request('scripts/log')[1]['data'])
 
     def test_switch_and_kill_running_temporary_script(self):

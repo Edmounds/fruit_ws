@@ -443,10 +443,8 @@ class RuntimeManager:
         if not (self.workspace_root / task.script).is_file():
             raise RuntimeErrorBase(f"脚本文件不存在: {task.script}", 404)
         with self._lock():
-            self._script_operation = "KILLING"
+            self._script_operation = "STARTING"
             try:
-                self._kill_scripts()
-                self._script_operation = "STARTING"
                 log_path = self.log_root / Path(task.log_file).name
                 start = log_path.stat().st_size if log_path.exists() else 0
                 self._launch(task, arguments)
