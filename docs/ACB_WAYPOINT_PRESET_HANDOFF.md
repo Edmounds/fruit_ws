@@ -2,7 +2,7 @@
 
 ## 1. 状态与范围
 
-**路点文件、模板、录点参数和编辑器后端支持已在独立 worktree 实施。**
+**路点预设已并入 `main`，RobViz Maker 和录点器现已支持 ACB 文件切换。**
 新 mission 和现场录点尚未实施。未启动真实底盘、机械臂或自动导航。
 新模板共 35 点。实际文件包含 13 个 C 点，另 22 点待录制。
 
@@ -27,7 +27,7 @@
 
 - 修改 `src/fruit_mission/` 的任务逻辑或启动入口。
 - 实现 B 区观察侧选择或二维码任务重排。
-- 修改 `/home/rc4/robviz` 的网页前端代码。
+- 修改 Maker 文件选择之外的 RobViz 前端功能。
 - 修改 `src/fruit_arm_planner/config/arm_presets.yaml`。
 - 实现物理卸货、人工卸货等待或返回起点。
 - 启动真实底盘、机械臂或自动导航。
@@ -175,18 +175,22 @@ HTTP 后端从已有 `waypoint_file`、`template_file` 的目录定位两份新�
 录制 `A_left1` 前，ACB 模板的相对几何参考为空，不填入零坐标。
 
 网页“航点 Maker”从录点器状态读取名称列表。
-录点和保存通过 ROS 消息执行，保存路径由录点器参数决定。
+文件下拉框支持 ABC、ACB 和调试文件，模板随正式文件一起切换。
+录点和保存通过 ROS 消息执行，保存路径由录点器当前加载文件决定。
 独立“航点编辑器”通过 HTTP 后端读写文件，两者不能混为同一配置入口。
 
 切换预设前保存当前录点结果。
-停止录点器后，用对应参数重新启动。
+启动脚本选择新预设时，停止录点器后用对应参数重新启动。
+网页 Maker 可在录点和导航空闲时，通过“文件”下拉框切换。
+未保存草稿需要确认丢弃，加载失败保留原草稿和模板。
 不必为切换预设重启 Point-LIO。
 已有录点器的保存文件、模板或自动名称文件不匹配时，提示退出，不静默复用。
 参数读取最多等待 10 秒。读取失败时退出，不启动第二个录点器。
 若模板有增删，重新加载对应录点模板后再录点。
 
 保留现有名称和类型校验、未保存提示、版本冲突保护、备份及原子保存。
-不新增网页按钮，不重构前端，不引入运行中的预设切换状态机。
+不新增网页按钮，不重构前端，不引入多步预设切换状态机。
+正式文件计数使用匹配模板总数，初始 ACB 显示 `13/35`。
 
 ## 6. 新 mission 负责人交接项
 
@@ -271,8 +275,9 @@ HTTP 后端从已有 `waypoint_file`、`template_file` 的目录定位两份新�
 
 ## 8. Worktree 交接说明
 
-本文档位于独立 worktree `.worktrees/acb-waypoint-handoff/`。
-该 worktree 基于创建时的已提交版本，不自动包含主目录未提交改动。
+首轮实现使用独立 worktree `.worktrees/acb-waypoint-handoff/`，现已合并到 `main` 并清理。
+日常运行使用主目录 `/home/rc4/fruit_ws`。
+新建 worktree 时，它仍不自动包含主目录未提交改动。
 本次从主目录当前 C 标定复制数据，并核对 13 点完全一致。
 后续联调前仍需核对操作者是否更新了 C 标定。
 
@@ -285,7 +290,7 @@ HTTP 后端从已有 `waypoint_file`、`template_file` 的目录定位两份新�
 ### 8.1 离线构建与检查
 
 ```bash
-cd /home/rc4/fruit_ws/.worktrees/acb-waypoint-handoff
+cd /home/rc4/fruit_ws
 source scripts/setup_fruit_runtime.bash
 colcon build --base-paths src --packages-select fruit_nav_bringup fruit_robviz_bridge \
   --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
@@ -298,10 +303,10 @@ PYTHONPATH="$PWD/src/fruit_robviz_bridge:$PWD/src/fruit_mission:$PWD/src/fruit_q
   src/fruit_mission/test/test_c_waypoint_route.py
 ```
 
-### 8.2 Worktree 编辑器配置
+### 8.2 新建 Worktree 时的编辑器配置
 
 原 Web 配置仍指向主目录。只加载 overlay 不会改变数据路径。
-主目录的旧后端也不会自动获得新增文件登记。
+主目录现有后端已登记两份 ACB 文件，正常使用不需要以下临时配置。
 在 worktree 验证编辑器时，生成临时配置，不修改主目录或前端。
 以下命令只生成配置，不启动硬件：
 

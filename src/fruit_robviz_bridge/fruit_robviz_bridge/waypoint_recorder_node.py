@@ -23,6 +23,7 @@ from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import (
     DurabilityPolicy,
@@ -162,15 +163,24 @@ class WaypointRecorderNode(Node):
         if not backup_dir_value:
             raise ValueError("backup_dir must be configured")
         backup_dir = Path(backup_dir_value).expanduser().resolve()
+        initial_file_id = "odom_acb" if waypoint_path.name == "odom_waypoints_acb.yaml" else "odom"
+        abc_waypoint_path = (
+            waypoint_path.with_name("odom_waypoints.yaml")
+            if initial_file_id == "odom_acb" else waypoint_path
+        )
+        abc_template_path = (
+            template_path.with_name("template.yaml")
+            if initial_file_id == "odom_acb" else template_path
+        )
         self._file_catalog = {
             "odom": EditorFile(
                 file_id="odom",
                 profile="odom",
                 mode="odometry",
                 frame_id=self._frame_id,
-                waypoint_file=waypoint_path,
-                template_file=template_path,
-                reference_file=waypoint_path,
+                waypoint_file=abc_waypoint_path,
+                template_file=abc_template_path,
+                reference_file=abc_waypoint_path,
                 formal=True,
             ),
             "debug": EditorFile(
@@ -183,14 +193,23 @@ class WaypointRecorderNode(Node):
                 reference_file=debug_waypoint_path,
                 formal=False,
             ),
+            "odom_acb": EditorFile(
+                file_id="odom_acb",
+                profile="acb",
+                mode="odometry",
+                frame_id=self._frame_id,
+                waypoint_file=waypoint_path.with_name("odom_waypoints_acb.yaml"),
+                template_file=template_path.with_name("template_acb.yaml"),
+                reference_file=waypoint_path.with_name("odom_waypoints_acb.yaml"),
+                formal=True,
+            ),
         }
         self._backup_dir = backup_dir
-        self._template_types = self._load_template_types(template_path)
-        self._template_order = list(self._template_types)
-        self._test_store, self._document_version = self._load_store_snapshot(
-            self._file_catalog["odom"]
+        self._test_store, self._document_version, self._template_types = self._load_store_snapshot(
+            self._file_catalog[initial_file_id]
         )
-        self._file_id = "odom"
+        self._template_order = list(self._template_types)
+        self._file_id = initial_file_id
         self._formal = True
         self._loaded_fingerprint = self._points_fingerprint()
         self._configured_auto_name_prefix = str(
@@ -722,14 +741,18 @@ class WaypointRecorderNode(Node):
         )
 
     def _load_store_snapshot(self, editor_file):
+        self._resolve_src_yaml_path(str(editor_file.waypoint_file))
+        template_types = self._load_template_types(
+            self._resolve_src_yaml_path(str(editor_file.template_file))
+        )
         document, _, version = load_waypoint_snapshot(editor_file)
         candidate = TestPointStore(editor_file.waypoint_file, self._frame_id)
         candidate.load_document(document, editor_file.waypoint_file)
         if editor_file.formal:
             for point in candidate.points:
-                if self._template_types.get(point.name) != point.point_type:
+                if template_types.get(point.name) != point.point_type:
                     raise ValueError(f"waypoint name/type does not match template: {point.name}")
-        return candidate, version
+        return candidate, version, template_types
 
     def _confirm_discard(self, payload):
         confirm = payload.get("confirm_discard", False)
@@ -796,13 +819,28 @@ class WaypointRecorderNode(Node):
             self._confirm_discard(payload)
             file_id = payload.get("file_id", payload.get("id"))
             if not isinstance(file_id, str) or file_id not in self._file_catalog:
-                raise ValueError("file_id must be odom or debug")
+                raise ValueError("file_id must be odom, odom_acb or debug")
             editor_file = self._file_catalog[file_id]
-            candidate, version = self._load_store_snapshot(editor_file)
+            candidate, version, template_types = self._load_store_snapshot(editor_file)
+            auto_name_file = str(self.get_parameter("auto_name_file").value)
+            if editor_file.formal and file_id != self._file_id:
+                auto_name_file = str(editor_file.template_file)
+            auto_name_sequence = self._load_auto_name_sequence(auto_name_file)
+            if editor_file.formal:
+                result = self.set_parameters_atomically([
+                    Parameter("waypoint_file", value=str(editor_file.waypoint_file)),
+                    Parameter("template_file", value=str(editor_file.template_file)),
+                    Parameter("auto_name_file", value=auto_name_file),
+                ])
+                if not result.successful:
+                    raise ValueError(result.reason)
             self._test_store = candidate
             self._file_id = file_id
             self._formal = editor_file.formal
             self._document_version = version
+            self._template_types = template_types
+            self._template_order = list(template_types)
+            self._auto_name_sequence = auto_name_sequence
             self._loaded_fingerprint = self._points_fingerprint()
         except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError) as error:
             self._reject_command(str(error))
@@ -833,9 +871,15 @@ class WaypointRecorderNode(Node):
         editor_file = self._file_catalog[self._file_id]
         try:
             self._confirm_discard(payload)
-            candidate, version = self._load_store_snapshot(editor_file)
+            candidate, version, template_types = self._load_store_snapshot(editor_file)
+            auto_name_sequence = self._load_auto_name_sequence(
+                str(self.get_parameter("auto_name_file").value)
+            )
             self._test_store = candidate
             self._document_version = version
+            self._template_types = template_types
+            self._template_order = list(template_types)
+            self._auto_name_sequence = auto_name_sequence
             self._loaded_fingerprint = self._points_fingerprint()
         except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError) as error:
             self._reject_command(f"Failed to reload waypoints: {error}")
