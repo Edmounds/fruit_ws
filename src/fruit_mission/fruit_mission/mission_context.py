@@ -359,8 +359,17 @@ class MissionContext:
             self._pending_observation is not None
             and self._pending_observation[2] == 'already_completed'
         )
+        open_loop_pose_confirmed = (
+            self.is_open_loop and self._current_area == 'C'
+            and self._pending_observation is None and self._pending_arm_preset is None
+            and self._last_completed_preset in (
+                'left_look_c', 'right_look_c',
+                'left_pick_openloop_a', 'right_pick_openloop_a',
+            )
+        )
         arm_safe = (
-            ((self._arm_home_confirmed or self._arm_shenzhi_confirmed or is_already_at_look)
+            ((self._arm_home_confirmed or self._arm_shenzhi_confirmed
+              or is_already_at_look or open_loop_pose_confirmed)
              and self._camera_planner.wait_stationary(self._wait_until))
             or has_pending_motion
         )
