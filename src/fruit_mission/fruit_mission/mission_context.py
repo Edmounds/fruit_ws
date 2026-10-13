@@ -163,8 +163,9 @@ class MissionContext:
 
     @property
     def is_open_loop(self) -> bool:
-        """Whether open-loop picking is enabled for AC zones."""
-        return bool(self.config.get("open_loop", False))
+        """Whether open-loop picking is enabled for the current area."""
+        return (self._current_area in ("A", "C")
+                and self._current_area in self.config.get("open_loop", "A"))
 
     def navigate_named(
         self,

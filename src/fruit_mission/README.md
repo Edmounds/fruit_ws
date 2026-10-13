@@ -50,7 +50,13 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 独立可视化、录点器和录包保留。旧启动脚本管理的附属进程可能随父启动脚本退出。
 仍有冲突节点，或 `fruit-perception.service` 会自动重启旧栈时，入口退出并提示处理。
 `--reuse-navigation` 已删除，`--flow`、`--open-loop` 和 `--debug` 保留。
-`--open-loop` 在 A/C 均调用已有 `left_pick_openloop_a` 或 `right_pick_openloop_a`。
+`--open-loop A|C|AC|none` 按区域选择开环抓取，默认 `A`。
+`A` 表示 A 开环、C 闭环；`C` 表示 A 闭环、C 开环；`AC` 表示两区开环；
+`none` 表示两区闭环。B 区保持原流程，`--flow` 只选择任务入口。
+单独传 `--open-loop` 或传非法值会在启动前报错。
+ROS 参数 `open_loop` 同样使用上述字符串，launch、节点及源码配置默认均为 `A`。
+开环区域调用已有 `left_pick_openloop_a` 或 `right_pick_openloop_a`，
+仍要求成熟度和品种匹配，但不等待三维深度目标。闭环区域保留原视觉目标抓取和保护边界。
 左右观察姿态直接切换，不穿插正常 Home 或新过渡动作。
 独立依赖并行初始化。顶层 launch 的唯一门控复用 `stack_readiness_client stack`。
 各项保留原 10 秒超时，TF 保留 5 秒，超时告警后启动 mission。
@@ -142,6 +148,10 @@ TF 不可用时沿用既有上一目标位置兜底；保留路线距离限制�
 cd /home/rc4/fruit_ws
 source scripts/setup_fruit_runtime.bash
 ./start_fruit_mission.sh --flow b  # B-only 同样要扫码，不直接套固定调试计划
+./start_fruit_mission.sh --flow ac                 # 默认 A 开环、C 闭环
+./start_fruit_mission.sh --flow ac --open-loop C   # A 闭环、C 开环
+./start_fruit_mission.sh --flow ac --open-loop AC  # A/C 都开环
+./start_fruit_mission.sh --flow ac --open-loop none  # A/C 都闭环
 ```
 
 源码修改后需重新构建 `fruit_mission` 并重启节点。配置继续从源码路径读取，

@@ -61,7 +61,7 @@ tasks:
     script: start_fruit_mission.sh
     parameters:
       flow: {flag: --flow, choices: [full, ac, a, b, c], default: full}
-      open_loop: {flag: --open-loop, default: false}
+      open_loop: {flag: --open-loop, choices: [A, C, AC, none], default: A}
       debug: {flag: --debug, default: false}
 
   waypoint_recording:

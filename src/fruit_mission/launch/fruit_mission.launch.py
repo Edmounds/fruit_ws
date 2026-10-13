@@ -15,6 +15,7 @@ from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 WORKSPACE = Path("/home/rc4/fruit_ws")
@@ -76,7 +77,7 @@ def generate_launch_description():
             "waypoint_file": LaunchConfiguration("waypoint_file"),
             "mission_flow": LaunchConfiguration("mission_flow"),
             "map_frame": LaunchConfiguration("map_frame"),
-            "open_loop": LaunchConfiguration("open_loop"),
+            "open_loop": ParameterValue(LaunchConfiguration("open_loop"), value_type=str),
         }],
     )
 
@@ -90,7 +91,8 @@ def generate_launch_description():
         DeclareLaunchArgument("log_level", default_value="info"),
         DeclareLaunchArgument("arm_log_level", default_value="info"),
         DeclareLaunchArgument("serial_log_level", default_value="info"),
-        DeclareLaunchArgument("open_loop", default_value="false"),
+        DeclareLaunchArgument("open_loop", default_value="A",
+                              choices=["A", "C", "AC", "none"]),
         DeclareLaunchArgument("start_serial_bridge", default_value="true"),
         DeclareLaunchArgument("start_robviz_bridge", default_value="true"),
     ]

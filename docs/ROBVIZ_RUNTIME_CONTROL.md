@@ -65,6 +65,8 @@ RobViz 的「脚本控制」页复用端口 8001 的运行服务。
 `test_camera_arm_target.sh`、`start_fruit_perception.sh`、`test_voice.sh` 和 `test_qr.sh`。
 卡片从服务配置读取参数及可选值，不允许提交 shell 命令。
 Mission 支持 flow、open-loop 和 debug。
+open-loop 提供 `A`、`C`、`AC`、`none` 四个选项，默认 `A`。
+`A` 或 `C` 只让对应区域开环；`AC` 让两区开环；`none` 让两区闭环。B 区保持原流程。
 感知支持 zone、debug、成熟度模型、性能模式、日志等级和仿真时间。
 相机机械臂测试必须选择 zone 和 left/right，支持 debug。
 遥控和打点支持 debug。打点的 teleop 已默认开启。
