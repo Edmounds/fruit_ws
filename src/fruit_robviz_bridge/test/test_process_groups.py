@@ -12,6 +12,7 @@ import unittest
 from fruit_robviz_bridge.process_groups import (
     owned_process_groups, process_groups_alive, stop_process_groups,
 )
+from fruit_robviz_bridge.runtime_manager import ManagedProcess
 
 
 class ProcessGroupsTest(unittest.TestCase):
@@ -124,6 +125,18 @@ class ProcessGroupsTest(unittest.TestCase):
             stop_process_groups({0}, 0, 0, 0)
         with self.assertRaises(ValueError):
             stop_process_groups(set(), float('nan'), 0, 0)
+
+    def test_finished_tracking_cannot_reactivate_reused_group_ids(self):
+        parent = self.start('pass')
+        parent.wait(timeout=2)
+        tracked = ManagedProcess(parent, Path('/unused-fixture-log'))
+        self.assertFalse(tracked.is_running())
+        unrelated = self.start('import time; print("ready",flush=True); time.sleep(60)')
+        self.assertEqual(unrelated.stdout.readline().strip(), 'ready')
+        # Model a recorded group ID resolving to a new, independently owned process.
+        tracked.groups = {unrelated.pid}
+        self.assertFalse(tracked.is_running())
+        self.assertIsNone(unrelated.poll())
 
     def test_shell_helper_handles_an_exited_leader(self):
         parent = self.start(

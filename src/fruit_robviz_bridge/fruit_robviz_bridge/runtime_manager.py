@@ -65,13 +65,17 @@ class ManagedProcess:
     process: subprocess.Popen[str]
     log_path: Path
     groups: set[int] = field(default_factory=set)
+    finished: bool = False
 
     def is_running(self) -> bool:
+        if self.finished:
+            return False
         self.process.poll()
         self.groups.update(owned_process_groups(self.groups | {self.process.pid}))
         running = process_groups_alive(self.groups)
         if not running:
             self.process.wait(timeout=1.0)
+            self.finished = True
         return running
 
 
