@@ -10,9 +10,11 @@ import subprocess
 import time
 import uuid
 
+from composition_interfaces.srv import ListNodes, LoadNode, UnloadNode
 from fruit_interfaces.msg import ArmStatus, ArmTelemetry
 from nav_msgs.msg import Odometry
 import rclpy
+from rclpy.parameter import Parameter
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
@@ -20,6 +22,7 @@ from sensor_msgs.msg import Image, Imu
 from std_msgs.msg import Header, String
 from std_srvs.srv import Trigger
 from tf2_ros import TransformException
+import yaml
 
 from fruit_mission.camera_target_planner_client import CameraTargetPlannerClient
 from fruit_mission.competition_protocol import localization_sample_ready, module_health
@@ -31,6 +34,7 @@ from fruit_robviz_bridge.process_groups import process_groups_alive, stop_proces
 
 WORKSPACE = Path('/home/rc4/fruit_ws')
 STATUS = WORKSPACE / 'tmp/fruit_competition/status.json'
+CLIENT_CONFIG = WORKSPACE / 'src/fruit_mission/config/script_ros_clients.yaml'
 START_SERVICE = '/fruit_competition/start_localization'
 NAV_LAUNCH = WORKSPACE / 'src/navigation/fruit_nav_bringup/launch/pointlio_odometry.launch.py'
 
@@ -42,10 +46,12 @@ class CompetitionRunner(StackReadinessClient):
         self.processes = {}
         self.process_groups = {}
         self.last_data = {}
+        self.last_data_monotonic = {}
         self.odometry = None
         self.started_ns = 0
         self.arm_fault = ''
         self.recording_checked = False
+        self.readiness_config = self._load_readiness_config()
         self.requested = options.phase == 'all'
         self.state = {'run_id': str(uuid.uuid4()), 'pid': os.getpid(), 'phase': 'PREPARING',
                       'parameters': {'flow': options.flow, 'open_loop': options.open_loop,
@@ -73,11 +79,160 @@ class CompetitionRunner(StackReadinessClient):
         self.create_timer(1.0, self.snapshot)
 
     def wait_until(self, predicate, timeout_sec=None):
-        timeout_sec = 10.0 if timeout_sec is None else min(timeout_sec, 10.0)
+        timeout_sec = 10.0 if timeout_sec is None else min(timeout_sec, 30.0)
         return super().wait_until(predicate, timeout_sec)
 
     def touch(self, key):
         self.last_data[key] = time.time()
+        self.last_data_monotonic[key] = time.monotonic()
+
+    @staticmethod
+    def _load_readiness_config():
+        document = yaml.safe_load(CLIENT_CONFIG.read_text(encoding='utf-8')) or {}
+        return dict(document.get('/**', {}).get('ros__parameters', {}))
+
+    def wait_for_camera_stream(self):
+        timeout_sec = float(self.readiness_config.get(
+            'perception_readiness_timeout_sec', 30.0))
+        stable_sec = float(self.readiness_config.get(
+            'perception_stable_duration_sec', 3.0))
+        max_gap_sec = float(self.readiness_config.get(
+            'perception_stream_max_gap_sec', 1.0))
+        attempt_started = time.monotonic()
+        stable_started = None
+
+        def camera_is_stable():
+            nonlocal stable_started
+            now = time.monotonic()
+            if not self.camera_streams_fresh(max_gap_sec, now):
+                stable_started = None
+                return False
+            stamps = [self.last_data_monotonic.get(key, 0.0)
+                      for key in ('camera', 'depth', 'perception')]
+            if any(stamp < attempt_started
+                   for stamp in stamps):
+                stable_started = None
+                return False
+            if stable_started is None:
+                stable_started = now
+            return now - stable_started >= stable_sec
+
+        ready = self.wait_until(camera_is_stable, timeout_sec)
+        if not ready:
+            self.get_logger().error(
+                f'Camera streams were not stable within {timeout_sec:.0f}s')
+        return ready
+
+    def camera_streams_fresh(self, max_gap_sec, now=None):
+        now = time.monotonic() if now is None else now
+        if not {'/camera', '/fruit_perception_node'}.issubset(self.node_names()):
+            return False
+        return all(
+            now - self.last_data_monotonic.get(key, 0.0) <= max_gap_sec
+            for key in ('camera', 'depth', 'perception')
+        )
+
+    def _component_camera_parameters(self, initial_reset):
+        document = yaml.safe_load(
+            (WORKSPACE / 'src/fruit_perception/config/fruit_perception.yaml').read_text(
+                encoding='utf-8'))
+        values = dict(document['camera']['ros__parameters'])
+        values['initial_reset'] = initial_reset
+        values['use_sim_time'] = False
+        return [Parameter(name=name, value=value).to_parameter_msg()
+                for name, value in values.items()]
+
+    def restart_camera_component(self):
+        container = '/fruit_perception_container'
+        list_client = self.create_client(ListNodes, f'{container}/_container/list_nodes')
+        unload_client = self.create_client(
+            UnloadNode, f'{container}/_container/unload_node')
+        load_client = self.create_client(LoadNode, f'{container}/_container/load_node')
+        try:
+            if not list_client.wait_for_service(timeout_sec=5.0):
+                self.get_logger().error('Camera component list service is unavailable')
+                return False
+            list_future = list_client.call_async(ListNodes.Request())
+            if not self.wait_until(list_future.done, 5.0):
+                self.get_logger().error('Camera component list request timed out')
+                return False
+            listed = list_future.result()
+            camera_ids = [uid for name, uid in zip(
+                listed.full_node_names, listed.unique_ids) if name == '/camera']
+            if len(camera_ids) != 1:
+                self.get_logger().error(
+                    f'Expected one /camera component, found {len(camera_ids)}')
+                return False
+            if not unload_client.wait_for_service(timeout_sec=5.0):
+                self.get_logger().error('Camera component unload service is unavailable')
+                return False
+            unload_future = unload_client.call_async(
+                UnloadNode.Request(unique_id=camera_ids[0]))
+            if not self.wait_until(unload_future.done, 5.0):
+                self.get_logger().error('Camera component unload timed out')
+                return False
+            if not unload_future.result().success:
+                self.get_logger().error(
+                    f'Camera component unload failed: {unload_future.result().error_message}')
+                return False
+            if not load_client.wait_for_service(timeout_sec=5.0):
+                self.get_logger().error('Camera component load service is unavailable')
+                return False
+            request = LoadNode.Request(
+                package_name='realsense2_camera',
+                plugin_name='realsense2_camera::RealSenseNodeFactory',
+                node_name='camera',
+                node_namespace='/',
+                parameters=self._component_camera_parameters(initial_reset=True),
+                extra_arguments=[Parameter(
+                    name='use_intra_process_comms', value=True).to_parameter_msg()],
+            )
+            load_future = load_client.call_async(request)
+            if not self.wait_until(load_future.done, 10.0):
+                self.get_logger().error('Camera component load timed out')
+                return False
+            response = load_future.result()
+            if not response.success:
+                self.get_logger().error(
+                    f'Camera component load failed: {response.error_message}')
+                return False
+            self.get_logger().warning('Camera component restarted with one hardware reset')
+            return True
+        finally:
+            self.destroy_client(list_client)
+            self.destroy_client(unload_client)
+            self.destroy_client(load_client)
+
+    def wait_for_prepare_modules(self):
+        required_nodes = [
+            '/camera', '/fruit_perception_node', '/fruit_qr_planner',
+            '/serial_controller', '/arm_planner_node', '/livox_ros_driver2',
+            '/axis_waypoint_action_server', '/twist_mux',
+        ]
+        if not self.wait_for_nodes(required_nodes, 10.0):
+            return False
+        if not self.wait_for_action(self.follow_waypoints_action, 10.0):
+            return False
+        if not self.wait_for_planner(10.0):
+            return False
+        if not self.wait_for_bridge(10.0):
+            return False
+        for key in ('radar', 'serial', 'arm'):
+            if not self.wait_until(
+                    lambda key=key: key in self.last_data_monotonic, 10.0):
+                self.get_logger().error(f'No fresh prepare stream: {key}')
+                return False
+        return True
+
+    def wait_for_loam(self):
+        if not self.wait_for_nodes(['/loam_interface'], 10.0):
+            return False
+        if not self.wait_until(lambda: 'odometry' in self.last_data_monotonic, 10.0):
+            self.get_logger().error('No fresh prepare stream: odometry')
+            return False
+        if not self.wait_for_transform('odom', 'base_link', 5.0, 1.0):
+            return False
+        return True
 
     def on_odometry(self, message):
         self.odometry = message
@@ -285,16 +440,55 @@ class CompetitionRunner(StackReadinessClient):
         if self.options.debug:
             self.start('udev', ['udevadm', 'monitor', '--kernel', '--udev'])
             self.start('kernel', ['journalctl', '-k', '-f', '-o', 'short-iso'])
+        camera_retry_used = False
+        if not self.wait_for_camera_stream():
+            camera_retry_used = True
+            self.get_logger().warning(
+                'Camera startup timed out; restarting the camera component once')
+            if not self.restart_camera_component() or not self.wait_for_camera_stream():
+                self.state.update(phase='ERROR', error='camera readiness failed after one retry')
+                self.write_snapshot()
+                raise RuntimeError('camera readiness failed after one retry')
+        if not self.wait_for_loam():
+            self.get_logger().warning('Loam readiness failed; restarting the Loam process once')
+            self.stop('loam')
+            self.start_localization_process('loam')
+            if not self.wait_for_loam():
+                self.state.update(phase='ERROR', error='Loam readiness failed after one retry')
+                self.write_snapshot()
+                raise RuntimeError('Loam readiness failed after one retry')
+        if not self.wait_for_prepare_modules():
+            self.state.update(phase='ERROR', error='prepare module readiness failed')
+            self.write_snapshot()
+            raise RuntimeError('prepare module readiness failed')
+        if not self.camera_streams_fresh(
+                float(self.readiness_config.get('perception_stream_max_gap_sec', 1.0))):
+            if camera_retry_used:
+                self.state.update(phase='ERROR', error='camera stream stopped during prepare')
+                self.write_snapshot()
+                raise RuntimeError('camera stream stopped during prepare')
+            camera_retry_used = True
+            if (not self.restart_camera_component()
+                    or not self.wait_for_camera_stream()
+                    or not self.wait_for_prepare_modules()):
+                self.state.update(phase='ERROR', error='camera readiness failed after one retry')
+                self.write_snapshot()
+                raise RuntimeError('camera readiness failed after one retry')
         try:
             planner = CameraTargetPlannerClient(self)
-            # Wait only during preparation, never repeat this gate on the field.
-            self.wait_until(lambda: planner._preset_client.service_is_ready()
-                            and planner._fresh_pose() is not None, 10.0)
+            if not self.wait_until(lambda: planner._preset_client.service_is_ready()
+                                   and planner._fresh_pose() is not None, 10.0):
+                raise RuntimeError('planner readiness failed during prepare')
             completed, reason = planner.execute_preset('home', self.wait_until)
             self.state['home'] = {'success': completed, 'reason': reason}
+            if not completed:
+                raise RuntimeError(f'Preparation Home failed: {reason}')
         except Exception as error:
             self.state['home'] = {'success': False, 'reason': str(error)}
             self.get_logger().error(f'Preparation Home failed: {error}')
+            self.state.update(phase='ERROR', error=f'prepare failed: {error}')
+            self.write_snapshot()
+            raise RuntimeError(f'prepare failed: {error}') from error
         self.state['phase'] = 'PREPARED'
         self.snapshot()
 

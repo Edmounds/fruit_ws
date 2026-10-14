@@ -1,7 +1,7 @@
 camera:
   ros__parameters:
     serial_no: '243322073779'
-    initial_reset: true
+    initial_reset: false
     enable_color: true
     rgb_camera.color_profile: 1280x720x30
     rgb_camera.color_format: RGB8

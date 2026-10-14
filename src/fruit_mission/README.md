@@ -72,6 +72,12 @@ RobViz「正式比赛」可选择 ABC 或 ACB。脚本控制页也提供独立 A
 ACB 的 `--phase localize` 只接受已准备的 ACB 会话。ABC 显式 `--flow` 同样校验流程。
 ABC 不传 `--flow` 时，定位入口沿用当前准备参数。
 节点增加 `mission_flow=acb`，抓取模式在 ACB 调用处按去程、回程明确切换。
+`prepare` 是进入场地前的硬件验收阶段。它必须确认相机 RGB、Depth 和 RGBD heartbeat
+连续稳定 3 秒，并确认感知、二维码、串口桥、机械臂 planner、雷达、Loam、里程计和航点
+action 正常，之后才允许 `localize`。相机单次启动等待 30 秒；首次超时会卸载并重新加载
+`/camera` 组件，并仅在这次恢复加载中执行一次 RealSense hardware reset。恢复仍失败时，
+启动器记录错误并停止，操作者必须手动重启。Loam 使用现有独立进程边界执行一次重启；
+其他模块无法安全独立重启时直接报错停止。普通启动不再使用 `initial_reset` 强制复位。
 主目录合入并构建后，才可在操作者授权的安全条件下启动：
 
 ```bash
