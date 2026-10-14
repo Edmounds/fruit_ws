@@ -14,7 +14,7 @@
 - 检测：640×640 letterbox，RGB /255，按品种 NMS。
 - 两个检测器的 `bad` 均不做熟度分类。标注图、预览检测及 `FruitDecision.types/detections` 发布裸标签 `bad`，A 区也保留该标签。
 - `bad` 的框和可选深度点仅供诊断。A/C 与 B 采摘候选均排除 `bad`，`targets` 不包含它。不增加坏果摘除流程。
-- 分类：原始 RGB 框向外扩展每边 10%，裁到图像范围，任一边小于 8 像素则丢弃。
+- 分类：直接使用第一阶段品种检测框映射回原图的 RGB ROI，不外扩；裁到图像范围，任一边小于 8 像素则丢弃。
 - `ripeness_model=edge`（默认）：六个 `ripeness_edge/<crop>/best.onnx`，224 方形拉伸、ImageNet 归一化，logits 使用稳定 Softmax。
 - `ripeness_model=yolo`：`ripeness/unified/best.onnx`，短边缩放到 224、中心裁剪、/255；输出已经有 Softmax。
 - YOLO 的缩放使用 OpenCV 线性插值，并非 PIL/torchvision 抗锯齿缩放的逐像素复刻；相同真实 ROI 的跨端概率一致性和准确率留待后续识别验收，当前仅证明运行契约与性能。

@@ -617,21 +617,13 @@ private:
           classified.push_back(std::move(detection));
           continue;
         }
-        const int x1 = std::max(0, static_cast<int>(std::floor(box.x - box.width * 0.1)));
-        const int y1 = std::max(0, static_cast<int>(std::floor(box.y - box.height * 0.1)));
-        const int x2 = std::min(
-          stream.frame->image.cols,
-          static_cast<int>(std::ceil(box.x + box.width * 1.1)));
-        const int y2 = std::min(
-          stream.frame->image.rows,
-          static_cast<int>(std::ceil(box.y + box.height * 1.1)));
-        if (x2 - x1 < 8 || y2 - y1 < 8) {
+        if (box.width < 8 || box.height < 8) {
           continue;
         }
         try {
           ++roi_count;
           const auto maturity = ripeness_classifier_.classify(
-            stream.frame->image(cv::Rect(x1, y1, x2 - x1, y2 - y1)), detection.type);
+            stream.frame->image(box), detection.type);
           RCLCPP_DEBUG(
             get_logger(), "%s: %s probability=%.4f", detection.type.c_str(),
             maturity.maturity.c_str(), maturity.confidence);
