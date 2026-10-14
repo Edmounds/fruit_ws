@@ -5,7 +5,6 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import signal
 import shlex
 import subprocess
 import time
@@ -27,6 +26,7 @@ from fruit_mission.competition_protocol import localization_sample_ready, module
 from fruit_mission.script_hardware_client import latched_qos
 from fruit_mission.stack_readiness_client import StackReadinessClient
 from fruit_mission.waypoint_route import MissionWaypointRoute
+from fruit_robviz_bridge.process_groups import process_groups_alive, stop_process_groups
 
 
 WORKSPACE = Path('/home/rc4/fruit_ws')
@@ -40,6 +40,7 @@ class CompetitionRunner(StackReadinessClient):
         super().__init__()
         self.options = options
         self.processes = {}
+        self.process_groups = {}
         self.last_data = {}
         self.odometry = None
         self.started_ns = 0
@@ -52,6 +53,7 @@ class CompetitionRunner(StackReadinessClient):
                       'execution': {}, 'modules': {}}
         self.log_dir = Path(os.environ['FRUIT_RUNTIME_SESSION_DIR'])
         self.create_service(Trigger, START_SERVICE, self.request_localization)
+        self.create_service(Trigger, f'{START_SERVICE}/{options.flow}', self.request_localization)
         for key, topic, message_type in (
             ('camera', '/camera/color/image_raw', Image),
             ('annotated', '/fruit_perception/camera/annotated_image', Image),
@@ -71,12 +73,8 @@ class CompetitionRunner(StackReadinessClient):
         self.create_timer(1.0, self.snapshot)
 
     def wait_until(self, predicate, timeout_sec=None):
-        if timeout_sec is not None:
-            return super().wait_until(predicate, min(timeout_sec, 10.0))
-        # Planner execution keeps its existing hardware-completion contract.
-        while rclpy.ok() and not predicate():
-            rclpy.spin_once(self, timeout_sec=0.1)
-        return rclpy.ok() and predicate()
+        timeout_sec = 10.0 if timeout_sec is None else min(timeout_sec, 10.0)
+        return super().wait_until(predicate, timeout_sec)
 
     def touch(self, key):
         self.last_data[key] = time.time()
@@ -119,7 +117,7 @@ class CompetitionRunner(StackReadinessClient):
         filter_args = ['--output-file', str(self.log_dir / f'{name}.log'), '--component', name]
         if self.options.debug:
             filter_args.append('--debug')
-        if name == 'mission':
+        if name in ('mission', 'prepared_stack', 'pointlio', 'loam'):
             filter_args.extend(['--stack-log-dir', str(self.log_dir)])
         # Fixed pipeline, command tokens are arguments rather than browser shell input.
         filter_command = [
@@ -128,22 +126,18 @@ class CompetitionRunner(StackReadinessClient):
             ['bash', '-c', f'set -o pipefail; {shlex.join(command)} 2>&1 | '
              f'{shlex.join(filter_command)}'],
             env=env, start_new_session=True)
+        self.process_groups[name] = {self.processes[name].pid}
 
     def stop(self, name):
-        process = self.processes.pop(name, None)
+        process = self.processes.get(name)
         if process is None:
             return
-        # The pipeline leader may exit before a descendant, so always signal its group.
-        for sig, timeout in ((signal.SIGINT, 5), (signal.SIGTERM, 2), (signal.SIGKILL, 2)):
-            try:
-                os.killpg(process.pid, sig)
-            except ProcessLookupError:
-                break
-            try:
-                process.wait(timeout=timeout)
-                break
-            except subprocess.TimeoutExpired:
-                continue
+        groups = self.process_groups.setdefault(name, {process.pid})
+        if not stop_process_groups(groups):
+            raise RuntimeError(f'{name} process group did not exit; restart is blocked')
+        process.wait(timeout=1.0)
+        self.processes.pop(name, None)
+        self.process_groups.pop(name, None)
 
     def start_localization_process(self, name):
         self.start(name, ['ros2', 'launch', str(NAV_LAUNCH), 'start_lidar:=false',
@@ -248,7 +242,9 @@ class CompetitionRunner(StackReadinessClient):
             'detail': '新鲜 TF' if tf_state == 'OK' else '无本轮有效 TF',
             'last_received': None})
         mission = self.processes.get('mission')
-        if mission and mission.poll() is not None and self.state['phase'] == 'RUNNING':
+        if (mission and mission.poll() is not None
+                and not process_groups_alive(self.process_groups.get('mission', {mission.pid}))
+                and self.state['phase'] == 'RUNNING'):
             self.state.update(
                 phase='FINISHED' if mission.returncode == 0 else 'ERROR',
                 error='' if mission.returncode == 0 else f'mission 退出码 {mission.returncode}')
@@ -300,29 +296,52 @@ class CompetitionRunner(StackReadinessClient):
 
     def close(self):
         # Request STOP, but never claim it proves hardware standstill.
-        stop = self.create_client(Trigger, '/arm_planner_node/stop')
-        if stop.service_is_ready() and rclpy.ok():
+        try:
+            if rclpy.ok(context=self.context):
+                stop = self.create_client(Trigger, '/arm_planner_node/stop')
+                if stop.service_is_ready():
+                    future = stop.call_async(Trigger.Request())
+                    self.wait_until(future.done, 2.0)
+            else:
+                self.get_logger().warning('ROS context 已关闭，STOP 未发送，硬件停稳未确认')
+        except Exception as error:
+            self.get_logger().warning(f'STOP unconfirmed: {error}')
+        finally:
+            # Cleanup must not depend on a valid ROS context or a pipeline leader.
+            groups = {process.pid for process in self.processes.values()}
+            for owned in self.process_groups.values():
+                groups.update(owned)
+            stopped = False
             try:
-                future = stop.call_async(Trigger.Request())
-                self.wait_until(future.done, 2.0)
+                stopped = stop_process_groups(groups) if groups else True
+                for process in self.processes.values():
+                    if stopped:
+                        process.wait(timeout=1.0)
+                    else:
+                        process.poll()
             except Exception as error:
-                self.get_logger().warning(f'STOP unconfirmed: {error}')
-        for name in list(self.processes):
-            self.stop(name)
-        self.state['phase'] = 'STOPPED'
-        self.state['updated_at'] = time.time()
-        for modules in self.state['modules'].values():
-            for module in modules:
-                module.update(state='STOPPED', detail='会话已停止，停稳状态未确认')
-        self.write_snapshot()
+                stopped = False
+                self.get_logger().warning(f'Process cleanup unconfirmed: {error}')
+            if stopped:
+                self.processes.clear()
+                self.process_groups.clear()
+            self.state['phase'] = 'STOPPED' if stopped else 'ERROR'
+            if not stopped:
+                self.state['error'] = '子进程停止未确认，请检查进程和硬件状态'
+            self.state['updated_at'] = time.time()
+            for modules in self.state['modules'].values():
+                for module in modules:
+                    module.update(state=self.state['phase'], detail='停稳状态未确认')
+            self.write_snapshot()
 
 
-def request_start():
+def request_start(expected_flow=None):
     node = Node('competition_start_client')
     try:
-        client = node.create_client(Trigger, START_SERVICE)
+        service = START_SERVICE if expected_flow is None else f'{START_SERVICE}/{expected_flow}'
+        client = node.create_client(Trigger, service)
         if not client.wait_for_service(timeout_sec=3):
-            raise RuntimeError('准备阶段未启动，请先执行 --phase prepare')
+            raise RuntimeError(f'准备会话不存在或流程不匹配: {expected_flow or "当前会话"}')
         future = client.call_async(Trigger.Request())
         rclpy.spin_until_future_complete(node, future, timeout_sec=3)
         if not future.done():
@@ -338,21 +357,22 @@ def request_start():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--phase', choices=('all', 'prepare', 'localize'), default='all')
-    parser.add_argument('--flow', choices=('full', 'ac', 'acb', 'a', 'b', 'c'), default='full')
+    parser.add_argument('--flow', choices=('full', 'ac', 'acb', 'a', 'b', 'c'))
     parser.add_argument('--open-loop', choices=('A', 'C', 'AC', 'none'), default='A')
     parser.add_argument('--debug', action='store_true')
     options = parser.parse_args()
+    if options.phase == 'localize':
+        rclpy.init()
+        try:
+            request_start(options.flow)
+        finally:
+            rclpy.try_shutdown()
+        return
+    options.flow = options.flow or 'full'
     if options.flow == 'acb':
         options.open_loop = 'none'
     filename = 'odom_waypoints_acb.yaml' if options.flow == 'acb' else 'odom_waypoints.yaml'
     options.waypoint_file = WORKSPACE / 'src/navigation/fruit_nav_bringup/waypoints' / filename
-    if options.phase == 'localize':
-        rclpy.init()
-        try:
-            request_start()
-        finally:
-            rclpy.shutdown()
-        return
     STATUS.parent.mkdir(parents=True, exist_ok=True)
     with (STATUS.parent / 'session.lock').open('a') as lock:
         try:
@@ -383,10 +403,12 @@ def main():
         except KeyboardInterrupt:
             pass
         finally:
-            runner.close()
-            runner.destroy_node()
-            if rclpy.ok():
-                rclpy.shutdown()
+            try:
+                runner.close()
+            finally:
+                runner.destroy_node()
+                if rclpy.ok():
+                    rclpy.shutdown()
 
 
 if __name__ == '__main__':

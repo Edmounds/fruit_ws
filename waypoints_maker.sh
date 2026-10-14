@@ -35,10 +35,6 @@ stop_children() {
   fi
   stopped=1
 
-  if ((${#pids[@]} == 0)); then
-    return
-  fi
-
   printf '\n[waypoints-maker] stopping launched processes...\n'
   fruit_recording_stop
   fruit_stop_all_process_groups "${pids[@]}"
@@ -84,7 +80,9 @@ wait_for_odom_tf() {
   return 1
 }
 
-trap stop_children INT TERM EXIT
+trap stop_children EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 while (($# > 0)); do
   case "$1" in

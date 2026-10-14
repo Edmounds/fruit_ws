@@ -10,12 +10,14 @@ import time
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import yaml
 
 from fruit_robviz_bridge.runtime_manager import RuntimeManager
 from fruit_robviz_bridge.runtime_server import RuntimeHTTPServer
+from fruit_robviz_bridge import runtime_server
+from fruit_robviz_bridge.process_groups import process_groups_alive
 
 
 class RuntimeProtocolTest(unittest.TestCase):
@@ -23,6 +25,8 @@ class RuntimeProtocolTest(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.process_ids = set()
         self.root = Path(self.directory.name)
+        self.status_before = runtime_server.COMPETITION_STATUS
+        runtime_server.COMPETITION_STATUS = self.root / 'competition.json'
         setup = self.root / 'setup.bash'
         setup.write_text('', encoding='utf-8')
         (self.root / 'sample.sh').write_text(
@@ -74,6 +78,7 @@ class RuntimeProtocolTest(unittest.TestCase):
                 break
             time.sleep(0.01)
         self.directory.cleanup()
+        runtime_server.COMPETITION_STATUS = self.status_before
 
     def request(self, path, body=None, origin=None):
         headers = {'Content-Type': 'application/json'}
@@ -316,6 +321,60 @@ class RuntimeProtocolTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(stopped['run']['state'], 'EXITED')
 
+    def test_exited_leader_remains_running_until_descendant_stops(self):
+        (self.root / 'sample2.sh').write_text(
+            'trap "" INT\n'
+            '/bin/sleep 60 &\necho descendant-ready\nexit 0\n')
+        status, started = self.request('scripts/sample2/start', {})
+        self.assertEqual(status, 200)
+        self.wait_for_log('sample2', 'descendant-ready')
+        time.sleep(0.1)
+        self.assertEqual(self.request('scripts')[1]['runs']['sample2']['state'], 'RUNNING')
+        self.assertEqual(self.request('scripts/sample2/start', {})[0], 409)
+        status, stopped = self.request('scripts/sample2/stop', {})
+        self.assertEqual(status, 200)
+        self.assertEqual(stopped['run']['state'], 'EXITED')
+        self.assertFalse(process_groups_alive({started['run']['pid']}))
+
+    def test_all_registered_cards_stop_owned_nested_groups_only(self):
+        config = Path(__file__).resolve().parents[1] / 'config/runtime_tasks.yaml'
+        manager = RuntimeManager(
+            config, self.root / 'setup.bash', self.root,
+            self.root / 'logs', self.root / 'cards.lock')
+        (self.root / 'worker.py').write_text(
+            'import os,signal,sys,time\n'
+            'from pathlib import Path\n'
+            'signal.signal(signal.SIGINT, lambda *args: sys.exit(0))\n'
+            'signal.signal(signal.SIGTERM, lambda *args: sys.exit(0))\n'
+            'Path(sys.argv[1]).write_text(str(os.getpid()))\n'
+            'print("ready",flush=True)\ntime.sleep(60)\n')
+        # These are fixture programs named after the cards, never the real robot scripts.
+        for card in manager.scripts()['scripts']:
+            with self.subTest(card=card['id']):
+                (self.root / card['script']).write_text(
+                    'trap "exit 0" INT TERM\n'
+                    'setsid /usr/bin/python3 worker.py nested.pid &\n'
+                    'while true; do sleep 0.05; done\n')
+                (self.root / 'nested.pid').unlink(missing_ok=True)
+                parameters = {
+                    name: spec['choices'][0] for name, spec in card['parameters'].items()
+                    if spec.get('required')}
+                started = manager.start_script(card['id'], parameters)['run']
+                self.process_ids.add(started['pid'])
+                deadline = time.monotonic() + 2
+                while not (self.root / 'nested.pid').exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                nested_pid = int((self.root / 'nested.pid').read_text())
+                self.process_ids.add(nested_pid)
+                # Start an independently owned script through the original HTTP manager.
+                self.assertEqual(self.request('scripts/sample2/start', {})[0], 200)
+                self.wait_for_log('sample2', 'second script running')
+                stopped = manager.stop_script(card['id'])['run']
+                self.assertEqual(stopped['state'], 'EXITED')
+                self.assertFalse(process_groups_alive({started['pid'], nested_pid}))
+                self.assertEqual(self.request('scripts')[1]['runs']['sample2']['state'], 'RUNNING')
+                self.assertEqual(self.request('scripts/sample2/stop', {})[0], 200)
+
     def test_origin_and_body_validation(self):
         self.assertEqual(self.request('scripts/kill', {}, 'http://evil.example:8000')[0], 403)
         self.assertEqual(self.request('scripts/kill', {}, 'http://127.0.0.1:broken')[0], 403)
@@ -330,6 +389,22 @@ class RuntimeProtocolTest(unittest.TestCase):
             self.assertEqual(self.request('competition/localize', body)[0], 400)
         self.assertEqual(self.request(
             'competition/localize', {}, 'http://evil.example:8000')[0], 403)
+
+    def test_named_localization_rejects_flow_mismatch_without_launching(self):
+        status_path = runtime_server.COMPETITION_STATUS
+        for phase in ('PREPARED', 'LOCALIZING', 'RUNNING'):
+            status_path.write_text(json.dumps({'phase': phase, 'parameters': {'flow': 'full'}}))
+            self.assertEqual(self.request('competition/localize/acb', {})[0], 409)
+        status_path.write_text(json.dumps({'phase': 'RUNNING', 'parameters': {'flow': 'acb'}}))
+        code, payload = self.request('competition/localize/acb', {})
+        self.assertEqual(code, 200)
+        self.assertFalse(payload['accepted'])
+        self.assertEqual(self.request('competition/localize', {})[0], 200)
+        for flow in ('invalid', 'acb/extra', '$(touch injected)'):
+            self.assertEqual(self.request(f'competition/localize/{quote(flow, safe="")}', {})[0],
+                             400)
+        self.assertEqual(self.request('competition/localize/acb', {'flow': 'acb'})[0], 400)
+        self.assertFalse((self.root / 'logs/competition-localize.log').exists())
 
     def test_utf8_split_at_chunk_boundary(self):
         self.request('scripts/kill', {})

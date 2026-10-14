@@ -86,7 +86,9 @@ cleanup()
   fruit_logging_close "${status}"
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 list_recorded_bags()
 {
@@ -201,7 +203,7 @@ if [[ -n "${FRUIT_RUNTIME_SESSION_DIR:-}" && -w "$orchestrator_log" ]]; then
   } >> "$orchestrator_log"
 fi
 
-ros2 bag record \
+setsid ros2 bag record \
   --include-hidden-topics \
   --storage mcap \
   "${recorded_topics[@]}" \

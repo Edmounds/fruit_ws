@@ -160,8 +160,14 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.FORBIDDEN, {"error": "不允许的 Origin"})
                 return
             path = urlparse(self.path).path
+            localize_path = '/api/runtime/competition/localize'
+            localize = path == localize_path or path.startswith(localize_path + '/')
+            expected_flow = path[len(localize_path) + 1:] if path != localize_path else None
             body = None
-            if path == "/api/runtime/competition/localize":
+            if localize:
+                if expected_flow is not None and expected_flow not in (
+                        'full', 'ac', 'acb', 'a', 'b', 'c'):
+                    raise RuntimeErrorBase('定位流程无效')
                 if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
                     raise RuntimeErrorBase("请求必须使用 application/json", 415)
                 try:
@@ -206,23 +212,30 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                         )
                 self._send(HTTPStatus.OK, result)
                 return
-            if path == "/api/runtime/competition/localize":
+            if localize:
                 if body:
                     raise RuntimeErrorBase("定位启动不接受参数")
                 try:
                     status = json.loads(COMPETITION_STATUS.read_text(encoding="utf-8"))
                 except (FileNotFoundError, json.JSONDecodeError):
                     status = {"phase": "STOPPED"}
+                prepared = status.get('parameters')
+                if expected_flow is not None and (
+                        not isinstance(prepared, dict) or prepared.get('flow') != expected_flow):
+                    raise RuntimeErrorBase('指定流程与准备会话不匹配', 409)
                 if status.get("phase") in {"LOCALIZING", "RUNNING"}:
                     self._send(HTTPStatus.OK, {"accepted": False, "phase": status["phase"]})
                     return
                 if status.get("phase") != "PREPARED":
                     raise RuntimeErrorBase("比赛尚未完成准备，不能启动定位", 409)
-                log_path = Path("/home/rc4/fruit_ws/log/runtime-control/competition-localize.log")
+                log_path = self.server.manager.log_root / 'competition-localize.log'
                 log_path.parent.mkdir(parents=True, exist_ok=True)
+                script = self.server.manager.workspace_root / 'start_fruit_mission.sh'
+                command = ['/bin/bash', str(script), '--phase', 'localize']
+                if expected_flow is not None:
+                    command.extend(['--flow', expected_flow])
                 process = subprocess.Popen(
-                    ["/bin/bash", "/home/rc4/fruit_ws/start_fruit_mission.sh",
-                     "--phase", "localize"],
+                    command,
                     stdout=log_path.open("a", encoding="utf-8"),
                     stderr=subprocess.STDOUT,
                     start_new_session=True,

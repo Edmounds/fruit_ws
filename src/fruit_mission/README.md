@@ -54,6 +54,8 @@ ACB 不提供单区调试或开环开关。ABC 默认路线、`full/ac/a/b/c` �
 RobViz「正式比赛」可选择 ABC 或 ACB。脚本控制页也提供独立 ACB 卡片。
 准备阶段确定参数和航点文件，定位阶段不能改路线。启动阶段说明见
 [`docs/ROBVIZ_RUNTIME_CONTROL.md`](../../docs/ROBVIZ_RUNTIME_CONTROL.md)。
+ACB 的 `--phase localize` 只接受已准备的 ACB 会话。ABC 显式 `--flow` 同样校验流程。
+ABC 不传 `--flow` 时，定位入口沿用当前准备参数。
 节点增加 `mission_flow=acb`，抓取模式在 ACB 调用处按去程、回程明确切换。
 主目录合入并构建后，才可在操作者授权的安全条件下启动：
 
@@ -115,6 +117,7 @@ B 树作业结束后，右侧执行 `right_to_home_b`，左侧执行 `left_to_ho
 Look 和两层 Store 均使用该规则，无可抓目标也执行该侧 B 安全预设。
 这两个预设等效于 B 区安全 Home，完成后不追加普通 `home`，B8 也遵循该规则。
 分阶段准备并行启动组件和一次 Home，完成后进入 `PREPARED`。
+准备阶段 Home 服务结果等待最多 10 秒，超时走客户端既有 STOP 和失败路径。
 定位只启动 Point-LIO，每次等待最多 10 秒，失败时只重启 Point-LIO 和 loam 一次。
 定位成功后按准备参数启动 mission，并显式传入已校验的 ABC 或 ACB 航点文件。
 比赛完成后保留模块，直到 Ctrl-C、单独停止或 Kill。它们不证明硬件停稳。
@@ -125,7 +128,10 @@ Look 和两层 Store 均使用该规则，无可抓目标也执行该侧 B 安�
 使用 `--debug` 时，准备阶段还会记录内核 USB 事件和 udev 事件，文件分别为
 当前运行目录的 `kernel.log` 和 `udev.log`。退出时监控进程与其他调试进程一起停止。
 直接执行整栈 launch 时，mission 退出触发整栈关闭。
-分阶段 runner 退出时发送 STOP，并清理所拥有的 ROS、录包和 USB 监控进程。
+分阶段 runner 退出时尝试发送 STOP，并清理所拥有的 ROS、录包和 USB 监控进程。
+ROS context 已关闭时跳过 STOP 客户端创建，明确告警，仍执行进程清理和状态写入。
+检查整个所属进程组及嵌套会话，组长退出不结束清理，也不允许提前重启定位进程。
+清理未确认时写入 `ERROR`，确认退出后才写入 `STOPPED`。
 进程关闭和 STOP 发布都不是硬件停稳证明。
 单点调试入口传递 `--zone`，客户端使用同一参数服务，不再等待区域话题订阅者。
 独立单点调试入口 `test_camera_arm_target.sh`（`camera_arm_target_client`）不依赖导航，只接受 `--zone A|B|C --left|--right`（可加 `--debug`），不再接受 `--model`。区域同时选择模型（A/C 蔬菜、B 水果）和 `<side>_look_<zone>` / `<side>_store_<zone>`（B 根据目标基座高度自动选择 `_store_b_up` 或 `_store_b_down`）；例如 `--zone C --left` 使用 `left_look_c`、`left_store_c`。工序为 Home→区域 Look→OPEN/HOLD→识别→CLOSE/HOLD→区域 Store，不加入跨区保护动作。它是人工硬件工具，不能作为自动测试运行。

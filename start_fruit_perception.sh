@@ -156,6 +156,7 @@ while process_alive "$launch_pid"; do
       robviz_status=$?
     fi
     report_robviz_exit "$robviz_status"
+    fruit_stop_process_group "$robviz_pid" "robviz" 5 2
     robviz_pid=""
   fi
   sleep 0.1

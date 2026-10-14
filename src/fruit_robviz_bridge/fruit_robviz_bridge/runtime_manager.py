@@ -9,13 +9,12 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import codecs
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import fcntl
 import os
 from pathlib import Path
 import shlex
-import signal
 import socket
 import subprocess
 import threading
@@ -23,6 +22,10 @@ import time
 from typing import Any, Iterator
 
 import yaml
+
+from fruit_robviz_bridge.process_groups import (
+    owned_process_groups, process_groups_alive, stop_process_groups,
+)
 
 
 class RuntimeErrorBase(Exception):
@@ -61,6 +64,15 @@ class Task:
 class ManagedProcess:
     process: subprocess.Popen[str]
     log_path: Path
+    groups: set[int] = field(default_factory=set)
+
+    def is_running(self) -> bool:
+        self.process.poll()
+        self.groups.update(owned_process_groups(self.groups | {self.process.pid}))
+        running = process_groups_alive(self.groups)
+        if not running:
+            self.process.wait(timeout=1.0)
+        return running
 
 
 def _now() -> str:
@@ -206,7 +218,7 @@ class RuntimeManager:
 
     def _tracked_process(self, task_id: str) -> ManagedProcess | None:
         tracked = self._processes.get(task_id)
-        if tracked is not None and tracked.process.poll() is not None:
+        if tracked is not None and not tracked.is_running():
             self._processes.pop(task_id, None)
             return None
         return tracked
@@ -405,12 +417,15 @@ class RuntimeManager:
             return None
         tracked = current.get("process")
         process = tracked.process if tracked else None
-        exit_code = process.poll() if process else current.get("exit_code")
+        running = tracked.is_running() if tracked else False
+        exit_code = process.returncode if process else current.get("exit_code")
+        if running:
+            exit_code = None
         if process and exit_code is not None and current.get("exit_code") is None:
             current["exit_code"] = exit_code
         return {
             "id": current["id"], "run_id": current["run_id"],
-            "state": "RUNNING" if process and exit_code is None else "EXITED",
+            "state": "RUNNING" if running else "EXITED",
             "exit_code": exit_code, "pid": process.pid if process else None,
         }
 
@@ -461,7 +476,7 @@ class RuntimeManager:
                 if sid == "kill":
                     continue
                 tracked = run.get("process")
-                if tracked and tracked.process.poll() is not None:
+                if tracked and self._tracked_process(sid) is None:
                     run["exit_code"] = tracked.process.returncode
                     self._processes.pop(sid, None)
             if result.returncode != 0:
@@ -629,21 +644,9 @@ class RuntimeManager:
                 )
         if tracked is not None:
             try:
-                try:
-                    os.killpg(tracked.process.pid, signal.SIGINT)
-                except ProcessLookupError:
-                    pass
-                try:
-                    tracked.process.wait(timeout=5.0)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(tracked.process.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        tracked.process.wait(timeout=5.0)
-                    except subprocess.TimeoutExpired as error:
-                        raise RuntimeConflict(f"任务 {task_id} 停止超时，进程仍在运行") from error
+                if not stop_process_groups(tracked.groups, 5.0, 5.0, None):
+                    raise RuntimeConflict(f"任务 {task_id} 停止超时，进程组仍在运行")
+                tracked.process.wait(timeout=1.0)
             finally:
                 self._tracked_process(task_id)
             stopped.append(task_id)

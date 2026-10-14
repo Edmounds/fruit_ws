@@ -3,6 +3,7 @@ set -eo pipefail
 WORKSPACE=/home/rc4/fruit_ws
 PHASE=all
 MISSION_FLOW=full
+FLOW_EXPLICIT=0
 OPEN_LOOP=A
 OPEN_LOOP_EXPLICIT=0
 debug_args=()
@@ -17,6 +18,7 @@ all: perform both stages (default). Use only at the stationary start pose.
 Localization waits up to 10s, then restarts Point-LIO and loam_interface once.
 Other module failures are informational. Existing motion safety checks still apply.
 Parameters are fixed when preparing. Localize reuses those parameters.
+Explicit --flow must match the prepared session. Without --flow, reuse its flow.
 Completed missions keep modules alive until Ctrl-C or Kill (not hardware ESTOP).
 Use start_fruit_mission_acb.sh for ACB with fixed per-leg picking modes.
 ACB fixes A outbound to open-loop, A return and C to closed-loop.
@@ -30,7 +32,7 @@ while (($#)); do
       (($# >= 2)) || { usage >&2; exit 2; }
       case "$1" in
         --phase) PHASE=$2 ;;
-        --flow) MISSION_FLOW=$2 ;;
+        --flow) MISSION_FLOW=$2; FLOW_EXPLICIT=1 ;;
         --open-loop) OPEN_LOOP=$2; OPEN_LOOP_EXPLICIT=1 ;;
       esac
       shift 2 ;;
@@ -58,5 +60,10 @@ if [[ "$PHASE" != localize ]]; then
   fruit_logging_init fruit_mission "${#debug_args[@]}"
   trap 'fruit_logging_close $?' EXIT
 fi
+runner_args=(--phase "$PHASE")
+if [[ "$PHASE" != localize ]] || ((FLOW_EXPLICIT)); then
+  runner_args+=(--flow "$MISSION_FLOW")
+fi
+runner_args+=(--open-loop "$OPEN_LOOP")
 /usr/bin/python3 "$WORKSPACE/src/fruit_mission/fruit_mission/competition_runner.py" \
-  --phase "$PHASE" --flow "$MISSION_FLOW" --open-loop "$OPEN_LOOP" "${debug_args[@]}"
+  "${runner_args[@]}" "${debug_args[@]}"

@@ -8,22 +8,22 @@ ROBVIZ_PID=""
 
 cleanup() {
   trap - EXIT INT TERM
-  if [[ -n "$ROBVIZ_PID" ]] && kill -0 "$ROBVIZ_PID" 2>/dev/null; then
+  if [[ -n "$ROBVIZ_PID" ]]; then
     printf '\n[test_qr] 正在停止 RobViz 视频网关进程 (PID: %s)...\n' "$ROBVIZ_PID"
-    kill -INT "$ROBVIZ_PID" 2>/dev/null || true
-    wait "$ROBVIZ_PID" 2>/dev/null || true
+    fruit_stop_process_group "$ROBVIZ_PID" "qr_robviz" 5 2
   fi
-  if [[ -n "$CAMERA_PID" ]] && kill -0 "$CAMERA_PID" 2>/dev/null; then
+  if [[ -n "$CAMERA_PID" ]]; then
     printf '[test_qr] 正在停止 RGB 相机进程 (PID: %s)...\n' "$CAMERA_PID"
-    kill -INT "$CAMERA_PID" 2>/dev/null || true
-    wait "$CAMERA_PID" 2>/dev/null || true
+    fruit_stop_process_group "$CAMERA_PID" "qr_camera" 5 2
   fi
   printf '[test_qr] 测试已退出。\n'
 }
 
-trap cleanup EXIT INT TERM
-
 source "$WORKSPACE/scripts/setup_fruit_runtime.bash"
+source "$WORKSPACE/scripts/fruit_runtime_logging.bash"
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 set -u
 
 # 检查相机节点是否已有外部发布者
@@ -37,7 +37,7 @@ if (( CAMERA_RUNNING )); then
   printf '[test_qr] 检测到已有相机节点运行，直接复用当前图像流。\n'
 else
   printf '[test_qr] 启动 RealSense RGB 相机 (1280x720 @ 30FPS, 仅开彩色)...\n'
-  ros2 run realsense2_camera realsense2_camera_node \
+  setsid ros2 run realsense2_camera realsense2_camera_node \
     --ros-args -r __ns:=/ -r __node:=camera \
     -p enable_color:=true \
     -p rgb_camera.color_profile:='1280x720x30' \
@@ -75,7 +75,7 @@ if (( ROBVIZ_RUNNING )); then
   printf '[test_qr] 检测到已有 RobViz 视频网关运行，直接复用。\n'
 else
   printf '[test_qr] 启动 RobViz 视频网关与融合图像 (端口 8787, WebRTC)...\n'
-  ros2 launch fruit_robviz_bridge fruit_robviz_bridge.launch.py > /dev/null 2>&1 &
+  setsid ros2 launch fruit_robviz_bridge fruit_robviz_bridge.launch.py > /dev/null 2>&1 &
   ROBVIZ_PID=$!
 fi
 

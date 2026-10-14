@@ -70,6 +70,10 @@ RobViz 的「脚本控制」页复用端口 8001 的运行服务。
 - 运行中「启动」禁用、「停止」可用。
 - 点击「停止」后进入过渡态，发送 SIGINT 信号；超时 5 秒未退出升级为 SIGTERM。
 - SIGTERM 后最多再等待 5 秒。仍未退出时返回 `409`，保留进程跟踪以便再次停止。
+- 停止检查整个所属进程组，不以组长退出作为清理完成。
+- 停止前记录嵌套子进程组，覆盖相机、录包和单点调试启动的独立会话。
+- 仍有所属进程或工作线程存活时保持 `RUNNING`，拒绝重新启动。纯僵尸进程不视为运行。
+- 单独停止不调用全局 Kill，不清理其他卡片或复用的外部节点。
 - 同一脚本运行中再次启动返回 `409`，不会停止或替换原进程。
 - 已退出的脚本保留退出码显示。
 - 点击左侧脚本卡片可直接在右侧激活或打开对应的日志 Tab。
@@ -99,6 +103,17 @@ POST /api/runtime/scripts/kill             {}
 `localize` 补启动 Point-LIO。每次初始化最多等待 10 秒，失败后重启 Point-LIO 与 `loam_interface` 一次。
 第二次失败会报错，不启动 mission。定位成功后自动进入所选路线。
 参数和航点文件在准备阶段确定，定位阶段不接受改路线或改参数。
+CLI 显式指定 `--flow` 时，只能定位同流程的准备会话。
+`start_fruit_mission_acb.sh --phase localize` 拒绝已准备的 ABC 会话。
+ABC 脚本不传 `--flow` 的 `--phase localize` 沿用当前准备参数。
+实现复用 Trigger 服务：通用入口为 `/fruit_competition/start_localization`，
+显式流程入口为 `/fruit_competition/start_localization/{flow}`。正式比赛页仍使用通用入口。
+脚本卡片使用 HTTP `/api/runtime/competition/localize/{flow}` 校验流程，拒绝不匹配的准备会话。
+该接口仍只接受空 JSON，流程标识不修改任何准备参数，并通过 CLI 显式流程入口再次校验。
+准备阶段 Home 服务结果等待最多 10 秒，超时保留客户端原有 STOP 和失败处理。
+runner 在 ROS context 关闭后仍清理子进程，并写入停止状态。
+清理未确认时写入 `ERROR`，不会伪报 `STOPPED`。STOP 未发送也会明确告警。
+准备栈、Point-LIO 和 loam 的输出继续分类到 `arm_planner.log`、`perception.log` 和 `navigation.log`。
 刷新或切换页面不会停止本轮。比赛会话锁阻止 ABC 和 ACB 同时拥有硬件。
 
 「正式比赛」的流程下拉框显示 `ABC` 和 `ACB`，并保留单区调试选择。
@@ -123,6 +138,7 @@ cursor 使用字节偏移，UTF-8 字符不会在读取边界拆坏。
 ```text
 GET  /api/runtime/competition/status
 POST /api/runtime/competition/localize {}
+POST /api/runtime/competition/localize/{flow} {}
 ```
 
 状态接口只读。它显示感知、机械臂、定位导航和 mission 四组健康状态，并读取 `/fruit_mission/status` 的当前动作与按果蔬 type 分类的完成、失败、跳过统计。连续数据超过 3 秒未更新会显示无数据。健康状态不阻塞比赛，也不自动重启模块。相机页面记忆标注 RGB、原始 RGB 或深度选择。
@@ -134,7 +150,20 @@ POST /api/runtime/competition/localize {}
 ```bash
 PYTHONPATH=src/fruit_robviz_bridge /usr/bin/python3 -m unittest discover \
   -s src/fruit_robviz_bridge/test -p test_runtime_protocol.py -v
+PYTHONPATH=src/fruit_robviz_bridge /usr/bin/python3 -m unittest discover \
+  -s src/fruit_robviz_bridge/test -p test_process_groups.py -v
 bash -n start_fruit_mission.sh start_fruit_mission_acb.sh kill_fruit_processes.sh
+```
+
+八张卡片的独立停止检查使用同名临时程序，不运行真实机器人脚本。
+假音频播放器检查不播放音频。runner 协议检查使用 localhost-only DDS domain 201，
+仅创建空节点和定位 Trigger 端点，不调用机械臂服务、不发布导航目标。
+
+```bash
+source scripts/setup_fruit_runtime.bash
+PYTHONPATH=src/fruit_mission:src/fruit_robviz_bridge:$PYTHONPATH \
+  /usr/bin/python3 -m unittest discover -s src/fruit_mission/test \
+  -p test_competition_runner_protocol.py -v
 ```
 
 更新后构建 `fruit_robviz_bridge` 和 RobViz 前端。

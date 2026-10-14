@@ -15,9 +15,9 @@ fi
 
 echo "正在播放测试音频: $AUDIO_FILE"
 if command -v paplay >/dev/null 2>&1; then
-  paplay "$AUDIO_FILE"
+  exec paplay "$AUDIO_FILE"
 elif command -v aplay >/dev/null 2>&1; then
-  aplay -q "$AUDIO_FILE"
+  exec aplay -q "$AUDIO_FILE"
 else
   echo "未找到音频播放工具 (paplay / aplay)" >&2
   exit 1

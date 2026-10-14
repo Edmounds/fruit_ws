@@ -133,31 +133,15 @@ fruit_stop_process_group() {
     local term_timeout="${4:-2}"
 
     [[ -n "$pid" ]] || return 0
-    kill -0 "$pid" 2>/dev/null || return 0
-
-    # 1. SIGINT to process group, fallback to individual pid
-    kill -INT -- "-$pid" 2>/dev/null || kill -INT "$pid" 2>/dev/null || true
-
-    local deadline=$((SECONDS + int_timeout))
-    while (( SECONDS < deadline )) && kill -0 "$pid" 2>/dev/null; do
-        sleep 0.1
-    done
-
-    # 2. SIGTERM
-    if kill -0 "$pid" 2>/dev/null; then
-        kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-        deadline=$((SECONDS + term_timeout))
-        while (( SECONDS < deadline )) && kill -0 "$pid" 2>/dev/null; do
-            sleep 0.1
-        done
+    local status=0
+    /usr/bin/python3 -m fruit_robviz_bridge.process_groups \
+        --int-timeout "$int_timeout" --term-timeout "$term_timeout" "$pid" || status=$?
+    if ((status)); then
+        printf '[cleanup][ERROR] %s process group stop remains unconfirmed\n' "$name" >&2
+    else
+        wait "$pid" 2>/dev/null || true
     fi
-
-    # 3. SIGKILL
-    if kill -0 "$pid" 2>/dev/null; then
-        kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
-    fi
-
-    wait "$pid" 2>/dev/null || true
+    return "$status"
 }
 
 fruit_stop_all_process_groups() {
@@ -166,58 +150,14 @@ fruit_stop_all_process_groups() {
 
     ((${#pids[@]} == 0)) && return 0
 
-    # Phase 1: send SIGINT to all groups simultaneously
-    for pid in "${pids[@]}"; do
-        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-            kill -INT -- "-$pid" 2>/dev/null || kill -INT "$pid" 2>/dev/null || true
-        fi
-    done
-
-    # Phase 2: wait up to 5s for all to finish
-    local deadline=$((SECONDS + 5))
-    while (( SECONDS < deadline )); do
-        local any_alive=0
+    local status=0
+    /usr/bin/python3 -m fruit_robviz_bridge.process_groups "${pids[@]}" || status=$?
+    if ((status == 0)); then
         for pid in "${pids[@]}"; do
-            if kill -0 "$pid" 2>/dev/null; then
-                any_alive=1
-                break
-            fi
+            wait "$pid" 2>/dev/null || true
         done
-        (( any_alive == 0 )) && break
-        sleep 0.1
-    done
-
-    # Phase 3: escalate to SIGTERM
-    for pid in "${pids[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-        fi
-    done
-
-    deadline=$((SECONDS + 2))
-    while (( SECONDS < deadline )); do
-        local any_alive=0
-        for pid in "${pids[@]}"; do
-            if kill -0 "$pid" 2>/dev/null; then
-                any_alive=1
-                break
-            fi
-        done
-        (( any_alive == 0 )) && break
-        sleep 0.1
-    done
-
-    # Phase 4: escalate to SIGKILL
-    for pid in "${pids[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
-        fi
-    done
-
-    # Phase 5: reap all
-    for pid in "${pids[@]}"; do
-        wait "$pid" 2>/dev/null || true
-    done
+    fi
+    return "$status"
 }
 
 fruit_logging_close() {
