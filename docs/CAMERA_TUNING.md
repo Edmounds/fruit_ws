@@ -1,11 +1,13 @@
 # 摄像头实时调参
 
-`test_camera_detector.py` 默认同时打开三个窗口：
-1. **YOLO 目标检测与三维测距窗口**（1280x720 RGB，对齐深度三维测距）。
-2. **原生深度伪彩色窗口**（848x480 原生深度，自适应距离伪彩色渲染，显示 Near/Far 图例）。
-3. **英文参数调参窗口**（`RealSense Camera Controls`，分组调节 RGB 和 Depth 核心参数）。
+`test_camera_detector.py` 支持无头模式（默认）与桌面 GUI 窗口：
+- **无头模式（`--display false`，默认）**：不创建 OpenCV 窗口与 Tkinter 调参面板，适合后台运行并通过 RobViz 网页端查看标注流（实时发布至 `/fruit_perception/camera/annotated_image`）。
+- **桌面 GUI 模式（`--display true` 或 `rgb`/`depth`/`both`）**：
+  1. **YOLO 目标检测与三维测距窗口**（1280x720 RGB，对齐深度三维测距）。
+  2. **原生深度伪彩色窗口**（848x480 原生深度，自适应距离伪彩色渲染，显示 Near/Far 图例）。
+  3. **英文参数调参窗口**（`RealSense Camera Controls`，分组调节 RGB 和 Depth 核心参数）。
 
-参数修改后立即作用于当前摄像头，可直接观察检测框和深度变化。关闭任一窗口或在 OpenCV 窗口按 `q`/`Esc` 均安全退出。
+参数修改后立即作用于当前摄像头，可直接观察检测框和深度变化。桌面模式下关闭任一窗口或在 OpenCV 窗口按 `q`/`Esc` 安全退出；无头模式下按 `Ctrl-C` 安全退出。
 
 （注：系统架构中深度相机硬件流保持常开，人工曝光调参针对底层 UVC/RGB 曝光与白平衡，以及深度传感器手动曝光与增益。原生深度伪彩色仅用于可视化观察，底层测距计算继续使用毫米级原始深度数据；正式任务运行时若检测到 `/fruit_mission`，调试工具拒绝启动。）
 
@@ -36,7 +38,7 @@ Base 由 Python 节点复用现有变换函数，要求图像采集时已满足�
 首次成功配置重载前不订阅 raw image，关闭全部面板后撤销对应 raw 订阅。
 详见 `src/fruit_robviz_bridge/README.md`。
 
-## GUI 启动
+## 启动与运行
 
 所有命令都在工作空间根目录执行，并先加载 ROS 运行环境：
 
@@ -45,20 +47,24 @@ cd /home/rc4/fruit_ws
 source scripts/setup_fruit_runtime.bash
 ```
 
-启动测试与调参（默认使用深度相机 camera）：
+启动无头检测（默认模式，发布 `/fruit_perception/camera/annotated_image` 供 RobViz 网页端查看）：
 
 ```bash
-# A 区模型
+# A 区模型（蔬菜）
 python3 test_camera_detector.py --model A
 
 # B 区模型（整树果实）
 python3 test_camera_detector.py --model B
+```
 
-# C 区模型（蔬菜果实）
-python3 test_camera_detector.py --model C
+启动桌面 GUI 窗口与调参面板：
 
-# D 区模型（复用 B 模型）
-python3 test_camera_detector.py --model D
+```bash
+# 打开桌面 GUI（默认 rgb 窗口与调参面板）
+python3 test_camera_detector.py --model B --display true
+
+# 指定显示窗口（rgb / depth / both）
+python3 test_camera_detector.py --model B --display both
 ```
 
 `--model` 必须是 `A`、`B`、`C` 或 `D`。脚本从当前 YAML 的 `model_root`

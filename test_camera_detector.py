@@ -131,6 +131,7 @@ class FrameSubscriber(Node):
         super().__init__('test_camera_detector')
         self._bridge = CvBridge()
         self._latest_color: np.ndarray | None = None
+        self._latest_color_header: Any | None = None
         self._latest_depth: np.ndarray | None = None
         self._latest_raw_depth: np.ndarray | None = None
         self.camera_info: CameraInfo | None = None
@@ -163,6 +164,27 @@ class FrameSubscriber(Node):
             ArmTelemetry, joint_state_topic, self._on_telemetry, qos_telemetry,
         )
 
+        self.annotated_topic = '/fruit_perception/camera/annotated_image'
+        self._annotated_pub = self.create_publisher(
+            Image, self.annotated_topic, qos_best_effort,
+        )
+
+    @property
+    def latest_header(self) -> Any | None:
+        return self._latest_color_header
+
+    def publish_annotated(self, frame_rgb: np.ndarray, header: Any | None = None) -> None:
+        try:
+            msg = self._bridge.cv2_to_imgmsg(frame_rgb, encoding='rgb8')
+            if header is not None:
+                msg.header = header
+            else:
+                msg.header.stamp = self.get_clock().now().to_msg()
+                msg.header.frame_id = 'camera_color_optical_frame'
+            self._annotated_pub.publish(msg)
+        except Exception as error:  # noqa: BLE001
+            self.get_logger().error(f'Failed to publish annotated image: {error}')
+
     def set_telemetry_conflict(self, conflict: bool) -> None:
         self.telemetry_conflict = conflict
         if conflict:
@@ -172,6 +194,7 @@ class FrameSubscriber(Node):
         try:
             frame = self._bridge.imgmsg_to_cv2(message, desired_encoding='rgb8')
             self._latest_color = np.ascontiguousarray(frame)
+            self._latest_color_header = message.header
         except Exception as error:  # noqa: BLE001
             self.get_logger().error(f'Color frame conversion failed: {error}')
 
@@ -238,6 +261,19 @@ class FrameSubscriber(Node):
         return color, depth, raw_depth
 
 
+def normalize_display_mode(val: str) -> str:
+    cleaned = str(val).strip().lower()
+    if cleaned in ('false', '0', 'none', 'off', 'no', 'headless'):
+        return 'false'
+    if cleaned in ('true', '1', 'on', 'yes', 'gui'):
+        return 'rgb'
+    if cleaned in ('rgb', 'depth', 'both'):
+        return cleaned
+    raise argparse.ArgumentTypeError(
+        f"Invalid display mode: '{val}'. Choose from: false, true, rgb, depth, both."
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='RealSense single camera object detection and 3D depth debug viewer.',
@@ -265,9 +301,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         '--display',
-        choices=('both', 'rgb', 'depth'),
-        default='rgb',
-        help='preview window display mode: rgb (default), depth, or both',
+        type=normalize_display_mode,
+        default='false',
+        help='preview window display mode: false (default: headless), true/rgb, depth, or both',
     )
     parser.add_argument(
         '--scale',
@@ -291,8 +327,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--controls',
         action='store_true',
-        default=True,
-        help='open the camera exposure and control parameters adjustment panel (default: enabled)',
+        default=None,
+        help='open the camera parameters adjustment panel (default: on in GUI, off in headless)',
     )
     parser.add_argument(
         '--no-controls',
@@ -300,7 +336,18 @@ def parse_args() -> argparse.Namespace:
         action='store_false',
         help='do not open the camera parameters adjustment panel',
     )
-    return parser.parse_args()
+    parsed = parser.parse_args()
+    if parsed.controls is None:
+        parsed.controls = (parsed.display != 'false')
+    elif parsed.display == 'false' and parsed.controls:
+        print(
+            'Warning: --controls is not supported in headless mode (--display false); '
+            'disabling control panel.',
+            file=sys.stderr,
+            flush=True,
+        )
+        parsed.controls = False
+    return parsed
 
 
 def load_config() -> dict[str, Any]:
@@ -2287,7 +2334,8 @@ def run() -> int:
                 )
             cv2.imshow(window_depth_name, init_depth)
 
-        cv2.waitKey(1)
+        if active_windows:
+            cv2.waitKey(1)
 
         if args.controls:
             control_panel = CameraControlPanel(
@@ -2303,20 +2351,28 @@ def run() -> int:
         last_frame_time = 0.0
         displayed_fps = 0.0
         last_wait_message = 0.0
+        last_headless_log = 0.0
         announced_first_frame = False
         current_raw_depth: np.ndarray | None = None
         latest_annotated_bgr: np.ndarray | None = None
         latest_depth_view: np.ndarray | None = None
 
         print('\n=== RealSense 3D Inspector Controls ===')
-        print(
-            f'  Mode: --display {args.display} | Scale: {scale:.2f} ({rgb_w}x{rgb_h}) | '
-            f'Max GUI FPS: {gui_fps:.0f}'
-        )
-        print('  [Hover Mouse] : Probe depth and 3D camera / arm base coordinates')
-        print('  [Key s]       : Save current annotated snapshot image to disk')
-        print('  [Key m]       : Toggle model between A (vegetables) and B (fruits)')
-        print('  [Key q / ESC] : Quit viewer\n')
+        if active_windows:
+            print(
+                f'  Mode: --display {args.display} | Scale: {scale:.2f} ({rgb_w}x{rgb_h}) | '
+                f'Max GUI FPS: {gui_fps:.0f}'
+            )
+            print('  [Hover Mouse] : Probe depth and 3D camera / arm base coordinates')
+            print('  [Key s]       : Save current annotated snapshot image to disk')
+            print('  [Key m]       : Toggle model between A (vegetables) and B (fruits)')
+            print('  [Key q / ESC] : Quit viewer\n')
+        else:
+            print(
+                f'  Mode: Headless (--display false) | '
+                f'RobViz streaming: {node.annotated_topic}'
+            )
+            print('  [Ctrl-C]      : Stop detector\n')
 
         window_opened = {wname: False for wname in active_windows}
 
@@ -2344,25 +2400,31 @@ def run() -> int:
 
             now = time.monotonic()
             if min_gui_interval > 0.0 and (now - last_render_time) < min_gui_interval:
-                key = cv2.waitKey(1)
-                if key in (27, ord('q'), ord('Q')):
-                    break
-                elif key in (ord('s'), ord('S')):
-                    target_img = (
-                        latest_annotated_bgr
-                        if latest_annotated_bgr is not None
-                        else latest_depth_view
-                    )
-                    if target_img is not None:
-                        timestamp = time.strftime('%Y%m%d_%H%M%S')
-                        save_path = WORKSPACE / f'snapshot_{timestamp}.jpg'
-                        cv2.imwrite(str(save_path), target_img)
-                        print(f'>>> Saved snapshot to {save_path}', flush=True)
-                elif key in (ord('m'), ord('M')):
-                    current_model = 'B' if current_model in ('A', 'C') else 'A'
-                    model_path = model_path_for(current_model, config)
-                    detector = Detector(model_path)
-                    print(f'>>> Switched to Model {current_model}: {model_path.name}', flush=True)
+                if active_windows:
+                    key = cv2.waitKey(1)
+                    if key in (27, ord('q'), ord('Q')):
+                        break
+                    elif key in (ord('s'), ord('S')):
+                        target_img = (
+                            latest_annotated_bgr
+                            if latest_annotated_bgr is not None
+                            else latest_depth_view
+                        )
+                        if target_img is not None:
+                            timestamp = time.strftime('%Y%m%d_%H%M%S')
+                            save_path = WORKSPACE / f'snapshot_{timestamp}.jpg'
+                            cv2.imwrite(str(save_path), target_img)
+                            print(f'>>> Saved snapshot to {save_path}', flush=True)
+                    elif key in (ord('m'), ord('M')):
+                        current_model = 'B' if current_model in ('A', 'C') else 'A'
+                        model_path = model_path_for(current_model, config)
+                        detector = Detector(model_path)
+                        print(
+                            f'>>> Switched to Model {current_model}: {model_path.name}',
+                            flush=True,
+                        )
+                else:
+                    time.sleep(0.005)
                 continue
 
             frame, depth_frame, raw_depth = node.take_latest()
@@ -2374,9 +2436,12 @@ def run() -> int:
                 if not announced_first_frame and now - last_wait_message > 2.0:
                     print(f'Waiting for frames on {selection.color_topic}...', flush=True)
                     last_wait_message = now
-                key = cv2.waitKey(1)
-                if key in (27, ord('q'), ord('Q')):
-                    break
+                if active_windows:
+                    key = cv2.waitKey(1)
+                    if key in (27, ord('q'), ord('Q')):
+                        break
+                else:
+                    time.sleep(0.01)
                 continue
 
             last_render_time = now
@@ -2416,22 +2481,25 @@ def run() -> int:
             intrinsics = validate_camera_info(node.camera_info, w_img, h_img)
             tcp_pose = node.get_fresh_tcp_pose()
 
+            annotated_rgb = draw_annotations(
+                frame,
+                depth_frame,
+                detections,
+                transform,
+                intrinsics,
+                extrinsic,
+                tcp_pose,
+                mouse_coords[0],
+                mouse_coords[1],
+                displayed_fps,
+                f'{current_model} ({"fruit" if current_model in ("B", "D") else "vegetable"})',
+                ripeness_classifier=ripeness_classifier,
+                scale=scale,
+            )
+
+            node.publish_annotated(annotated_rgb, header=node.latest_header)
+
             if show_rgb:
-                annotated_rgb = draw_annotations(
-                    frame,
-                    depth_frame,
-                    detections,
-                    transform,
-                    intrinsics,
-                    extrinsic,
-                    tcp_pose,
-                    mouse_coords[0],
-                    mouse_coords[1],
-                    displayed_fps,
-                    f'{current_model} ({"fruit" if current_model in ("B", "D") else "vegetable"})',
-                    ripeness_classifier=ripeness_classifier,
-                    scale=scale,
-                )
                 latest_annotated_bgr = cv2.cvtColor(annotated_rgb, cv2.COLOR_RGB2BGR)
                 if scale != 1.0:
                     disp_bgr = cv2.resize(
@@ -2460,25 +2528,42 @@ def run() -> int:
                     depth_disp = latest_depth_view
                 cv2.imshow(window_depth_name, depth_disp)
 
-            key = cv2.waitKey(1)
-            if key in (27, ord('q'), ord('Q')):
-                break
-            elif key in (ord('s'), ord('S')):
-                target_img = (
-                    latest_annotated_bgr
-                    if latest_annotated_bgr is not None
-                    else latest_depth_view
-                )
-                if target_img is not None:
-                    timestamp = time.strftime('%Y%m%d_%H%M%S')
-                    save_path = WORKSPACE / f'snapshot_{timestamp}.jpg'
-                    cv2.imwrite(str(save_path), target_img)
-                    print(f'>>> Saved snapshot to {save_path}', flush=True)
-            elif key in (ord('m'), ord('M')):
-                current_model = 'B' if current_model in ('A', 'C') else 'A'
-                model_path = model_path_for(current_model, config)
-                detector = Detector(model_path)
-                print(f'>>> Switched to Model {current_model}: {model_path.name}', flush=True)
+            if active_windows:
+                key = cv2.waitKey(1)
+                if key in (27, ord('q'), ord('Q')):
+                    break
+                elif key in (ord('s'), ord('S')):
+                    target_img = (
+                        latest_annotated_bgr
+                        if latest_annotated_bgr is not None
+                        else latest_depth_view
+                    )
+                    if target_img is not None:
+                        timestamp = time.strftime('%Y%m%d_%H%M%S')
+                        save_path = WORKSPACE / f'snapshot_{timestamp}.jpg'
+                        cv2.imwrite(str(save_path), target_img)
+                        print(f'>>> Saved snapshot to {save_path}', flush=True)
+                elif key in (ord('m'), ord('M')):
+                    current_model = 'B' if current_model in ('A', 'C') else 'A'
+                    model_path = model_path_for(current_model, config)
+                    detector = Detector(model_path)
+                    print(
+                        f'>>> Switched to Model {current_model}: {model_path.name}',
+                        flush=True,
+                    )
+            else:
+                now_log = time.monotonic()
+                if now_log - last_headless_log >= 2.0:
+                    last_headless_log = now_log
+                    det_summary = ', '.join(f'{d.label}:{d.score:.2f}' for d in detections[:3])
+                    if len(detections) > 3:
+                        det_summary += f', ... (+{len(detections) - 3})'
+                    print(
+                        f'[detector] Model: {current_model} | FPS: {displayed_fps:.1f} '
+                        f'| Detections: {len(detections)} ({det_summary or "none"}) | '
+                        f'RobViz: {node.annotated_topic}',
+                        flush=True,
+                    )
 
     finally:
         _ignore_shutdown_signals()
