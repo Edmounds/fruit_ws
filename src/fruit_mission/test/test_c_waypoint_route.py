@@ -63,6 +63,30 @@ class TestCWaypointRoute(unittest.TestCase):
         self.assertEqual(names, [C_TOP_1, C_TOP_2])
         self.assertAlmostEqual(yaws[-1], math.pi)
 
+    def test_transit_yaw_avoids_turn_before_reverse_travel(self):
+        route = rectangle_route()
+        yaws = route.navigation_yaws_from_waypoints(
+            5.0, 0.0, 0.0, [C_TOP_1, C_TOP_2])
+        self.assertAlmostEqual(yaws[0], 0.0)
+        self.assertAlmostEqual(yaws[-1], math.pi)
+        # The connector's saved yaw remains available for a separate rotation.
+        connector = route.pose(C_TOP_1)
+        self.assertAlmostEqual(2.0 * math.atan2(connector.qz, connector.qw), math.pi / 2.0)
+
+    def test_transit_yaw_keeps_forward_travel(self):
+        route = rectangle_route()
+        yaws = route.navigation_yaws_from_waypoints(
+            3.0, 0.0, 0.0, [C_TOP_1, C_TOP_2])
+        self.assertAlmostEqual(yaws[0], 0.0)
+        self.assertAlmostEqual(yaws[-1], math.pi)
+
+    def test_transit_yaw_rejects_nonfinite_start(self):
+        route = rectangle_route()
+        for start in ((math.nan, 0.0, 0.0), (0.0, math.inf, 0.0), (0.0, 0.0, math.nan)):
+            with self.subTest(start=start):
+                with self.assertRaises(ValueError):
+                    route.navigation_yaws_from_waypoints(*start, [C_TOP_1, C_TOP_2])
+
     def test_exit_from_top_stays_in_lane(self):
         route = rectangle_route()
         top = route.pose(C_TOP_2)

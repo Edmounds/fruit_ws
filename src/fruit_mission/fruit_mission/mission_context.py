@@ -196,8 +196,9 @@ class MissionContext:
         waypoint_names: Sequence[str],
         observation_side: Optional[str] = None,
         arm_preset: Optional[str] = None,
+        yaws: Optional[Sequence[float]] = None,
     ) -> bool:
-        """Send exactly the requested names, without YAML-order expansion."""
+        """Send the requested names and optional yaw overrides, without route expansion."""
         if observation_side is not None and arm_preset is not None:
             raise ValueError("Cannot specify both observation_side and arm_preset")
         names = [str(name) for name in waypoint_names]
@@ -213,14 +214,14 @@ class MissionContext:
             self.start_observation(observation_side)
         if arm_preset is not None:
             self.start_arm_preset(arm_preset)
-        if not self._send_waypoint_names(names):
+        if not self._send_waypoint_names(names, yaws):
             if observation_side is not None:
                 self._pending_observation = None
             if arm_preset is not None:
                 self.finish_arm_preset()
             return False
         self._current_waypoint_name = names[-1]
-        self._current_route_yaw = self._waypoint_yaw(names[-1])
+        self._current_route_yaw = self._waypoint_yaw(names[-1]) if yaws is None else yaws[-1]
         if arm_preset is not None:
             result = self.finish_arm_preset()
             if not result.completed:

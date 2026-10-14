@@ -50,7 +50,7 @@ def run_c(ctx, plan):
     ctx.save_c_distribution(plan)
 
 
-def navigate(ctx, waypoints, *, side=None, preset=None):
+def navigate(ctx, waypoints, *, side=None, preset=None, yaws=None):
     """Navigate with optional concurrent Look or preset; failed handoffs get one safe Home."""
     ctx.telemetry.step('navigate', target=' → '.join(waypoints))
     if (
@@ -71,7 +71,7 @@ def navigate(ctx, waypoints, *, side=None, preset=None):
             if ctx._current_area:
                 ctx.telemetry.result('skipped', 'navigation_home_unconfirmed')
             return False
-    if ctx.navigate_named(waypoints, observation_side=side, arm_preset=preset):
+    if ctx.navigate_named(waypoints, observation_side=side, arm_preset=preset, yaws=yaws):
         return True
     ctx.node.get_logger().warning(f"导航失败，跳过当前动作: {' -> '.join(waypoints)}")
     if ctx._current_area:
@@ -97,7 +97,7 @@ def enter_shenzhi(ctx, *, completed):
 
 
 def scan_b_qr(ctx, *, arrived, preset="qr_scan_b", return_home=True):
-    """Scan and retain a B plan; optionally keep the successful QR pose."""
+    """Scan and retain a B plan; return_home=False leaves all pose recovery to caller."""
     ctx.report_current_area("B")
     ready = arrived and ctx.execute_arm_preset(preset).completed
     plan = None
@@ -113,11 +113,11 @@ def scan_b_qr(ctx, *, arrived, preset="qr_scan_b", return_home=True):
         plan = build_b_plan("\n".join(ctx.config["qr_fallback"]["b_targets"]))
     ctx.save_b_plan(plan)
     ctx.announce(format_b_announcement(plan))
-    if not arrived:  # Failed navigation already recovered once.
+    if not arrived or not return_home:  # Navigation recovery or caller-owned pose exit.
         return plan
     if not decoded:
         ctx.recover_home()
-    elif return_home:
+    else:
         motion = ctx.execute_arm_preset('home')
         if not motion.completed:
             ctx.recover_home()

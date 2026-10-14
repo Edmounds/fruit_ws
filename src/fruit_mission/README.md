@@ -27,9 +27,11 @@ ACB 编排位于 [`fruit_mission/Logic_acb.py`](fruit_mission/Logic_acb.py)。
 
 ```text
 A_left1→4：每点只抓左侧，固定开环
-→ B_QR：导航时 shenzhi，到点执行 qr_scan_a_to_b，扫码、播报并保存 B 计划
+→ 完成 shenzhi 后导航到 B_QR：到点执行 qr_scan_a_to_b，扫码、播报并保存 B 计划
+→ 无论是否读到 B 二维码，直接完成 right_look_a，再开始回程导航
 → A_right4→1：每点只抓右侧，固定闭环
-→ C_QR：扫码、播报，按二维码顺序闭环作业
+→ to_C_waypoint_1：沿途 shenzhi，用最小转向朝向到点，再原地对齐航点 yaw
+→ C_QR：导航到点后执行 qr_scan_c，扫码、播报，按二维码顺序闭环作业
 → 沿 C 图到 C_top_waypoint_2：播报当前 A+C 累计收获
 → 沿 C 图到 C_entrance_waypoint_2
 → to_B_lower_waypoint_1：shenzhi 转场，之后确认一次安全 Home
@@ -37,8 +39,16 @@ A_left1→4：每点只抓左侧，固定开环
 → 停在 B8，直接结束，不再次汇总
 ```
 
-B 扫码成功后不插入 Home，回程导航直接切 `right_look_a`。
-扫码失败仍使用原兜底计划和单次安全恢复，返回 B 时不重新扫码。
+B 扫码成功、超时或扫码姿态失败后均不插入 Home，下一条机械臂动作直接执行 `right_look_a`。
+普通读码失败仍使用原兜底计划，返回 B 时不重新扫码。
+`right_look_a` 完成后才允许回程导航。该交接失败时发送 STOP，并将本次 ACB 标记为 ERROR。
+操作者明确要求此故障分支终止任务，禁止从墙边扫码姿态尝试 Home、伸直或其他转场。
+前置伸直失败时恢复一次 Home，跳过 B 扫码转场，保留 B 兜底计划并推进 A 回程。
+C 转场复用路线朝向计算，优先保持车头朝向后退到 `to_C_waypoint_1`。
+到点后再用同一航点的保存 yaw 原地转向，然后前往 `C_QR`。这不是导航重试。
+到点、原地转向和前往 `C_QR` 各自保留 10 秒预算，不修改航点文件或全局导航行为。
+未到达 `C_QR` 时保存、播报 C 兜底计划，但跳过 C 作业、汇总和 C 图出口导航。
+到达 `C_QR` 后读码失败时仍使用原 C 兜底计划执行作业。
 中途汇总复用已有短语和累计记录，不说“任务流程结束”，不清零。
 等待每条播报完成，等待最多 10 秒，失败或超时继续流程。
 汇总点导航失败时跳过汇总，仍尝试原 C 图出口。
@@ -75,7 +85,7 @@ ABC 不传 `--flow` 时，定位入口沿用当前准备参数。
 | --- | --- |
 | `run_b(ctx, plan, first_side="right")` | 共用 B1～B8 作业。ABC 默认奇数右、偶数左，ACB 使用 `first_side="left"`。 |
 | `run_c(ctx, plan)` | 共用 C 区二维码顺序、图导航、抓取、记录和失败推进。 |
-| `navigate(ctx, waypoints, side=None, preset=None)` | 明确导航点；有 side 时导航与 Look 并行，有 preset 时导航与指定机械臂预设（如 A 结束前往 B 扫码、以及 B 结束前往 C 扫码的 `shenzhi`）并行。失败清理待消费动作，安全恢复并返回 False。 |
+| `navigate(ctx, waypoints, side=None, preset=None, yaws=None)` | 明确导航点，可传入逐点 yaw；有 side 时导航与 Look 并行，有 preset 时导航与指定机械臂预设并行。失败清理待消费动作，安全恢复并返回 False。ACB 前往 B 扫码点前同步完成伸直。 |
 | `pick_a(ctx, side=...)` | 区域 Look/OPEN → 实测停稳 → harvest 窗口 → 成熟目标 → CLOSE/驻留 → 区域 Store/OPEN/驻留。正常不追加 Home，无重复抓取。 |
 | `pick_b_tree(ctx, tree_name=..., target=..., side=...)` | 每树观察一次，按二维码品种、成熟度和基座空间限制筛选，再按检测置信度选最多两个目标。首次抓取前冻结基座请求，再逐个抓取/Store。同树成功抓取之间不回 Home，树末尾执行本侧 `*_to_home_b`。 |
 | `navigate_c(ctx, task)` | 复用现有 C 几何规划，记录路线和 camera_side；失败的记录在恢复前由分区流程保存。 |
@@ -85,7 +95,8 @@ ABC 不传 `--flow` 时，定位入口沿用当前准备参数。
 
 `arrived` 使用前一个 `navigate` 的返回值；导航失败已经执行过一次安全恢复，
 扫码函数只使用兜底计划，不再为同一导航失败重复尝试 Home。
-ACB 的 `scan_b_qr` 指定 `preset="qr_scan_a_to_b", return_home=False`。
+ACB 的 `scan_b_qr` 指定 `preset="qr_scan_a_to_b", return_home=False`，不执行扫码阶段的 Home 恢复。
+ACB 调用处负责扫码后的 `right_look_a` 交接，包括普通读码失败分支。
 ABC 的默认扫码预设和成功后 Home 保持不变。
 
 `MissionContext` 只保留 ROS 反馈、导航发送、感知窗口、planner 原语及安全交接；

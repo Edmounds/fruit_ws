@@ -266,7 +266,7 @@ class MissionWaypointRoute:
             navigation_names, rejoin_point = self._c_navigation_names(
                 graph_path, candidate.goal_name, rejoin_point,
             )
-            navigation_yaws = self._navigation_yaws_from_waypoints(
+            navigation_yaws = self.navigation_yaws_from_waypoints(
                 float(start_x),
                 float(start_y),
                 float(start_yaw),
@@ -326,7 +326,7 @@ class MissionWaypointRoute:
         names, _rejoin_point = self._c_navigation_names(
             graph_path, target_name, rejoin_point,
         )
-        return names, self._navigation_yaws_from_waypoints(
+        return names, self.navigation_yaws_from_waypoints(
             start_x, start_y, start_yaw, names,
         )
 
@@ -590,14 +590,16 @@ class MissionWaypointRoute:
                     )
         raise ValueError(f"C route graph cannot reach {target_name}")
 
-    def _navigation_yaws_from_waypoints(
+    def navigation_yaws_from_waypoints(
         self,
         start_x: float,
         start_y: float,
         start_yaw: float,
         target_names: Sequence[str],
     ) -> List[float]:
-        """Choose efficient transit yaw while preserving the final pick yaw."""
+        """Choose efficient transit yaw while preserving the final saved yaw."""
+        if not all(math.isfinite(value) for value in (start_x, start_y, start_yaw)):
+            raise ValueError("route start must be finite")
         if not target_names:
             return [float(start_yaw)]
 
