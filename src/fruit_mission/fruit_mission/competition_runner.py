@@ -593,7 +593,7 @@ def main():
         MissionWaypointRoute.from_file(options.waypoint_file,
                                        options.flow, 'odom')
         subprocess.run(['bash', str(WORKSPACE / 'kill_fruit_processes.sh'), '--competition'],
-                       timeout=10, check=True)
+                       timeout=30, check=True)
         rclpy.init()
         runner = CompetitionRunner(options)
         try:
