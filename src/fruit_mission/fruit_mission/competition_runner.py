@@ -170,6 +170,8 @@ class CompetitionRunner(StackReadinessClient):
     def localize(self):
         self.state['phase'] = 'LOCALIZING'
         for attempt in (1, 2):
+            if not rclpy.ok(context=self.context):
+                return
             self.state['attempt'] = attempt
             self.started_ns = self.get_clock().now().nanoseconds
             self.odometry = None
@@ -181,6 +183,8 @@ class CompetitionRunner(StackReadinessClient):
                     '--ros-args', '-p', f'mission_flow:={self.options.flow}',
                     '-p', f'waypoint_file:={self.options.waypoint_file}',
                     '-p', f'open_loop:={self.options.open_loop}'])
+                return
+            if not rclpy.ok(context=self.context):
                 return
             self.get_logger().error(f'定位初始化失败或超时，attempt={attempt}')
             self.stop('pointlio')

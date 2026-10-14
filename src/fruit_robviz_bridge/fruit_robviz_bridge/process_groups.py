@@ -50,9 +50,10 @@ def stop_process_groups(groups, int_timeout=5.0, term_timeout=2.0, kill_timeout=
         raise ValueError('Signal wait must be finite and between 0 and 10 seconds')
     for sig, timeout in phases:
         groups.update(owned_process_groups(groups))
-        if any(group <= 1 or group == os.getpgrp() for group in groups):
+        targets = tuple(groups)
+        if any(group <= 1 or group == os.getpgrp() for group in targets):
             raise ValueError('Refusing to signal an invalid or caller process group')
-        for group in groups:
+        for group in targets:
             try:
                 os.killpg(group, sig)
             except ProcessLookupError:

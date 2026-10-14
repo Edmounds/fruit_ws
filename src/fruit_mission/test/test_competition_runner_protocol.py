@@ -73,6 +73,13 @@ class CompetitionRunnerProtocolTest(unittest.TestCase):
         self.assertLess(elapsed, 11.5)
         self.assertFalse(self.runner.wait_until(future.done, 0))
 
+    def test_shutdown_does_not_start_or_retry_localization(self):
+        rclpy.shutdown()
+        self.runner.localize()
+        self.assertFalse(self.runner.processes)
+        self.runner.close()
+        self.assertEqual(self.runner.state['phase'], 'STOPPED')
+
     def test_module_output_reaches_existing_subsystem_logs(self):
         for name, label, logfile in [('prepared_stack', 'arm_planner_node', 'arm_planner.log'),
                                      ('pointlio', 'laserMapping', 'navigation.log'),
