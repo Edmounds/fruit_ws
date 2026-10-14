@@ -6,7 +6,8 @@
 ## 模块与职责
 
 1. **原尺寸图像网关与桥接节点 (`fruit_robviz_image_bridge`)**：
-   运行在 Python/GStreamer，经批准跨进程订阅本机 raw image，提供标注 RGB、原始 RGB (`/camera/color/image_raw`) 与 Native Depth 三路 WebRTC (H.264) 及可选 JPEG 压缩流。保持输入原尺寸传输，不进行降采样。提供 NUC 本地单张无损 PNG 采集服务端协议。原始 RGB 共用 `rgb.*` 传输设置。
+   运行在 Python/GStreamer，提供果蔬标注、原始 RGB、融合标注与 Native Depth 四路 WebRTC (H.264)。不发布 JPEG topic。保持输入原尺寸传输，不进行降采样。提供 NUC 本地单张无损 PNG 采集协议。三路 RGB 共用 `rgb.*` 传输设置。
+   同进程运行独立节点 `fruit_robviz_image_fusion`。收到相机图像就发布融合预览，不按观看人数启停。
 2. **配置重载客户端 (`RobvizConfigClient`)**：
    在启动时及接收到 `/fruit_robviz_bridge/reload_image_settings` Trigger 请求时从 HTTP 服务获取最新图像设置，并通过 ROS 参数原子应用到图像网关节点。
    同节点中的图像配置与 Base 预览分别初始化。初始化失败只停用该模块，修复后重启。
@@ -39,16 +40,33 @@ Base 预览从感知包的 `fruit_perception_geometry` 导入共享纯几何，�
 - 网关同一时间仅允许一个保存任务执行（全局互斥），保存取最新未丢弃原始帧，不受视频预览限帧影响。
 - 独立单机脚本 `collect_cam_img.py` 仍保留原来的 JPG 行为；RobViz 采集专用于无损 PNG 采集。
 
-### JPEG 压缩话题
-当所选传输模式为 JPEG 时，节点按需编码并发布原尺寸压缩图像：
+### WebRTC 图像来源
+RobViz 的可选列表只显示经过有效帧探测的网关来源：
 
 ```text
-/fruit_perception/camera/annotated_image/compressed        sensor_msgs/msg/CompressedImage
-/fruit_robviz_bridge/camera/color/image_raw/compressed    sensor_msgs/msg/CompressedImage
-/fruit_perception/camera/native_depth/compressed           sensor_msgs/msg/CompressedImage
+/camera/color/image_raw                          相机原图
+/fruit_perception/camera/annotated_image          原有果蔬标注
+/fruit_robviz_bridge/camera/annotated_image        独立融合标注
+/camera/depth/image_rect_raw                      原始深度
 ```
 
-RGB 预览直接转发感知节点的标注图。
+WebSocket `getMeta` 最多短暂订阅 1 秒验证每路输入，不为探测建立编码管线。
+探测结果至少缓存 2 秒。活动图像面板每 3 秒查询，停止发帧的来源从可选列表移除。
+已选来源失效时保留选择并遮住旧画面，不自动换图。有效来源恢复后继续预览。
+仅有 ROS 发布者或订阅者不能证明来源可播放。相机驱动自身的 compressed 插件不受影响。
+
+融合节点订阅相机原图、果蔬 `preview_detections`、`base_preview_detections` 和二维码 `preview_detections`。
+二维码与果蔬结果独立匹配图像的时间戳和坐标系，不等待结果，不要求结果齐全。
+没有结果时发布相机原图。只有一种有效结果时绘制该种标注。
+晚到的结果不会补画，也不会套用到下一帧，因此异步推理的框可能很少出现。
+类别、置信度、相机坐标和 `arm_base_link` 坐标直接绘制进图像，随后编码 H.264。
+缺失或无效的机械臂根坐标显示 `unavailable`，不影响检测框和画面。
+坐标变换继续使用原有静止、新鲜度和硬件反馈校验，不补造坐标。
+二维码显示绿色框，果蔬显示黄色框。二维码完整 UTF-8 内容保留在结果 topic。
+二维码文字通过系统 OpenCV FreeType 和 Noto CJK 字体绘制，支持中文内容。
+缺失字体时记录警告，仅文字降级为 ASCII，不影响框、果蔬标注或视频。
+原有 perception 标注 topic 保持不变，没有第二个发布者混发。
+
 Native Depth 预览读取 `/camera/depth/image_rect_raw` (16UC1 毫米语义)，使用 JET 伪彩色并保留原尺寸。
 伪彩色深度图仅供观察，不能替代数值测距。
 
@@ -66,15 +84,13 @@ Native Depth 预览读取 `/camera/depth/image_rect_raw` (16UC1 毫米语义)，
 | 帧率上限 | 10.0 FPS | 10.0 FPS |
 | WebRTC目标码率 | 4.0 Mbps | 1.5 Mbps |
 | 拥塞调节 | 开启 | 开启 |
-| JPEG目标质量 | 90 | 90 |
-| JPEG最低质量 | 70 | 70 |
 | 分辨率 | 原尺寸 (1280×720) | 原尺寸 (848×480) |
 
-- 当模式为 WebRTC 时，不编码和发布 JPEG。
-- 当模式为 JPEG 时，不启动 WebRTC 编码。
-- 无客户端观看或订阅时，停止 raw image 订阅与编码管线。
+- 仅接受 WebRTC 模式，不编码或发布 JPEG。旧配置中的 JPEG 质量字段保留兼容，但不用于编码。
+- 无客户端观看时，停止 WebRTC 编码管线。融合图像发布不受影响。
+- 来源探测与 PNG 采集可以短暂订阅 raw image，但不会触发 WebRTC 编码。
 - 网关未启动或信令断线时，活动图像页每秒等待网关恢复，不自动回退至 JPEG 或 Raw。
-- WebRTC 协商错误停止，重新协商需用户显式操作。采集连接恢复不会自动重发截图命令。
+- 网关或 peer 断线时每秒恢复连接。明确网关错误需显式重连。截图命令不会自动重发。
 - WebRTC 在 GStreamer 通知协商就绪后生成 offer，避免初始 RTP caps 尚未就绪时生成空视频协商。
 
 ## 运行与验证
@@ -162,9 +178,12 @@ PYTHONPATH="$PWD/src/fruit_robviz_bridge:$PYTHONPATH" \
 # 离线纯算法及编码自检（不依赖 ROS 主节点）：
 ros2 run fruit_robviz_bridge check_preview --self-check
 
-# 实时 JPEG 接收与解码检查：
-ros2 run fruit_robviz_bridge check_preview --duration-sec 60
+# 图像协议、时间戳与 ROI 数学检查：
+PYTHONPATH="$PWD/src/fruit_robviz_bridge:$PWD/src/fruit_qr_planner:$PYTHONPATH" \
+  /usr/bin/python3 -m pytest -q src/fruit_robviz_bridge/test/test_image_fusion_protocol.py
 ```
+
+`check_preview` 的旧实时 JPEG 模式不再适用于此网关。WebRTC 实时画面需在 RobViz 验证。
 
 ## 机械臂编辑与预览
 

@@ -28,8 +28,8 @@ set -u
 
 # 检查相机节点是否已有外部发布者
 CAMERA_RUNNING=0
-if ros2 node list 2>/dev/null | grep -q "^/camera$" || \
-   ros2 topic list --no-daemon 2>/dev/null | grep -q "^/camera/color/image_raw$"; then
+if ros2 topic info --no-daemon /camera/color/image_raw 2>/dev/null | \
+   grep -q '^Publisher count: [1-9]'; then
   CAMERA_RUNNING=1
 fi
 
@@ -74,13 +74,13 @@ fi
 if (( ROBVIZ_RUNNING )); then
   printf '[test_qr] 检测到已有 RobViz 视频网关运行，直接复用。\n'
 else
-  printf '[test_qr] 启动 RobViz 视频网关 (端口 8787, 支持 WebRTC 与 Compressed 画面)...\n'
+  printf '[test_qr] 启动 RobViz 视频网关与融合图像 (端口 8787, WebRTC)...\n'
   ros2 launch fruit_robviz_bridge fruit_robviz_bridge.launch.py > /dev/null 2>&1 &
   ROBVIZ_PID=$!
 fi
 
-printf '[test_qr] RobViz 压缩图像话题: /camera/color/image_raw/compressed\n'
-printf '[test_qr] RobViz 标注压缩话题: /fruit_perception/camera/annotated_image/compressed\n'
+printf '[test_qr] RobViz 相机原图: /camera/color/image_raw\n'
+printf '[test_qr] RobViz 融合图像: /fruit_robviz_bridge/camera/annotated_image\n'
 printf '[test_qr] RobViz WebRTC 端口: http://<机器人IP>:8787\n\n'
 
 # 启动比赛同款检验终端

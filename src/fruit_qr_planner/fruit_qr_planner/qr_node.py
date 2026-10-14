@@ -115,6 +115,40 @@ def image_to_bgr(message: Image, cv2_module: Any) -> Any:
     return image
 
 
+def decode_qr_results(image: Any, decode_barcodes: Any) -> tuple[Optional[str], list]:
+    """Decode once and retain QR rectangles independently of plan validity."""
+    payloads = []
+    detections = []
+    for barcode in decode_barcodes(image):
+        if barcode.type != "QRCODE":
+            continue
+        text = ""
+        for encoding in ("utf-8", "gbk"):
+            try:
+                text = barcode.data.decode(encoding).strip()
+                break
+            except UnicodeDecodeError:
+                continue
+        if text:
+            payloads.append(text)
+        rect = barcode.rect
+        detections.append({
+            "text": text[:4096],
+            "roi": [int(rect.left), int(rect.top), int(rect.width), int(rect.height)],
+        })
+    return select_unique_payload(payloads), detections[:64]
+
+
+def qr_result_json(message: Image, detections: list) -> str:
+    """Use the source image header, not processing time, for overlay matching."""
+    return json.dumps({
+        "stamp_sec": message.header.stamp.sec,
+        "stamp_nanosec": message.header.stamp.nanosec,
+        "frame_id": message.header.frame_id,
+        "detections": detections,
+    }, ensure_ascii=False, separators=(",", ":"))
+
+
 class FruitQrPlannerNode(Node):
     def __init__(self) -> None:
         super().__init__("fruit_qr_planner")
@@ -154,6 +188,9 @@ class FruitQrPlannerNode(Node):
         self._candidate_count = 0
         self._current_window: Optional[Dict[str, Any]] = None
         self._window_completed = False
+        self._preview_publisher = self.create_publisher(
+            String, "/fruit_qr_planner/camera/preview_detections", qos_profile_sensor_data
+        )
         self._b_publisher = self.create_publisher(String, "/fruit/b_pick_plan", plan_qos())
         self._c_publisher = self.create_publisher(String, "/fruit/c_pick_plan", plan_qos())
         self._subscription = self.create_subscription(
@@ -224,7 +261,8 @@ class FruitQrPlannerNode(Node):
         target_area = window["area"]
         try:
             image = image_to_bgr(message, self._cv2)
-            payload = self._decode(image)
+            payload, detections = decode_qr_results(image, self._decode_barcodes)
+            self._preview_publisher.publish(String(data=qr_result_json(message, detections)))
             canonical_payload = normalize_payload(payload or "")
             if not canonical_payload:
                 self._candidate = None
@@ -268,23 +306,6 @@ class FruitQrPlannerNode(Node):
                 f"Published C-zone pick plan with {plan['task_count']} tasks "
                 f"(window={window['window_id']})"
             )
-
-    def _decode(self, image: Any) -> Optional[str]:
-        payloads = []
-        for barcode in self._decode_barcodes(image):
-            if barcode.type != "QRCODE":
-                continue
-            text = None
-            try:
-                text = barcode.data.decode("utf-8")
-            except UnicodeDecodeError:
-                try:
-                    text = barcode.data.decode("gbk")
-                except UnicodeDecodeError:
-                    pass
-            if text is not None and text.strip():
-                payloads.append(text)
-        return select_unique_payload(payloads)
 
 
 def main(args=None) -> None:

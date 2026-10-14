@@ -28,13 +28,15 @@ gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst  # noqa: E402
 
 from fruit_robviz_bridge.video_frames import (  # noqa: E402
+    convert_depth_to_jet,
     encode_png,
     validate_and_extract_color,
 )
 from fruit_robviz_bridge.video_streamer import StreamChannel  # noqa: E402
+from fruit_robviz_bridge.image_fusion import ImageFusionNode  # noqa: E402
 from rcl_interfaces.msg import SetParametersResult  # noqa: E402
 import rclpy  # noqa: E402
-from rclpy.executors import ExternalShutdownException  # noqa: E402
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor  # noqa: E402
 from rclpy.node import Node  # noqa: E402
 from rclpy.parameter import Parameter  # noqa: E402
 from sensor_msgs.msg import Image  # noqa: E402
@@ -67,34 +69,19 @@ class VideoGatewayNode(Node):
         self.declare_parameter(
             "depth_topic", "/camera/depth/image_rect_raw"
         )
-        self.declare_parameter(
-            "rgb_output_topic",
-            "/fruit_perception/camera/annotated_image/compressed",
-        )
-        self.declare_parameter(
-            "depth_output_topic",
-            "/fruit_perception/camera/native_depth/compressed",
-        )
+        self.declare_parameter("fusion_topic", "/fruit_robviz_bridge/camera/annotated_image")
 
         self.annotated_topic = str(self.get_parameter("annotated_topic").value)
         self.depth_topic = str(self.get_parameter("depth_topic").value)
-        self.rgb_output_topic = str(self.get_parameter("rgb_output_topic").value)
-        self.depth_output_topic = str(self.get_parameter("depth_output_topic").value)
+        self.fusion_topic = str(self.get_parameter("fusion_topic").value)
 
         self.declare_parameter("raw_rgb_topic", "/camera/color/image_raw")
-        self.declare_parameter(
-            "raw_rgb_output_topic",
-            "/fruit_robviz_bridge/camera/color/image_raw/compressed",
-        )
         self.declare_parameter(
             "capture_output_dir",
             "/home/rc4/fruit_ws/data/yolo_images/camera",
         )
 
         self.raw_rgb_topic = str(self.get_parameter("raw_rgb_topic").value)
-        self.raw_rgb_output_topic = str(
-            self.get_parameter("raw_rgb_output_topic").value
-        )
         self.capture_output_dir = str(self.get_parameter("capture_output_dir").value)
 
         # Version & session tracking
@@ -115,7 +102,6 @@ class VideoGatewayNode(Node):
             "rgb": StreamChannel(
                 "rgb",
                 self.annotated_topic,
-                self.rgb_output_topic,
                 self,
                 self.loop,
                 rgb_params,
@@ -123,7 +109,6 @@ class VideoGatewayNode(Node):
             "camera": StreamChannel(
                 "camera",
                 self.raw_rgb_topic,
-                self.raw_rgb_output_topic,
                 self,
                 self.loop,
                 rgb_params,
@@ -131,24 +116,25 @@ class VideoGatewayNode(Node):
             "depth": StreamChannel(
                 "depth",
                 self.depth_topic,
-                self.depth_output_topic,
                 self,
                 self.loop,
                 depth_params,
+            ),
+            "fusion": StreamChannel(
+                "fusion", self.fusion_topic, self, self.loop, rgb_params,
             ),
         }
 
         # Topic lookup mapping
         self.topic_to_channel: Dict[str, StreamChannel] = {
             self.annotated_topic: self.channels["rgb"],
-            self.rgb_output_topic: self.channels["rgb"],
             "rgb": self.channels["rgb"],
             self.raw_rgb_topic: self.channels["camera"],
-            self.raw_rgb_output_topic: self.channels["camera"],
             "camera": self.channels["camera"],
             self.depth_topic: self.channels["depth"],
-            self.depth_output_topic: self.channels["depth"],
             "depth": self.channels["depth"],
+            self.fusion_topic: self.channels["fusion"],
+            "fusion": self.channels["fusion"],
         }
 
         self.add_on_set_parameters_callback(self._on_set_parameters)
@@ -210,7 +196,7 @@ class VideoGatewayNode(Node):
                 merged.update(updates[stream_name])
 
                 transport = str(merged.get("transport", "")).lower()
-                if transport not in ("webrtc", "jpeg"):
+                if transport != "webrtc":
                     raise ValueError(f"Invalid {stream_name}.transport: {transport}")
 
                 bw = float(merged["bandwidth_mbps"])
@@ -248,6 +234,7 @@ class VideoGatewayNode(Node):
                 for stream_name, merged in merged_streams.items():
                     self.channels[stream_name].update_parameters(merged)
                 self.channels["camera"].update_parameters(merged_streams["rgb"])
+                self.channels["fusion"].update_parameters(merged_streams["rgb"])
                 self.applied_version = new_version
                 self.applied_session = new_session
                 if self.server:
@@ -354,6 +341,9 @@ class VideoGatewayServer:
         self.active_websockets: Set[web.WebSocketResponse] = set()
         self.save_lock = asyncio.Lock()
         self._active_save_future: Optional[asyncio.Future] = None
+        self._probe_lock = asyncio.Lock()
+        self._last_probe = 0.0
+        self._available = {}
 
         self.app = web.Application()
         self.app.router.add_get("/", self.handle_index)
@@ -433,7 +423,7 @@ class VideoGatewayServer:
             streams[ch.raw_topic] = {
                 "name": stream_name,
                 "transport": ch.transport,
-                "compressedTopic": ch.compressed_topic,
+                "available": self._available.get(ch.raw_topic, False),
                 "maxFps": ch.max_fps,
                 "version": self.node.applied_version,
                 "bandwidthMbps": ch.bandwidth_mbps,
@@ -444,6 +434,43 @@ class VideoGatewayServer:
             "session": self.node.applied_session,
             "streams": streams,
         }
+
+    async def probe_streams(self) -> None:
+        """Briefly subscribe to managed sources without creating video encoders."""
+        async with self._probe_lock:
+            if time.monotonic() - self._last_probe < 2.0:
+                return
+
+            async def probe(channel):
+                if not channel.settings_applied or self.node.count_publishers(channel.raw_topic) == 0:
+                    return False
+                channel.add_capture_client("discovery")
+                try:
+                    deadline = time.monotonic() + 1.0
+                    while time.monotonic() < deadline:
+                        frame, received = channel.get_latest_raw_frame()
+                        if frame is not None and time.monotonic() - received <= 1.0:
+                            try:
+                                if channel.name == "depth":
+                                    convert_depth_to_jet(frame)
+                                else:
+                                    validate_and_extract_color(frame)
+                            except Exception as error:
+                                self.node.get_logger().warning(
+                                    f"Source probe rejected {channel.raw_topic}: {error}",
+                                    throttle_duration_sec=2.0,
+                                )
+                                return False
+                            return True
+                        await asyncio.sleep(0.05)
+                    return False
+                finally:
+                    channel.remove_capture_client("discovery")
+
+            channels = list(self.node.channels.values())
+            available = await asyncio.gather(*(probe(ch) for ch in channels))
+            self._available = {ch.raw_topic: ok for ch, ok in zip(channels, available)}
+            self._last_probe = time.monotonic()
 
     def broadcast_metadata(self) -> None:
         payload = self.build_metadata()
@@ -509,6 +536,7 @@ class VideoGatewayServer:
                     topic = data.get("topic")
 
                     if mtype == "getMeta":
+                        await self.probe_streams()
                         await ws.send_json(self.build_metadata())
                         continue
 
@@ -534,7 +562,7 @@ class VideoGatewayServer:
                             requested_topic
                         )
                         if requested_channel is None or requested_channel.name not in (
-                            "rgb", "camera"
+                            "rgb", "camera", "fusion"
                         ):
                             await ws.send_json(
                                 {
@@ -580,6 +608,8 @@ class VideoGatewayServer:
                             )
                             continue
 
+                        await self.probe_streams()
+
                         if capture_channel is None:
                             capture_channel = self.node.channels.get("camera")
                         if capture_channel is None:
@@ -618,10 +648,8 @@ class VideoGatewayServer:
                                 "requestId": req_id,
                                 "topic": capture_topic,
                                 "availableTopics": [
-                                    self.node.raw_rgb_topic,
-                                    self.node.raw_rgb_output_topic,
-                                    self.node.annotated_topic,
-                                    self.node.rgb_output_topic,
+                                    ch.raw_topic for ch in self.node.channels.values()
+                                    if ch.name != "depth" and self._available.get(ch.raw_topic)
                                 ],
                                 "outputDir": self.node.capture_output_dir,
                                 "totalCount": total_count,
@@ -836,7 +864,7 @@ class VideoGatewayServer:
                                 "topic": topic,
                                 "rawTopic": channel.raw_topic,
                                 "transport": channel.transport,
-                                "compressedTopic": channel.compressed_topic,
+                                "available": self._available.get(channel.raw_topic, False),
                                 "maxFps": channel.max_fps,
                                 "version": self.node.applied_version,
                             }
@@ -889,6 +917,14 @@ def main(args=None) -> None:
     asyncio.set_event_loop(loop)
 
     node = VideoGatewayNode(loop)
+    fusion = ImageFusionNode(
+        node.raw_rgb_topic, node.fusion_topic,
+        str(node.get_parameter("arm_frame_id").value),
+        bool(node.get_parameter("use_sim_time").value),
+    )
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
+    executor.add_node(fusion)
     server = VideoGatewayServer(node, loop)
     node.server = server
 
@@ -901,7 +937,7 @@ def main(args=None) -> None:
 
     def spin_ros():
         try:
-            rclpy.spin(node)
+            executor.spin()
         except ExternalShutdownException:
             pass
         finally:
@@ -938,6 +974,7 @@ def main(args=None) -> None:
         rclpy.try_shutdown()
         ros_thread.join(timeout=2.0)
         node.destroy_node()
+        fusion.destroy_node()
         glib_loop.quit()
         glib_thread.join(timeout=2.0)
         pending = asyncio.all_tasks(loop)

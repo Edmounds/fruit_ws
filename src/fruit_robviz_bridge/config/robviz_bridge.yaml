@@ -6,10 +6,8 @@ fruit_robviz_image_bridge:
     arm_frame_id: "arm_base_link"
     annotated_topic: "/fruit_perception/camera/annotated_image"
     raw_rgb_topic: "/camera/color/image_raw"
+    fusion_topic: "/fruit_robviz_bridge/camera/annotated_image"
     depth_topic: "/camera/depth/image_rect_raw"
-    rgb_output_topic: "/fruit_perception/camera/annotated_image/compressed"
-    raw_rgb_output_topic: "/fruit_robviz_bridge/camera/color/image_raw/compressed"
-    depth_output_topic: "/fruit_perception/camera/native_depth/compressed"
     capture_output_dir: "/home/rc4/fruit_ws/data/yolo_images/camera"
     rgb.transport: "webrtc"
     rgb.bandwidth_mbps: 25.0

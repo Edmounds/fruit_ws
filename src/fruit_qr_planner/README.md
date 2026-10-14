@@ -11,10 +11,19 @@ can be processed without restarting the node.
 - Observation window: `/fruit_mission/observation_window` (`std_msgs/msg/String`, JSON)
 - B plan: `/fruit/b_pick_plan` (`std_msgs/msg/String`, UTF-8 JSON)
 - C plan: `/fruit/c_pick_plan` (`std_msgs/msg/String`, UTF-8 JSON)
+- Preview: `/fruit_qr_planner/camera/preview_detections` (`std_msgs/msg/String`, UTF-8 JSON)
 - Parameters: `image_topic`, `observation_window_topic`, and `confirm_frames` (default `1`)
 
 Decoding only occurs during an active observation window with `purpose="qr"` and for frames whose capture timestamp is at or after the window's start time. Outside a valid QR window, frames are immediately dropped to minimize CPU overhead.
 Each plan published includes `observation_window_id`, `image_stamp_sec`, and `image_stamp_nanosec`.
+Preview messages contain `stamp_sec`, `stamp_nanosec`, `frame_id`, and `detections`.
+Each detection contains `text` and pixel `roi: [x, y, width, height]`.
+Preview results use the source image header, including empty detection lists.
+They publish before task-plan validation, so invalid competition contents do not hide a detected QR rectangle.
+Preview limits are 64 rectangles and 4096 characters per rectangle. Task-plan parsing is unchanged.
+Mission preview decoding stops after success or window closure. The fused camera video does not stop.
+`test_qr.sh` continuously decodes and publishes the same preview protocol without publishing JPEG or fruit annotation images.
+RobViz renders QR and fruit results independently into `/fruit_robviz_bridge/camera/annotated_image` for WebRTC.
 Plans retain tasks and area metadata, without unused `stages` or `scan_index` fields.
 Window commands accept areas A/B/C only. Mission consumers reject non-object plan JSON,
 invalid integer image timestamps, wrong window IDs, and mismatched QR purpose or B/C area.

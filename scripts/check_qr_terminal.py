@@ -3,16 +3,16 @@
 
 import sys
 import time
-from typing import Any, Optional, Tuple
+from typing import Optional
 
 import cv2
-import numpy as np
 from pyzbar.pyzbar import decode as decode_barcodes
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import CompressedImage, Image
+from sensor_msgs.msg import Image
+from std_msgs.msg import String
 
 from fruit_qr_planner.planner import (
     build_b_plan,
@@ -20,7 +20,7 @@ from fruit_qr_planner.planner import (
     normalize_payload,
     ParseError,
 )
-from fruit_qr_planner.qr_node import image_to_bgr, select_unique_payload
+from fruit_qr_planner.qr_node import decode_qr_results, image_to_bgr, qr_result_json
 
 
 GREEN = "\033[1;32m"
@@ -47,19 +47,13 @@ class QrTerminalMonitor(Node):
             self._on_image,
             qos_profile_sensor_data,
         )
-        self._compressed_pub = self.create_publisher(
-            CompressedImage,
-            "/camera/color/image_raw/compressed",
-            qos_profile_sensor_data,
-        )
-        self._annotated_compressed_pub = self.create_publisher(
-            CompressedImage,
-            "/fruit_perception/camera/annotated_image/compressed",
+        self._preview_publisher = self.create_publisher(
+            String,
+            "/fruit_qr_planner/camera/preview_detections",
             qos_profile_sensor_data,
         )
         self._last_report_payload: Optional[str] = None
         self._last_report_time: float = 0.0
-        self._last_compress_pub_time: float = 0.0
         self._frame_count = 0
         self._total_frames = 0
         self._last_fps_time = time.time()
@@ -84,59 +78,6 @@ class QrTerminalMonitor(Node):
             )
             sys.stdout.flush()
 
-    def _decode_and_annotate(self, image: Any) -> Tuple[Optional[str], Any]:
-        payloads = []
-        annotated = image.copy()
-        for barcode in decode_barcodes(image):
-            if barcode.type != "QRCODE":
-                continue
-            text = None
-            try:
-                text = barcode.data.decode("utf-8")
-            except UnicodeDecodeError:
-                try:
-                    text = barcode.data.decode("gbk")
-                except UnicodeDecodeError:
-                    pass
-            if text is not None and text.strip():
-                payloads.append(text)
-            if barcode.polygon:
-                pts = np.array([[p.x, p.y] for p in barcode.polygon], dtype=np.int32)
-                cv2.polylines(annotated, [pts], True, (0, 255, 0), 3)
-                rect = barcode.rect
-                cv2.putText(
-                    annotated,
-                    "QR DETECTED",
-                    (rect.left, max(rect.top - 10, 20)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 0),
-                    2,
-                )
-        return select_unique_payload(payloads), annotated
-
-    def _publish_compressed(self, image: Any, stamp: Any) -> None:
-        now = time.time()
-        # Publish compressed frame at max ~15 FPS to conserve CPU
-        if now - self._last_compress_pub_time < 0.065:
-            return
-        self._last_compress_pub_time = now
-
-        success, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        if not success:
-            return
-
-        msg = CompressedImage()
-        msg.header.stamp = stamp
-        msg.header.frame_id = "camera_color_optical_frame"
-        msg.format = "jpeg"
-        msg.data = encoded.tobytes()
-        try:
-            self._compressed_pub.publish(msg)
-            self._annotated_compressed_pub.publish(msg)
-        except Exception:
-            pass
-
     def _on_image(self, message: Image) -> None:
         self._total_frames += 1
         self._frame_count += 1
@@ -148,8 +89,8 @@ class QrTerminalMonitor(Node):
 
         try:
             image = image_to_bgr(message, cv2)
-            payload, annotated = self._decode_and_annotate(image)
-            self._publish_compressed(annotated, message.header.stamp)
+            payload, detections = decode_qr_results(image, decode_barcodes)
+            self._preview_publisher.publish(String(data=qr_result_json(message, detections)))
         except Exception as exc:
             if now - self._last_heartbeat_time > 2.0:
                 print(f"{YELLOW}[图像解析警告] {exc}{RESET}")

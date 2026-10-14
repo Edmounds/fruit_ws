@@ -3,7 +3,7 @@
 #
 # Licensed under the MIT License and Apache License, Version 2.0.
 
-"""GStreamer WebRTC and JPEG streaming engine for ROS 2 image streams."""
+"""GStreamer WebRTC streaming engine for ROS 2 image streams."""
 
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ from gi.repository import Gst, GstSdp, GstWebRTC  # noqa: E402
 
 from fruit_robviz_bridge.video_frames import (  # noqa: E402
     convert_depth_to_jet,
-    encode_jpeg,
     validate_and_extract_color,
 )
 from rclpy.node import Node  # noqa: E402
@@ -32,33 +31,30 @@ from rclpy.qos import (  # noqa: E402
     HistoryPolicy,
     QoSProfile,
     ReliabilityPolicy,
-    qos_profile_sensor_data,
 )
-from sensor_msgs.msg import CompressedImage, Image  # noqa: E402
+from sensor_msgs.msg import Image  # noqa: E402
 
 logger = logging.getLogger("VideoStreamer")
 
 
 class StreamChannel:
-    """Manages a single image stream (RGB or Depth) for WebRTC and JPEG output."""
+    """Manages one raw image source for WebRTC output."""
 
     def __init__(
         self,
         name: str,
         raw_topic: str,
-        compressed_topic: str,
         node: Node,
         loop: asyncio.AbstractEventLoop,
         initial_params: dict,
     ) -> None:
         self.name = name
         self.raw_topic = raw_topic
-        self.compressed_topic = compressed_topic
         self.node = node
         self.loop = loop
 
         # Configuration parameters
-        self.transport = str(initial_params.get("transport", "webrtc")).lower()
+        self.transport = "webrtc"
         self.bandwidth_mbps = float(initial_params.get("bandwidth_mbps", 25.0))
         self.max_fps = float(initial_params.get("max_fps", 10.0))
         self.target_bitrate_mbps = float(
@@ -66,9 +62,6 @@ class StreamChannel:
                 "target_bitrate_mbps", 4.0 if name == "rgb" else 1.5
             )
         )
-        self.quality = int(initial_params.get("quality", 90))
-        self.min_quality = int(initial_params.get("min_quality", 70))
-        self.auto_quality = bool(initial_params.get("auto_quality", True))
         self.settings_applied = False
 
         # WebRTC Bitrate bounds (kbps)
@@ -76,12 +69,6 @@ class StreamChannel:
         self.max_bitrate_kbps = min(int(self.bandwidth_mbps * 1000), target_kbps)
         self.min_bitrate_kbps = max(150, int(self.max_bitrate_kbps * 0.15))
         self.current_bitrate_kbps = self.max_bitrate_kbps
-
-        # JPEG Token bucket
-        self.token_capacity = self.bandwidth_mbps * 1_000_000.0 / 8.0
-        self.tokens = self.token_capacity
-        self.last_token_refill = time.monotonic()
-        self.current_jpeg_quality = self.quality
 
         # State and synchronization
         self.lock = threading.Lock()
@@ -104,19 +91,12 @@ class StreamChannel:
         self.bus: Optional[Gst.Bus] = None
         self.video_spec: Optional[Tuple[int, int, str]] = None
 
-        # JPEG ROS publisher
-        self.compressed_publisher = self.node.create_publisher(
-            CompressedImage, self.compressed_topic, qos_profile_sensor_data
-        )
-
         # Worker push task
         self.push_task: Optional[asyncio.Task] = None
         self.is_active = False
 
     def update_parameters(self, params: dict) -> None:
         """Update stream configuration atomically."""
-        old_transport = self.transport
-        self.transport = str(params.get("transport", self.transport)).lower()
         self.bandwidth_mbps = float(
             params.get("bandwidth_mbps", self.bandwidth_mbps)
         )
@@ -124,9 +104,6 @@ class StreamChannel:
         self.target_bitrate_mbps = float(
             params.get("target_bitrate_mbps", self.target_bitrate_mbps)
         )
-        self.quality = int(params.get("quality", self.quality))
-        self.min_quality = int(params.get("min_quality", self.min_quality))
-        self.auto_quality = bool(params.get("auto_quality", self.auto_quality))
         self.settings_applied = True
 
         target_kbps = int(self.target_bitrate_mbps * 1000)
@@ -137,9 +114,6 @@ class StreamChannel:
             max(self.min_bitrate_kbps, self.current_bitrate_kbps),
         )
 
-        self.token_capacity = self.bandwidth_mbps * 1_000_000.0 / 8.0
-        self.tokens = min(self.tokens, self.token_capacity)
-
         if self.encoder:
             try:
                 self.encoder.set_property("bitrate", self.current_bitrate_kbps)
@@ -147,26 +121,6 @@ class StreamChannel:
                 logger.exception(
                     "[%s] Could not update encoder bitrate", self.name
                 )
-
-        if old_transport != self.transport:
-            logger.info(
-                "[%s] Transport changed from %s to %s",
-                self.name,
-                old_transport,
-                self.transport,
-            )
-            if old_transport == "webrtc" and self.transport == "jpeg":
-                # Close all WebRTC peers and pipeline
-                self.teardown_pipeline()
-                self.notify_all(
-                    {
-                        "type": "error",
-                        "topic": self.raw_topic,
-                        "message": "Stream switched to JPEG mode",
-                    }
-                )
-            elif old_transport == "jpeg" and self.transport == "webrtc":
-                pass
 
         self.update_demand()
 
@@ -189,11 +143,7 @@ class StreamChannel:
         """Return True if there is an active subscriber/viewer for this stream video."""
         if not self.settings_applied:
             return False
-        if self.transport == "webrtc":
-            return len(self.viewers) > 0
-        if self.transport == "jpeg":
-            return self.compressed_publisher.get_subscription_count() > 0
-        return False
+        return len(self.viewers) > 0
 
     def has_demand(self) -> bool:
         """Return True if there is video demand or raw capture demand."""
@@ -650,85 +600,40 @@ class StreamChannel:
             if frame_msg is not None:
                 try:
                     if self.name == "depth":
-                        gst_bytes, bgr_mat, spec = convert_depth_to_jet(frame_msg)
+                        gst_bytes, _, spec = convert_depth_to_jet(frame_msg)
                         spec = (spec[0], spec[1], "RGB")
                     else:
-                        gst_bytes, bgr_mat, spec = validate_and_extract_color(frame_msg)
+                        gst_bytes, _, spec = validate_and_extract_color(frame_msg)
                 except ValueError as exc:
                     logger.warning("[%s] Image processing rejected: %s", self.name, exc)
                     self.notify_error(f"Image error: {exc}")
                 else:
-                    if self.transport == "webrtc":
-                        # Push to GStreamer pipeline
-                        if not self.pipeline or self.video_spec != spec:
-                            self.teardown_pipeline()
-                            try:
-                                self.setup_pipeline(*spec)
-                                for vid in list(self.viewers):
-                                    self.attach_viewer(vid)
-                            except Exception as exc:
-                                logger.exception(
-                                    "[%s] Failed to initialize pipeline: %s", self.name, exc
-                                )
-                                self.notify_error(f"Could not init pipeline: {exc}")
-                                await asyncio.sleep(0.5)
-                                continue
+                    if not self.pipeline or self.video_spec != spec:
+                        self.teardown_pipeline()
+                        try:
+                            self.setup_pipeline(*spec)
+                            for vid in list(self.viewers):
+                                self.attach_viewer(vid)
+                        except Exception as exc:
+                            logger.exception(
+                                "[%s] Failed to initialize pipeline: %s", self.name, exc
+                            )
+                            self.notify_error(f"Could not init pipeline: {exc}")
+                            await asyncio.sleep(0.5)
+                            continue
 
-                        if self.appsrc:
-                            duration = int(interval * Gst.SECOND)
-                            buf = Gst.Buffer.new_wrapped(gst_bytes)
-                            buf.pts = pts
-                            buf.dts = pts
-                            buf.duration = duration
-                            pts += duration
-                            ret = self.appsrc.emit("push-buffer", buf)
-                            if ret != Gst.FlowReturn.OK:
-                                logger.warning(
-                                    "[%s] appsrc returned %s", self.name, ret.value_nick
-                                )
-
-                    elif self.transport == "jpeg":
-                        # Encode and publish CompressedImage
-                        self.process_jpeg(bgr_mat, frame_msg.header)
+                    if self.appsrc:
+                        duration = int(interval * Gst.SECOND)
+                        buf = Gst.Buffer.new_wrapped(gst_bytes)
+                        buf.pts = pts
+                        buf.dts = pts
+                        buf.duration = duration
+                        pts += duration
+                        ret = self.appsrc.emit("push-buffer", buf)
+                        if ret != Gst.FlowReturn.OK:
+                            logger.warning(
+                                "[%s] appsrc returned %s", self.name, ret.value_nick
+                            )
 
             elapsed = time.monotonic() - loop_start
             await asyncio.sleep(max(0.001, interval - elapsed))
-
-    def process_jpeg(self, bgr_mat, header) -> None:
-        now = time.monotonic()
-        elapsed = now - self.last_token_refill
-        self.tokens = min(
-            self.token_capacity,
-            self.tokens + elapsed * (self.bandwidth_mbps * 1_000_000.0 / 8.0),
-        )
-        self.last_token_refill = now
-
-        first_quality = (
-            min(self.quality, max(self.min_quality, self.current_jpeg_quality))
-            if self.auto_quality
-            else self.quality
-        )
-
-        step = 5
-        min_q = self.min_quality if self.auto_quality else self.quality
-        for q in range(first_quality, min_q - 1, -step):
-            try:
-                encoded = encode_jpeg(bgr_mat, q)
-            except Exception as exc:
-                logger.warning("[%s] JPEG encode failed: %s", self.name, exc)
-                return
-            if len(encoded) <= self.tokens:
-                self.tokens -= len(encoded)
-                if self.auto_quality:
-                    self.current_jpeg_quality = min(self.quality, q + step)
-                msg = CompressedImage()
-                msg.header = header
-                msg.format = "jpeg"
-                msg.data = encoded
-                self.compressed_publisher.publish(msg)
-                return
-            if not self.auto_quality:
-                break
-
-        if self.auto_quality:
-            self.current_jpeg_quality = self.min_quality

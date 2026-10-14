@@ -318,8 +318,8 @@ def validate_image_settings(payload: Mapping[str, Any]) -> dict:
             raise ValueError(f"图像配置缺少 {stream_name} 对象")
 
         transport = str(stream.get("transport", "webrtc")).strip().lower()
-        if transport not in ("webrtc", "jpeg"):
-            raise ValueError(f"{stream_name}.transport 必须是 webrtc 或 jpeg")
+        if transport != "webrtc":
+            raise ValueError(f"{stream_name}.transport 必须是 webrtc")
 
         bw = _strict_positive(
             stream.get("bandwidth_mbps"),
