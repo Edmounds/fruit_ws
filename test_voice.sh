@@ -2,7 +2,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AUDIO_FILE="${1:-"$SCRIPT_DIR/sounds/fruit_success.wav"}"
+DEFAULT_AUDIO="$SCRIPT_DIR/src/fruit_mission/sounds/wisadel/start.wav"
+if [[ ! -f "$DEFAULT_AUDIO" ]]; then
+  DEFAULT_AUDIO="$SCRIPT_DIR/sounds/fruit_success.wav"
+fi
+AUDIO_FILE="${1:-"$DEFAULT_AUDIO"}"
 
 if [[ ! -f "$AUDIO_FILE" ]]; then
   echo "音频文件不存在: $AUDIO_FILE" >&2
