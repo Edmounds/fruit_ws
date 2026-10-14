@@ -13,7 +13,7 @@ from fruit_qr_planner.planner import build_b_plan, build_c_plan
 
 
 def run_b(ctx, plan, *, first_side="right"):
-    """Fixed B1..B8 order with alternating vehicle-relative observation sides."""
+    """Enter B1 at Home, then alternate concurrent Looks for B2..B8."""
     if first_side not in ("left", "right"):
         raise ValueError("first_side must be left or right")
     ctx.report_current_area("B")
@@ -23,7 +23,13 @@ def run_b(ctx, plan, *, first_side="right"):
         tree_name = format_b_tree_name(position)
         side = first_side if position % 2 == 1 else other_side
         waypoint = waypoints[position - 1]
-        if navigate(ctx, [waypoint], side=side):
+        entering_b = ctx._b_observation_side is None
+        if entering_b and not ctx._arm_home_confirmed:
+            ctx.node.get_logger().warning('B区入区 Home 未确认，跳过导航和观察')
+            ctx.telemetry.result('skipped', 'navigation_home_unconfirmed')
+            ctx.announce(f"B区{tree_name}导航失败，跳过。")
+            continue
+        if navigate(ctx, [waypoint], side=None if entering_b else side):
             pick_b_tree(
                 ctx,
                 tree_name=tree_name,
