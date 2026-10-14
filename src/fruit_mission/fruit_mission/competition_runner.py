@@ -20,6 +20,7 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import Image, Imu
 from std_msgs.msg import Header, String
+from std_srvs.srv import Empty
 from std_srvs.srv import Trigger
 from tf2_ros import TransformException
 import yaml
@@ -143,6 +144,18 @@ class CompetitionRunner(StackReadinessClient):
                 for name, value in values.items()]
 
     def restart_camera_component(self):
+        reset_client = self.create_client(Empty, '/camera/hw_reset')
+        try:
+            if reset_client.wait_for_service(timeout_sec=5.0):
+                reset_future = reset_client.call_async(Empty.Request())
+                if self.wait_until(reset_future.done, 10.0):
+                    self.get_logger().warning(
+                        'Camera hardware reset requested through the camera component')
+                    return True
+                self.get_logger().error('Camera hardware reset service timed out')
+        finally:
+            self.destroy_client(reset_client)
+
         container = '/fruit_perception_container'
         list_client = self.create_client(ListNodes, f'{container}/_container/list_nodes')
         unload_client = self.create_client(
