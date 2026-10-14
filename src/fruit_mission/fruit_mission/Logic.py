@@ -47,15 +47,11 @@ def run_a(ctx):
 
 
 def run_b(ctx, plan):
-    """QR tree order; observe/freeze/pick up to two fruit inside one action."""
+    """Fixed B1..B8 order; QR only supplies each tree's target variety."""
     ctx.report_current_area("B")
     waypoints = ctx.route.b_goal_names()
-    for task in sorted(plan["tasks"], key=lambda item: int(item["sequence"])):
-        position = int(task["position_id"])
+    for position, task in enumerate(plan["tasks"], start=1):
         tree_name = format_b_tree_name(position)
-        if not 1 <= position <= len(waypoints):
-            ctx.announce(f"B区{tree_name}编号无效，跳过。")
-            continue
         side = "right" if position % 2 == 1 else "left"
         waypoint = waypoints[position - 1]
         if navigate(ctx, [waypoint], side=side):

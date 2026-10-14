@@ -13,8 +13,12 @@ from fruit_qr_planner.planner import build_b_plan, build_c_plan
 
 def navigate(ctx, waypoints, *, side=None, preset=None):
     """Navigate with optional concurrent Look or preset; failed handoffs get one safe Home."""
-    if side is not None and ctx._current_area == "B" and not ctx._arm_home_confirmed:
-        ctx.node.get_logger().warning('B区转场 Home 未确认，跳过当前导航和 Look')
+    if (
+        ctx._current_area == "B"
+        and (side is not None or ctx._b_observation_side is not None)
+        and not ctx._arm_home_confirmed
+    ):
+        ctx.node.get_logger().warning('B区安全姿态未确认，跳过当前导航和机械臂动作')
         return False
     if (
         side is None
@@ -218,9 +222,9 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
             ctx.node.get_logger().warning(f"Skipping invalid B target: {error}")
     if not requests:
         ctx.stop_dataset_capture()
-        motion = ctx.execute_arm_preset("home")
+        motion = ctx.execute_arm_preset(f"{side}_to_home_b")
         if not motion.completed:
-            ctx.recover_home()
+            ctx.recover_home_b(stop_only=True)
         return False
     expected_type = expected_ripe_type(target)
     observed = spoken_model_type(expected_type)
@@ -235,10 +239,11 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
                 ctx.announce(f"{label}机械臂执行失败，跳过。")
                 return False
             ctx.announce(f"{label}继续下一个目标。")
-    if result.success:  # The last failed grasp already recovered Home once.
-        motion = ctx.execute_arm_preset("home")
+    if result.success:  # The last failed grasp already recovered B safe Home once.
+        motion = ctx.execute_arm_preset(f"{side}_to_home_b")
         if not motion.completed:
-            return ctx.recover_home() and success
+            ctx.recover_home_b(stop_only=True)
+            return False
     return success
 
 

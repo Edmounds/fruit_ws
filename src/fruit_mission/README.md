@@ -7,8 +7,9 @@
 - `main(ctx)`：整场 **A → 扫 B 码 → B1～B8 作业 → 扫 C 码 → 按二维码顺序执行 C 作业 → C_top_waypoint_1 → 采摘汇总播报**。
 - `run_a(ctx)`：A1、A2、A3、A4 逐点展开；每点先导航并并行启动左 Look，
   然后调用左、右 `pick_a`。导航与采摘是独立积木，不用循环隐藏固定路线。
-- `run_b(ctx, plan)`：固定按 B1～B8 导航，使用二维码给每棵树指定的目标品种和左右侧，
-  调用一次 `pick_b_tree` 完成该树工序。树间转场边走边切对侧 Look，单树结束后不执行伸直，B 区全部完成后前往 C 区途中边走边伸直。
+- `run_b(ctx, plan)`：固定按 B1～B8 导航，二维码只指定每棵树的目标品种。
+  奇数树观察右侧，偶数树观察左侧。调用一次 `pick_b_tree` 完成该树工序。
+  每树先完成本侧 B 安全预设，再边走边切下一树 Look。B 区全部完成后前往 C 区途中边走边伸直。
 - `run_c(ctx, plan)`：按二维码项序导航，用路线规划器确定的侧调用 `pick_c`；
   采摘完成后不追加伸直，下一段导航按是否经过 top 点选择姿态。导航失败记录并跳过，不在未到达的位置抓取。
 - 分区间固定通道点直接列在调用处，不再通过隐藏的 transition 名称展开。
@@ -27,7 +28,7 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 | --- | --- |
 | `navigate(ctx, waypoints, side=None, preset=None)` | 明确导航点；有 side 时导航与 Look 并行，有 preset 时导航与指定机械臂预设（如 A 结束前往 B 扫码、以及 B 结束前往 C 扫码的 `shenzhi`）并行。失败清理待消费动作，安全恢复并返回 False。 |
 | `pick_a(ctx, side=...)` | 区域 Look/OPEN → 实测停稳 → harvest 窗口 → 成熟目标 → CLOSE/驻留 → 区域 Store/OPEN/驻留。正常不追加 Home，无重复抓取。 |
-| `pick_b_tree(ctx, tree_name=..., target=..., side=...)` | 每树观察一次，按二维码品种、成熟度和基座空间限制筛选，再按检测置信度选最多两个目标。首次抓取前冻结基座请求，再逐个抓取/Store。同树成功抓取之间不回 Home，树末尾回 Home。 |
+| `pick_b_tree(ctx, tree_name=..., target=..., side=...)` | 每树观察一次，按二维码品种、成熟度和基座空间限制筛选，再按检测置信度选最多两个目标。首次抓取前冻结基座请求，再逐个抓取/Store。同树成功抓取之间不回 Home，树末尾执行本侧 `*_to_home_b`。 |
 | `navigate_c(ctx, task)` | 复用现有 C 几何规划，记录路线和 camera_side；失败的记录在恢复前由分区流程保存。 |
 | `navigate_c_route(ctx, names, yaws, side=None)` | C 路线经过任一 top 点时，导航开始异步启动 `shenzhi`，通过最后一个 top 点后，剩余导航并行启动目标侧 Look；收尾不启动 Look。 |
 | `pick_c(ctx, task, side=...)` | 当前二维码项的单次识别/采摘、结果记录和播报；不增加方向复核。 |
@@ -59,7 +60,10 @@ ROS 参数 `open_loop` 同样使用上述字符串，launch、节点及源码配
 A 区开环调用已有 `left_pick_openloop_a` 或 `right_pick_openloop_a`，
 C 区开环调用已有 `left_pick_openloop_c` 或 `right_pick_openloop_c`，
 仍要求成熟度和品种匹配，但不等待三维深度目标。闭环区域保留原视觉目标抓取，C 区转场伸直按路线触发。
-左右观察姿态直接切换，不穿插正常 Home 或新过渡动作。
+A/C 左右观察姿态直接切换，不穿插正常 Home 或新过渡动作。
+B 树作业结束后，右侧执行 `right_to_home_b`，左侧执行 `left_to_home_b`。
+Look 和两层 Store 均使用该规则，无可抓目标也执行该侧 B 安全预设。
+这两个预设等效于 B 区安全 Home，完成后不追加普通 `home`，B8 也遵循该规则。
 独立依赖并行初始化。顶层 launch 的唯一门控复用 `stack_readiness_client stack`。
 各项保留原 10 秒超时，TF 保留 5 秒，超时告警后启动 mission。
 不使用固定 sleep，外围节点退出不终止 mission。
@@ -86,7 +90,7 @@ A 左右调用顺序直接在 `Logic.py`，不再使用
 `a_observation_order` 配置。
 
 窗口结果在入缓存前核对 ID、用途及合法窗后图像时间；扫码计划另核对区域，非对象 JSON 与非法时间忽略后继续等待或使用既有固定兜底。
-姿态统一遵循 planner 的 `arm_presets.yaml` 名称定义，无中间映射：观察调用 `left_look_a/b/c` 或 `right_look_a/b/c`，放果调用 `left_store_a/b/c` 或 `right_store_a/b/c`，扫码调用 `qr_scan_b/c`，复归调用 `home`。
+姿态统一遵循 planner 的 `arm_presets.yaml` 名称定义，无中间映射：观察调用 `left_look_a/b/c` 或 `right_look_a/b/c`，放果调用 `left_store_a/b/c` 或 `right_store_a/b/c`（B 按层选择 `_up/down`），扫码调用 `qr_scan_b/c`。B 树作业复归调用本侧 `*_to_home_b`，其他复归调用 `home`。
 Look 已明确拒绝且未下发轨迹（`trajectory_id=0`），并有有效静止反馈时，不再取消导航。
 到点后消费失败结果，恢复一次 Home，再推进任务。
 请求异常、取消、planner 被占用或已下发轨迹的失败仍保留必要停止和导航取消。
@@ -94,7 +98,11 @@ Look 已明确拒绝且未下发轨迹（`trajectory_id=0`），并有有效静�
 已删除无调用者的旧路线查询 API。当前 A/B/C 路线规划和结果记录保留。
 期望类型只随观察窗口发布，不再维护重复品种话题。
 
-实际姿态顺序以 `Logic.py` / `actions.py` 为准。B 扫码及单树结束后回 Home，树间导航同时切对侧 Look；B→C 转场使用 `shenzhi`。C 开环和闭环采摘完成后均不追加固定伸直。C 扫码后的伸直交接保持不变。原有必要 `shenzhi` 未确认时仍禁止导航，Home 不冒充保护位；软件继续推进。
+实际姿态顺序以 `Logic.py` / `actions.py` 为准。B 扫码后仍回普通 Home。
+B 单树结束后执行本侧 B 安全预设，完成后下一树导航同时切 Look。
+B→C 转场仍使用 `shenzhi`。C 开环和闭环采摘完成后均不追加固定伸直。
+C 扫码后的伸直交接保持不变。必要 `shenzhi` 未确认时仍禁止导航，Home 不冒充保护位。
+B 输入端已校验八项固定顺序，`run_b` 不再重复排序或检查树号范围。
 
 所有 C 区作业入口及 `full` 收尾共用 top 路段姿态编排。
 规划路线包含 `C_top_waypoint_1` 或 `C_top_waypoint_2` 时，开始导航前异步下发一次 `shenzhi`。
@@ -196,11 +204,16 @@ planner 和 mission；复用桥不由当前脚本清理，也不更改其配置�
 
 - 普通观察、采摘、二维码或外围节点失败，跳过当前操作，继续 A/B/C 软件流程。
 - `pick_a` 返回 `success / reason_code / matched_type`。左侧失败也调用同点右侧，
-  B 第一抓失败恢复一次 Home，确认成功后继续第二个冻结目标；恢复失败则跳过剩余目标。
+  B 第一抓失败恢复一次 B 安全 Home，确认成功后继续第二个冻结目标；恢复失败则跳过剩余目标。
   C 无论本项结果如何都推进下一项，不重新观察或反复抓取。
 - 后续导航/Look/抓取仍受既有反馈和运动占用门控；软件推进不是运动许可。
   保留导航取消、STOP、紧急状态锁和运动入口的新鲜实测静止检查，恢复只尝试一次 Home。
-- B 区树间 Home 未确认时，调用处不提交下一树导航或对侧 Look，只推进软件任务。
+- B 树作业的 `recover_home()` 使用 `recover_home_b()`，按已提交的 B 观察侧选择 `*_to_home_b`。
+  B 扫码阶段没有观察侧，仍使用普通 Home。恢复保留急停、STOP、导航取消及新鲜 IDLE 检查。
+- B 安全预设自身失败时只停止必要运动，不重复执行预设，也不改用普通 Home。
+  B 安全姿态未确认时，不提交下一树导航或 Look，只推进软件任务。
+  B 退出导航也须确认 B 安全姿态，不能用并行伸直绕过失败的安全交接。
+  B Store 完成不等同于 B 安全 Home，必须完成对应的 B 安全预设。
 - 机械臂执行无限等待下位机结果，可由主动 STOP/取消或节点退出中断。
   导航每个路点包含转向和直行，最多执行 10 秒；上层不重发，底层重试配置为 0。
   Mission 对整个目标的结果等待预算为路点数 × 10 秒，超时取消并恢复。goal 应答、取消、端点、识别、

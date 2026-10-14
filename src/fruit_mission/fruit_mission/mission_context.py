@@ -105,6 +105,7 @@ class MissionContext:
         self._arm_home_confirmed = False
         self._arm_shenzhi_confirmed = False
         self._last_completed_preset: Optional[str] = None
+        self._b_observation_side: Optional[str] = None
         self._shenzhi_required = False
         self._navigation_stopped = True
         self._navigation_handle = None
@@ -670,6 +671,8 @@ class MissionContext:
             future = self._camera_planner.start_preset(name)
             reason = 'arm_endpoints_not_ready'
             if future is not None:
+                if self._current_area == 'B':
+                    self._b_observation_side = side
                 self._arm_home_confirmed = False
                 self._arm_shenzhi_confirmed = False
         self._pending_observation = (side, future, reason)
@@ -749,7 +752,9 @@ class MissionContext:
             self._last_completed_preset = preset_name
         else:
             self._last_completed_preset = None
-        self._arm_home_confirmed = (preset_name == "home" or "store" in preset_name) and completed
+        self._arm_home_confirmed = completed and (
+            preset_name in ('home', 'left_to_home_b', 'right_to_home_b')
+            or ('store' in preset_name and '_store_b' not in preset_name))
         self._arm_shenzhi_confirmed = preset_name == "shenzhi" and completed
         if self._arm_shenzhi_confirmed:
             self._shenzhi_required = False
@@ -776,11 +781,23 @@ class MissionContext:
         """A planned protection boundary cannot be satisfied by recovery Home."""
         self._shenzhi_required = True
 
-    def send_return_initial_pose(self) -> bool:
-        """Execute the initial-pose recovery preset."""
-        return self.execute_arm_preset("home").completed
-
     def recover_home(self) -> bool:
+        """Recover to ordinary Home, or the submitted B observation side's safe Home."""
+        if self._current_area == 'B' and self._b_observation_side is not None:
+            return self.recover_home_b()
+        return self._recover_to_preset('home')
+
+    def recover_home_b(self, *, stop_only: bool = False) -> bool:
+        """Use the last submitted B side, never the next tree's side."""
+        if self._b_observation_side is None:
+            return self._recover_to_preset('home', stop_only=stop_only)
+        preset_name = f'{self._b_observation_side}_to_home_b'
+        completed = self._recover_to_preset(preset_name, stop_only=stop_only)
+        if not completed and not stop_only:
+            self._recover_to_preset(preset_name, stop_only=True)
+        return completed
+
+    def _recover_to_preset(self, preset_name: str, *, stop_only: bool = False) -> bool:
         """One recovery, not a retry loop; unsafe physical motion stays inhibited."""
         self._pending_observation = None
         self._pending_arm_preset = None
@@ -793,7 +810,10 @@ class MissionContext:
         stop_future = None
         stationary = self._camera_planner.is_stationary(
             self.config['stationary']['joint_speed_rps'])
-        self._arm_home_confirmed = self._arm_home_confirmed and stationary
+        self._arm_home_confirmed = (
+            self._arm_home_confirmed and stationary
+            and (preset_name == 'home' or self._last_completed_preset == preset_name)
+            and not stop_only)
         motion_future = self._camera_planner._motion_future
         if not self._arm_home_confirmed and (
                 (motion_future is not None and not motion_future.done())
@@ -826,7 +846,7 @@ class MissionContext:
             except Exception as error:
                 self.node.get_logger().warning(f'Cannot confirm STOP dispatch: {error}')
                 return False
-        return self.send_return_initial_pose()
+        return not stop_only and self.execute_arm_preset(preset_name).completed
 
     def report_current_area(self, area: str) -> bool:
         """Publish mission state and set perception zone without MCU policy."""
@@ -930,7 +950,9 @@ class MissionContext:
             self._last_completed_preset = preset_name
         else:
             self._last_completed_preset = None
-        self._arm_home_confirmed = (preset_name == 'home' or 'store' in preset_name) and completed
+        self._arm_home_confirmed = completed and (
+            preset_name in ('home', 'left_to_home_b', 'right_to_home_b')
+            or ('store' in preset_name and '_store_b' not in preset_name))
         self._arm_shenzhi_confirmed = preset_name == 'shenzhi' and completed
         if self._arm_shenzhi_confirmed:
             self._shenzhi_required = False
