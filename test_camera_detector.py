@@ -631,6 +631,26 @@ def ensure_arm_communication(
     return debug_proc, bridge_proc, planner_proc
 
 
+def ensure_robviz_bridge(node: FrameSubscriber) -> subprocess.Popen | None:
+    """Check if RobViz video gateway is running; launch if missing."""
+    node_names = set(node.get_node_names())
+    if 'fruit_robviz_image_bridge' in node_names:
+        print('Reusing existing RobViz video gateway (/fruit_robviz_image_bridge)', flush=True)
+        return None
+
+    print(
+        'RobViz video gateway (/fruit_robviz_image_bridge) not detected; '
+        'launching fruit_robviz_bridge.launch.py...',
+        flush=True,
+    )
+    bridge_proc, log_p = launch_background_process(
+        ['ros2', 'launch', 'fruit_robviz_bridge', 'fruit_robviz_bridge.launch.py'],
+        'test_camera_detector_robviz_bridge.log',
+    )
+    print(f'Started RobViz video gateway; log={log_p}', flush=True)
+    return bridge_proc
+
+
 def write_ros_params_file(selection: CameraSelection) -> Path:
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     params_path = TMP_DIR / f'test_camera_detector_{selection.name}_params.yaml'
@@ -2228,6 +2248,7 @@ def run() -> int:
     owned_arm_debug: subprocess.Popen | None = None
     owned_bridge: subprocess.Popen | None = None
     owned_planner: subprocess.Popen | None = None
+    owned_robviz_bridge: subprocess.Popen | None = None
     camera_process: subprocess.Popen | None = None
     log_path = TMP_DIR / f'test_camera_detector_{selection.name}.log'
     control_panel = None
@@ -2235,6 +2256,7 @@ def run() -> int:
 
     try:
         owned_arm_debug, owned_bridge, owned_planner = ensure_arm_communication(node)
+        owned_robviz_bridge = ensure_robviz_bridge(node)
 
         if wait_for_publisher(node, selection.color_topic, 1.0):
             print(
@@ -2584,6 +2606,8 @@ def run() -> int:
                 rclpy.shutdown()
         except Exception:  # noqa: BLE001
             pass
+        if owned_robviz_bridge is not None:
+            stop_process(owned_robviz_bridge)
         if owned_planner is not None:
             stop_process(owned_planner)
         if owned_bridge is not None:
