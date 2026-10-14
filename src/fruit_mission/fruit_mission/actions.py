@@ -48,8 +48,6 @@ def run_c(ctx, plan):
         navigation = navigate_c(ctx, task)
         if navigation["status"] != "succeeded":
             ctx.save_c_distribution(plan)
-            ctx.recover_home()
-            enter_shenzhi(ctx, completed=False)
             continue
         pick_c(ctx, task, side=navigation["camera_side"])
         ctx.save_c_distribution(plan)
@@ -82,7 +80,6 @@ def navigate(ctx, waypoints, *, side=None, preset=None, yaws=None):
     ctx.node.get_logger().warning(f"导航失败，跳过当前动作: {' -> '.join(waypoints)}")
     if ctx._current_area:
         ctx.telemetry.result('skipped', 'navigation_failed')
-    ctx.recover_home()
     return False
 
 
@@ -121,12 +118,9 @@ def scan_b_qr(ctx, *, arrived, preset="qr_scan_b", return_home=True):
     ctx.announce(format_b_announcement(plan))
     if not arrived or not return_home:  # Navigation recovery or caller-owned pose exit.
         return plan
-    if not decoded:
+    motion = ctx.execute_arm_preset('home')
+    if not motion.completed:
         ctx.recover_home()
-    else:
-        motion = ctx.execute_arm_preset('home')
-        if not motion.completed:
-            ctx.recover_home()
     return plan
 
 
@@ -151,9 +145,10 @@ def scan_c_qr(ctx, *, arrived):
     distribution = ctx.route.build_c_distribution(plan)
     ctx.save_c_distribution(distribution)
     ctx.announce(format_c_announcement(plan))
-    if arrived and not decoded:
+    if ready:
+        enter_shenzhi(ctx, completed=True)
+    elif arrived:
         ctx.recover_home()
-    enter_shenzhi(ctx, completed=decoded)
     return distribution
 
 

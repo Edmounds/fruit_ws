@@ -53,11 +53,9 @@ def main(ctx):
             ctx.announce_summary(completed=False)
         else:
             ctx.node.get_logger().warning("ACB 汇总航点导航失败，跳过中途汇总")
-            ctx.recover_home()
 
         if not ctx.navigate_c_waypoint("C_entrance_waypoint_2"):
             ctx.node.get_logger().warning("ACB C区出口导航失败，继续既定B区转场")
-            ctx.recover_home()
     else:
         ctx.node.get_logger().warning("ACB 未到达 C_QR，跳过 C 区作业、汇总和出口导航")
     if navigate(ctx, ["to_B_lower_waypoint_1"], preset="shenzhi"):
