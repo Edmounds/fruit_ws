@@ -57,31 +57,30 @@ ros2 run fruit_robviz_bridge fruit-runtime stop arm
 ## 脚本控制插件
 
 RobViz 的「脚本控制」页复用端口 8001 的运行服务。
-左侧显示七个脚本卡片，右侧只显示当前启动的脚本日志。
+左侧显示七个脚本卡片，支持多个脚本并发启动与单独停止。右侧日志面板通过顶部 Tab 标签栏切换各脚本日志。
 页面使用主页的间隙、圆角和主题变量，分隔条可拖动缩放。
 参数选择和布局保存在当前机器的插件状态中。
 
 支持 `start_fruit_mission.sh`、`start_tele.sh`、`waypoints_maker.sh`、
 `test_camera_arm_target.sh`、`start_fruit_perception.sh`、`test_voice.sh` 和 `test_qr.sh`。
 卡片从服务配置读取参数及可选值，不允许提交 shell 命令。
-Mission 支持 flow、open-loop 和 debug。
-open-loop 提供 `A`、`C`、`AC`、`none` 四个选项，默认 `A`。
-`A` 或 `C` 只让对应区域开环；`AC` 让两区开环；`none` 让两区闭环。B 区保持原流程。
-感知支持 zone、debug、成熟度模型、性能模式、日志等级和仿真时间。
-相机机械臂测试必须选择 zone 和 left/right，支持 debug。
-遥控和打点支持 debug。打点的 teleop 已默认开启。
-语音和 QR 测试不提供参数。
+每张卡片提供独立的「启动」与「停止」按钮：
+- 未运行时「启动」可用、「停止」禁用。
+- 运行中「启动」禁用、「停止」可用。
+- 点击「停止」后进入过渡态，发送 SIGINT 信号；超时 5 秒未退出升级为 SIGTERM。
+- 已退出的脚本保留退出码显示。
+- 点击左侧脚本卡片可直接在右侧激活或打开对应的日志 Tab。
 
-顶部只有一个 Kill 控件，点击后立即执行 `kill_fruit_processes.sh`。
-启动操作直接运行指定脚本，不再强制先执行 Kill 清理旧任务；操作人员可按需手动点击 Kill 进行清理。
+顶部保留全局 Kill 控件，点击后立即执行 `kill_fruit_processes.sh`。
 清理范围包括机器人任务、图像桥，以及测试脚本及其子进程。
 独立运行的 RobViz 页面服务、runtime 服务和 Foxglove 服务不属于清理目标。
 **Kill 是进程清理，不是硬件急停，也不证明硬件已经停稳。**
 
 ```text
 GET  /api/runtime/scripts
-GET  /api/runtime/scripts/log?run_id={run_id}&cursor={byte_offset}
+GET  /api/runtime/scripts/log?script_id={script_id}&run_id={run_id}&cursor={byte_offset}
 POST /api/runtime/scripts/{task_id}/start  {"parameters": {...}}
+POST /api/runtime/scripts/{task_id}/stop   {}
 POST /api/runtime/scripts/kill             {}
 ```
 
@@ -93,9 +92,10 @@ POST /api/runtime/scripts/kill             {}
 启动返回进程状态，不代表相机、ROS 节点或硬件已经就绪。
 脚本使用 `DISPLAY=:0` 和当前用户的 `/run/user/{uid}` 会话环境，支持本机窗口和音频。
 日志保留 ANSI 颜色和回车更新，使用只读 xterm 显示。
-每次日志响应最多 64 KiB，返回页面时最多恢复最近 256 KiB。
+右侧日志面板为单终端实例，切换 Tab 时重置并按需拉取目标脚本最近尾部数据（最多 256 KiB）。
+每次日志响应最多 64 KiB。
 cursor 使用字节偏移，UTF-8 字符不会在读取边界拆坏。
-脚本退出后保留日志和退出码，新一次启动只显示新一次日志。
+脚本退出后保留日志和退出码，已退出的 Tab 支持点击关闭。
 切换插件或关闭网页不会停止脚本。
 运行服务重启会丢失内存中的当前任务引用，页面不会自动重启任务。
 

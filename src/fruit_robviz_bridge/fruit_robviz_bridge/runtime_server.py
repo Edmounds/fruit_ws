@@ -122,8 +122,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                     cursor = int(query.get("cursor", ["0"])[0])
                 except ValueError as error:
                     raise RuntimeErrorBase("日志 cursor 无效") from error
+                script_id = query.get("script_id", [None])[0]
+                run_id = query.get("run_id", [""])[0]
                 self._send(HTTPStatus.OK, self.server.manager.script_log(
-                    cursor, query.get("run_id", [""])[0]
+                    cursor, run_id, script_id
                 ))
                 return
             if path == "/api/runtime/tasks":
@@ -167,14 +169,19 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                     result = self.server.manager.kill_scripts()
                 else:
                     script_id, action = self._operation("/api/runtime/scripts/")
-                    if script_id is None or action != "start":
+                    if script_id is None or action not in ("start", "stop"):
                         self._send(HTTPStatus.NOT_FOUND, {"error": "接口不存在"})
                         return
-                    if body.keys() - {"parameters"}:
-                        raise RuntimeErrorBase("存在未知请求字段")
-                    result = self.server.manager.start_script(
-                        script_id, body.get("parameters", {})
-                    )
+                    if action == "stop":
+                        if body:
+                            raise RuntimeErrorBase("Stop 不接受参数")
+                        result = self.server.manager.stop_script(script_id)
+                    else:
+                        if body.keys() - {"parameters"}:
+                            raise RuntimeErrorBase("存在未知请求字段")
+                        result = self.server.manager.start_script(
+                            script_id, body.get("parameters", {})
+                        )
                 self._send(HTTPStatus.OK, result)
                 return
             if task_id is None or operation not in ("start", "stop"):

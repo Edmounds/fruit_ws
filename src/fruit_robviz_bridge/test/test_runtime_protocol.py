@@ -25,17 +25,29 @@ class RuntimeProtocolTest(unittest.TestCase):
         (self.root / 'sample.sh').write_text(
             "printf '\\033[32m中文测试\\033[0m\\n'\n"
             'printf "%s\\n" "$@"\n', encoding='utf-8')
+        (self.root / 'sample2.sh').write_text(
+            'printf "second script running\\n"\n'
+            'trap "exit 0" INT TERM\n'
+            'while true; do sleep 0.05; done\n', encoding='utf-8')
         (self.root / 'kill_fruit_processes.sh').write_text(
             'echo "safe temporary cleanup"\nexit 0\n', encoding='utf-8')
         config = self.root / 'tasks.yaml'
-        config.write_text(yaml.safe_dump({'tasks': {'sample': {
-            'command': '/bin/false', 'script': 'sample.sh',
-            'parameters': {
-                'mode': {'flag': '--mode', 'choices': ['one', 'two'], 'required': True},
-                'debug': {'flag': '--debug', 'default': False},
-                'model': {'flag': 'model:=', 'choices': ['edge', 'yolo'], 'default': 'edge'},
+        config.write_text(yaml.safe_dump({'tasks': {
+            'sample': {
+                'command': '/bin/false', 'script': 'sample.sh',
+                'parameters': {
+                    'mode': {'flag': '--mode', 'choices': ['one', 'two'], 'required': True},
+                    'debug': {'flag': '--debug', 'default': False},
+                    'model': {'flag': 'model:=', 'choices': ['edge', 'yolo'], 'default': 'edge'},
+                },
             },
-        }}}), encoding='utf-8')
+            'sample2': {
+                'command': '/bin/false', 'script': 'sample2.sh',
+                'parameters': {
+                    'debug': {'flag': '--debug', 'default': False},
+                },
+            },
+        }}), encoding='utf-8')
         self.manager = RuntimeManager(
             config, setup, self.root, self.root / 'logs', self.root / 'control.lock')
         self.server = RuntimeHTTPServer('127.0.0.1', 0, self.manager)
@@ -158,6 +170,51 @@ class RuntimeProtocolTest(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(stopped['current']['state'], 'EXITED')
             self.assertIn('[Kill] Cleanup completed.', self.request('scripts/log')[1]['data'])
+        finally:
+            self.request('scripts/kill', {})
+
+    def test_concurrent_scripts_individual_stop_and_logs(self):
+        try:
+            status, start1 = self.request('scripts/sample/start', {'parameters': {'mode': 'one'}})
+            self.assertEqual(status, 200)
+            status, start2 = self.request('scripts/sample2/start', {'parameters': {'debug': True}})
+            self.assertEqual(status, 200)
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                status, state = self.request('scripts')
+                if (state.get('runs', {}).get('sample2', {}).get('state') == 'RUNNING' and
+                        state.get('runs', {}).get('sample', {}).get('state') == 'EXITED'):
+                    break
+                time.sleep(0.01)
+
+            self.assertIn('runs', state)
+            self.assertEqual(state['runs']['sample2']['state'], 'RUNNING')
+            self.assertEqual(state['runs']['sample']['state'], 'EXITED')
+
+            # Fetch log for sample2 specifically
+            status, log2 = self.request('scripts/log?script_id=sample2')
+            self.assertEqual(status, 200)
+            self.assertIn('second script running', log2['data'])
+
+            # Fetch log for sample specifically
+            status, log1 = self.request('scripts/log?script_id=sample')
+            self.assertEqual(status, 200)
+            self.assertIn('中文测试', log1['data'])
+
+            # Stop sample2 individually
+            status, stop_res = self.request('scripts/sample2/stop', {})
+            self.assertEqual(status, 200)
+            self.assertEqual(stop_res['run']['state'], 'EXITED')
+
+            # Idempotent stop on already stopped script
+            status, stop_again = self.request('scripts/sample2/stop', {})
+            self.assertEqual(status, 200)
+            self.assertEqual(stop_again['run']['state'], 'EXITED')
+
+            # Stop unknown script -> 404
+            status, _ = self.request('scripts/nonexistent/stop', {})
+            self.assertEqual(status, 404)
         finally:
             self.request('scripts/kill', {})
 

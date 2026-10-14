@@ -116,8 +116,25 @@ class RuntimeManager:
         self._processes: dict[str, ManagedProcess] = {}
         self._operation_lock = threading.RLock()
         self._script_operation: str | None = None
-        self._current_script: dict[str, Any] | None = None
+        self._script_runs: dict[str, dict[str, Any]] = {}
+        self._last_script_id: str | None = None
         self.tasks = self._load_tasks(config_path)
+
+    @property
+    def _current_script(self) -> dict[str, Any] | None:
+        if self._last_script_id is not None:
+            return self._script_runs.get(self._last_script_id)
+        return None
+
+    @_current_script.setter
+    def _current_script(self, value: dict[str, Any] | None) -> None:
+        if value is None:
+            self._last_script_id = None
+        else:
+            task_id = value.get("id")
+            if task_id:
+                self._script_runs[task_id] = value
+                self._last_script_id = task_id
 
     @staticmethod
     def _load_tasks(path: Path) -> dict[str, Task]:
@@ -389,6 +406,8 @@ class RuntimeManager:
         tracked = current.get("process")
         process = tracked.process if tracked else None
         exit_code = process.poll() if process else current.get("exit_code")
+        if process and exit_code is not None and current.get("exit_code") is None:
+            current["exit_code"] = exit_code
         return {
             "id": current["id"], "run_id": current["run_id"],
             "state": "RUNNING" if process and exit_code is None else "EXITED",
@@ -396,23 +415,33 @@ class RuntimeManager:
         }
 
     def scripts(self) -> dict[str, Any]:
+        runs: dict[str, Any] = {}
+        for script_id, run in self._script_runs.items():
+            status = self._script_status(run)
+            if status is not None:
+                runs[script_id] = status
         return {
             "scripts": [{"id": task.task_id, "script": task.script,
-                         "parameters": task.parameters or {}, "note": task.note}
+                         "parameters": task.parameters or {}, "note": task.note,
+                         "status": runs.get(task.task_id)}
                         for task in self.tasks.values() if task.script],
+            "runs": runs,
             "current": self._script_status(self._current_script),
             "operation": self._script_operation,
         }
 
     def _kill_scripts(self) -> None:
         self.log_root.mkdir(parents=True, exist_ok=True)
-        if self._current_script is None:
-            self._current_script = {
+        kill_run = self._script_runs.get("kill")
+        if kill_run is None:
+            kill_run = {
                 "id": "kill", "run_id": _now(), "start": 0,
                 "log_path": self.log_root / "kill.log",
             }
-            self._current_script["log_path"].write_bytes(b"")
-        with self._current_script["log_path"].open("ab") as output:
+            self._script_runs["kill"] = kill_run
+            kill_run["log_path"].write_bytes(b"")
+        self._last_script_id = "kill"
+        with kill_run["log_path"].open("ab") as output:
             output.write(b"\n\x1b[33m[Kill] Stopping project processes...\x1b[0m\n")
             output.flush()
             kill_path = shlex.quote(str(self.workspace_root / 'kill_fruit_processes.sh'))
@@ -427,14 +456,19 @@ class RuntimeManager:
             except subprocess.TimeoutExpired as error:
                 output.write(b"\x1b[31m[Kill] Cleanup timed out. New script NOT started.\x1b[0m\n")
                 raise RuntimeConflict("Kill 清理超时，未启动新脚本") from error
-            tracked = self._current_script.get("process")
-            if tracked is None:
-                self._current_script["exit_code"] = result.returncode
+            kill_run["exit_code"] = result.returncode
+            for sid, run in self._script_runs.items():
+                if sid == "kill":
+                    continue
+                tracked = run.get("process")
+                if tracked:
+                    if tracked.process.poll() is not None:
+                        run["exit_code"] = tracked.process.poll()
+                    else:
+                        run["exit_code"] = -9
+                    self._processes.pop(sid, None)
             if result.returncode != 0:
                 raise RuntimeConflict("Kill 清理失败，未启动新脚本。请检查当前日志")
-            # A stopped process must be reaped before replacing its tracking record.
-            if tracked and tracked.process.poll() is None:
-                raise RuntimeConflict("当前脚本仍在退出，未启动新脚本")
             output.write(b"\x1b[32m[Kill] Cleanup completed.\x1b[0m\n")
 
     def start_script(self, task_id: str, parameters: Any) -> dict[str, Any]:
@@ -445,16 +479,35 @@ class RuntimeManager:
         with self._lock():
             self._script_operation = "STARTING"
             try:
+                if task_id in self._processes:
+                    self._stop_one(task_id)
                 log_path = self.log_root / Path(task.log_file).name
                 start = log_path.stat().st_size if log_path.exists() else 0
                 self._launch(task, arguments)
-                self._current_script = {
+                run = {
                     "id": task_id, "run_id": _now(), "start": start,
                     "log_path": log_path, "process": self._processes[task_id],
                 }
-                return {"current": self._script_status(self._current_script)}
+                self._script_runs[task_id] = run
+                self._last_script_id = task_id
+                status = self._script_status(run)
+                return {"current": status, "run": status}
             finally:
                 self._script_operation = None
+
+    def stop_script(self, task_id: str) -> dict[str, Any]:
+        self._script_task(task_id)
+        with self._lock():
+            run = self._script_runs.get(task_id)
+            tracked = self._tracked_process(task_id)
+            if run is None and tracked is None:
+                raise RuntimeErrorBase(f"脚本 {task_id} 未启动", 404)
+            if tracked is not None:
+                self._stop_one(task_id)
+                if run is not None:
+                    run["exit_code"] = tracked.process.poll()
+            status = self._script_status(run) if run else None
+            return {"current": status, "run": status}
 
     def kill_scripts(self) -> dict[str, Any]:
         with self._lock():
@@ -465,12 +518,29 @@ class RuntimeManager:
             finally:
                 self._script_operation = None
 
-    def script_log(self, cursor: int, run_id: str) -> dict[str, Any]:
+    def script_log(self, cursor: int, run_id: str, script_id: str | None = None) -> dict[str, Any]:
         """Read bounded byte chunks. Preserve ANSI and incomplete UTF-8 sequences."""
         if cursor < 0:
             raise RuntimeErrorBase("日志 cursor 必须非负")
-        current = self._current_script
-        payload = {"current": self._script_status(current), "operation": self._script_operation,
+        if script_id:
+            current = self._script_runs.get(script_id)
+            if current is None:
+                if script_id == "kill":
+                    log_path = self.log_root / "kill.log"
+                elif script_id in self.tasks:
+                    task = self.tasks[script_id]
+                    log_path = self.log_root / Path(task.log_file).name
+                else:
+                    raise RuntimeErrorBase(f"未知脚本: {script_id}", 404)
+                if log_path.exists():
+                    current = {
+                        "id": script_id, "run_id": "", "start": 0,
+                        "log_path": log_path, "exit_code": None,
+                    }
+        else:
+            current = self._current_script
+        payload = {"id": current["id"] if current else (script_id or ""),
+                   "current": self._script_status(current), "operation": self._script_operation,
                    "run_id": current["run_id"] if current else "", "cursor": 0,
                    "data": "", "reset": False}
         if current is None:
