@@ -146,6 +146,33 @@ class RuntimeProtocolTest(unittest.TestCase):
         self.assertEqual(self.request('scripts/log?cursor=wrong')[0], 400)
         self.assertEqual(self.request('scripts/unknown/start', {})[0], 404)
 
+    def test_registered_acb_script_parameters_and_log(self):
+        config = Path(__file__).resolve().parents[1] / 'config/runtime_tasks.yaml'
+        self.manager = RuntimeManager(
+            config, self.root / 'setup.bash', self.root,
+            self.root / 'logs', self.root / 'control.lock')
+        self.server.manager = self.manager
+        (self.root / 'start_fruit_mission_acb.sh').write_text(
+            'printf "%s\\n" "$@"\n', encoding='utf-8')
+        status, data = self.request('scripts')
+        self.assertEqual(status, 200)
+        scripts = {item['id']: item for item in data['scripts']}
+        self.assertEqual(scripts['mission_acb']['script'], 'start_fruit_mission_acb.sh')
+        self.assertEqual(set(scripts['mission_acb']['parameters']), {'phase', 'debug'})
+        self.assertEqual(self.manager.script_arguments('mission_acb', {}), ['--phase', 'all'])
+        self.assertEqual(self.manager.script_arguments('mission', {}),
+                         ['--phase', 'all', '--flow', 'full', '--open-loop', 'A'])
+        for parameters in ({'flow': 'full'}, {'open_loop': 'A'}, {'phase': 'invalid'},
+                           {'debug': 'true'}, {'phase': '$(touch injected)'}):
+            self.assertEqual(self.request('scripts/mission_acb/start', {
+                'parameters': parameters})[0], 400)
+        status, reply = self.request('scripts/mission_acb/start', {
+            'parameters': {'phase': 'prepare', 'debug': True}})
+        self.assertEqual(status, 200)
+        self.assertEqual(reply['run']['id'], 'mission_acb')
+        self.wait_for_log('mission_acb', '--phase\nprepare\n--debug')
+        self.assertFalse((self.root / 'injected').exists())
+
     def test_start_script_without_cleanup_and_failed_cleanup_aborts_kill(self):
         (self.root / 'sample.sh').write_text('touch script-ran\n')
         (self.root / 'kill_fruit_processes.sh').write_text('echo cleanup-failed\nexit 1\n')
@@ -297,6 +324,12 @@ class RuntimeProtocolTest(unittest.TestCase):
         status, _ = self.request('scripts/sample/start', {
             'parameters': {'mode': 'one'}, 'command': 'arbitrary'})
         self.assertEqual(status, 400)
+
+    def test_localization_endpoint_rejects_parameter_changes(self):
+        for body in ({'flow': 'acb'}, {'parameters': {'flow': 'full'}}, []):
+            self.assertEqual(self.request('competition/localize', body)[0], 400)
+        self.assertEqual(self.request(
+            'competition/localize', {}, 'http://evil.example:8000')[0], 403)
 
     def test_utf8_split_at_chunk_boundary(self):
         self.request('scripts/kill', {})

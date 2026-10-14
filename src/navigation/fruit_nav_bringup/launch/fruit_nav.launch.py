@@ -41,6 +41,11 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument("start_pointlio", default_value="true"),
+            DeclareLaunchArgument("start_loam", default_value="true"),
+            DeclareLaunchArgument("start_lidar", default_value="true"),
+            DeclareLaunchArgument("start_sensor_frames", default_value="true"),
+            DeclareLaunchArgument("initial_stability_timeout_sec", default_value="5.0"),
             DeclareLaunchArgument(
                 "params_file",
                 default_value=os.path.join(
@@ -78,6 +83,12 @@ def generate_launch_description():
                     "params_file": params_file,
                     "lidar_config": lidar_config,
                     "use_sim_time": use_sim_time,
+                    "start_pointlio": LaunchConfiguration("start_pointlio"),
+                    "start_loam": LaunchConfiguration("start_loam"),
+                    "start_lidar": LaunchConfiguration("start_lidar"),
+                    "start_sensor_frames": LaunchConfiguration("start_sensor_frames"),
+                    "initial_stability_timeout_sec": LaunchConfiguration(
+                        "initial_stability_timeout_sec"),
                 }.items(),
             ),
             GroupAction(actions=[IncludeLaunchDescription(

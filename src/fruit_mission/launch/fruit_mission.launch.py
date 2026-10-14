@@ -58,7 +58,14 @@ def generate_launch_description():
         ("src/fruit_arm_planner/launch/fruit_arm_planner.launch.py", {
             "log_level": LaunchConfiguration("arm_log_level"),
         }, None),
-        ("src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.py", {}, None),
+        ("src/navigation/fruit_nav_bringup/launch/fruit_nav.launch.py", {
+            "start_pointlio": LaunchConfiguration("start_pointlio"),
+            "start_loam": LaunchConfiguration("start_loam"),
+            "start_lidar": LaunchConfiguration("start_lidar"),
+            "start_sensor_frames": LaunchConfiguration("start_sensor_frames"),
+            "initial_stability_timeout_sec": LaunchConfiguration(
+                "initial_stability_timeout_sec"),
+        }, None),
         ("src/fruit_perception/launch/fruit_perception.launch.py", {}, None),
         ("src/fruit_robviz_bridge/launch/fruit_robviz_bridge.launch.py", {},
          "start_robviz_bridge"),
@@ -95,6 +102,12 @@ def generate_launch_description():
                               choices=["A", "C", "AC", "none"]),
         DeclareLaunchArgument("start_serial_bridge", default_value="true"),
         DeclareLaunchArgument("start_robviz_bridge", default_value="true"),
+        DeclareLaunchArgument("start_pointlio", default_value="true"),
+        DeclareLaunchArgument("start_loam", default_value="true"),
+        DeclareLaunchArgument("start_lidar", default_value="true"),
+        DeclareLaunchArgument("start_sensor_frames", default_value="true"),
+        DeclareLaunchArgument("initial_stability_timeout_sec", default_value="5.0"),
+        DeclareLaunchArgument("prepare_only", default_value="false"),
     ]
 
     # 4. 自动生成动作列表
@@ -106,20 +119,29 @@ def generate_launch_description():
             message += f" (status={event.returncode}); unavailable operations will be skipped"
         return [LogInfo(msg=message), mission]
 
-    actions = [
+    def start_modules(context):
+        actions = []
+        for relative_path, module_arguments, condition in modules:
+            module_arguments = {"use_sim_time": use_sim_time, **module_arguments}
+            actions.append(GroupAction(actions=[IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(str(WORKSPACE / relative_path)),
+                launch_arguments=module_arguments.items(),
+                condition=IfCondition(LaunchConfiguration(condition)) if condition else None,
+            )]))
+        if LaunchConfiguration("prepare_only").perform(context) != "true":
+            actions.extend([
+                RegisterEventHandler(OnProcessExit(
+                    target_action=readiness, on_exit=start_mission)),
+                RegisterEventHandler(OnProcessExit(
+                    target_action=mission,
+                    on_exit=[EmitEvent(event=Shutdown(reason="Mission process exited"))],
+                )),
+                readiness,
+            ])
+        return actions
+
+    return LaunchDescription([
         *arguments,
         OpaqueFunction(function=_validate_waypoints),
-        RegisterEventHandler(OnProcessExit(target_action=readiness, on_exit=start_mission)),
-        RegisterEventHandler(OnProcessExit(
-            target_action=mission,
-            on_exit=[EmitEvent(event=Shutdown(reason="Mission process exited"))],
-        )),
-    ]
-    for relative_path, module_arguments, condition in modules:
-        module_arguments = {"use_sim_time": use_sim_time, **module_arguments}
-        actions.append(GroupAction(actions=[IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(str(WORKSPACE / relative_path)),
-            launch_arguments=module_arguments.items(),
-            condition=IfCondition(LaunchConfiguration(condition)) if condition else None,
-        )]))
-    return LaunchDescription([*actions, readiness])
+        OpaqueFunction(function=start_modules),
+    ])

@@ -48,9 +48,12 @@ B 扫码成功后不插入 Home，回程导航直接切 `right_look_a`。
 B 抓取、分层 Store 和同侧安全 Home 共用原实现，仅改变观察侧。
 
 `start_fruit_mission_acb.sh` 选择独立 `fruit_mission_acb.launch.py`。
-runner 和 launch 共用原整栈启动、readiness、日志、录包及退出清理。
-ACB 脚本只支持 `--debug` 和 `--help`，不提供单区调试或开环开关。
-旧 ABC 默认路线、`full/ac/a/b/c` 和开环参数保持原行为。
+ABC 和 ACB 脚本共用分阶段 `competition_runner.py`、日志、录包及退出清理。
+两者支持 `--phase all|prepare|localize`、`--debug` 和 `--help`，默认 `all`。
+ACB 不提供单区调试或开环开关。ABC 默认路线、`full/ac/a/b/c` 和开环参数保持不变。
+RobViz「正式比赛」可选择 ABC 或 ACB。脚本控制页也提供独立 ACB 卡片。
+准备阶段确定参数和航点文件，定位阶段不能改路线。启动阶段说明见
+[`docs/ROBVIZ_RUNTIME_CONTROL.md`](../../docs/ROBVIZ_RUNTIME_CONTROL.md)。
 节点增加 `mission_flow=acb`，抓取模式在 ACB 调用处按去程、回程明确切换。
 主目录合入并构建后，才可在操作者授权的安全条件下启动：
 
@@ -89,6 +92,7 @@ ABC 的默认扫码预设和成功后 Home 保持不变。
 `/fruit_mission/current_area` 仍发布任务状态，但感知不再订阅。
 参数失败只告警并推进流程，不重试。区域不匹配的 harvest 窗口不产生抓取目标。
 `start_fruit_mission.sh` 调用 `fruit_mission.launch.py`，不调用感知调试入口。
+脚本通过 `competition_runner.py` 分阶段启动该 launch，而非直接执行整栈 launch。
 顶层 launch include 串口、planner-only、导航、感知和 RobViz 基础 launch。
 感知 launch 只拥有相机、检测和 QR。正式入口不复用导航、感知、planner 或串口桥。
 独立 RobViz 可复用，退出时不停止该外部实例。
@@ -110,14 +114,19 @@ A/C 左右观察姿态直接切换，不穿插正常 Home 或新过渡动作。
 B 树作业结束后，右侧执行 `right_to_home_b`，左侧执行 `left_to_home_b`。
 Look 和两层 Store 均使用该规则，无可抓目标也执行该侧 B 安全预设。
 这两个预设等效于 B 区安全 Home，完成后不追加普通 `home`，B8 也遵循该规则。
-独立依赖并行初始化。顶层 launch 的唯一门控复用 `stack_readiness_client stack`。
+分阶段准备并行启动组件和一次 Home，完成后进入 `PREPARED`。
+定位只启动 Point-LIO，每次等待最多 10 秒，失败时只重启 Point-LIO 和 loam 一次。
+定位成功后按准备参数启动 mission，并显式传入已校验的 ABC 或 ACB 航点文件。
+比赛完成后保留模块，直到 Ctrl-C、单独停止或 Kill。它们不证明硬件停稳。
+直接执行顶层 launch 时，独立依赖并行初始化，唯一门控仍复用 `stack_readiness_client stack`。
 各项保留原 10 秒超时，TF 保留 5 秒，超时告警后启动 mission。
 不使用固定 sleep，外围节点退出不终止 mission。
-调试录包仍由 shell 在相机检查后后台启动，不阻塞 launch 的 mission 门控。
-使用 `--debug` 时，入口还会在启动 ROS 子系统前记录内核 USB 事件和 udev 事件，文件分别为
+分阶段 `--debug` 在感知心跳可用后后台启动录包，不阻塞比赛。
+使用 `--debug` 时，准备阶段还会记录内核 USB 事件和 udev 事件，文件分别为
 当前运行目录的 `kernel.log` 和 `udev.log`。退出时监控进程与其他调试进程一起停止。
-mission 退出触发本次 launch 的整栈关闭。Ctrl-C 也关闭本次拥有的子进程。
-shell 保留 STOP 请求和录包、USB 监控清理。进程关闭和 STOP 发布都不是硬件停稳证明。
+直接执行整栈 launch 时，mission 退出触发整栈关闭。
+分阶段 runner 退出时发送 STOP，并清理所拥有的 ROS、录包和 USB 监控进程。
+进程关闭和 STOP 发布都不是硬件停稳证明。
 单点调试入口传递 `--zone`，客户端使用同一参数服务，不再等待区域话题订阅者。
 独立单点调试入口 `test_camera_arm_target.sh`（`camera_arm_target_client`）不依赖导航，只接受 `--zone A|B|C --left|--right`（可加 `--debug`），不再接受 `--model`。区域同时选择模型（A/C 蔬菜、B 水果）和 `<side>_look_<zone>` / `<side>_store_<zone>`（B 根据目标基座高度自动选择 `_store_b_up` 或 `_store_b_down`）；例如 `--zone C --left` 使用 `left_look_c`、`left_store_c`。工序为 Home→区域 Look→OPEN/HOLD→识别→CLOSE/HOLD→区域 Store，不加入跨区保护动作。它是人工硬件工具，不能作为自动测试运行。
 原 `mission_flow.py` 和作为判断帮助文件的 `logic.py` 已移除，避免两个主流程来源。
@@ -197,7 +206,7 @@ B 放果预设按抓取时的分层动态选用 `<side>_store_b_up` 或 `<side>_
 | `c` | `debug_c`：真实扫 C 码 → `run_c` |
 | `ac` | `run_ac`：保留原 AC 入口，复用同一套动作 |
 
-起始播报、初始一次安全 Home、结束关闭感知和结束播报由节点生命周期统一处理。
+起始播报、结束关闭感知和结束播报由节点生命周期处理。分阶段准备由 runner 执行一次 Home。
 仅 `full` 在 C 区任务结束后，从当前位置沿现有 C 区图规划前往 `C_top_waypoint_1`，
 到点后对齐该航点 YAML 保存的 yaw，再播报采摘汇总。优先使用实时 TF，
 TF 不可用时沿用既有上一目标位置兜底；保留路线距离限制与导航安全门控。

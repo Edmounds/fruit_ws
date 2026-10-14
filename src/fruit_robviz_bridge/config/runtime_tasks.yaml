@@ -56,12 +56,24 @@ tasks:
   mission:
     command: "/home/rc4/fruit_ws/start_fruit_mission.sh"
     readiness:
-      process_pattern: "/home/rc4/fruit_ws/start_fruit_mission.sh"
+      process_pattern: "--flow full --open-loop"
     log_file: mission.log
     script: start_fruit_mission.sh
     parameters:
+      phase: {flag: --phase, choices: [all, prepare, localize], default: all}
       flow: {flag: --flow, choices: [full, ac, a, b, c], default: full}
       open_loop: {flag: --open-loop, choices: [A, C, AC, none], default: A}
+      debug: {flag: --debug, default: false}
+
+  mission_acb:
+    command: "/home/rc4/fruit_ws/start_fruit_mission_acb.sh"
+    readiness:
+      process_pattern: "--flow acb --open-loop none"
+    log_file: mission_acb.log
+    script: start_fruit_mission_acb.sh
+    note: 'ACB 固定：A 去程开环，A 回程及 C 闭环。定位阶段沿用准备参数。'
+    parameters:
+      phase: {flag: --phase, choices: [all, prepare, localize], default: all}
       debug: {flag: --debug, default: false}
 
   waypoint_recording:

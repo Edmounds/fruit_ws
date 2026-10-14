@@ -28,6 +28,7 @@ target_tokens=(
   "/home/rc4/fruit_ws/scripts/robot_debug_monitor.sh"
   "fruit_robot_debug_monitor"
   "fruit_robviz_image_bridge"
+  "/home/rc4/fruit_ws/src/fruit_mission/fruit_mission/competition_runner.py"
   "python3 - fruit-mission "
   "python3 - navigation "
   "python3 - perception "
@@ -194,6 +195,7 @@ is_competition_process() {
     fi
   done
   case "$executable" in
+    /home/rc4/fruit_ws/src/fruit_mission/fruit_mission/competition_runner.py) return 0 ;;
     /home/rc4/fruit_ws/src/fruit_arm_planner/test/cartesian_console.py) return 0 ;;
     src/fruit_arm_planner/test/cartesian_console.py|./src/fruit_arm_planner/test/cartesian_console.py)
       [[ "$(readlink "/proc/$pid/cwd")" == /home/rc4/fruit_ws ]] && return 0

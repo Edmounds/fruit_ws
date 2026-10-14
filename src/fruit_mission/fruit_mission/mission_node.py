@@ -57,11 +57,18 @@ class FruitMissionNode(Node):
         """Select once; startup/cleanup are not mixed into competition composition."""
         ctx = self._mission_context
         try:
+            ctx.telemetry.step('announce_start')
             ctx.announce_and_wait("我们是重庆大学 RoboCup 水果采摘队伍，现在开始采摘")
             # ctx.recover_home()
             self._entrypoint(ctx)
             if self.config["mission_flow"] != "acb":
                 ctx.announce_summary()
+            ctx.telemetry.data['phase'] = 'FINISHED'
+            ctx.telemetry.step('finished')
+        except Exception:
+            ctx.telemetry.data['phase'] = 'ERROR'
+            ctx.telemetry.step('mission_error')
+            raise
         finally:
             ctx.close_observation_window()
 

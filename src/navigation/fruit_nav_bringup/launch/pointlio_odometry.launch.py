@@ -16,6 +16,7 @@ import os
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -34,6 +35,11 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument("start_lidar", default_value="true"),
+            DeclareLaunchArgument("start_pointlio", default_value="true"),
+            DeclareLaunchArgument("start_loam", default_value="true"),
+            DeclareLaunchArgument("start_sensor_frames", default_value="true"),
+            DeclareLaunchArgument("initial_stability_timeout_sec", default_value="5.0"),
             DeclareLaunchArgument(
                 "params_file",
                 default_value=os.path.join(
@@ -57,12 +63,14 @@ def generate_launch_description():
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(SOURCE_SHARE, "launch", "sensor_frames.launch.py")
-                )
+                ),
+                condition=IfCondition(LaunchConfiguration("start_sensor_frames")),
             ),
             Node(
                 package="livox_ros_driver2",
                 executable="livox_ros_driver2_node",
                 name="livox_ros_driver2",
+                condition=IfCondition(LaunchConfiguration("start_lidar")),
                 parameters=[
                     params_file,
                     {"use_sim_time": use_sim_time},
@@ -76,6 +84,7 @@ def generate_launch_description():
                 package="point_lio",
                 executable="pointlio_mapping",
                 name="laserMapping",
+                condition=IfCondition(LaunchConfiguration("start_pointlio")),
                 parameters=[
                     params_file,
                     {"use_sim_time": use_sim_time},
@@ -94,11 +103,14 @@ def generate_launch_description():
                 package="loam_interface",
                 executable="loam_interface_node",
                 name="loam_interface",
+                condition=IfCondition(LaunchConfiguration("start_loam")),
                 parameters=[
                     params_file,
                     {
                         "use_sim_time": use_sim_time,
                         "stabilize_initial_odom": True,
+                        "initial_stability_timeout_sec": LaunchConfiguration(
+                            "initial_stability_timeout_sec"),
                     },
                 ],
                 output="screen",

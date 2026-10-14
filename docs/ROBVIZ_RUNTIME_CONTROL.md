@@ -22,6 +22,7 @@ RobViz 使用两个常驻 HTTP 服务：
 - `perception`：按需启动 `start_fruit_perception.sh`。
 - `navigation`：按需启动 `start_navigation.sh`。
 - `mission`：按需启动 `start_fruit_mission.sh`。
+- `mission_acb`：按需启动 `start_fruit_mission_acb.sh`，使用固定 ACB 模式。
 - `waypoint_recording`：按需启动 `waypoints_maker.sh`。
 
 任务命令和就绪检查属于机器人本机配置。浏览器只能选择任务 ID，不能传入命令。
@@ -57,11 +58,11 @@ ros2 run fruit_robviz_bridge fruit-runtime stop arm
 ## 脚本控制插件
 
 RobViz 的「脚本控制」页复用端口 8001 的运行服务。
-左侧显示七个脚本卡片，支持多个脚本并发启动与单独停止。右侧日志面板通过顶部 Tab 标签栏切换各脚本日志。
+左侧显示八个脚本卡片，支持多个脚本并发启动与单独停止。右侧日志面板通过顶部 Tab 标签栏切换各脚本日志。
 页面使用主页的间隙、圆角和主题变量，分隔条可拖动缩放。
 参数选择和布局保存在当前机器的插件状态中。
 
-支持 `start_fruit_mission.sh`、`start_tele.sh`、`waypoints_maker.sh`、
+支持 `start_fruit_mission.sh`、`start_fruit_mission_acb.sh`、`start_tele.sh`、`waypoints_maker.sh`、
 `test_camera_arm_target.sh`、`start_fruit_perception.sh`、`test_voice.sh` 和 `test_qr.sh`。
 卡片从服务配置读取参数及可选值，不允许提交 shell 命令。
 每张卡片提供独立的「启动」与「停止」按钮：
@@ -93,6 +94,18 @@ POST /api/runtime/scripts/kill             {}
 浏览器 Origin 必须与运行服务同主机，页面端口必须为 8000。
 
 启动返回进程状态，不代表相机、ROS 节点或硬件已经就绪。
+正式比赛的 `mission` 和 `mission_acb` 脚本支持 `phase=prepare|localize|all`。
+`prepare` 在场外启动相机、感知、二维码、机械臂、雷达、loam 和导航，并执行一次 Home。
+`localize` 补启动 Point-LIO。每次初始化最多等待 10 秒，失败后重启 Point-LIO 与 `loam_interface` 一次。
+第二次失败会报错，不启动 mission。定位成功后自动进入所选路线。
+参数和航点文件在准备阶段确定，定位阶段不接受改路线或改参数。
+刷新或切换页面不会停止本轮。比赛会话锁阻止 ABC 和 ACB 同时拥有硬件。
+
+「正式比赛」的流程下拉框显示 `ABC` 和 `ACB`，并保留单区调试选择。
+ABC 使用 `mission` 任务，`flow=full`。ACB 使用 `mission_acb` 任务和独立 ACB 启动脚本。
+ACB 固定 A 去程开环、A 回程及 C 闭环，因此页面禁用开环选择。
+ACB 卡片只提供 `phase` 和 `debug`，不接受 `flow` 或 `open_loop`。
+两条路线分别使用 `odom_waypoints.yaml` 和 `odom_waypoints_acb.yaml`。
 脚本使用 `DISPLAY=:0` 和当前用户的 `/run/user/{uid}` 会话环境，支持本机窗口和音频。
 日志保留 ANSI 颜色和回车更新，使用只读 xterm 显示。
 右侧日志面板为单终端实例，切换 Tab 时重置并按需拉取目标脚本最近尾部数据（最多 256 KiB）。
@@ -105,6 +118,15 @@ cursor 使用字节偏移，UTF-8 字符不会在读取边界拆坏。
 切换插件或关闭网页不会停止脚本。
 运行服务重启会丢失内存中的当前任务引用，页面不会自动重启任务。
 
+正式比赛页面使用以下状态接口：
+
+```text
+GET  /api/runtime/competition/status
+POST /api/runtime/competition/localize {}
+```
+
+状态接口只读。它显示感知、机械臂、定位导航和 mission 四组健康状态，并读取 `/fruit_mission/status` 的当前动作与按果蔬 type 分类的完成、失败、跳过统计。连续数据超过 3 秒未更新会显示无数据。健康状态不阻塞比赛，也不自动重启模块。相机页面记忆标注 RGB、原始 RGB 或深度选择。
+
 ### 离线通信检查
 
 以下检查只使用临时脚本，不连接 ROS 或硬件：
@@ -112,7 +134,7 @@ cursor 使用字节偏移，UTF-8 字符不会在读取边界拆坏。
 ```bash
 PYTHONPATH=src/fruit_robviz_bridge /usr/bin/python3 -m unittest discover \
   -s src/fruit_robviz_bridge/test -p test_runtime_protocol.py -v
-bash -n kill_fruit_processes.sh
+bash -n start_fruit_mission.sh start_fruit_mission_acb.sh kill_fruit_processes.sh
 ```
 
 更新后构建 `fruit_robviz_bridge` 和 RobViz 前端。

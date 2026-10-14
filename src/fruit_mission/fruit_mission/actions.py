@@ -52,12 +52,14 @@ def run_c(ctx, plan):
 
 def navigate(ctx, waypoints, *, side=None, preset=None):
     """Navigate with optional concurrent Look or preset; failed handoffs get one safe Home."""
+    ctx.telemetry.step('navigate', target=' → '.join(waypoints))
     if (
         ctx._current_area == "B"
         and (side is not None or ctx._b_observation_side is not None)
         and not ctx._arm_home_confirmed
     ):
         ctx.node.get_logger().warning('B区安全姿态未确认，跳过当前导航和机械臂动作')
+        ctx.telemetry.result('skipped', 'navigation_home_unconfirmed')
         return False
     if (
         side is None
@@ -66,10 +68,14 @@ def navigate(ctx, waypoints, *, side=None, preset=None):
     ):
         if not ctx.recover_home():
             ctx.node.get_logger().warning('安全 Home 未确认，跳过当前导航')
+            if ctx._current_area:
+                ctx.telemetry.result('skipped', 'navigation_home_unconfirmed')
             return False
     if ctx.navigate_named(waypoints, observation_side=side, arm_preset=preset):
         return True
     ctx.node.get_logger().warning(f"导航失败，跳过当前动作: {' -> '.join(waypoints)}")
+    if ctx._current_area:
+        ctx.telemetry.result('skipped', 'navigation_failed')
     ctx.recover_home()
     return False
 
@@ -147,6 +153,7 @@ def scan_c_qr(ctx, *, arrived):
 
 def pick_a(ctx, *, side):
     """One side at the current A point, with no navigation or grasp retries."""
+    ctx.telemetry.step('observe', target=f'{ctx._current_waypoint_name}/{side}')
     result = observe_and_pick(ctx, side=side, expected_type="ripe")
     if not result.success:
         ctx.node.get_logger().warning(f"A区当前动作跳过: {result.reason_code}")
@@ -155,12 +162,15 @@ def pick_a(ctx, *, side):
 
 def observe_and_pick(ctx, *, side, expected_type, label=None):
     """Look (open gripper) -> harvest window -> fresh target -> CLOSE/Store/Home."""
+    ctx.telemetry.step('look')
     look = ctx.finish_observation(side)
     if not look.completed:
+        record_failed_opportunity(ctx, look.reason_code, expected_type)
         ctx.recover_home()
         return PickExecutionResult(False, look.reason_code)
     area = ctx._current_area or "A"
     window_id = ctx.open_observation_window(area, "harvest", expected_type)
+    ctx.telemetry.step('observe')
     try:
         if ctx.is_open_loop and area in ("A", "C"):
             selection = ctx.wait_camera_decision(window_id, expected_type)
@@ -175,6 +185,8 @@ def observe_and_pick(ctx, *, side, expected_type, label=None):
             ctx.node.get_logger().info(
                 f"{area}区开环跳过抓取: {selection.reason_code} (type={selection.matched_type})"
             )
+            record_failed_opportunity(
+                ctx, selection.reason_code, selection.matched_type or expected_type)
             return PickExecutionResult(
                 False, selection.reason_code, selection.matched_type)
         if label:
@@ -186,6 +198,8 @@ def observe_and_pick(ctx, *, side, expected_type, label=None):
         motion = ctx.execute_arm_preset(preset_name)
         if not motion.completed:
             ctx.recover_home()
+            record_failed_opportunity(
+                ctx, motion.reason_code, selection.matched_type or expected_type)
             return PickExecutionResult(False, motion.reason_code, selection.matched_type)
         ctx.record_pick(selection.matched_type)
         ctx.announce("采摘完成。")
@@ -195,6 +209,8 @@ def observe_and_pick(ctx, *, side, expected_type, label=None):
         ctx.stop_dataset_capture()
         if area != "A":
             ctx.recover_home()
+        record_failed_opportunity(
+            ctx, selection.reason_code, selection.matched_type or expected_type)
         return PickExecutionResult(
             False, selection.reason_code, selection.matched_type)
     try:
@@ -204,6 +220,8 @@ def observe_and_pick(ctx, *, side, expected_type, label=None):
         ctx.node.get_logger().warning(str(error))
         if area != "A":
             ctx.recover_home()
+        record_failed_opportunity(
+            ctx, "camera_target_invalid", selection.matched_type or expected_type)
         return PickExecutionResult(
             False, "camera_target_invalid", selection.matched_type)
     if label:
@@ -222,6 +240,7 @@ def _grasp_and_collect(ctx, request, *, store_preset, matched_type=None):
         motion = ctx.execute_arm_preset(store_preset)
     if not motion.completed:
         ctx.recover_home()
+        record_failed_opportunity(ctx, motion.reason_code, matched_type)
         return PickExecutionResult(False, motion.reason_code, matched_type)
     ctx.record_pick(matched_type)
     ctx.announce("采摘完成。")
@@ -233,18 +252,22 @@ def _grasp_and_collect(ctx, request, *, store_preset, matched_type=None):
 def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
     """Observe (open gripper) once; freeze up to two matching ripe targets before either grasp."""
     label = tree_name or (f"{waypoint}号" if waypoint else "一号")
+    ctx.telemetry.step('look', target=f'{waypoint or label}/{label}')
     look = ctx.finish_observation(side)
     if not look.completed:
+        record_failed_opportunity(ctx, look.reason_code, target)
         ctx.recover_home()
         ctx.announce(f"{label}识别失败，跳过。")
         return False
     window_id = ctx.open_observation_window("B", "harvest", target)
+    ctx.telemetry.step('observe', target=target)
     try:
         targets = ctx.wait_b_targets(window_id)
     finally:
         ctx.close_observation_window()
     if targets is None:
         ctx.stop_dataset_capture()
+        record_failed_opportunity(ctx, 'camera_target_timeout', target)
         ctx.recover_home()
         ctx.announce(f"{label}没有识别到果实，跳过。")
         return False
@@ -259,7 +282,9 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
                 break
         except ValueError as error:
             ctx.node.get_logger().warning(f"Skipping invalid B target: {error}")
+            record_failed_opportunity(ctx, 'camera_target_invalid', item.model_type)
     if not requests:
+        record_failed_opportunity(ctx, 'no_matching_valid_target', target)
         ctx.stop_dataset_capture()
         motion = ctx.execute_arm_preset(f"{side}_to_home_b")
         if not motion.completed:
@@ -328,6 +353,7 @@ def navigate_c_route(ctx, names, yaws, *, side=None):
 
 def navigate_c(ctx, task):
     """Reuse C geometry/side planning and record one navigation result."""
+    ctx.telemetry.step('navigate', target=f"C/{task['sequence']}/{task['position_id']}")
     navigation = ctx.navigate_c_position(int(task["position_id"]))
     task["navigation_status"] = navigation["status"]
     for key in (
@@ -338,6 +364,7 @@ def navigate_c(ctx, task):
         if key in navigation:
             task[key] = navigation[key]
     if navigation["status"] != "succeeded":
+        record_failed_opportunity(ctx, navigation['status'], task.get('target_name'))
         planning_failed = navigation["status"] == "planning_failed"
         task["result"] = "navigation_planning_failed" if planning_failed else "navigation_failed"
         task["navigation_failure_reason"] = navigation.get("reason")
@@ -367,3 +394,11 @@ def pick_c(ctx, task, *, side):
     else:
         ctx.announce(f"{pos_label}识别失败，跳过。")
     return result
+
+
+def record_failed_opportunity(ctx, reason, model_type=None):
+    outcome = 'skipped' if reason in {
+        'no_detection', 'target_unripe', 'type_mismatch', 'no_matching_valid_target',
+        'navigation_failed', 'planning_failed', 'navigation_planning_failed',
+    } else 'failed'
+    ctx.telemetry.result(outcome, reason, model_type)

@@ -13,6 +13,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
+import subprocess
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -26,6 +27,7 @@ from fruit_robviz_bridge.runtime_manager import (
 DEFAULT_CONFIG = Path(
     "/home/rc4/fruit_ws/src/fruit_robviz_bridge/config/runtime_tasks.yaml"
 )
+COMPETITION_STATUS = Path("/home/rc4/fruit_ws/tmp/fruit_competition/status.json")
 
 
 class RuntimeHTTPServer(ThreadingHTTPServer):
@@ -128,6 +130,13 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                     cursor, run_id, script_id
                 ))
                 return
+            if path == "/api/runtime/competition/status":
+                try:
+                    payload = json.loads(COMPETITION_STATUS.read_text(encoding="utf-8"))
+                except (FileNotFoundError, json.JSONDecodeError):
+                    payload = {"phase": "STOPPED", "error": "尚未启动比赛准备"}
+                self._send(HTTPStatus.OK, payload)
+                return
             if path == "/api/runtime/tasks":
                 self._send(HTTPStatus.OK, self.server.manager.status())
                 return
@@ -151,6 +160,19 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.FORBIDDEN, {"error": "不允许的 Origin"})
                 return
             path = urlparse(self.path).path
+            body = None
+            if path == "/api/runtime/competition/localize":
+                if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
+                    raise RuntimeErrorBase("请求必须使用 application/json", 415)
+                try:
+                    size = int(self.headers.get("Content-Length", "0"))
+                    if not 0 <= size <= 16384:
+                        raise ValueError("body size")
+                    body = json.loads(self.rfile.read(size) or b"{}")
+                except (ValueError, UnicodeDecodeError) as error:
+                    raise RuntimeErrorBase("请求 JSON 无效或超过大小限制") from error
+                if not isinstance(body, dict):
+                    raise RuntimeErrorBase("请求必须为 JSON object")
             if path.startswith("/api/runtime/scripts/"):
                 if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
                     raise RuntimeErrorBase("请求必须使用 application/json", 415)
@@ -183,6 +205,29 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                             script_id, body.get("parameters", {})
                         )
                 self._send(HTTPStatus.OK, result)
+                return
+            if path == "/api/runtime/competition/localize":
+                if body:
+                    raise RuntimeErrorBase("定位启动不接受参数")
+                try:
+                    status = json.loads(COMPETITION_STATUS.read_text(encoding="utf-8"))
+                except (FileNotFoundError, json.JSONDecodeError):
+                    status = {"phase": "STOPPED"}
+                if status.get("phase") in {"LOCALIZING", "RUNNING"}:
+                    self._send(HTTPStatus.OK, {"accepted": False, "phase": status["phase"]})
+                    return
+                if status.get("phase") != "PREPARED":
+                    raise RuntimeErrorBase("比赛尚未完成准备，不能启动定位", 409)
+                log_path = Path("/home/rc4/fruit_ws/log/runtime-control/competition-localize.log")
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                process = subprocess.Popen(
+                    ["/bin/bash", "/home/rc4/fruit_ws/start_fruit_mission.sh",
+                     "--phase", "localize"],
+                    stdout=log_path.open("a", encoding="utf-8"),
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                self._send(HTTPStatus.OK, {"accepted": True, "pid": process.pid})
                 return
             if task_id is None or operation not in ("start", "stop"):
                 self._send(HTTPStatus.NOT_FOUND, {"error": "接口不存在"})

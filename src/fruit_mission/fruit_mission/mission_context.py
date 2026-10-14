@@ -37,6 +37,7 @@ from fruit_mission.config import _validate_qr_fallbacks
 # from fruit_mission.dataset_capture import DatasetCapture
 from fruit_mission.decisions import format_produce_count, merge_seen_types, spoken_produce_name
 from fruit_mission.script_hardware_client import set_perception_zone
+from fruit_mission.mission_telemetry import MissionTelemetry
 from fruit_mission.tts import RecordedSpeaker
 from fruit_mission.waypoint_route import MissionWaypointRoute
 from fruit_mission.waypoint_route import WaypointPose
@@ -78,6 +79,7 @@ class MissionContext:
         self.config = config
         self.speaker = speaker or RecordedSpeaker(config.get("tts", {}), node.get_logger())
         self._pick_counts: Counter[str] = Counter()
+        self.telemetry = MissionTelemetry(node)
         self.route = MissionWaypointRoute.from_file(
             Path(str(config["waypoint_file"])),
             str(config.get("mission_flow", "full")),
@@ -771,6 +773,7 @@ class MissionContext:
 
     def move_to_base_target(self, request) -> _ArmMotionResult:
         """One planner CLOSE/dwell request, starting only with stationary feedback."""
+        self.telemetry.step('grasp')
         if not self._navigation_stopped:
             return _ArmMotionResult(False, 'arm_pose_unavailable')
         self._arm_home_confirmed = False
@@ -856,6 +859,7 @@ class MissionContext:
         if area not in {"A", "B", "C"}:
             raise ValueError("area must be A, B or C")
         self._current_area = area
+        self.telemetry.step('area', area=area, target='')
         message = String()
         message.data = area
         self._current_area_publisher.publish(message)
@@ -864,6 +868,7 @@ class MissionContext:
 
     def record_pick(self, matched_type: Optional[str]) -> None:
         """Record one confirmed harvested produce target."""
+        self.telemetry.result('completed', 'store_completed', matched_type)
         name = spoken_produce_name(matched_type)
         if name and name != "未知果实":
             self._pick_counts[name] += 1
@@ -944,6 +949,7 @@ class MissionContext:
 
     def execute_arm_preset(self, preset_name: str) -> _ArmMotionResult:
         """Execute a preset directly from arm_presets.yaml and wait for completion."""
+        self.telemetry.step(preset_name)
         if not self._navigation_stopped:
             self._arm_home_confirmed = False
             self._arm_shenzhi_confirmed = False
