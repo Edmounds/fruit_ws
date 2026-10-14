@@ -416,7 +416,7 @@ class RuntimeManager:
 
     def scripts(self) -> dict[str, Any]:
         runs: dict[str, Any] = {}
-        for script_id, run in self._script_runs.items():
+        for script_id, run in self._script_runs.copy().items():
             status = self._script_status(run)
             if status is not None:
                 runs[script_id] = status
@@ -461,11 +461,8 @@ class RuntimeManager:
                 if sid == "kill":
                     continue
                 tracked = run.get("process")
-                if tracked:
-                    if tracked.process.poll() is not None:
-                        run["exit_code"] = tracked.process.poll()
-                    else:
-                        run["exit_code"] = -9
+                if tracked and tracked.process.poll() is not None:
+                    run["exit_code"] = tracked.process.returncode
                     self._processes.pop(sid, None)
             if result.returncode != 0:
                 raise RuntimeConflict("Kill 清理失败，未启动新脚本。请检查当前日志")
@@ -479,8 +476,8 @@ class RuntimeManager:
         with self._lock():
             self._script_operation = "STARTING"
             try:
-                if task_id in self._processes:
-                    self._stop_one(task_id)
+                if self._tracked_process(task_id) is not None:
+                    raise RuntimeConflict(f"脚本 {task_id} 已在运行")
                 log_path = self.log_root / Path(task.log_file).name
                 start = log_path.stat().st_size if log_path.exists() else 0
                 self._launch(task, arguments)
@@ -632,13 +629,23 @@ class RuntimeManager:
                 )
         if tracked is not None:
             try:
-                os.killpg(tracked.process.pid, signal.SIGINT)
-                tracked.process.wait(timeout=5.0)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                if tracked.process.poll() is None:
-                    os.killpg(tracked.process.pid, signal.SIGTERM)
+                try:
+                    os.killpg(tracked.process.pid, signal.SIGINT)
+                except ProcessLookupError:
+                    pass
+                try:
+                    tracked.process.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(tracked.process.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        tracked.process.wait(timeout=5.0)
+                    except subprocess.TimeoutExpired as error:
+                        raise RuntimeConflict(f"任务 {task_id} 停止超时，进程仍在运行") from error
             finally:
-                self._processes.pop(task_id, None)
+                self._tracked_process(task_id)
             stopped.append(task_id)
         return stopped
 

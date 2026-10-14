@@ -1,7 +1,9 @@
 """Run against temporary scripts only. No ROS graph or hardware is required."""
 
 import json
+import os
 from pathlib import Path
+import signal
 import tempfile
 import threading
 import time
@@ -19,6 +21,7 @@ from fruit_robviz_bridge.runtime_server import RuntimeHTTPServer
 class RuntimeProtocolTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
+        self.process_ids = set()
         self.root = Path(self.directory.name)
         setup = self.root / 'setup.bash'
         setup.write_text('', encoding='utf-8')
@@ -26,8 +29,8 @@ class RuntimeProtocolTest(unittest.TestCase):
             "printf '\\033[32m中文测试\\033[0m\\n'\n"
             'printf "%s\\n" "$@"\n', encoding='utf-8')
         (self.root / 'sample2.sh').write_text(
-            'printf "second script running\\n"\n'
             'trap "exit 0" INT TERM\n'
+            'printf "second script running\\n"\n'
             'while true; do sleep 0.05; done\n', encoding='utf-8')
         (self.root / 'kill_fruit_processes.sh').write_text(
             'echo "safe temporary cleanup"\nexit 0\n', encoding='utf-8')
@@ -56,17 +59,20 @@ class RuntimeProtocolTest(unittest.TestCase):
         self.base = f'http://127.0.0.1:{self.server.server_port}/api/runtime/'
 
     def tearDown(self):
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            current = self.manager.scripts()['current']
-            if current is None or current['state'] == 'EXITED':
-                break
-            time.sleep(0.01)
-        if current and current['state'] == 'RUNNING':
-            self.manager.kill_scripts()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
+        for pid in self.process_ids:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            runs = self.manager.scripts()['runs']
+            if all(run['state'] == 'EXITED' for run in runs.values()):
+                break
+            time.sleep(0.01)
         self.directory.cleanup()
 
     def request(self, path, body=None, origin=None):
@@ -76,10 +82,22 @@ class RuntimeProtocolTest(unittest.TestCase):
         request = Request(self.base + path, headers=headers,
                           data=json.dumps(body).encode() if body is not None else None)
         try:
-            with urlopen(request, timeout=3) as response:
-                return response.status, json.load(response)
+            with urlopen(request, timeout=12) as response:
+                payload = json.load(response)
+                if path.endswith('/start') and payload.get('run', {}).get('pid'):
+                    self.process_ids.add(payload['run']['pid'])
+                return response.status, payload
         except HTTPError as error:
             return error.code, json.load(error)
+
+    def wait_for_log(self, script_id, text):
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            status, log = self.request(f'scripts/log?script_id={script_id}')
+            if status == 200 and text in log['data']:
+                return
+            time.sleep(0.01)
+        self.fail(f'{script_id} did not log {text!r}')
 
     def test_metadata_parameters_and_colored_current_log(self):
         status, data = self.request('scripts')
@@ -157,6 +175,12 @@ class RuntimeProtocolTest(unittest.TestCase):
             while not (self.root / 'script.pid').exists() and time.monotonic() < deadline:
                 time.sleep(0.01)
             self.assertTrue((self.root / 'script.pid').exists())
+            status, _ = self.request('scripts/sample/start', {'parameters': {'mode': 'two'}})
+            self.assertEqual(status, 409)
+            current = self.request('scripts')[1]['runs']['sample']
+            self.assertEqual(current['pid'], first['run']['pid'])
+            self.assertEqual(current['run_id'], first['run']['run_id'])
+            self.assertEqual(self.request('scripts/sample/stop', {})[0], 200)
             status, second = self.request('scripts/sample/start', {'parameters': {'mode': 'two'}})
             self.assertEqual(status, 200)
             self.assertNotEqual(first['current']['pid'], second['current']['pid'])
@@ -174,23 +198,21 @@ class RuntimeProtocolTest(unittest.TestCase):
             self.request('scripts/kill', {})
 
     def test_concurrent_scripts_individual_stop_and_logs(self):
+        (self.root / 'sample.sh').write_text(
+            'trap "exit 0" INT TERM\necho 中文测试\n'
+            'while true; do sleep 0.05; done\n', encoding='utf-8')
         try:
             status, start1 = self.request('scripts/sample/start', {'parameters': {'mode': 'one'}})
             self.assertEqual(status, 200)
             status, start2 = self.request('scripts/sample2/start', {'parameters': {'debug': True}})
             self.assertEqual(status, 200)
 
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline:
-                status, state = self.request('scripts')
-                if (state.get('runs', {}).get('sample2', {}).get('state') == 'RUNNING' and
-                        state.get('runs', {}).get('sample', {}).get('state') == 'EXITED'):
-                    break
-                time.sleep(0.01)
-
+            self.wait_for_log('sample', '中文测试')
+            self.wait_for_log('sample2', 'second script running')
+            status, state = self.request('scripts')
             self.assertIn('runs', state)
             self.assertEqual(state['runs']['sample2']['state'], 'RUNNING')
-            self.assertEqual(state['runs']['sample']['state'], 'EXITED')
+            self.assertEqual(state['runs']['sample']['state'], 'RUNNING')
 
             # Fetch log for sample2 specifically
             status, log2 = self.request('scripts/log?script_id=sample2')
@@ -206,6 +228,9 @@ class RuntimeProtocolTest(unittest.TestCase):
             status, stop_res = self.request('scripts/sample2/stop', {})
             self.assertEqual(status, 200)
             self.assertEqual(stop_res['run']['state'], 'EXITED')
+            state = self.request('scripts')[1]['runs']
+            self.assertEqual(state['sample']['pid'], start1['run']['pid'])
+            self.assertEqual(state['sample']['state'], 'RUNNING')
 
             # Idempotent stop on already stopped script
             status, stop_again = self.request('scripts/sample2/stop', {})
@@ -217,6 +242,52 @@ class RuntimeProtocolTest(unittest.TestCase):
             self.assertEqual(status, 404)
         finally:
             self.request('scripts/kill', {})
+
+    def test_kill_retains_tracking_for_surviving_scripts(self):
+        for exit_code in (0, 1):
+            with self.subTest(exit_code=exit_code):
+                (self.root / 'kill_fruit_processes.sh').write_text(f'exit {exit_code}\n')
+                status, started = self.request('scripts/sample2/start', {})
+                self.assertEqual(status, 200)
+                self.wait_for_log('sample2', 'second script running')
+                status, _ = self.request('scripts/kill', {})
+                self.assertEqual(status, 200 if exit_code == 0 else 409)
+                current = self.request('scripts')[1]['runs']['sample2']
+                self.assertEqual(current['state'], 'RUNNING')
+                self.assertEqual(current['pid'], started['run']['pid'])
+                self.assertEqual(self.request('scripts/sample2/start', {})[0], 409)
+                status, stopped = self.request('scripts/sample2/stop', {})
+                self.assertEqual(status, 200)
+                self.assertEqual(stopped['run']['state'], 'EXITED')
+
+    def test_stop_waits_for_sigterm_exit(self):
+        (self.root / 'sample2.sh').write_text(
+            'trap "" INT\ntrap "sleep 0.2; exit 0" TERM\necho ready\n'
+            'while true; do sleep 0.05; done\n')
+        self.assertEqual(self.request('scripts/sample2/start', {})[0], 200)
+        self.wait_for_log('sample2', 'ready')
+        status, stopped = self.request('scripts/sample2/stop', {})
+        self.assertEqual(status, 200)
+        self.assertEqual(stopped['run']['state'], 'EXITED')
+        self.assertEqual(stopped['run']['exit_code'], 0)
+        self.assertEqual(self.request('scripts/sample2/start', {})[0], 200)
+
+    def test_stop_timeout_retains_tracking_and_rejects_restart(self):
+        (self.root / 'sample2.sh').write_text(
+            'trap "if [[ -f allow-exit ]]; then exit 0; fi" INT TERM\necho ready\n'
+            'while true; do sleep 0.05; done\n')
+        status, started = self.request('scripts/sample2/start', {})
+        self.assertEqual(status, 200)
+        self.wait_for_log('sample2', 'ready')
+        self.assertEqual(self.request('scripts/sample2/stop', {})[0], 409)
+        current = self.request('scripts')[1]['runs']['sample2']
+        self.assertEqual(current['state'], 'RUNNING')
+        self.assertEqual(current['pid'], started['run']['pid'])
+        self.assertEqual(self.request('scripts/sample2/start', {})[0], 409)
+        (self.root / 'allow-exit').touch()
+        status, stopped = self.request('scripts/sample2/stop', {})
+        self.assertEqual(status, 200)
+        self.assertEqual(stopped['run']['state'], 'EXITED')
 
     def test_origin_and_body_validation(self):
         self.assertEqual(self.request('scripts/kill', {}, 'http://evil.example:8000')[0], 403)
