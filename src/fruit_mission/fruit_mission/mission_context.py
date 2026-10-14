@@ -633,7 +633,7 @@ class MissionContext:
                 stationary = self._camera_planner.wait_stationary(self._wait_until)
                 if not stationary:
                     return _ArmMotionResult(False, 'arm_pose_unavailable')
-                self.start_dataset_capture()
+                # self.start_dataset_capture()
                 return _ArmMotionResult(True, 'already_completed')
             return _ArmMotionResult(False, reason)
         completed, reason = self._camera_planner.finish_motion(future, self._wait_until)
@@ -642,20 +642,22 @@ class MissionContext:
             self._last_completed_preset = name
             self._arm_home_confirmed = False
             self._arm_shenzhi_confirmed = False
-            self.start_dataset_capture()
+            # self.start_dataset_capture()
         else:
             self._last_completed_preset = None
         return _ArmMotionResult(completed, reason)
 
     def start_dataset_capture(self) -> None:
         """Start the raw RGB burst after a Look reaches its measured pose."""
-        if self._dataset_capture is not None and self._current_area in ('A', 'B', 'C'):
-            self._dataset_capture.start_look(self._current_area)
+        # if self._dataset_capture is not None and self._current_area in ('A', 'B', 'C'):
+        #     self._dataset_capture.start_look(self._current_area)
+        pass
 
     def stop_dataset_capture(self) -> None:
         """Stop collecting new frames for the current Look."""
-        if self._dataset_capture is not None:
-            self._dataset_capture.stop_look()
+        # if self._dataset_capture is not None:
+        #     self._dataset_capture.stop_look()
+        pass
 
     def start_observation(self, side: str) -> None:
         """Look and navigation share the executor, not blocking worker threads."""
@@ -918,8 +920,8 @@ class MissionContext:
             self.cancel_navigation()
             # Drain STOP before tearing down its ROS client.
             rclpy.spin_once(self.node, timeout_sec=0.2)
-        if self._dataset_capture is not None:
-            self._dataset_capture.close()
+        # if self._dataset_capture is not None:
+        #     self._dataset_capture.close()
         close = getattr(self.speaker, "close", None)
         if callable(close):
             close(wait=False)
@@ -1353,14 +1355,15 @@ class MissionContext:
             self._latest_camera_target = target
 
     def _on_dataset_image(self, message: Image) -> None:
-        if self._dataset_capture is None:
-            return
-        try:
-            stamp_ns = int(message.header.stamp.sec) * 1_000_000_000
-            stamp_ns += int(message.header.stamp.nanosec)
-            self._dataset_capture.on_frame(message, stamp_ns)
-        except Exception as error:  # noqa: BLE001
-            self.node.get_logger().warning(f"Cannot cache raw RGB frame: {error}")
+        # if self._dataset_capture is None:
+        #     return
+        # try:
+        #     stamp_ns = int(message.header.stamp.sec) * 1_000_000_000
+        #     stamp_ns += int(message.header.stamp.nanosec)
+        #     self._dataset_capture.on_frame(message, stamp_ns)
+        # except Exception as error:  # noqa: BLE001
+        #     self.node.get_logger().warning(f"Cannot cache raw RGB frame: {error}")
+        pass
 
     def _on_b_plan(self, message: String) -> None:
         plan = self._receive_plan(message, 'B')

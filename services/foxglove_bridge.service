@@ -10,6 +10,7 @@ Group=rc4
 WorkingDirectory=/home/rc4/fruit_ws
 Environment=HOME=/home/rc4
 Environment=ROS_DISTRO=humble
+Environment=FOXGLOVE_SERVICE_TIMEOUT_SEC=5
 ExecStart=/bin/bash -lc 'set -eo pipefail; source /home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash; set -u; exec ros2 launch foxglove_bridge foxglove_bridge_launch.xml'
 Restart=on-failure
 RestartSec=5

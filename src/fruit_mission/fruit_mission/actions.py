@@ -182,7 +182,7 @@ def observe_and_pick(ctx, *, side, expected_type, label=None):
 
     if ctx.is_open_loop and area in ("A", "C"):
         if selection.reason_code != "matched":
-            ctx.stop_dataset_capture()
+            # ctx.stop_dataset_capture()
             ctx.node.get_logger().info(
                 f"{area}区开环跳过抓取: {selection.reason_code} (type={selection.matched_type})"
             )
@@ -195,7 +195,7 @@ def observe_and_pick(ctx, *, side, expected_type, label=None):
             ctx.announce(f"{label}识别到{observed}，开始抓取。")
         preset_name = f"{side}_pick_openloop_{area.lower()}"
         ctx.node.get_logger().info(f"{area}区开环执行抓取预设: {preset_name}")
-        ctx.stop_dataset_capture()
+        # ctx.stop_dataset_capture()
         motion = ctx.execute_arm_preset(preset_name)
         if not motion.completed:
             ctx.recover_home()
@@ -207,7 +207,7 @@ def observe_and_pick(ctx, *, side, expected_type, label=None):
         return PickExecutionResult(True, "store_completed", selection.matched_type)
 
     if selection.target is None:
-        ctx.stop_dataset_capture()
+        # ctx.stop_dataset_capture()
         if area != "A":
             ctx.recover_home()
         record_failed_opportunity(
@@ -217,7 +217,7 @@ def observe_and_pick(ctx, *, side, expected_type, label=None):
     try:
         request, layer = ctx.camera_target_request(selection.target.point)
     except ValueError as error:
-        ctx.stop_dataset_capture()
+        # ctx.stop_dataset_capture()
         ctx.node.get_logger().warning(str(error))
         if area != "A":
             ctx.recover_home()
@@ -235,7 +235,7 @@ def observe_and_pick(ctx, *, side, expected_type, label=None):
 
 def _grasp_and_collect(ctx, request, *, store_preset, matched_type=None):
     """One CLOSE/dwell -> side Store/OPEN; failure recovers once."""
-    ctx.stop_dataset_capture()
+    # ctx.stop_dataset_capture()
     motion = ctx.move_to_base_target(request)
     if motion.completed:
         motion = ctx.execute_arm_preset(store_preset)
@@ -267,7 +267,7 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
     finally:
         ctx.close_observation_window()
     if targets is None:
-        ctx.stop_dataset_capture()
+        # ctx.stop_dataset_capture()
         record_failed_opportunity(ctx, 'camera_target_timeout', target)
         ctx.recover_home()
         ctx.announce(f"{label}没有识别到果实，跳过。")
@@ -286,7 +286,7 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
             record_failed_opportunity(ctx, 'camera_target_invalid', item.model_type)
     if not requests:
         record_failed_opportunity(ctx, 'no_matching_valid_target', target)
-        ctx.stop_dataset_capture()
+        # ctx.stop_dataset_capture()
         motion = ctx.execute_arm_preset(f"{side}_to_home_b")
         if not motion.completed:
             ctx.recover_home_b(stop_only=True)

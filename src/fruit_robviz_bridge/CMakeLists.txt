@@ -43,6 +43,17 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
   RENAME fruit_runtime_server)
 
+add_library(foxglove_service_timeout SHARED
+  src/foxglove_service_timeout.cpp
+)
+target_link_libraries(foxglove_service_timeout ${CMAKE_DL_LIBS})
+
+install(TARGETS foxglove_service_timeout
+  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_recorder test/test_recorder.py)

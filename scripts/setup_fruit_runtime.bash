@@ -28,6 +28,10 @@ unset ROS_PACKAGE_PATH
 source /opt/ros/humble/setup.bash
 source /home/rc4/fruit_ws/install/local_setup.bash
 
+if [[ -r /home/rc4/fruit_ws/install/fruit_robviz_bridge/lib/libfoxglove_service_timeout.so ]]; then
+  export LD_PRELOAD="${LD_PRELOAD:+${LD_PRELOAD}:}/home/rc4/fruit_ws/install/fruit_robviz_bridge/lib/libfoxglove_service_timeout.so"
+fi
+
 if [[ ! -r /opt/ros/humble/lib/librmw_cyclonedds_cpp.so ]]; then
   echo "ROS runtime requires ros-humble-rmw-cyclonedds-cpp" >&2
   echo "Install it with: sudo apt install ros-humble-rmw-cyclonedds-cpp" >&2

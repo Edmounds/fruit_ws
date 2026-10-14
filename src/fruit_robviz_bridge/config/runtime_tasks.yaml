@@ -2,8 +2,10 @@
 # The browser can select task IDs, but cannot submit a command.
 tasks:
   foxglove_bridge:
+    command: "ros2 launch foxglove_bridge foxglove_bridge_launch.xml"
     readiness:
       tcp_port: 8765
+    log_file: foxglove_bridge.log
 
   serial_controller:
     command: "ros2 launch auto_serial_bridge auto_serial_bridge.launch.py"
