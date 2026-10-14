@@ -134,7 +134,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 try:
                     payload = json.loads(COMPETITION_STATUS.read_text(encoding="utf-8"))
                 except (FileNotFoundError, json.JSONDecodeError):
-                    payload = {"phase": "STOPPED", "error": "尚未启动比赛准备"}
+                    payload = {"phase": "STOPPED"}
                 self._send(HTTPStatus.OK, payload)
                 return
             if path == "/api/runtime/tasks":
