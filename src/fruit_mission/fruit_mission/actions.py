@@ -95,10 +95,7 @@ def scan_c_qr(ctx, *, arrived):
         plan = build_c_plan("\n".join(lines))
     distribution = ctx.route.build_c_distribution(plan)
     ctx.save_c_distribution(distribution)
-    ctx.announce_and_wait(
-        format_c_announcement(plan),
-        lead_time_sec=float(ctx.config.get("c_qr_announce_lead_sec", 4.0)),
-    )
+    ctx.announce(format_c_announcement(plan))
     if arrived and not decoded:
         ctx.recover_home()
     enter_shenzhi(ctx, completed=decoded)
@@ -113,7 +110,7 @@ def pick_a(ctx, *, side):
     return result
 
 
-def observe_and_pick(ctx, *, side, expected_type):
+def observe_and_pick(ctx, *, side, expected_type, label=None):
     """Look (open gripper) -> harvest window -> fresh target -> CLOSE/Store/Home."""
     look = ctx.finish_observation(side)
     if not look.completed:
@@ -137,6 +134,9 @@ def observe_and_pick(ctx, *, side, expected_type):
             )
             return PickExecutionResult(
                 False, selection.reason_code, selection.matched_type)
+        if label:
+            observed = spoken_model_type(selection.matched_type)
+            ctx.announce(f"{label}识别到{observed}，开始抓取。")
         preset_name = f"{side}_pick_openloop_{area.lower()}"
         ctx.node.get_logger().info(f"{area}区开环执行抓取预设: {preset_name}")
         ctx.stop_dataset_capture()
@@ -145,6 +145,7 @@ def observe_and_pick(ctx, *, side, expected_type):
             ctx.recover_home()
             return PickExecutionResult(False, motion.reason_code, selection.matched_type)
         ctx.record_pick(selection.matched_type)
+        ctx.announce("采摘完成。")
         return PickExecutionResult(True, "store_completed", selection.matched_type)
 
     if selection.target is None:
@@ -162,6 +163,9 @@ def observe_and_pick(ctx, *, side, expected_type):
             ctx.recover_home()
         return PickExecutionResult(
             False, "camera_target_invalid", selection.matched_type)
+    if label:
+        observed = spoken_model_type(selection.matched_type)
+        ctx.announce(f"{label}识别到{observed}，开始抓取。")
     store_preset = store_preset_name(side, area, layer)
     return _grasp_and_collect(
         ctx, request, store_preset=store_preset, matched_type=selection.matched_type)
@@ -177,6 +181,7 @@ def _grasp_and_collect(ctx, request, *, store_preset, matched_type=None):
         ctx.recover_home()
         return PickExecutionResult(False, motion.reason_code, matched_type)
     ctx.record_pick(matched_type)
+    ctx.announce("采摘完成。")
     return PickExecutionResult(
         True, "store_completed", matched_type,
     )
@@ -184,12 +189,11 @@ def _grasp_and_collect(ctx, request, *, store_preset, matched_type=None):
 
 def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
     """Observe (open gripper) once; freeze up to two matching ripe targets before either grasp."""
-    label = tree_name or waypoint or "第一棵树"
+    label = tree_name or (f"{waypoint}号" if waypoint else "一号")
     look = ctx.finish_observation(side)
     if not look.completed:
-        reason = _b_observation_failure_text(look.reason_code)
         ctx.recover_home()
-        ctx.announce(f"B区{label}，{reason}，跳过。")
+        ctx.announce(f"{label}识别失败，跳过。")
         return False
     window_id = ctx.open_observation_window("B", "harvest", target)
     try:
@@ -199,7 +203,7 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
     if targets is None:
         ctx.stop_dataset_capture()
         ctx.recover_home()
-        ctx.announce(f"B区{label}，识别超时，跳过。")
+        ctx.announce(f"{label}没有识别到果实，跳过。")
         return False
     selected = _select_b_targets(ctx, label, target, targets)
     requests = []
@@ -218,19 +222,19 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
         if not motion.completed:
             ctx.recover_home()
         return False
-    ctx.announce(
-        f"B区{label}，识别到{target}，和二维码一致，开始抓成熟{target}。")
+    expected_type = expected_ripe_type(target)
+    observed = spoken_model_type(expected_type)
+    ctx.announce(f"{label}识别到{observed}，开始抓取。")
     success = True
     for request, store_preset, model_type in requests:
         result = _grasp_and_collect(
             ctx, request, store_preset=store_preset, matched_type=model_type)
         success = result.success and success
         if not result.success:
-            reason = _b_arm_failure_text(result.reason_code)
             if not ctx._arm_home_confirmed:
-                ctx.announce(f"B区{label}，{reason}，跳过。")
+                ctx.announce(f"{label}机械臂执行失败，跳过。")
                 return False
-            ctx.announce(f"B区{label}，{reason}，继续下一个目标。")
+            ctx.announce(f"{label}继续下一个目标。")
     if result.success:  # The last failed grasp already recovered Home once.
         motion = ctx.execute_arm_preset("home")
         if not motion.completed:
@@ -240,14 +244,16 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
 
 def _select_b_targets(ctx, label, target, targets):
     if not targets:
-        ctx.announce(f"B区{label}，没有识别到果实，跳过。")
+        ctx.announce(f"{label}没有识别到果实，跳过。")
         return []
     expected_type = expected_ripe_type(target)
     selected = sorted(
         (item for item in targets if item.model_type == expected_type),
         key=lambda item: item.confidence, reverse=True)
     if not selected:
-        ctx.announce(f"B区{label}，没有识别到成熟{target}，跳过。")
+        first_type = targets[0].model_type
+        observed = spoken_model_type(first_type)
+        ctx.announce(f"{label}识别到{observed}，跳过。")
     return selected
 
 
@@ -292,10 +298,8 @@ def navigate_c(ctx, task):
         task["result"] = "navigation_planning_failed" if planning_failed else "navigation_failed"
         task["navigation_failure_reason"] = navigation.get("reason")
         task["navigation_failure_detail"] = navigation.get("detail")
-        reason = "当前项导航规划失败" if planning_failed else "导航失败"
-        ctx.announce(
-            f"C区{format_position_name(int(task['position_id']))}，"
-            f"应该采{task['target_name']}。{reason}，跳过。")
+        pos_label = format_position_name(int(task["position_id"]))
+        ctx.announce(f"{pos_label}导航失败，跳过。")
     return navigation
 
 
@@ -305,52 +309,17 @@ def pick_c(ctx, task, *, side):
     target = str(task["target_name"])
     expected_type = str(task.get("expected_ripe_type") or expected_ripe_type(target))
     task["last_observation"] = {"source": "camera", "expected_type": expected_type}
-    result = observe_and_pick(ctx, side=side, expected_type=expected_type)
+    pos_label = format_position_name(position)
+    result = observe_and_pick(
+        ctx, side=side, expected_type=expected_type, label=pos_label)
     task["result"] = result.reason_code
-    prefix = f"C区{format_position_name(position)}，应该采{target}。"
-    observed = spoken_model_type(result.matched_type)
     if result.success:
-        ctx.announce(prefix + f"识别到{observed}，采摘放置工序完成。")
-    elif result.reason_code in {"no_detection", "target_unripe", "type_mismatch"}:
-        ctx.announce(_c_skip_text(position, target, result.reason_code, result.matched_type))
+        return result
+    if result.reason_code in {"no_detection", "camera_target_timeout"}:
+        ctx.announce(f"{pos_label}没有识别到目标，跳过。")
+    elif result.matched_type:
+        observed = spoken_model_type(result.matched_type)
+        ctx.announce(f"{pos_label}识别到{observed}，跳过。")
     else:
-        ctx.announce(prefix + f"识别到{observed}，{_pick_failure_text(result.reason_code)}。")
+        ctx.announce(f"{pos_label}识别失败，跳过。")
     return result
-
-
-def _b_observation_failure_text(reason_code):
-    return {
-        "arm_callback_failed": "机械臂执行失败",
-        "arm_endpoints_not_ready": "机械臂通信端点未就绪",
-        "arm_pose_unavailable": "机械臂执行失败",
-        "camera_target_timeout": "识别超时",
-    }.get(reason_code, "识别失败")
-
-
-def _b_arm_failure_text(reason_code):
-    return {
-        "arm_callback_failed": "机械臂执行报错",
-        "arm_endpoints_not_ready": "机械臂通信端点未就绪",
-    }.get(reason_code, "机械臂执行失败")
-
-
-def _c_skip_text(position, target, reason_code, matched_type):
-    prefix = f"C区{format_position_name(position)}，应该采{target}。"
-    observed = spoken_model_type(matched_type) if matched_type else None
-    if reason_code == "no_detection":
-        return prefix + "没有识别到目标，跳过。"
-    if reason_code == "target_unripe":
-        return prefix + f"识别到{observed or '不成熟' + target}，跳过。"
-    if reason_code == "type_mismatch":
-        return prefix + f"识别到{observed or '其他目标'}，跳过。"
-    if observed:
-        return prefix + f"识别到{observed}，跳过。"
-    return prefix + f"没有识别到成熟{target}，跳过。"
-
-
-def _pick_failure_text(reason_code):
-    return {
-        "camera_target_timeout": "深度相机没有识别到可抓取目标",
-        "arm_callback_failed": "机械臂执行报错",
-        "arm_endpoints_not_ready": "机械臂通信端点未就绪",
-    }.get(reason_code, "闭环抓取失败")

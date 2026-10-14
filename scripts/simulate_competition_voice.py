@@ -36,54 +36,60 @@ def main():
     time.sleep(2.0)
 
     # 3. B区扫码
-    logger.info("【B区扫码】到达B区二维码点位，获取到B区果树规划，异步播报...")
+    logger.info("【B区扫码】到达B区二维码点位，获取到B区果树规划，精简异步播报...")
     b_qr_text = (
-        "第一棵树苹果；第二棵树梨子；第三棵树苹果；第四棵树梨子；"
-        "第五棵树苹果；第六棵树梨子；第七棵树苹果；第八棵树梨子"
+        "一号苹果；二号梨子；三号苹果；四号梨子；"
+        "五号苹果；六号梨子；七号苹果；八号梨子"
     )
     speaker.announce(b_qr_text)
-    time.sleep(15.5)
+    time.sleep(6.0)
 
     # 4. C区扫码
-    logger.info("【C区扫码】到达C区二维码点位，获取C区分布规划，提前量播报...")
+    logger.info("【C区扫码】到达C区二维码点位，获取C区分布规划，零等待异步播报...")
     c_qr_text = (
-        "第一项，一号位置，南瓜；第二项，十二号位置，西红柿；"
-        "第三项，三号位置，辣椒；第四项，四号位置，洋葱；"
-        "第五项，五号位置，南瓜；第六项，六号位置，西红柿；"
-        "第七项，七号位置，辣椒；第八项，八号位置，洋葱"
+        "一号南瓜；十二号西红柿；三号辣椒；四号洋葱；"
+        "五号南瓜；六号西红柿；七号辣椒；八号洋葱"
     )
-    speaker.announce_and_wait(c_qr_text, lead_time_sec=10.0)
-    time.sleep(18.0)
+    speaker.announce(c_qr_text)
+    time.sleep(6.0)
 
     # 5. C区作业
-    logger.info("【C区作业】导航至 1 号位置，采摘成熟南瓜...")
-    speaker.announce_and_wait("C区一号位置，应该采南瓜。识别到成熟南瓜，采摘放置工序完成。")
+    logger.info("【C区作业】导航至 1 号位置，采摘成熟南瓜（边动边播报）...")
+    speaker.announce_and_wait("一号识别到成熟南瓜，开始抓取。")
+    time.sleep(0.5)
+    speaker.announce_and_wait("采摘完成。")
     time.sleep(1.0)
 
-    logger.info("【C区作业】导航至 12 号位置，采摘成熟西红柿...")
-    speaker.announce_and_wait("C区十二号位置，应该采西红柿。识别到成熟西红柿，采摘放置工序完成。")
+    logger.info("【C区作业】导航至 12 号位置，采摘成熟西红柿（边动边播报）...")
+    speaker.announce_and_wait("十二号识别到成熟西红柿，开始抓取。")
+    time.sleep(0.5)
+    speaker.announce_and_wait("采摘完成。")
     time.sleep(1.0)
 
     logger.info("【C区作业】导航至 3 号位置，发现辣椒未成熟，跳过...")
-    speaker.announce_and_wait("C区三号位置，应该采辣椒。识别到不成熟辣椒，跳过。")
-    time.sleep(1.5)
-
-    # 6. B区作业
-    logger.info("【B区作业】返回B区第 1 棵树，采摘成熟苹果...")
-    speaker.announce_and_wait("B区第一棵树，识别到苹果，和二维码一致，开始抓成熟苹果。")
-    time.sleep(0.5)
-    speaker.announce_and_wait("B区第一棵树，识别到苹果，采摘放置工序完成。")
+    speaker.announce_and_wait("三号识别到不成熟辣椒，跳过。")
     time.sleep(1.0)
 
-    logger.info("【B区作业】前进至B区第 2 棵树，采摘成熟梨子...")
-    speaker.announce_and_wait("B区第二棵树，识别到梨子，和二维码一致，开始抓成熟梨子。")
+    logger.info("【C区作业】导航至 4 号位置，视野无目标，跳过...")
+    speaker.announce_and_wait("四号没有识别到目标，跳过。")
+    time.sleep(1.0)
+
+    # 6. B区作业
+    logger.info("【B区作业】返回B区第 1 棵树，采摘成熟苹果（边动边播报）...")
+    speaker.announce_and_wait("一号识别到成熟苹果，开始抓取。")
     time.sleep(0.5)
-    speaker.announce_and_wait("B区第二棵树，识别到梨子，采摘放置工序完成。")
+    speaker.announce_and_wait("采摘完成。")
+    time.sleep(1.0)
+
+    logger.info("【B区作业】前进至B区第 2 棵树，采摘成熟梨子（边动边播报）...")
+    speaker.announce_and_wait("二号识别到成熟梨子，开始抓取。")
+    time.sleep(0.5)
+    speaker.announce_and_wait("采摘完成。")
     time.sleep(1.0)
 
     logger.info("【B区作业】前进至B区第 3 棵树，品种与二维码不一致，跳过...")
-    speaker.announce_and_wait("B区第三棵树，识别到苹果，和二维码不一致，跳过。")
-    time.sleep(1.5)
+    speaker.announce_and_wait("三号识别到成熟苹果，跳过。")
+    time.sleep(1.0)
 
     # 7. 流程结束与采摘汇总
     logger.info("【比赛结束】全流程正常遍历完毕，直接播报流程结束与按品种采摘汇总...")

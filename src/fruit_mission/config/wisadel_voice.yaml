@@ -297,6 +297,46 @@ phrases:
     file: "c_pos_12.wav"
 
   # -------------------------------------------------------------
+  # 8.1 精简点位与树号 (Short position / tree numbers 1~12)
+  # -------------------------------------------------------------
+  - id: pos_num_1
+    text: "一号"
+    file: "pos_num_1.wav"
+  - id: pos_num_2
+    text: "二号"
+    file: "pos_num_2.wav"
+  - id: pos_num_3
+    text: "三号"
+    file: "pos_num_3.wav"
+  - id: pos_num_4
+    text: "四号"
+    file: "pos_num_4.wav"
+  - id: pos_num_5
+    text: "五号"
+    file: "pos_num_5.wav"
+  - id: pos_num_6
+    text: "六号"
+    file: "pos_num_6.wav"
+  - id: pos_num_7
+    text: "七号"
+    file: "pos_num_7.wav"
+  - id: pos_num_8
+    text: "八号"
+    file: "pos_num_8.wav"
+  - id: pos_num_9
+    text: "九号"
+    file: "pos_num_9.wav"
+  - id: pos_num_10
+    text: "十号"
+    file: "pos_num_10.wav"
+  - id: pos_num_11
+    text: "十一号"
+    file: "pos_num_11.wav"
+  - id: pos_num_12
+    text: "十二号"
+    file: "pos_num_12.wav"
+
+  # -------------------------------------------------------------
   # 9. C区作业位置前缀 (C-zone prefixes for in-field events)
   # -------------------------------------------------------------
   - id: c_zone_pos_1
@@ -413,6 +453,12 @@ phrases:
   - id: act_recognize
     text: "识别到"
     file: "act_recognize.wav"
+  - id: act_start_pick
+    text: "开始抓取"
+    file: "act_start_pick.wav"
+  - id: act_pick_done
+    text: "采摘完成"
+    file: "act_pick_done.wav"
   - id: act_harvest_done
     text: "采摘放置工序完成"
     file: "act_harvest_done.wav"

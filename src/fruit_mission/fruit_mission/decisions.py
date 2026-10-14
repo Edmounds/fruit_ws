@@ -69,12 +69,12 @@ def spoken_model_type(model_type: Optional[str]) -> str:
 
 def format_b_tree_name(position_id: int) -> str:
     """Return a spoken B-zone tree label."""
-    return f"第{_chinese_index(position_id)}棵树"
+    return f"{_chinese_index(position_id)}号"
 
 
 def format_position_name(position_id: int) -> str:
     """Return a spoken C-zone position name."""
-    return f"{_chinese_index(position_id)}号位置"
+    return f"{_chinese_index(position_id)}号"
 
 
 def is_tree_fruit_type(model_type: str) -> bool:
@@ -100,7 +100,7 @@ def ordered_c_tasks(c_plan: Mapping[str, object]) -> List[Mapping[str, object]]:
 def format_b_announcement(b_plan: Mapping[str, object]) -> str:
     """Build a spoken summary for the B plan."""
     parts = [
-        f"第{_chinese_index(int(task['position_id']))}棵树{task['target']}"
+        f"{_chinese_index(int(task['position_id']))}号{task['target']}"
         for task in b_plan.get("tasks", [])
     ]
     return "；".join(parts)
@@ -109,11 +109,7 @@ def format_b_announcement(b_plan: Mapping[str, object]) -> str:
 def format_c_announcement(c_plan: Mapping[str, object]) -> str:
     """Build a spoken summary for the C plan."""
     parts = [
-        (
-            f"第{_chinese_index(int(task['sequence']))}项，"
-            f"{format_position_name(int(task['position_id']))}，"
-            f"{task['target']}"
-        )
+        f"{_chinese_index(int(task['position_id']))}号{task['target']}"
         for task in c_plan.get("tasks", [])
     ]
     return "；".join(parts)
