@@ -56,7 +56,7 @@ class FruitMissionNode(Node):
         ctx = self._mission_context
         try:
             ctx.announce_and_wait("我们是重庆大学 RoboCup 水果采摘队伍，现在开始采摘")
-            ctx.recover_home()
+            # ctx.recover_home()
             self._entrypoint(ctx)
             ctx.announce_summary()
         finally:

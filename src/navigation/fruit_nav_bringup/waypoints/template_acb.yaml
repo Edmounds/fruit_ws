@@ -8,12 +8,8 @@ points:
   type: goal
 - name: A_left4
   type: goal
-- name: to_B_QR_waypoint
-  type: waypoint
 - name: B_QR
   type: goal
-- name: to_A_right_waypoint_1
-  type: waypoint
 - name: A_right4
   type: goal
 - name: A_right3
@@ -52,21 +48,19 @@ points:
   type: waypoint
 - name: to_B_lower_waypoint_1
   type: waypoint
-- name: to_B_lower_waypoint_2
-  type: waypoint
-- name: B8
-  type: goal
-- name: B7
-  type: goal
-- name: B6
-  type: goal
-- name: B5
-  type: goal
-- name: B4
-  type: goal
-- name: B3
+- name: B1
   type: goal
 - name: B2
   type: goal
-- name: B1
+- name: B3
+  type: goal
+- name: B4
+  type: goal
+- name: B5
+  type: goal
+- name: B6
+  type: goal
+- name: B7
+  type: goal
+- name: B8
   type: goal

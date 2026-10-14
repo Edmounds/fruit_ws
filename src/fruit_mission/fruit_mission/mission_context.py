@@ -22,7 +22,7 @@ from rclpy.qos import DurabilityPolicy
 from rclpy.qos import HistoryPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
-from rclpy.qos import qos_profile_sensor_data
+# from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
@@ -34,7 +34,7 @@ from fruit_mission.actions import navigate_c_route
 from fruit_mission.camera_target_planner_client import CameraTargetPlannerClient
 from fruit_mission.camera_target_planner_client import DEFAULT_EXTRINSIC_CONFIG
 from fruit_mission.config import _validate_qr_fallbacks
-from fruit_mission.dataset_capture import DatasetCapture
+# from fruit_mission.dataset_capture import DatasetCapture
 from fruit_mission.decisions import format_produce_count, merge_seen_types, spoken_produce_name
 from fruit_mission.script_hardware_client import set_perception_zone
 from fruit_mission.tts import RecordedSpeaker
@@ -142,21 +142,23 @@ class MissionContext:
             target_offset_b_down_m=config.get("target_offset_b_down_m", (0.0, 0.0, 0.0)),
             max_joint_speed_rps=config['stationary']['joint_speed_rps'],
         )
-        self._dataset_capture = DatasetCapture(
-            node.get_logger(),
-            str(config.get("dataset_output_dir", "/home/rc4/fruit_ws/data")),
-            frame_limit=int(config.get("dataset_frames_per_look", 5)),
-            frame_interval_sec=float(config.get("dataset_frame_interval_sec", 0.1)),
-            shutdown_timeout_sec=float(
-                config.get("dataset_shutdown_timeout_sec", 10.0)
-            ),
-        )
-        self._dataset_image_subscription = node.create_subscription(
-            Image,
-            str(config.get("dataset_image_topic", "/camera/color/image_raw")),
-            self._on_dataset_image,
-            qos_profile_sensor_data,
-        )
+        # self._dataset_capture = DatasetCapture(
+        #     node.get_logger(),
+        #     str(config.get("dataset_output_dir", "/home/rc4/fruit_ws/data")),
+        #     frame_limit=int(config.get("dataset_frames_per_look", 5)),
+        #     frame_interval_sec=float(config.get("dataset_frame_interval_sec", 0.1)),
+        #     shutdown_timeout_sec=float(
+        #         config.get("dataset_shutdown_timeout_sec", 10.0)
+        #     ),
+        # )
+        # self._dataset_image_subscription = node.create_subscription(
+        #     Image,
+        #     str(config.get("dataset_image_topic", "/camera/color/image_raw")),
+        #     self._on_dataset_image,
+        #     qos_profile_sensor_data,
+        # )
+        self._dataset_capture = None
+        self._dataset_image_subscription = None
         self._follow_waypoints_client = ActionClient(
             node,
             FollowWaypoints,
@@ -644,12 +646,13 @@ class MissionContext:
 
     def start_dataset_capture(self) -> None:
         """Start the raw RGB burst after a Look reaches its measured pose."""
-        if self._current_area in ('A', 'B', 'C'):
+        if self._dataset_capture is not None and self._current_area in ('A', 'B', 'C'):
             self._dataset_capture.start_look(self._current_area)
 
     def stop_dataset_capture(self) -> None:
         """Stop collecting new frames for the current Look."""
-        self._dataset_capture.stop_look()
+        if self._dataset_capture is not None:
+            self._dataset_capture.stop_look()
 
     def start_observation(self, side: str) -> None:
         """Look and navigation share the executor, not blocking worker threads."""
@@ -908,7 +911,8 @@ class MissionContext:
             self.cancel_navigation()
             # Drain STOP before tearing down its ROS client.
             rclpy.spin_once(self.node, timeout_sec=0.2)
-        self._dataset_capture.close()
+        if self._dataset_capture is not None:
+            self._dataset_capture.close()
         close = getattr(self.speaker, "close", None)
         if callable(close):
             close(wait=False)
@@ -1341,6 +1345,8 @@ class MissionContext:
             self._latest_camera_target = target
 
     def _on_dataset_image(self, message: Image) -> None:
+        if self._dataset_capture is None:
+            return
         try:
             stamp_ns = int(message.header.stamp.sec) * 1_000_000_000
             stamp_ns += int(message.header.stamp.nanosec)
