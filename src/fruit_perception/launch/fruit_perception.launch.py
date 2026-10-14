@@ -106,7 +106,7 @@ def generate_launch_description():
         name='fruit_perception_container',
         namespace='',
         package='rclcpp_components',
-        executable='component_container',
+        executable='component_container_mt',
         composable_node_descriptions=composable_nodes,
         output='screen',
         emulate_tty=True,

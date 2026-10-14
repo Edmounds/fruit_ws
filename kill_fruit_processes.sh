@@ -7,6 +7,7 @@ target_pids=()
 declare -A matched_commands=()
 competition=0
 dry_run=0
+workspace=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 # These tokens cover the launch files and executable nodes in the current
 # perception, odometry, navigation, and teleop design.
@@ -326,14 +327,36 @@ stop_ros_daemon() {
 
 clean_camera_usb_state() {
   command -v ros2 >/dev/null 2>&1 || return 0
+  local project_process_count=${#target_pids[@]}
   if ! timeout 2 ros2 service list 2>/dev/null | grep -Fxq '/camera/hw_reset'; then
-    printf 'Camera reset service is unavailable; USB reset was not requested.\n'
+    if ((project_process_count > 0)); then
+      printf 'Camera reset service is unavailable while project processes are active; continuing process cleanup.\n'
+      return 0
+    fi
+    local device_info=''
+    if command -v rs-enumerate-devices >/dev/null 2>&1; then
+      device_info=$(timeout 8 rs-enumerate-devices -c 2>/dev/null || true)
+    fi
+    if [[ "$device_info" != *'Serial Number'* ]]; then
+      printf 'Warning: no RealSense device found for isolated USB preflight reset.\n' >&2
+      return 0
+    fi
+    printf 'No camera reset service found; running isolated USB preflight reset.\n'
+    if ! /usr/bin/python3 "${workspace}/scripts/reset_realsense_usb.py"; then
+      printf 'Warning: isolated camera USB preflight reset failed.\n' >&2
+    fi
     return 0
   fi
 
   printf 'Resetting the camera before stopping project processes.\n'
   if ! timeout 12 ros2 service call /camera/hw_reset std_srvs/srv/Empty '{}' >/dev/null 2>&1; then
     printf 'Warning: camera hardware reset timed out or failed.\n' >&2
+    if ((project_process_count == 0)); then
+      printf 'Falling back to isolated USB preflight reset.\n'
+      if ! /usr/bin/python3 "${workspace}/scripts/reset_realsense_usb.py"; then
+        printf 'Warning: isolated camera USB preflight reset failed.\n' >&2
+      fi
+    fi
     return 0
   fi
 
@@ -347,6 +370,12 @@ clean_camera_usb_state() {
     return 0
   fi
   printf 'Warning: camera USB device did not re-enumerate within 10 seconds.\n' >&2
+  if ((project_process_count == 0)); then
+    printf 'Falling back to isolated USB preflight reset.\n'
+    if ! /usr/bin/python3 "${workspace}/scripts/reset_realsense_usb.py"; then
+      printf 'Warning: isolated camera USB preflight reset failed.\n' >&2
+    fi
+  fi
 }
 
 while (($#)); do
