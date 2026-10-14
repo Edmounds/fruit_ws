@@ -352,7 +352,7 @@ def main():
     p_gen = subparsers.add_parser("generate", help="Batch generate missing audio files via GPU server")
     p_gen.add_argument("--manifest", "-m", default="/home/rc4/fruit_ws/src/fruit_mission/config/wisadel_voice.yaml",
                        help="Path to wisadel_voice.yaml")
-    p_gen.add_argument("--mode", default="gremlin", choices=["gremlin", "classic", "dry"], help="Voice mode")
+    p_gen.add_argument("--mode", default="dry", choices=["gremlin", "classic", "dry"], help="Voice mode")
     p_gen.add_argument("--lang", default="zh", help="Language")
     p_gen.add_argument("--force", "-f", action="store_true", help="Regenerate all even if file exists")
     p_gen.set_defaults(func=cmd_generate)

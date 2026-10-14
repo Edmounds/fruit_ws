@@ -16,7 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate Wis'adel Helium Voice for fruit robot")
     parser.add_argument("--text", "-t", required=True, help="Text to speak")
     parser.add_argument("--output", "-o", default="sounds/wisadel_helium.wav", help="Local output wav path")
-    parser.add_argument("--mode", "-m", default="gremlin", choices=["gremlin", "classic", "dry"],
+    parser.add_argument("--mode", "-m", default="dry", choices=["gremlin", "classic", "dry"],
                         help="Voice mode: gremlin (魔性鬼畜版), classic (经典纯正版), dry (微调原声)")
     parser.add_argument("--lang", "-l", default="zh", choices=["zh", "en", "ja", "auto"], help="Text language")
     parser.add_argument("--play", "-p", action="store_true", help="Play audio immediately using aplay/paplay")
@@ -39,7 +39,7 @@ def main():
         f"--output {remote_wav}"
     )
 
-    print(f"[*] Requesting Wis'adel voice synthesis on GPU server (ubuntu-remote)...")
+    print(f"[*] Requesting voice synthesis (default: Muelsyse 缪尔赛思) on GPU server (ubuntu-remote)...")
     print(f"    Mode: {args.mode}")
     print(f"    Text: {args.text}")
 
