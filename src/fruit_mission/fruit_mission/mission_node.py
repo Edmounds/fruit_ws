@@ -6,7 +6,8 @@ import rclpy
 from rclpy.node import Node
 
 from fruit_mission.config import load_config
-from fruit_mission.Logic import debug_a, debug_b, debug_c, main as competition_main, run_ac
+from fruit_mission.Logic_abc import debug_a, debug_b, debug_c, main as competition_main, run_ac
+from fruit_mission.Logic_acb import main as acb_main
 from fruit_mission.mission_context import MissionContext
 
 
@@ -16,6 +17,7 @@ ENTRYPOINTS = {
     "b": debug_b,
     "c": debug_c,
     "ac": run_ac,
+    "acb": acb_main,
 }
 
 
@@ -48,7 +50,7 @@ class FruitMissionNode(Node):
         try:
             self._entrypoint = ENTRYPOINTS[self.config["mission_flow"]]
         except KeyError as error:
-            raise ValueError("mission_flow must be full, ac, a, b, or c") from error
+            raise ValueError("mission_flow must be full, ac, acb, a, b, or c") from error
         self._mission_context = MissionContext(self, self.config)
 
     def run(self) -> None:
@@ -58,7 +60,8 @@ class FruitMissionNode(Node):
             ctx.announce_and_wait("我们是重庆大学 RoboCup 水果采摘队伍，现在开始采摘")
             # ctx.recover_home()
             self._entrypoint(ctx)
-            ctx.announce_summary()
+            if self.config["mission_flow"] != "acb":
+                ctx.announce_summary()
         finally:
             ctx.close_observation_window()
 

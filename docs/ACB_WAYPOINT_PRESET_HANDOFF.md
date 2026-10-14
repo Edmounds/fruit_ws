@@ -1,5 +1,23 @@
 # ACB 路点预设：确认与交接
 
+## 2026-10-14：当前 mission 约定
+
+**本次操作者确认覆盖下方首轮交接中的旧路线。**
+当前实现和入口见 [fruit_mission README](../src/fruit_mission/README.md#独立-acb-入口)。
+
+- 当前模板与实际文件均包含 32 个点，不再使用首轮 35 点骨架。
+- A 左侧去程开环，右侧回程闭环，C 区闭环。
+- 提前扫 B 使用已有 `qr_scan_a_to_b`，从 `shenzhi` 进入，成功后直接接 `right_look_a`。
+- C 作业后到 `C_top_waypoint_2`，成功到点才汇总 A+C，不清零、不说“任务流程结束”。
+- 然后沿 C 图到 `C_entrance_waypoint_2`，经 `to_B_lower_waypoint_1` 转场。
+- B 使用此前保存的计划，按 B1→B8 作业，奇数左、偶数右。
+- B8 后直接结束，不再次汇总，不增加返航或卸货。
+- 汇总点失败跳过汇总。操作者选择在出口或返 B 通道失败后仍继续既定 B 路线。
+- 继续流程不绕过既有安全门控，也不表示失败后的路径已经通过实机安全验收。
+- 本次不修改任何操作者标定预设，不启动硬件。
+
+以下正文保留首轮路点交接历史，不再作为当前 mission 的执行依据。
+
 ## 1. 状态与范围
 
 **路点预设已并入 `main`，RobViz Maker 和录点器现已支持 ACB 文件切换。**
@@ -148,7 +166,7 @@ C_entrance_waypoint_2    waypoint
 - [`waypoint_route.py`](../src/fruit_mission/fruit_mission/waypoint_route.py)：C 区图规划与观察侧计算。
 - [`mission_context.py`](../src/fruit_mission/fruit_mission/mission_context.py)：`navigate_c_position()` 和 `navigate_c_waypoint()`。
 - [`actions.py`](../src/fruit_mission/fruit_mission/actions.py)：`scan_c_qr()`。
-- [`Logic.py`](../src/fruit_mission/fruit_mission/Logic.py)：`run_c()`。
+- [`actions.py`](../src/fruit_mission/fruit_mission/actions.py)：当前共用 `run_c()`。
 
 路点任务只保证数据兼容，不单独承诺新 mission 的 C 自动导航已经通过验收。
 

@@ -364,26 +364,31 @@ class MissionWaypointRoute:
 
     def _validate_required_points(self) -> None:
         flow = self._required_flow
-        if flow not in {"full", "ac", "a", "b", "c"}:
+        if flow not in {"full", "ac", "acb", "a", "b", "c"}:
             raise ValueError(f"unknown mission flow: {flow}")
+        if flow == "acb":
+            for side in ("left", "right"):
+                for position in range(1, 5):
+                    self._require_type(f"A_{side}{position}", "goal")
+            self._require_type("to_B_lower_waypoint_1", "waypoint")
         if flow in {"full", "ac", "a"}:
             for name in ("A1", "A2", "A3", "A4"):
                 self._require_type(name, "goal")
             self._require_type("to_B_QR_waypoint", "waypoint")
-        if flow in {"full", "ac", "b"}:
+        if flow in {"full", "ac", "acb", "b"}:
             self._require_type(B_QR, "goal")
-        if flow in {"full", "ac", "c"}:
+        if flow in {"full", "ac", "acb", "c"}:
             self._require_type(C_QR, "goal")
-        if flow in {"full", "ac", "b"}:
+        if flow in {"full", "ac", "acb", "b"}:
             self._require_type("to_C_waypoint_1", "waypoint")
-        if flow in {"full", "ac", "c"}:
+        if flow in {"full", "ac", "acb", "c"}:
             self._requires_c_points = True
             waypoint_names = _c_waypoint_names(self._c_entrance_1)
             for name in C_GOAL_NAMES + waypoint_names:
                 self._require_type(name, "goal" if name in C_GOAL_NAMES else "waypoint")
         else:
             self._requires_c_points = False
-        if flow in {"full", "b"}:
+        if flow in {"full", "acb", "b"}:
             self.b_goal_names()
 
     def _require_type(self, name: str, point_type: str) -> None:

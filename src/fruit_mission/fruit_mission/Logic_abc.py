@@ -1,14 +1,11 @@
 """Competition composition: edit routes and action order here, not in ROS callbacks."""
 
 from fruit_mission.actions import navigate
-from fruit_mission.actions import enter_shenzhi
-from fruit_mission.actions import navigate_c
 from fruit_mission.actions import pick_a
-from fruit_mission.actions import pick_b_tree
-from fruit_mission.actions import pick_c
+from fruit_mission.actions import run_b
+from fruit_mission.actions import run_c
 from fruit_mission.actions import scan_b_qr
 from fruit_mission.actions import scan_c_qr
-from fruit_mission.decisions import format_b_tree_name
 
 
 def main(ctx):
@@ -44,41 +41,6 @@ def run_a(ctx):
             ctx.node.get_logger().warning(
                 f"A区点位 {wp} 导航失败，跳过并保持当前侧 {side}"
             )
-
-
-def run_b(ctx, plan):
-    """Fixed B1..B8 order; QR only supplies each tree's target variety."""
-    ctx.report_current_area("B")
-    waypoints = ctx.route.b_goal_names()
-    for position, task in enumerate(plan["tasks"], start=1):
-        tree_name = format_b_tree_name(position)
-        side = "right" if position % 2 == 1 else "left"
-        waypoint = waypoints[position - 1]
-        if navigate(ctx, [waypoint], side=side):
-            pick_b_tree(
-                ctx,
-                tree_name=tree_name,
-                target=str(task["target"]),
-                side=side,
-                waypoint=waypoint,
-            )
-        else:
-            ctx.announce(f"B区{tree_name}导航失败，跳过。")
-
-
-def run_c(ctx, plan):
-    """QR task order; use the route planner's side without direction rechecks."""
-    ctx.report_current_area("C")
-    for task in sorted(plan["tasks"], key=lambda item: int(item["sequence"])):
-        navigation = navigate_c(ctx, task)
-        if navigation["status"] != "succeeded":
-            ctx.save_c_distribution(plan)
-            ctx.recover_home()
-            enter_shenzhi(ctx, completed=False)
-            continue
-        pick_c(ctx, task, side=navigation["camera_side"])
-        ctx.save_c_distribution(plan)
-    ctx.save_c_distribution(plan)
 
 
 def debug_a(ctx):

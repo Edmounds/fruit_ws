@@ -5,10 +5,49 @@ from fruit_mission.decisions import PickExecutionResult
 from fruit_mission.decisions import expected_ripe_type
 from fruit_mission.decisions import format_b_announcement
 from fruit_mission.decisions import format_c_announcement
+from fruit_mission.decisions import format_b_tree_name
 from fruit_mission.decisions import format_position_name
 from fruit_mission.decisions import spoken_model_type
 from fruit_mission.waypoint_route import c_top_transit_end
 from fruit_qr_planner.planner import build_b_plan, build_c_plan
+
+
+def run_b(ctx, plan, *, first_side="right"):
+    """Fixed B1..B8 order with alternating vehicle-relative observation sides."""
+    if first_side not in ("left", "right"):
+        raise ValueError("first_side must be left or right")
+    ctx.report_current_area("B")
+    waypoints = ctx.route.b_goal_names()
+    other_side = "left" if first_side == "right" else "right"
+    for position, task in enumerate(plan["tasks"], start=1):
+        tree_name = format_b_tree_name(position)
+        side = first_side if position % 2 == 1 else other_side
+        waypoint = waypoints[position - 1]
+        if navigate(ctx, [waypoint], side=side):
+            pick_b_tree(
+                ctx,
+                tree_name=tree_name,
+                target=str(task["target"]),
+                side=side,
+                waypoint=waypoint,
+            )
+        else:
+            ctx.announce(f"B区{tree_name}导航失败，跳过。")
+
+
+def run_c(ctx, plan):
+    """QR task order; use the route planner's side without direction rechecks."""
+    ctx.report_current_area("C")
+    for task in sorted(plan["tasks"], key=lambda item: int(item["sequence"])):
+        navigation = navigate_c(ctx, task)
+        if navigation["status"] != "succeeded":
+            ctx.save_c_distribution(plan)
+            ctx.recover_home()
+            enter_shenzhi(ctx, completed=False)
+            continue
+        pick_c(ctx, task, side=navigation["camera_side"])
+        ctx.save_c_distribution(plan)
+    ctx.save_c_distribution(plan)
 
 
 def navigate(ctx, waypoints, *, side=None, preset=None):
@@ -51,10 +90,10 @@ def enter_shenzhi(ctx, *, completed):
     return motion.completed
 
 
-def scan_b_qr(ctx, *, arrived):
-    """qr_scan_b -> QR window -> plan/fallback -> announcement -> Home."""
+def scan_b_qr(ctx, *, arrived, preset="qr_scan_b", return_home=True):
+    """Scan and retain a B plan; optionally keep the successful QR pose."""
     ctx.report_current_area("B")
-    ready = arrived and ctx.execute_arm_preset('qr_scan_b').completed
+    ready = arrived and ctx.execute_arm_preset(preset).completed
     plan = None
     if ready:
         window_id = ctx.open_observation_window("B", "qr")
@@ -72,7 +111,7 @@ def scan_b_qr(ctx, *, arrived):
         return plan
     if not decoded:
         ctx.recover_home()
-    else:
+    elif return_home:
         motion = ctx.execute_arm_preset('home')
         if not motion.completed:
             ctx.recover_home()

@@ -86,7 +86,7 @@ def generate_launch_description():
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("waypoint_file", default_value=""),
         DeclareLaunchArgument("mission_flow", default_value="full",
-                              choices=["full", "ac", "a", "b", "c"]),
+                              choices=["full", "ac", "acb", "a", "b", "c"]),
         DeclareLaunchArgument("map_frame", default_value="odom"),
         DeclareLaunchArgument("log_level", default_value="info"),
         DeclareLaunchArgument("arm_log_level", default_value="info"),

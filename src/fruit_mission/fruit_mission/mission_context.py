@@ -869,9 +869,10 @@ class MissionContext:
             self._pick_counts[name] += 1
             self.node.get_logger().info(f"记录采摘工序完成：{name}，当前累计：{self._pick_counts[name]}")
 
-    def announce_summary(self) -> None:
-        """Speak final mission summary by produce category directly."""
-        self.announce_and_wait("任务流程结束")
+    def announce_summary(self, *, completed: bool = True) -> None:
+        """Speak cumulative counts without clearing them; optionally mark completion."""
+        if completed:
+            self.announce_and_wait("任务流程结束")
         total = sum(self._pick_counts.values())
         if total == 0:
             self.announce_and_wait("本次没有采摘记录")

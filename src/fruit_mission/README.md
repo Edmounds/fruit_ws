@@ -2,22 +2,64 @@
 
 ## 从哪里审核
 
-打开 [`fruit_mission/Logic.py`](fruit_mission/Logic.py)：
+ABC 编排位于 [`fruit_mission/Logic_abc.py`](fruit_mission/Logic_abc.py)：
 
 - `main(ctx)`：整场 **A → 扫 B 码 → B1～B8 作业 → 扫 C 码 → 按二维码顺序执行 C 作业 → C_top_waypoint_1 → 采摘汇总播报**。
 - `run_a(ctx)`：A1、A2、A3、A4 逐点展开；每点先导航并并行启动左 Look，
   然后调用左、右 `pick_a`。导航与采摘是独立积木，不用循环隐藏固定路线。
-- `run_b(ctx, plan)`：固定按 B1～B8 导航，二维码只指定每棵树的目标品种。
+- 共用 `actions.run_b(ctx, plan)`：固定按 B1～B8 导航，二维码只指定每棵树的目标品种。
   奇数树观察右侧，偶数树观察左侧。调用一次 `pick_b_tree` 完成该树工序。
   每树先完成本侧 B 安全预设，再边走边切下一树 Look。B 区全部完成后前往 C 区途中边走边伸直。
-- `run_c(ctx, plan)`：按二维码项序导航，用路线规划器确定的侧调用 `pick_c`；
+- 共用 `actions.run_c(ctx, plan)`：按二维码项序导航，用路线规划器确定的侧调用 `pick_c`；
   采摘完成后不追加伸直，下一段导航按是否经过 top 点选择姿态。导航失败记录并跳过，不在未到达的位置抓取。
 - 分区间固定通道点直接列在调用处，不再通过隐藏的 transition 名称展开。
 
 只要改变比赛顺序、路线、左右侧或目标，就编辑这里。航点坐标和车体朝向仍由源码
 `src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml` 提供，使用 `odom`。
 A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点时同步修改
-`Logic.py` 和 `waypoint_route.py` 的必需点校验，不能期待 YAML 自动增加工序。
+`Logic_abc.py` 和 `waypoint_route.py` 的必需点校验，不能期待 YAML 自动增加工序。
+
+## 独立 ACB 入口
+
+ACB 编排位于 [`fruit_mission/Logic_acb.py`](fruit_mission/Logic_acb.py)。
+运行坐标来自源码 `src/navigation/fruit_nav_bringup/waypoints/odom_waypoints_acb.yaml`。
+`template_acb.yaml` 只用于录点，不是运行时坐标文件。
+
+```text
+A_left1→4：每点只抓左侧，固定开环
+→ B_QR：导航时 shenzhi，到点执行 qr_scan_a_to_b，扫码、播报并保存 B 计划
+→ A_right4→1：每点只抓右侧，固定闭环
+→ C_QR：扫码、播报，按二维码顺序闭环作业
+→ 沿 C 图到 C_top_waypoint_2：播报当前 A+C 累计收获
+→ 沿 C 图到 C_entrance_waypoint_2
+→ to_B_lower_waypoint_1：shenzhi 转场，之后确认一次安全 Home
+→ B1→B8：使用之前保存的 B 计划，奇数左侧 Look，偶数右侧 Look
+→ 停在 B8，直接结束，不再次汇总
+```
+
+B 扫码成功后不插入 Home，回程导航直接切 `right_look_a`。
+扫码失败仍使用原兜底计划和单次安全恢复，返回 B 时不重新扫码。
+中途汇总复用已有短语和累计记录，不说“任务流程结束”，不清零。
+等待每条播报完成，等待最多 10 秒，失败或超时继续流程。
+汇总点导航失败时跳过汇总，仍尝试原 C 图出口。
+按操作者选择，C 出口或返 B 通道失败后仍推进既定 B 路线。
+不把失败视为到达，不绕行、不重试，保留既有 STOP、反馈和安全交接门控。
+导航没有自动避障，失败后的继续路径必须由操作者现场验证。
+B 抓取、分层 Store 和同侧安全 Home 共用原实现，仅改变观察侧。
+
+`start_fruit_mission_acb.sh` 选择独立 `fruit_mission_acb.launch.py`。
+runner 和 launch 共用原整栈启动、readiness、日志、录包及退出清理。
+ACB 脚本只支持 `--debug` 和 `--help`，不提供单区调试或开环开关。
+旧 ABC 默认路线、`full/ac/a/b/c` 和开环参数保持原行为。
+节点增加 `mission_flow=acb`，抓取模式在 ACB 调用处按去程、回程明确切换。
+主目录合入并构建后，才可在操作者授权的安全条件下启动：
+
+```bash
+./start_fruit_mission_acb.sh
+./start_fruit_mission_acb.sh --debug
+```
+
+离线检查不代表倒车、二维码姿态或整机扫掠空间已经验收。
 
 ## 重复动作放在哪里
 
@@ -26,6 +68,8 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 
 | 积木 | 参数与职责 |
 | --- | --- |
+| `run_b(ctx, plan, first_side="right")` | 共用 B1～B8 作业。ABC 默认奇数右、偶数左，ACB 使用 `first_side="left"`。 |
+| `run_c(ctx, plan)` | 共用 C 区二维码顺序、图导航、抓取、记录和失败推进。 |
 | `navigate(ctx, waypoints, side=None, preset=None)` | 明确导航点；有 side 时导航与 Look 并行，有 preset 时导航与指定机械臂预设（如 A 结束前往 B 扫码、以及 B 结束前往 C 扫码的 `shenzhi`）并行。失败清理待消费动作，安全恢复并返回 False。 |
 | `pick_a(ctx, side=...)` | 区域 Look/OPEN → 实测停稳 → harvest 窗口 → 成熟目标 → CLOSE/驻留 → 区域 Store/OPEN/驻留。正常不追加 Home，无重复抓取。 |
 | `pick_b_tree(ctx, tree_name=..., target=..., side=...)` | 每树观察一次，按二维码品种、成熟度和基座空间限制筛选，再按检测置信度选最多两个目标。首次抓取前冻结基座请求，再逐个抓取/Store。同树成功抓取之间不回 Home，树末尾执行本侧 `*_to_home_b`。 |
@@ -36,6 +80,8 @@ A 固定路线要求 A1～A4 都存在且类型为 goal；新增/删减采摘点
 
 `arrived` 使用前一个 `navigate` 的返回值；导航失败已经执行过一次安全恢复，
 扫码函数只使用兜底计划，不再为同一导航失败重复尝试 Home。
+ACB 的 `scan_b_qr` 指定 `preset="qr_scan_a_to_b", return_home=False`。
+ABC 的默认扫码预设和成功后 Home 保持不变。
 
 `MissionContext` 只保留 ROS 反馈、导航发送、感知窗口、planner 原语及安全交接；
 品种判断和语音格式在 `decisions.py`，C 路线数学继续在 `waypoint_route.py`。
@@ -86,7 +132,7 @@ planner YAML，姿态、速度、标定在对应 planner/相机源码 YAML，
 正常 Look 的 OPEN 由预设负责，不追加冗余 OPEN/HOLD 或 Home。
 底盘终态仍使用导航结果，实际底盘停稳仍须现场确认。
 恢复在 STOP 确认后等待新鲜 `STATUS_IDLE`，planner 保留运动占用与 STOP 后 IDLE 保护。
-A 左右调用顺序直接在 `Logic.py`，不再使用
+A 左右调用顺序直接在 `Logic_abc.py` / `Logic_acb.py`，不再使用
 `a_observation_order` 配置。
 
 窗口结果在入缓存前核对 ID、用途及合法窗后图像时间；扫码计划另核对区域，非对象 JSON 与非法时间忽略后继续等待或使用既有固定兜底。
@@ -98,7 +144,7 @@ Look 已明确拒绝且未下发轨迹（`trajectory_id=0`），并有有效静�
 已删除无调用者的旧路线查询 API。当前 A/B/C 路线规划和结果记录保留。
 期望类型只随观察窗口发布，不再维护重复品种话题。
 
-实际姿态顺序以 `Logic.py` / `actions.py` 为准。B 扫码后仍回普通 Home。
+ABC 姿态顺序以 `Logic_abc.py` / `actions.py` 为准。ABC B 扫码后仍回普通 Home。
 B 单树结束后执行本侧 B 安全预设，完成后下一树导航同时切 Look。
 B→C 转场仍使用 `shenzhi`。C 开环和闭环采摘完成后均不追加固定伸直。
 C 扫码后的伸直交接保持不变。必要 `shenzhi` 未确认时仍禁止导航，Home 不冒充保护位。
@@ -143,7 +189,7 @@ B 放果预设按抓取时的分层动态选用 `<side>_store_b_up` 或 `<side>_
 节点启动时从明确的入口表选择一次函数；`main()` 没有模式分支，不做动态导入或流程图引擎。
 `mission_flow` / `--flow` 保留现有名字，GUI 和启动脚本不需要换一套用法：
 
-| 选择 | Logic.py 入口 |
+| 选择 | Logic_abc.py 入口 |
 | --- | --- |
 | `full`（默认） | `main` |
 | `a` | `debug_a`：`run_a` 后到既有 A 出口点 |

@@ -18,16 +18,19 @@ ODOM_FRAME="odom"
 MISSION_FLOW="full"
 DEBUG_RECORD_ENABLED=0
 OPEN_LOOP=A
+OPEN_LOOP_EXPLICIT=0
 
 usage() {
   cat <<'EOF'
-Usage: ./start_fruit_mission.sh [--flow full|ac|a|b|c] [--open-loop A|C|AC|none] [--debug]
+Usage: ./start_fruit_mission.sh [--flow full|ac|acb|a|b|c] [--open-loop A|C|AC|none] [--debug]
 
 Start the complete perception, arm planner, odometry navigation, and mission stack in the
 startup-relative odom frame.
 Start only from a safe stationary robot. Existing competition stacks and motion
 clients are stopped before this runner starts its own stack and odom origin.
---flow selects a Logic.py entry function; B/C-only entries also scan their QR.
+--flow selects a Logic_abc.py entry function; B/C-only entries also scan their QR.
+Use ./start_fruit_mission_acb.sh for the independent Logic_acb.py route.
+ACB fixes A outbound to open-loop, A return and C to closed-loop.
 --open-loop selects Zones A, C, or AC for preset picking without 3D depth closure.
 The default is A (A open-loop, C closed-loop); none uses closed-loop picking in both zones.
 Use --debug to record the mission profile under rosbags/. The profile includes
@@ -50,6 +53,7 @@ while (($# > 0)); do
     --open-loop)
       (($# >= 2)) || { usage >&2; exit 2; }
       OPEN_LOOP=$2
+      OPEN_LOOP_EXPLICIT=1
       shift 2
       ;;
     --debug)
@@ -68,7 +72,7 @@ while (($# > 0)); do
 done
 
 case "$MISSION_FLOW" in
-  full|ac|a|b|c) ;;
+  full|ac|acb|a|b|c) ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -76,6 +80,16 @@ case "$OPEN_LOOP" in
   A|C|AC|none) ;;
   *) usage >&2; exit 2 ;;
 esac
+
+if [[ "$MISSION_FLOW" == "acb" ]]; then
+  if ((OPEN_LOOP_EXPLICIT)) && [[ "$OPEN_LOOP" != "none" ]]; then
+    echo "ACB uses fixed per-leg picking modes; --open-loop must be none" >&2
+    exit 2
+  fi
+  MISSION_LAUNCH="$WORKSPACE/src/fruit_mission/launch/fruit_mission_acb.launch.py"
+  WAYPOINT_FILE="$WORKSPACE/src/navigation/fruit_nav_bringup/waypoints/odom_waypoints_acb.yaml"
+  OPEN_LOOP=none
+fi
 
 child_pids=()
 child_names=()

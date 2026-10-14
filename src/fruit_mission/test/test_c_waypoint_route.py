@@ -57,6 +57,21 @@ class TestCWaypointRoute(unittest.TestCase):
         self.assertAlmostEqual(yaws[0], 0.0)
         self.assertAlmostEqual(yaws[-1], math.pi / 2.0)
 
+    def test_other_top_preserves_saved_yaw(self):
+        route = rectangle_route()
+        names, yaws = route.plan_c_waypoint(3.5, 0.0, 0.0, C_TOP_2, 0.5)
+        self.assertEqual(names, [C_TOP_1, C_TOP_2])
+        self.assertAlmostEqual(yaws[-1], math.pi)
+
+    def test_exit_from_top_stays_in_lane(self):
+        route = rectangle_route()
+        top = route.pose(C_TOP_2)
+        names, yaws = route.plan_c_waypoint(
+            top.x, top.y, math.pi, C_ENTRANCE_2, 0.5)
+        self.assertEqual(names, [C_ENTRANCE_2])
+        self.assertEqual(len(names), len(yaws))
+        self.assertAlmostEqual(yaws[-1], math.pi)
+
     def test_off_lane_rejoins_before_navigation(self):
         route = rectangle_route()
         names, yaws = route.plan_c_waypoint(2.0, -0.15, 0.0, C_TOP_1, 0.5)

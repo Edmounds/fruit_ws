@@ -97,11 +97,14 @@ colcon build --base-paths src --packages-select fruit_navigation
 - 录制的航点保存至 `src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml`（`frame_id: odom`）。
 
 ### 3.3 启动全流程采摘比赛 (`start_fruit_mission.sh`)
-`--flow` 现在选择 `Logic.py` 中的入口函数，完整比赛函数不再混入模式分支。
+ABC 的 `--flow` 选择 `Logic_abc.py` 中的入口函数，完整比赛函数不再混入模式分支。
 固定 A 导航点和区间通道点在调用处可见；完整流程按 A → B → C 执行，
 B 区固定访问 1～8 号树，C 区按二维码顺序访问。B/C 单区调试仍先扫描对应二维码，
 失败则用 mission 自有兜底计划。路线坐标、C 几何规划与停稳/取消门控按 source waypoint 和 Mission 路线规划结果执行。
 编排和重复动作的文件边界见 [fruit_mission README](../src/fruit_mission/README.md)。
+独立 ACB 入口为 `start_fruit_mission_acb.sh`，使用 `Logic_acb.py` 和 `odom_waypoints_acb.yaml`。
+它提前保存 B 二维码计划，完成 A/C 后在 `C_top_waypoint_2` 汇总，再执行 B1～B8。
+ACB 固定 A 去程开环、A 回程和 C 闭环，B 奇数左、偶数右，B8 后不再次汇总。
 
 任务启动入口负责里程计导航、单 camera 感知、串口桥与任务状态机。以下是脚本使用方法，
 不是实机采摘验收结论；观察/收臂旧接口及 planner 启动需按架构文档核对：
