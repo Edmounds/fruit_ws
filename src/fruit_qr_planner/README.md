@@ -46,7 +46,8 @@ one target per non-empty line. The C code accepts either target lines followed b
 position list, or one `target + position` task per line.
 
 The fixed camera `rgb8` image is validated and converted with the system NumPy
-and OpenCV directly. QR payloads are decoded by the system `python3-pyzbar`
+and OpenCV directly. QR decoding tries Otsu and adaptive binary images first,
+then grayscale and the converted color image as fallbacks. QR payloads are decoded by the system `python3-pyzbar`
 and `libzbar0` packages, which support UTF-8 Chinese payloads without relying
 on OpenCV's optional QUIRC decoder. Always run nodes and launch commands in an environment initialized by
 `/home/rc4/fruit_ws/scripts/setup_fruit_runtime.bash`, which excludes user-site NumPy 2

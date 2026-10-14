@@ -115,28 +115,53 @@ def image_to_bgr(message: Image, cv2_module: Any) -> Any:
     return image
 
 
-def decode_qr_results(image: Any, decode_barcodes: Any) -> tuple[Optional[str], list]:
-    """Decode once and retain QR rectangles independently of plan validity."""
-    payloads = []
-    detections = []
-    for barcode in decode_barcodes(image):
-        if barcode.type != "QRCODE":
-            continue
-        text = ""
-        for encoding in ("utf-8", "gbk"):
-            try:
-                text = barcode.data.decode(encoding).strip()
-                break
-            except UnicodeDecodeError:
+def decode_qr_results(
+    image: Any, decode_barcodes: Any, cv2_module: Any = None
+) -> tuple[Optional[str], list]:
+    """Decode binary QR candidates first and retain their pixel rectangles."""
+    if cv2_module is None:
+        import cv2 as cv2_module
+
+    gray = cv2_module.cvtColor(image, cv2_module.COLOR_BGR2GRAY)
+    _, otsu = cv2_module.threshold(
+        gray, 0, 255, cv2_module.THRESH_BINARY | cv2_module.THRESH_OTSU
+    )
+    adaptive = cv2_module.adaptiveThreshold(
+        gray,
+        255,
+        cv2_module.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2_module.THRESH_BINARY,
+        31,
+        5,
+    )
+
+    def decode_candidate(candidate: Any) -> tuple[Optional[str], list]:
+        payloads = []
+        detections = []
+        for barcode in decode_barcodes(candidate):
+            if barcode.type != "QRCODE":
                 continue
-        if text:
-            payloads.append(text)
-        rect = barcode.rect
-        detections.append({
-            "text": text[:4096],
-            "roi": [int(rect.left), int(rect.top), int(rect.width), int(rect.height)],
-        })
-    return select_unique_payload(payloads), detections[:64]
+            text = ""
+            for encoding in ("utf-8", "gbk"):
+                try:
+                    text = barcode.data.decode(encoding).strip()
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if text:
+                payloads.append(text)
+            rect = barcode.rect
+            detections.append({
+                "text": text[:4096],
+                "roi": [int(rect.left), int(rect.top), int(rect.width), int(rect.height)],
+            })
+        return select_unique_payload(payloads), detections[:64]
+
+    for candidate in (otsu, adaptive, gray, image):
+        payload, detections = decode_candidate(candidate)
+        if detections:
+            return payload, detections
+    return None, []
 
 
 def qr_result_json(message: Image, detections: list) -> str:
@@ -261,7 +286,9 @@ class FruitQrPlannerNode(Node):
         target_area = window["area"]
         try:
             image = image_to_bgr(message, self._cv2)
-            payload, detections = decode_qr_results(image, self._decode_barcodes)
+            payload, detections = decode_qr_results(
+                image, self._decode_barcodes, self._cv2
+            )
             self._preview_publisher.publish(String(data=qr_result_json(message, detections)))
             canonical_payload = normalize_payload(payload or "")
             if not canonical_payload:

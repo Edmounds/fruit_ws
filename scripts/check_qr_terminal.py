@@ -89,7 +89,7 @@ class QrTerminalMonitor(Node):
 
         try:
             image = image_to_bgr(message, cv2)
-            payload, detections = decode_qr_results(image, decode_barcodes)
+            payload, detections = decode_qr_results(image, decode_barcodes, cv2)
             self._preview_publisher.publish(String(data=qr_result_json(message, detections)))
         except Exception as exc:
             if now - self._last_heartbeat_time > 2.0:

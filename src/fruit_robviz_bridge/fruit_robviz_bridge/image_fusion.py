@@ -1,5 +1,6 @@
 """Continuous camera preview with independent, strictly same-frame overlays."""
 
+from collections import deque
 import json
 import math
 
@@ -125,7 +126,7 @@ def draw_qr(image, detections, font=None):
 
 
 class ImageFusionNode(Node):
-    """Publish every incoming camera frame without waiting for results."""
+    """Publish camera frames and preserve exact late QR associations."""
 
     def __init__(self, image_topic, output_topic, arm_frame_id, use_sim_time=False):
         # The gateway's launch __node remap must not rename this second node.
@@ -136,6 +137,7 @@ class ImageFusionNode(Node):
         self._fruit = None
         self._base = None
         self._qr = None
+        self._image_cache = deque(maxlen=12)
         self._arm_frame = arm_frame_id
         self._qr_font = None
         try:
@@ -168,21 +170,19 @@ class ImageFusionNode(Node):
         except (ValueError, TypeError) as error:
             self._qr = None
             self.get_logger().warning(f"QR preview rejected: {error}", throttle_duration_sec=2.0)
-
-    def _on_image(self, message):
-        fruit = self._fruit
-        if fruit and not matches_image(fruit.header, message.header):
-            fruit = None
-        qr = self._qr
-        if qr and (
-            stamp_key(message.header) == (0, 0)
-            or (qr["stamp_sec"], qr["stamp_nanosec"]) != stamp_key(message.header)
-            or qr["frame_id"] != message.header.frame_id
-        ):
-            qr = None
-        if not fruit and not qr:
-            self._publisher.publish(message)
             return
+        if not self._qr["detections"]:
+            return
+        for image in reversed(self._image_cache):
+            if (
+                stamp_key(image.header)
+                == (self._qr["stamp_sec"], self._qr["stamp_nanosec"])
+                and image.header.frame_id == self._qr["frame_id"]
+            ):
+                self._publish_overlay(image, self._qr)
+                break
+
+    def _publish_overlay(self, message, qr):
         try:
             _, bgr, _ = validate_and_extract_color(message)
             image = bgr.copy()
@@ -193,7 +193,9 @@ class ImageFusionNode(Node):
             self._publisher.publish(message)
             return
 
-        # Each overlay can fail independently. Never gate video on result completeness.
+        fruit = self._fruit
+        if fruit and not matches_image(fruit.header, message.header):
+            fruit = None
         if fruit:
             base = self._base
             base_items = base.detections if base and matches_image(
@@ -223,8 +225,24 @@ class ImageFusionNode(Node):
         output = Image()
         output.header = message.header
         output.width, output.height = message.width, message.height
-        # Keep the input color format so intermittent overlays do not renegotiate WebRTC.
         output.encoding = encoding
         output.step = message.width * image.shape[2]
         output.data = image.tobytes()
         self._publisher.publish(output)
+
+    def _on_image(self, message):
+        self._image_cache.append(message)
+        fruit = self._fruit
+        if fruit and not matches_image(fruit.header, message.header):
+            fruit = None
+        qr = self._qr
+        if qr and (
+            stamp_key(message.header) == (0, 0)
+            or (qr["stamp_sec"], qr["stamp_nanosec"]) != stamp_key(message.header)
+            or qr["frame_id"] != message.header.frame_id
+        ):
+            qr = None
+        if not fruit and not qr:
+            self._publisher.publish(message)
+            return
+        self._publish_overlay(message, qr)

@@ -153,6 +153,19 @@ def test_ros_image_protocol_keeps_sources_independent_and_color_format_stable():
         camera.publish(image)
         spin_until(lambda: bool(received))
         assert bytes(received[-1].data) == bytes(image.data)
+
+        # A QR result can arrive after fusion already published its raw frame.
+        received.clear()
+        image.header.stamp.sec += 1
+        camera.publish(image)
+        spin_until(lambda: bool(received))
+        qr_pub.publish(String(data=qr_result_json(image, [
+            {"text": "QR", "roi": [100, 40, 20, 20]}
+        ])))
+        spin_until(lambda: len(received) >= 2)
+        output = received[-1]
+        pixels = np.frombuffer(output.data, dtype=np.uint8).reshape(100, 160, 3)
+        assert bool(pixels[59, 110].any())
     finally:
         executor.shutdown()
         fusion.destroy_node()
