@@ -133,6 +133,8 @@ excluded.
 --competition  Stop only competition stacks and motion clients. Preserve
                independent RobViz, waypoint recorder, and rosbag processes.
                The caller and its ancestors are never targets.
+               Before stopping, reset /camera when its hardware-reset service
+               is available and wait for USB re-enumeration.
 EOF
 }
 
@@ -322,6 +324,31 @@ stop_ros_daemon() {
   fi
 }
 
+clean_camera_usb_state() {
+  command -v ros2 >/dev/null 2>&1 || return 0
+  if ! timeout 2 ros2 service list 2>/dev/null | grep -Fxq '/camera/hw_reset'; then
+    printf 'Camera reset service is unavailable; USB reset was not requested.\n'
+    return 0
+  fi
+
+  printf 'Resetting the camera before stopping project processes.\n'
+  if ! timeout 12 ros2 service call /camera/hw_reset std_srvs/srv/Empty '{}' >/dev/null 2>&1; then
+    printf 'Warning: camera hardware reset timed out or failed.\n' >&2
+    return 0
+  fi
+
+  sleep 2
+  local device_info=''
+  if command -v rs-enumerate-devices >/dev/null 2>&1; then
+    device_info=$(timeout 8 rs-enumerate-devices -c 2>/dev/null || true)
+  fi
+  if [[ "$device_info" == *'Serial Number'* ]]; then
+    printf 'Camera USB device re-enumerated successfully.\n'
+    return 0
+  fi
+  printf 'Warning: camera USB device did not re-enumerate within 10 seconds.\n' >&2
+}
+
 while (($#)); do
 case "$1" in
   --competition) competition=1 ;;
@@ -356,6 +383,10 @@ if command -v systemctl >/dev/null 2>&1 && \
 fi
 
 refresh_targets
+
+if ((${dry_run:-0} == 0)); then
+  clean_camera_usb_state
+fi
 
 if ((${#target_pids[@]} == 0)); then
   printf 'No project processes found.\n'
