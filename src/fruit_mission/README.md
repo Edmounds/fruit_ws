@@ -9,8 +9,7 @@ ABC 编排位于 [`fruit_mission/Logic_abc.py`](fruit_mission/Logic_abc.py)：
   然后调用左、右 `pick_a`。导航与采摘是独立积木，不用循环隐藏固定路线。
 - 共用 `actions.run_b(ctx, plan)`：固定按 B1～B8 导航，二维码只指定每棵树的目标品种。
   奇数树观察右侧，偶数树观察左侧。调用一次 `pick_b_tree` 完成该树工序。
-  进入 B1 全程保持已确认 Home，到点后才执行首树 Look。
-  每树先完成本侧 B 安全预设，再边走边切下一树 Look。B 区全部完成后前往 C 区途中边走边伸直。
+  导航与 Look 并行切换。每树先完成本侧 B 安全预设，再边走边切下一树 Look。B 区全部完成后前往 C 区途中边走边伸直。
 - 共用 `actions.run_c(ctx, plan)`：按二维码项序导航，用路线规划器确定的侧调用 `pick_c`；
   采摘完成后不追加伸直，下一段导航按是否经过 top 点选择姿态。导航失败记录并跳过，不在未到达的位置抓取。
 - 分区间固定通道点直接列在调用处，不再通过隐藏的 transition 名称展开。
@@ -87,7 +86,7 @@ ABC 不传 `--flow` 时，定位入口沿用当前准备参数。
 
 | 积木 | 参数与职责 |
 | --- | --- |
-| `run_b(ctx, plan, first_side="right")` | 共用 B1～B8 作业。B1 保持 Home，到点后 Look；B2～B8 并行 Look。ABC 默认奇数右、偶数左，ACB 使用 `first_side="left"`。 |
+| `run_b(ctx, plan, first_side="right")` | 共用 B1～B8 作业。B1～B8 导航与 Look 并行。ABC 默认奇数右、偶数左，ACB 使用 `first_side="left"`。 |
 | `run_c(ctx, plan)` | 共用 C 区二维码顺序、图导航、抓取、记录和失败推进。 |
 | `navigate(ctx, waypoints, side=None, preset=None, yaws=None)` | 明确导航点，可传入逐点 yaw；有 side 时导航与 Look 并行，有 preset 时导航与指定机械臂预设并行。失败清理待消费动作，安全恢复并返回 False。ACB 前往 B 扫码点前同步完成伸直。 |
 | `pick_a(ctx, side=...)` | 区域 Look/OPEN → 实测停稳 → harvest 窗口 → 成熟目标 → CLOSE/驻留 → 区域 Store/OPEN/驻留。正常不追加 Home，无重复抓取。 |
@@ -95,7 +94,7 @@ ABC 不传 `--flow` 时，定位入口沿用当前准备参数。
 | `navigate_c(ctx, task)` | 复用现有 C 几何规划，记录路线和 camera_side；失败的记录在恢复前由分区流程保存。 |
 | `navigate_c_route(ctx, names, yaws, side=None)` | C 路线经过任一 top 点时，导航开始异步启动 `shenzhi`，通过最后一个 top 点后，剩余导航并行启动目标侧 Look；收尾不启动 Look。 |
 | `pick_c(ctx, task, side=...)` | 当前二维码项的单次识别/采摘、结果记录和播报；不增加方向复核。 |
-| `scan_b_qr / scan_c_qr(ctx, arrived=...)` | 已到点且 QR 姿态执行完成后开启 QR 扫码窗口；到点/扫码失败均用 mission 自有固定计划，保存、播报并恢复。ABC B 扫码后回 Home，保持 Home 到 B1 后才 Look；B 完成后前往 C 扫码点途中边走边伸直。 |
+| `scan_b_qr / scan_c_qr(ctx, arrived=...)` | 已到点且 QR 姿态执行完成后开启 QR 扫码窗口；到点/扫码失败均用 mission 自有固定计划，保存、播报并恢复。ABC B 扫码后切换/保持 shenzhi，导航往 B1 途中直接切换首树 Look；B 完成后前往 C 扫码点途中边走边伸直。 |
 
 `arrived` 使用前一个 `navigate` 的返回值；导航失败已经执行过一次安全恢复，
 扫码函数只使用兜底计划，不再为同一导航失败重复尝试 Home。

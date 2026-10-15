@@ -13,7 +13,7 @@ from fruit_qr_planner.planner import build_b_plan, build_c_plan
 
 
 def run_b(ctx, plan, *, first_side="right"):
-    """Enter B1 at Home, then alternate concurrent Looks for B2..B8."""
+    """Fixed B1..B8 order with alternating vehicle-relative observation sides."""
     if first_side not in ("left", "right"):
         raise ValueError("first_side must be left or right")
     ctx.report_current_area("B")
@@ -23,13 +23,7 @@ def run_b(ctx, plan, *, first_side="right"):
         tree_name = format_b_tree_name(position)
         side = first_side if position % 2 == 1 else other_side
         waypoint = waypoints[position - 1]
-        entering_b = ctx._b_observation_side is None
-        if entering_b and not ctx._arm_home_confirmed:
-            ctx.node.get_logger().warning('B区入区 Home 未确认，跳过导航和观察')
-            ctx.telemetry.result('skipped', 'navigation_home_unconfirmed')
-            ctx.announce(f"B区{tree_name}导航失败，跳过。")
-            continue
-        if navigate(ctx, [waypoint], side=None if entering_b else side):
+        if navigate(ctx, [waypoint], side=side):
             pick_b_tree(
                 ctx,
                 tree_name=tree_name,
@@ -60,7 +54,7 @@ def navigate(ctx, waypoints, *, side=None, preset=None, yaws=None):
     if (
         ctx._current_area == "B"
         and (side is not None or ctx._b_observation_side is not None)
-        and not ctx._arm_home_confirmed
+        and not (ctx._arm_home_confirmed or ctx._arm_shenzhi_confirmed)
     ):
         ctx.node.get_logger().warning('B区安全姿态未确认，跳过当前导航和机械臂动作')
         ctx.telemetry.result('skipped', 'navigation_home_unconfirmed')
@@ -116,10 +110,13 @@ def scan_b_qr(ctx, *, arrived, preset="qr_scan_b", return_home=True):
         plan = build_b_plan("\n".join(ctx.config["qr_fallback"]["b_targets"]))
     ctx.save_b_plan(plan)
     ctx.announce(format_b_announcement(plan))
-    if not arrived or not return_home:  # Navigation recovery or caller-owned pose exit.
+    if not return_home:  # Navigation recovery or caller-owned pose exit.
         return plan
-    motion = ctx.execute_arm_preset('home')
-    if not motion.completed:
+    if ready:
+        motion = ctx.execute_arm_preset('shenzhi')
+        if not motion.completed:
+            ctx.recover_home()
+    elif not (ctx._arm_home_confirmed or ctx._arm_shenzhi_confirmed):
         ctx.recover_home()
     return plan
 
