@@ -44,7 +44,7 @@ on `/fruit_mission/observation_window` as JSON strings:
 When no harvest window is open or a frame was captured before window start, the node
 continues to publish 2D/3D raw detections and annotated images for diagnostics, but
 `observation_window_id` is empty (`""`), `has_target` is false, and `targets_ready` is false.
-Target locking and candidate accumulation only occur within a valid harvest window.
+Candidate voting only occurs within a valid harvest window. Duplicate RGB capture stamps do not count as new frames.
 
 Closing a window (`valid: 0`) immediately revokes evidence accumulation and resets selectors.
 The window's `expected_type` is the only target-filter input.
@@ -129,14 +129,12 @@ Observation windows do not select models. A harvest window must match `zone`.
 Changing `zone` closes the active window and discards old in-flight evidence.
 Open a new matching window after a successful parameter response.
 
-- Area `A`: `vegetable_type/best.onnx` plus ripeness classification; publishes
-  bare `ripe/unripe` labels. Only `ripe` enters single-target locking.
+- Area `A`: `vegetable_type/best.onnx` plus ripeness classification; retains species/maturity labels for voting and diagnostics.
 - Area `B`: `fruit_type/best.onnx` plus ripeness classification; publishes
   `apple_ripe/apple_unripe/pear_ripe/pear_unripe` and diagnostic `bad`,
   with independently confirmed candidates.
 - Area `C`: the same vegetable detector as A, plus ripeness classification;
-  publishes species/maturity labels and locks mature targets matching the expected
-  type. Model-internal `pepper` is normalized to business label `chili` **after**
+  publishes species/maturity labels. Model-internal `pepper` is normalized to business label `chili` **after**
   selecting and running the pepper ripeness classifier.
 
 Camera startup uses `initial_reset: true`. This resets device state, but does not
@@ -151,9 +149,9 @@ LLVM/SPIR-V startup crash with the updated detectors and Edge classifiers.
 This setting does not switch inference to CPU or limit inference threads.
 Both detectors publish `bad` in `types`, `detections`, preview detections and annotations,
 including Area A. `bad` has no ripeness suffix and bypasses ripeness classification.
-Its ROI and optional depth point are diagnostic only.
-Neither harvest selector receives `bad`, and `targets` never contains `bad`.
-This update does not add bad-produce removal or a new mission flow.
+Its ROI supplies per-fruit defect evidence. Its optional depth point remains diagnostic.
+Raw `types` and `detections` remain unchanged, even when ripe and bad overlap.
+Only the completed vote authorizes harvesting. Bad-produce removal is not implemented.
 
 The external debug monitor expects active camera streams whenever perception is running;
 missing streams are reported as `STALE`, not `IDLE`.
@@ -164,8 +162,10 @@ The decision stream on `/fruit_perception/decision` contains:
 - `observation_window_id`: active harvest window ID, or empty string when outside window
 - detected fruit `types` in confidence order
 - all detections in confidence order (`detections`), including ROI and optional 3D points
-- `has_target` and `target_point` when single-target lock is acquired within a valid window (Areas A/C), or when targets are ready (Area B)
-- B zone `targets_ready` and all confirmed aggregated `targets`
+- `has_target` and `target_point` only for a completed ripe target with valid depth; A/C also checks the expected label
+- A/B/C `targets_ready`: the complete frame batch has finished, including empty observations
+- `targets`: the A/C primary result or all B per-fruit results, including diagnostic `bad` and `unknown`
+- `FruitTarget.has_point`: valid aggregated depth exists. A/C open-loop does not require it
 - annotated RGB8 image on `/fruit_perception/camera/annotated_image`
 
 The target point is the `target_point` field in the decision message and uses
@@ -183,54 +183,43 @@ and never supplies a grasp point. ROS business labels and confidence semantics s
 
 ## Short-window target confirmation
 
-Target selection no longer waits for fixed 35/50-frame batches. Source YAML provides
-starting values, **not measured calibration or a one-second latency guarantee**:
+A/B/C observe a complete batch of ten new processed frames. Empty detections count as frames.
+Source YAML sets `camera_target_acquisition_frames: 10` and `camera_b_target_acquisition_frames: 10`.
+There is no minimum observation duration, vote count, support ratio, or final-frame support requirement.
+Legacy minimum-vote, support-ratio, missed-frame, and lock-loss parameters are removed.
 
-| Parameter | Starting value | Meaning |
-| --- | --- | --- |
-| `camera_target_acquisition_frames` | 8 | A/C rolling evidence window in processed frames |
-| `camera_b_target_acquisition_frames` | 8 | B observation length in processed frames |
-| `camera_target_min_observations` | 6 | Minimum supporting observations of one species/maturity label |
-| `camera_target_type_support_ratio` | 0.75 | Minimum supporting fraction of that track's observations |
-| `camera_target_max_missed_frames` | 2 | Tolerated consecutive missing frames during confirmation |
-| `camera_target_maturity_confidence_threshold` | 0.70 | Minimum classifier probability for a supporting observation |
+Each spatial fruit track votes for its species/maturity label.
+Only classifier probabilities at or above `camera_target_maturity_confidence_threshold: 0.70` vote.
+The highest vote count wins. Equal counts use mean detector confidence of supporting observations.
+Equal counts and equal confidence produce `unknown`. No valid votes also produce `unknown`.
+Published confidence is mean detector confidence across that fruit's observations, not classifier probability.
+The detector threshold remains `0.50`.
 
-The last four parameters apply to both selectors. `min_observations` must fit both
-windows; support ratio must be greater than 0.5 and at most 1, missing-frame count
-must be smaller than both windows, and maturity threshold must be in [0.5, 1].
+Association uses original-image boxes with IoU greater than `0.30`.
+The existing 3D association radius remains available for candidates without boxes.
+Tracks survive misses throughout this one batch. Different fruits do not share votes.
+Depth aggregation uses only valid winning-label observations and retains statistical outlier rejection.
+A/C open-loop can use a winning label without depth. Visual grasping still requires valid depth and mission geometry checks.
 
-Association remains spatial using the existing radius. All localized normal-produce
-candidates enter the evidence window, including wrong species, unripe and uncertain
-maturity observations. Species is retained internally even in A, while public A
-labels remain `ripe/unripe`. Low-confidence maturity observations count against
-consistency but do not support any label. Detector confidence stays separate from
-classifier probability; the existing detector threshold remains 0.50.
+A/C selects one primary fruit using `0.7 * confidence + 0.3 * horizontal_centrality`.
+Within `camera_target_score_close_threshold: 0.05` of the highest score, higher detector confidence wins.
+Selection occurs **before** checking bad, maturity, or expected species.
+A bad primary is skipped, not replaced by a neighboring healthy fruit for a fixed preset.
+Multiple detections alone do not force a skip.
+B publishes independent per-fruit results. Mission selects at most two matching ripe targets after geometry checks.
+As before, B's expected species is filtered by mission, not by `has_target`.
 
-A/C can confirm as soon as enough evidence exists: the dominant label must be ripe
-and match the expected type when supplied. The current observation must support
-that label, so a stale, absent or currently conflicting candidate cannot trigger
-confirmation. Coordinate aggregation uses only supporting observations, retaining
-the existing outlier math and single-pixel depth algorithm. After locking, matching
-frames repeat the frozen aggregate point; missed/conflicting frames publish no
-single target, and the existing eight-frame lock-loss threshold is unchanged.
-Matching uses the frozen aggregate as its spatial anchor, so successive small
-displacements cannot keep republishing an arbitrarily old location.
+A defect belongs to a fruit when its center is inside the fruit box and intersection covers at least half the defect area.
+Small defect boxes therefore do not need high whole-fruit IoU.
+Every associated fruit is vetoed if attribution is ambiguous. Unrelated fruits remain eligible.
+One valid defect observation latches `bad` until this window resets, even when subsequent frames miss the defect.
+Defect boxes are retained through the batch, including when the fruit ROI is temporarily unavailable.
+An internal candidate's `bad` flag provides the same veto for a future ROI defect detector.
+No third-stage model, loader, or missing-model fallback is implemented now.
 
-B observes once per tree. After the eight-frame warmup, independently confirmed,
-currently visible candidates are frozen together. Unconfirmed or mixed-species
-tracks do not block confirmed candidates. Both ripe and unripe labels need evidence.
-Confirmed targets are sorted prioritizing ripe targets and detector-confidence median.
-All confirmed targets are published and repeated until the next observation reset.
-The early `camera_b_target_max_count` cap is removed. Mission filters species,
-maturity and raw arm-base height/distance before selecting at most two targets
-by descending detector confidence. The observation completes after eight processed
-frames, including when no track qualifies. Unconfirmed tracks are discarded for
-this observation rather than extending the window. Missing frames still use the
-client's existing per-operation timeout. No observation retries are introduced.
-
-At an actual processing rate F, clean A/C needs roughly 6/F seconds and clean B
-roughly 8/F seconds, plus capture/startup/transport costs. Occasional misses or
-label conflicts can extend this. Changes require rebuilding perception and
-restarting its container; source YAML is read at startup. Measure with
-`perception_log_level:=info` before claiming field latency/accuracy. Motion safety,
-standstill confirmation and client timeouts are unchanged.
+Completed results freeze and repeat until reset. Mission consumes only `targets_ready/targets`, never raw-label history.
+If ten frames do not finish within the existing timeout, capped at ten seconds, mission skips without retries.
+**One valid mature vote among nine empty frames may win. A missing final-frame target does not revoke the result.**
+These operator-selected rules favor fewer missed harvests. They do not guarantee stable detection or absence of defects.
+At processing rate F, the batch needs roughly `10/F` seconds plus transport costs, not a fixed wall-clock delay.
+Rebuild perception and mission, then restart their nodes. No preset, route, or motion-service contract changes.

@@ -8,93 +8,89 @@
 
 namespace fruit_perception
 {
-namespace
-{
 
-double squared_distance(const cv::Point3d & left, const cv::Point3d & right)
+bool defect_belongs_to_fruit(const cv::Rect & defect, const cv::Rect & fruit)
 {
-  const cv::Point3d difference = left - right;
-  return difference.dot(difference);
+  if (defect.empty() || fruit.empty()) {
+    return false;
+  }
+  const cv::Point2d center{
+    defect.x + defect.width * 0.5, defect.y + defect.height * 0.5};
+  return center.x >= fruit.x && center.x < fruit.x + fruit.width &&
+         center.y >= fruit.y && center.y < fruit.y + fruit.height &&
+         static_cast<double>((defect & fruit).area()) / defect.area() >= 0.5;
 }
 
-double median(std::vector<double> values)
+std::optional<BTargetResult> select_primary_target(
+  const std::vector<BTargetResult> & targets, double confidence_weight,
+  double score_close_threshold)
 {
-  const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2U);
-  std::nth_element(values.begin(), middle, values.end());
-  if (values.size() % 2U != 0U) {
-    return *middle;
+  if (targets.empty()) {
+    return std::nullopt;
   }
-  const double upper = *middle;
-  const double lower = *std::max_element(values.begin(), middle);
-  return (lower + upper) * 0.5;
+  const auto score = [confidence_weight](const BTargetResult & target) {
+      const double half_width = target.image_width * 0.5;
+      const double centrality = half_width > 0.0 ? 1.0 - std::clamp(
+        std::abs(target.pixel_center.x - half_width) / half_width, 0.0, 1.0) : 0.0;
+      return confidence_weight * target.confidence + (1.0 - confidence_weight) * centrality;
+    };
+  const double best_score = score(
+    *std::max_element(
+      targets.begin(), targets.end(), [&score](const auto & left, const auto & right) {
+        return score(left) < score(right);
+      }));
+  const BTargetResult * primary = nullptr;
+  for (const auto & target : targets) {
+    if (best_score - score(target) <= score_close_threshold &&
+      (primary == nullptr || target.confidence > primary->confidence))
+    {
+      primary = &target;
+    }
+  }
+  return *primary;
 }
-
-void validate_config(const BTargetSelectorConfig & config)
-{
-  if (config.acquisition_frames == 0U) {
-    throw std::invalid_argument("camera_b_target_acquisition_frames must be positive");
-  }
-  if (!std::isfinite(config.association_radius_m) || config.association_radius_m <= 0.0) {
-    throw std::invalid_argument(
-            "camera_b_target_association_radius_m must be positive and finite");
-  }
-  if (!std::isfinite(config.outlier_sigma) || config.outlier_sigma <= 0.0) {
-    throw std::invalid_argument(
-            "camera_b_target_outlier_sigma must be positive and finite");
-  }
-  if (config.min_observations == 0U || config.min_observations > config.acquisition_frames ||
-    !std::isfinite(config.type_support_ratio) || config.type_support_ratio <= 0.5 ||
-    config.type_support_ratio > 1.0 || config.max_missed_frames >= config.acquisition_frames ||
-    !std::isfinite(config.maturity_confidence_threshold) ||
-    config.maturity_confidence_threshold < 0.5 || config.maturity_confidence_threshold > 1.0)
-  {
-    throw std::invalid_argument("Invalid B target confirmation configuration");
-  }
-}
-
-}  // namespace
 
 BTargetSelector::BTargetSelector(BTargetSelectorConfig config)
 : config_(std::move(config))
 {
-  validate_config(config_);
+  if (config_.acquisition_frames == 0U ||
+    !std::isfinite(config_.association_radius_m) || config_.association_radius_m <= 0.0 ||
+    !std::isfinite(config_.outlier_sigma) || config_.outlier_sigma <= 0.0 ||
+    !std::isfinite(config_.maturity_confidence_threshold) ||
+    config_.maturity_confidence_threshold < 0.5 || config_.maturity_confidence_threshold > 1.0)
+  {
+    throw std::invalid_argument("Invalid target vote configuration");
+  }
 }
 
-BTargetUpdate BTargetSelector::update(const std::vector<BTargetCandidate> & candidates)
+BTargetUpdate BTargetSelector::update(
+  const std::vector<BTargetCandidate> & candidates, const std::vector<cv::Rect> & defects)
 {
   if (ready_) {
-    return BTargetUpdate{true, locked_targets_};
+    return {true, locked_targets_};
   }
-
+  defects_.insert(defects_.end(), defects.begin(), defects.end());
   add_frame(candidates);
+  for (auto & track : tracks_) {
+    for (const auto & defect : defects_) {
+      if (defect_belongs_to_fruit(defect, track.observations.back().roi)) {
+        track.bad = true;
+      }
+    }
+  }
   if (frame_count_ < config_.acquisition_frames) {
     return {};
   }
-  auto statistics = select_tracks();
-  // Freeze only independently confirmed tracks when the observation window ends.
-  std::stable_sort(
-    statistics.begin(), statistics.end(),
-    [](const auto & left, const auto & right) {
-      const bool left_ripe = left.result.type.rfind("_ripe") != std::string::npos;
-      const bool right_ripe = right.result.type.rfind("_ripe") != std::string::npos;
-      if (left_ripe != right_ripe) {
-        return left_ripe;
-      }
-      return left.confidence > right.confidence;
-    });
-  // Mission applies species and arm-base limits before selecting at most two.
-  locked_targets_.reserve(statistics.size());
-  for (const auto & statistic : statistics) {
-    locked_targets_.push_back(statistic.result);
-  }
+  locked_targets_ = select_tracks();
   ready_ = true;
-  return BTargetUpdate{true, locked_targets_};
+  return {true, locked_targets_};
 }
 
 void BTargetSelector::reset()
 {
   frame_count_ = 0U;
   tracks_.clear();
+  defects_.clear();
   ready_ = false;
   locked_targets_.clear();
 }
@@ -107,158 +103,141 @@ cv::Point3d BTargetSelector::mean_point(const Track & track)
 void BTargetSelector::add_frame(const std::vector<BTargetCandidate> & candidates)
 {
   ++frame_count_;
-  for (auto & track : tracks_) {
-    auto & observations = track.observations;
-    observations.erase(
-      std::remove_if(
-        observations.begin(), observations.end(), [this](const auto & observation) {
-          return frame_count_ - observation.frame >= config_.acquisition_frames;
-        }), observations.end());
-    track.point_sum = {};
-    for (const auto & observation : observations) {
-      track.point_sum += observation.point;
-    }
-  }
-  tracks_.erase(
-    std::remove_if(
-      tracks_.begin(), tracks_.end(), [this](const auto & track) {
-        return track.observations.empty() ||
-        frame_count_ - track.last_seen_frame > config_.max_missed_frames + 1U;
-      }), tracks_.end());
-  const double radius_squared =
-    config_.association_radius_m * config_.association_radius_m;
   for (const auto & candidate : candidates) {
+    if (!std::isfinite(candidate.confidence) || candidate.confidence < 0.0 ||
+      candidate.confidence > 1.0 || !std::isfinite(candidate.maturity_confidence) ||
+      candidate.maturity_confidence < 0.0 || candidate.maturity_confidence > 1.0)
+    {
+      continue;
+    }
     Track * closest = nullptr;
-    double closest_distance = radius_squared;
+    double best_overlap = 0.3;
+    double closest_distance = config_.association_radius_m * config_.association_radius_m;
     for (auto & track : tracks_) {
       if (track.last_seen_frame == frame_count_) {
         continue;
       }
-      const double distance = squared_distance(candidate.point, mean_point(track));
-      if (distance <= radius_squared &&
-        (closest == nullptr || distance < closest_distance))
-      {
-        closest = &track;
-        closest_distance = distance;
+      const auto & previous = track.observations.back();
+      if (!candidate.roi.empty() && !previous.roi.empty()) {
+        const double intersection = (candidate.roi & previous.roi).area();
+        const double overlap = intersection /
+          (candidate.roi.area() + previous.roi.area() - intersection);
+        if (overlap > best_overlap) {
+          closest = &track;
+          best_overlap = overlap;
+        }
+      } else if (candidate.has_point && previous.has_point) {
+        const cv::Point3d difference = candidate.point - mean_point(track);
+        const double distance = difference.dot(difference);
+        if (distance <= closest_distance) {
+          closest = &track;
+          closest_distance = distance;
+        }
       }
     }
-
     const Observation observation{
       candidate.type, candidate.point, candidate.pixel_center,
-      candidate.image_width, candidate.confidence, candidate.maturity_confidence, frame_count_};
+      candidate.image_width, candidate.confidence, candidate.maturity_confidence, frame_count_,
+      candidate.roi, candidate.has_point};
     if (closest == nullptr) {
-      Track track;
-      track.observations.push_back(observation);
-      track.point_sum = candidate.point;
-      track.last_seen_frame = frame_count_;
-      tracks_.push_back(std::move(track));
-      continue;
+      tracks_.push_back(Track{{observation}, candidate.point, frame_count_, candidate.bad});
+    } else {
+      closest->observations.push_back(observation);
+      closest->point_sum += candidate.point;
+      closest->last_seen_frame = frame_count_;
+      closest->bad = closest->bad || candidate.bad;
     }
-    closest->observations.push_back(observation);
-    closest->point_sum += candidate.point;
-    closest->last_seen_frame = frame_count_;
   }
-  tracks_.erase(
-    std::remove_if(
-      tracks_.begin(), tracks_.end(), [this](const auto & track) {
-        return frame_count_ - track.last_seen_frame > config_.max_missed_frames;
-      }), tracks_.end());
 }
 
-std::vector<BTargetSelector::TrackStatistics> BTargetSelector::select_tracks() const
+std::vector<BTargetResult> BTargetSelector::select_tracks() const
 {
-  std::vector<TrackStatistics> statistics;
-  statistics.reserve(tracks_.size());
+  std::vector<BTargetResult> statistics;
   for (const auto & track : tracks_) {
-    if (track.last_seen_frame != frame_count_) {
-      continue;
-    }
-    std::map<std::string, std::size_t> votes;
+    // Keep all tracks until the window closes, including bad or temporarily missing fruit.
+    std::map<std::string, std::pair<std::size_t, double>> votes;
+    double confidence_sum = 0.0;
+    cv::Point2d pixel_sum{};
     for (const auto & observation : track.observations) {
+      confidence_sum += observation.confidence;
+      pixel_sum += observation.pixel_center;
       if (observation.maturity_confidence >= config_.maturity_confidence_threshold) {
-        ++votes[observation.type];
+        auto & vote = votes[observation.type];
+        ++vote.first;
+        vote.second += observation.confidence;
       }
     }
-    if (votes.empty()) {
-      continue;
+    std::string winner;
+    std::size_t best_count = 0U;
+    double best_confidence = 0.0;
+    bool tied = false;
+    for (const auto & item : votes) {
+      const auto count = item.second.first;
+      const double confidence = item.second.second / count;
+      if (count > best_count || (count == best_count && confidence > best_confidence)) {
+        winner = item.first;
+        best_count = count;
+        best_confidence = confidence;
+        tied = false;
+      } else if (count == best_count && confidence == best_confidence) {
+        tied = true;
+      }
     }
-    const auto best_type = std::max_element(
-      votes.begin(), votes.end(),
-      [](const auto & left, const auto & right) {return left.second < right.second;});
-    if (best_type->second < config_.min_observations ||
-      static_cast<double>(best_type->second) / track.observations.size() <
-      config_.type_support_ratio || track.observations.back().type != best_type->first ||
-      track.observations.back().maturity_confidence < config_.maturity_confidence_threshold)
-    {
-      continue;
+    if (tied) {
+      winner.clear();
     }
-    std::vector<const Observation *> supporting;
-    cv::Point3d supporting_sum{};
+    BTargetResult result;
+    result.type = track.bad ? "bad" : (winner.empty() ? "unknown" : winner);
+    result.confidence = confidence_sum / track.observations.size();
+    result.pixel_center = pixel_sum * (1.0 / track.observations.size());
+    result.image_width = track.observations.front().image_width;
+    result.observation_count = best_count;
+
+    std::vector<cv::Point3d> points;
+    cv::Point3d sum{};
     for (const auto & observation : track.observations) {
-      if (observation.type == best_type->first &&
-        observation.maturity_confidence >= config_.maturity_confidence_threshold)
+      if (observation.type == winner &&
+        observation.maturity_confidence >= config_.maturity_confidence_threshold &&
+        observation.has_point && std::isfinite(observation.point.x) &&
+        std::isfinite(observation.point.y) && std::isfinite(observation.point.z) &&
+        observation.point.z > 0.0)
       {
-        supporting.push_back(&observation);
-        supporting_sum += observation.point;
+        points.push_back(observation.point);
+        sum += observation.point;
       }
     }
-    const cv::Point3d initial_mean =
-      supporting_sum * (1.0 / static_cast<double>(supporting.size()));
-    cv::Point3d variance{};
-    std::vector<double> confidences;
-    confidences.reserve(track.observations.size());
-    for (const auto * item : supporting) {
-      const auto & observation = *item;
-      const cv::Point3d difference = observation.point - initial_mean;
-      variance.x += difference.x * difference.x;
-      variance.y += difference.y * difference.y;
-      variance.z += difference.z * difference.z;
-      confidences.push_back(observation.confidence);
-    }
-    const double divisor = 1.0 / static_cast<double>(supporting.size());
-    const cv::Point3d initial_stddev{
-      std::sqrt(variance.x * divisor),
-      std::sqrt(variance.y * divisor),
-      std::sqrt(variance.z * divisor)};
-
-    std::vector<const Observation *> inliers;
-    cv::Point3d inlier_sum{};
-    cv::Point2d pixel_center_sum{};
-    for (const auto * item : supporting) {
-      const auto & observation = *item;
-      const cv::Point3d difference = observation.point - initial_mean;
-      const bool within_x = initial_stddev.x == 0.0 ||
-        std::abs(difference.x) <= config_.outlier_sigma * initial_stddev.x;
-      const bool within_y = initial_stddev.y == 0.0 ||
-        std::abs(difference.y) <= config_.outlier_sigma * initial_stddev.y;
-      const bool within_z = initial_stddev.z == 0.0 ||
-        std::abs(difference.z) <= config_.outlier_sigma * initial_stddev.z;
-      if (within_x && within_y && within_z) {
-        inliers.push_back(&observation);
-        inlier_sum += observation.point;
-        pixel_center_sum += observation.pixel_center;
+    if (!points.empty()) {
+      const auto mean = sum * (1.0 / points.size());
+      cv::Point3d variance{};
+      for (const auto & point : points) {
+        const auto difference = point - mean;
+        variance.x += difference.x * difference.x;
+        variance.y += difference.y * difference.y;
+        variance.z += difference.z * difference.z;
       }
-    }
-    if (inliers.empty()) {
-      for (const auto * observation : supporting) {
-        inliers.push_back(observation);
-        inlier_sum += observation->point;
-        pixel_center_sum += observation->pixel_center;
+      const cv::Point3d deviation{
+        std::sqrt(variance.x / points.size()), std::sqrt(variance.y / points.size()),
+        std::sqrt(variance.z / points.size())};
+      cv::Point3d inlier_sum{};
+      for (const auto & point : points) {
+        const auto difference = point - mean;
+        if (std::abs(difference.x) <= config_.outlier_sigma * deviation.x &&
+          std::abs(difference.y) <= config_.outlier_sigma * deviation.y &&
+          std::abs(difference.z) <= config_.outlier_sigma * deviation.z)
+        {
+          inlier_sum += point;
+          ++result.inlier_count;
+        }
       }
+      if (result.inlier_count == 0U) {
+        result.point = mean;
+        result.inlier_count = points.size();
+      } else {
+        result.point = inlier_sum * (1.0 / result.inlier_count);
+      }
+      result.has_point = !track.bad;
     }
-
-    const double confidence = median(std::move(confidences));
-    statistics.push_back(
-      TrackStatistics{
-        BTargetResult{
-          best_type->first,
-          inlier_sum * (1.0 / static_cast<double>(inliers.size())),
-          pixel_center_sum * (1.0 / static_cast<double>(inliers.size())),
-          track.observations.front().image_width,
-          track.observations.size(),
-          inliers.size(),
-          confidence},
-        confidence});
+    statistics.push_back(result);
   }
   return statistics;
 }

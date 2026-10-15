@@ -51,7 +51,6 @@ ament_target_dependencies(detection_parser sensor_msgs)
 
 add_library(
   fruit_perception_component SHARED
-  src/camera_target_selector.cpp
   src/b_target_selector.cpp
   src/fruit_perception_node.cpp
   src/ripeness_classifier.cpp

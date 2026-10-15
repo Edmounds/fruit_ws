@@ -64,10 +64,11 @@ Mission 和单点客户端在缓存结果前检查当前窗口 ID 及合法窗�
 ## 持续推理与窗外数据特性
 
 1. **持续推理与按需标注**：即便处于窗口之外，深度相机仍以固定帧率出流，OpenVINO 核显持续进行 2D/3D 检测与标注图生成，供监视器与调试工具观察。
-   - 水果与蔬菜检测器均可发布诊断标签 `bad`，包括 `types`、`detections`、预览检测和标注图。`bad` 不做熟度分类，不进入目标锁定或 `targets`。框和深度点不授权坏果摘除。
+- 水果与蔬菜检测器均可发布 `bad`，包括 `types`、`detections`、预览检测和标注图。`bad` 不做熟度分类，按空间归属否决对应果实。完成后的 `targets` 可含不可采收的 `bad`，不授权坏果摘除。
 2. **证据严格隔离**：
    - 处于窗口之外时，`/fruit_perception/decision` 发布的决策消息中 `observation_window_id` 为空（`""`），`has_target=false`，`targets_ready=false`，`targets` 列表为空。**窗外的原始检测绝不授权抓取**。
-   - 只有在有效 harvest 窗口内且帧时间戳满足条件时，滑动窗口目标跟踪器（A/C 区 `CameraTargetSelector` 8 帧窗口，B 区 `BTargetSelector` 8 帧窗口）才累积证据；达到锁定条件后输出带有对应 `observation_window_id` 的可抓取目标。
+- 只有有效 harvest 窗口内的窗后新帧才累积证据。A/B/C 共用逐果实投票，完整观察 10 个处理帧，空帧计数，重复 RGB 时间戳不计数。最多票胜出，熟度概率须达到 0.70；平票比较平均检测置信度，不要求过半、最低次数或末帧支持。结果带对应窗口 ID，任务层只接受完成的 `targets_ready/targets`。
+- 一次有效关联的 `bad` 在本窗口内保持否决，漏检不解除。A/C 先评分确定主目标，再判断是否可采，不用旁边好果放行固定预设。未在 10 秒内完成观察则跳过，不以历史成熟标签兜底。
 3. **二维码到站即扫**：
    - `fruit_qr_planner` 仅在 `purpose="qr"` 的窗口内对窗后帧进行解码，同一窗口仅发布一次确认计划（`confirm_frames=1`，单次等待上限 10 秒）。
    - 输出的 `/fruit/b_pick_plan` 和 `/fruit/c_pick_plan` 计划中携带 `observation_window_id`、`image_stamp_sec`、`image_stamp_nanosec`。

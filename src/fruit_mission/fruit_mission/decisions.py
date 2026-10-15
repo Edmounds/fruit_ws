@@ -53,6 +53,8 @@ def spoken_model_type(model_type: Optional[str]) -> str:
     """Return a Chinese phrase for a model type suitable for speech."""
     if not model_type:
         return "未知目标"
+    if model_type == "bad":
+        return "坏果"
     parts = model_type.rsplit("_", 1)
     if len(parts) != 2:
         return "未知目标"

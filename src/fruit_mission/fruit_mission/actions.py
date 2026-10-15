@@ -409,7 +409,7 @@ def pick_c(ctx, task, *, side):
 
 def record_failed_opportunity(ctx, reason, model_type=None):
     outcome = 'skipped' if reason in {
-        'no_detection', 'target_unripe', 'type_mismatch', 'no_matching_valid_target',
+        'no_detection', 'target_unripe', 'target_bad', 'type_mismatch', 'no_matching_valid_target',
         'navigation_failed', 'planning_failed', 'navigation_planning_failed',
     } else 'failed'
     ctx.telemetry.result(outcome, reason, model_type)

@@ -4,6 +4,7 @@
 #include <opencv2/core.hpp>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,9 @@ struct BTargetCandidate
   std::size_t image_width;
   double confidence;
   double maturity_confidence{1.0};
+  cv::Rect roi{};
+  bool has_point{true};
+  bool bad{false};
 };
 
 struct BTargetSelectorConfig
@@ -25,9 +29,6 @@ struct BTargetSelectorConfig
   std::size_t acquisition_frames;
   double association_radius_m;
   double outlier_sigma;
-  std::size_t min_observations{6U};
-  double type_support_ratio{0.75};
-  std::size_t max_missed_frames{2U};
   double maturity_confidence_threshold{0.70};
 };
 
@@ -40,6 +41,7 @@ struct BTargetResult
   std::size_t observation_count{0U};
   std::size_t inlier_count{0U};
   double confidence{0.0};
+  bool has_point{false};
 };
 
 struct BTargetUpdate
@@ -53,7 +55,10 @@ class BTargetSelector
 public:
   explicit BTargetSelector(BTargetSelectorConfig config);
 
-  BTargetUpdate update(const std::vector<BTargetCandidate> & candidates);
+  // Shared A/B/C voting. Defects use original-image pixel coordinates.
+  BTargetUpdate update(
+    const std::vector<BTargetCandidate> & candidates,
+    const std::vector<cv::Rect> & defects = {});
   void reset();
 
 private:
@@ -66,6 +71,8 @@ private:
     double confidence;
     double maturity_confidence;
     std::size_t frame;
+    cv::Rect roi;
+    bool has_point;
   };
 
   struct Track
@@ -73,16 +80,11 @@ private:
     std::vector<Observation> observations;
     cv::Point3d point_sum{};
     std::size_t last_seen_frame{0U};
-  };
-
-  struct TrackStatistics
-  {
-    BTargetResult result;
-    double confidence{0.0};
+    bool bad{false};
   };
 
   void add_frame(const std::vector<BTargetCandidate> & candidates);
-  std::vector<TrackStatistics> select_tracks() const;
+  std::vector<BTargetResult> select_tracks() const;
   static cv::Point3d mean_point(const Track & track);
 
   BTargetSelectorConfig config_;
@@ -90,7 +92,14 @@ private:
   std::vector<Track> tracks_;
   bool ready_{false};
   std::vector<BTargetResult> locked_targets_;
+  std::vector<cv::Rect> defects_;
 };
+
+bool defect_belongs_to_fruit(const cv::Rect & defect, const cv::Rect & fruit);
+
+std::optional<BTargetResult> select_primary_target(
+  const std::vector<BTargetResult> & targets, double confidence_weight,
+  double score_close_threshold);
 
 }  // namespace fruit_perception
 

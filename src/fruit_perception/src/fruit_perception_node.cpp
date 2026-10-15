@@ -22,13 +22,13 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "fruit_perception/b_target_selector.hpp"
-#include "fruit_perception/camera_target_selector.hpp"
 #include "fruit_perception/detection_output.hpp"
 #include "fruit_perception/detection_parser.hpp"
 #include "fruit_perception/image_processing.hpp"
@@ -175,42 +175,23 @@ public:
     target_score_close_threshold_ =
       static_cast<float>(declare_parameter("camera_target_score_close_threshold", 0.05));
     const auto target_acquisition_frames =
-      declare_parameter<std::int64_t>("camera_target_acquisition_frames", 8);
+      declare_parameter<std::int64_t>("camera_target_acquisition_frames", 10);
     const auto target_association_radius =
       declare_parameter("camera_target_association_radius_m", 0.03);
     const auto target_outlier_sigma =
       declare_parameter("camera_target_outlier_sigma", 2.0);
-    const auto target_lock_miss_frames =
-      declare_parameter<std::int64_t>("camera_target_lock_miss_frames", 8);
     if (target_acquisition_frames <= 0) {
       throw std::invalid_argument("camera_target_acquisition_frames must be positive");
     }
-    if (target_lock_miss_frames <= 0) {
-      throw std::invalid_argument("camera_target_lock_miss_frames must be positive");
-    }
-    target_selector_config_ = CameraTargetSelectorConfig{
+    target_selector_config_ = BTargetSelectorConfig{
       static_cast<std::size_t>(target_acquisition_frames),
       target_association_radius,
-      target_outlier_sigma,
-      static_cast<std::size_t>(target_lock_miss_frames),
-      target_confidence_weight_,
-      target_score_close_threshold_};
-    const auto min_observations =
-      declare_parameter<std::int64_t>("camera_target_min_observations", 6);
-    const auto max_missed_frames =
-      declare_parameter<std::int64_t>("camera_target_max_missed_frames", 2);
-    if (min_observations <= 0 || max_missed_frames < 0) {
-      throw std::invalid_argument("Invalid target confirmation observation/miss counts");
-    }
-    target_selector_config_.min_observations = static_cast<std::size_t>(min_observations);
-    target_selector_config_.type_support_ratio =
-      declare_parameter("camera_target_type_support_ratio", 0.75);
-    target_selector_config_.max_missed_frames = static_cast<std::size_t>(max_missed_frames);
+      target_outlier_sigma};
     target_selector_config_.maturity_confidence_threshold =
       declare_parameter("camera_target_maturity_confidence_threshold", 0.70);
 
     const auto b_target_acquisition_frames =
-      declare_parameter<std::int64_t>("camera_b_target_acquisition_frames", 8);
+      declare_parameter<std::int64_t>("camera_b_target_acquisition_frames", 10);
     if (b_target_acquisition_frames <= 0) {
       throw std::invalid_argument("camera_b_target_acquisition_frames must be positive");
     }
@@ -218,9 +199,6 @@ public:
       static_cast<std::size_t>(b_target_acquisition_frames),
       declare_parameter("camera_b_target_association_radius_m", 0.03),
       declare_parameter("camera_b_target_outlier_sigma", 2.0)};
-    b_target_selector_config_.min_observations = target_selector_config_.min_observations;
-    b_target_selector_config_.type_support_ratio = target_selector_config_.type_support_ratio;
-    b_target_selector_config_.max_missed_frames = target_selector_config_.max_missed_frames;
     b_target_selector_config_.maturity_confidence_threshold =
       target_selector_config_.maturity_confidence_threshold;
 
@@ -384,8 +362,10 @@ private:
     double total_detection_ms{0.0};
     double total_classification_ms{0.0};
     double total_processing_ms{0.0};
-    std::unique_ptr<CameraTargetSelector> target_selector;
+    std::unique_ptr<BTargetSelector> target_selector;
     std::unique_ptr<BTargetSelector> b_target_selector;
+    std::int64_t last_vote_stamp_ns{0};
+    bool vote_logged{false};
     std::uint64_t target_selection_generation{0U};
     std::uint64_t submitted_target_selection_generation{0U};
     std::atomic<bool> busy{false};
@@ -501,7 +481,7 @@ private:
       decision_publisher_,
       create_publisher<sensor_msgs::msg::Image>(
         annotated_topic, rclcpp::QoS(1).reliable()));
-    stream->target_selector = std::make_unique<CameraTargetSelector>(target_selector_config_);
+    stream->target_selector = std::make_unique<BTargetSelector>(target_selector_config_);
     stream->b_target_selector = std::make_unique<BTargetSelector>(b_target_selector_config_);
     stream->target_selection_generation = target_selection_generation_.load();
     auto * stream_ptr = stream.get();
@@ -546,6 +526,8 @@ private:
       if (stream.target_selection_generation != target_generation) {
         stream.target_selector->reset();
         stream.b_target_selector->reset();
+        stream.last_vote_stamp_ns = 0;
+        stream.vote_logged = false;
         stream.target_selection_generation = target_generation;
       }
       stream.submitted_target_selection_generation = target_generation;
@@ -685,112 +667,76 @@ private:
       preview_detections.detections = result.detections;
       preview_detections_publisher_->publish(preview_detections);
 
+      const auto rgb_stamp_ns = static_cast<std::int64_t>(context.rgb_stamp.sec) *
+        1000000000LL + context.rgb_stamp.nanosec;
       const bool in_window = context.is_harvest_window &&
         !context.window_id.empty() &&
         (stream.submitted_target_selection_generation == target_selection_generation_.load()) &&
         is_stamp_at_or_after(context.rgb_stamp, context.start_sec, context.start_nanosec) &&
-        is_stamp_at_or_after(context.depth_stamp, context.start_sec, context.start_nanosec);
+        is_stamp_at_or_after(context.depth_stamp, context.start_sec, context.start_nanosec) &&
+        rgb_stamp_ns > stream.last_vote_stamp_ns;
 
       if (in_window) {
+        stream.last_vote_stamp_ns = rgb_stamp_ns;
         result.observation_window_id = context.window_id;
-        if (area == 'B') {
-          std::vector<BTargetCandidate> candidates;
-          candidates.reserve(outputs.size());
-          for (std::size_t index = 0U; index < outputs.size(); ++index) {
-            const auto & output = outputs[index];
-            if (output.type == "bad" || !output.has_point ||
-              !std::isfinite(output.point.x) ||
-              !std::isfinite(output.point.y) ||
-              !std::isfinite(output.point.z))
-            {
-              continue;
-            }
-            candidates.push_back(
-              BTargetCandidate{
-                output.type,
-                output.point,
-                cv::Point2d{
-                  static_cast<double>(output.roi.x) +
-                  static_cast<double>(output.roi.width) * 0.5,
-                  static_cast<double>(output.roi.y) +
-                  static_cast<double>(output.roi.height) * 0.5},
-                static_cast<std::size_t>(stream.transform.original_width),
-                static_cast<double>(output.confidence), detections[index].maturity_confidence});
+        std::vector<BTargetCandidate> candidates;
+        std::vector<cv::Rect> defects;
+        for (std::size_t index = 0U; index < outputs.size(); ++index) {
+          const auto & output = outputs[index];
+          if (output.type == "bad") {
+            defects.push_back(output.roi);
+            continue;
           }
-
-          const auto target_update = stream.b_target_selector->update(candidates);
-          result.targets_ready = target_update.ready;
-          result.targets.reserve(target_update.targets.size());
-          for (const auto & target : target_update.targets) {
-            msg::FruitTarget item;
-            item.type = target.type;
-            item.confidence = static_cast<float>(target.confidence);
-            item.has_point = true;
-            item.point.x = target.point.x;
-            item.point.y = target.point.y;
-            item.point.z = target.point.z;
-            item.pixel_x = static_cast<float>(target.pixel_center.x);
-            item.pixel_y = static_cast<float>(target.pixel_center.y);
-            item.image_width = static_cast<std::uint32_t>(target.image_width);
-            item.observation_count = static_cast<std::uint32_t>(target.observation_count);
-            item.inlier_count = static_cast<std::uint32_t>(target.inlier_count);
-            result.targets.push_back(std::move(item));
-          }
-          if (!result.targets.empty()) {
+          const bool has_point = output.has_point && std::isfinite(output.point.x) &&
+            std::isfinite(output.point.y) && std::isfinite(output.point.z) && output.point.z > 0;
+          candidates.push_back(
+            BTargetCandidate{
+              output.type, has_point ? output.point : cv::Point3d{},
+              cv::Point2d{output.roi.x + output.roi.width * 0.5,
+                output.roi.y + output.roi.height * 0.5},
+              static_cast<std::size_t>(stream.transform.original_width),
+              output.confidence, detections[index].maturity_confidence, output.roi, has_point});
+        }
+        auto target_update = (area == 'B' ? stream.b_target_selector :
+          stream.target_selector)->update(candidates, defects);
+        result.targets_ready = target_update.ready;
+        if (area != 'B' && !target_update.targets.empty()) {
+          // Rank before checking bad/maturity. A fixed preset cannot switch fruit.
+          target_update.targets = {*select_primary_target(
+              target_update.targets, target_confidence_weight_, target_score_close_threshold_)};
+        }
+        for (const auto & target : target_update.targets) {
+          msg::FruitTarget item;
+          item.type = target.type;
+          item.confidence = static_cast<float>(target.confidence);
+          item.has_point = target.has_point;
+          item.point.x = target.point.x;
+          item.point.y = target.point.y;
+          item.point.z = target.point.z;
+          item.pixel_x = static_cast<float>(target.pixel_center.x);
+          item.pixel_y = static_cast<float>(target.pixel_center.y);
+          item.image_width = static_cast<std::uint32_t>(target.image_width);
+          item.observation_count = static_cast<std::uint32_t>(target.observation_count);
+          item.inlier_count = static_cast<std::uint32_t>(target.inlier_count);
+          result.targets.push_back(std::move(item));
+          const bool ripe = target.type.size() >= 5U &&
+            target.type.compare(target.type.size() - 5U, 5U, "_ripe") == 0;
+          const bool expected = area == 'B' || context.expected_type.empty() ||
+            context.expected_type == "ripe" || context.expected_type == target.type;
+          if (!result.has_target && target.has_point && ripe && expected) {
             result.has_target = true;
-            result.target_point = result.targets.front().point;
+            result.target_point = result.targets.back().point;
           }
-        } else {
-          std::vector<CameraTargetCandidate> candidates;
-          candidates.reserve(outputs.size());
-          const auto expected_type = context.expected_type;
-          const double half_width = static_cast<double>(stream.frame->image.cols) * 0.5;
-          for (std::size_t index = 0U; index < outputs.size(); ++index) {
-            const auto & output = outputs[index];
-            if (output.type == "bad" || !output.has_point ||
-              !std::isfinite(output.point.x) ||
-              !std::isfinite(output.point.y) ||
-              !std::isfinite(output.point.z))
-            {
-              continue;
-            }
-            const double roi_center_x =
-              static_cast<double>(output.roi.x) + static_cast<double>(output.roi.width) * 0.5;
-            const double horizontal_offset = std::clamp(
-              std::abs(roi_center_x - half_width) / half_width, 0.0, 1.0);
-            candidates.push_back(
-              CameraTargetCandidate{
-                output.point, static_cast<double>(output.confidence), 1.0 - horizontal_offset,
-                output.type, detections[index].maturity_confidence});
-          }
-
-          const auto target_update = stream.target_selector->update(candidates, expected_type);
-          if (target_update.lock_lost) {
-            RCLCPP_WARN(
-              get_logger(),
-              "Camera target lock lost after %zu missed frames; reacquiring",
-              target_selector_config_.lock_miss_frames);
-          }
-          if (target_update.lock_acquired) {
+          if (!stream.vote_logged) {
             RCLCPP_INFO(
-              get_logger(),
-              "Camera target locked with %zu/%zu inliers in a %zu-frame window: score=%.3f, "
-              "confidence=%.3f, horizontal_centrality=%.3f, "
-              "mean=(%.3f, %.3f, %.3f), stddev=(%.4f, %.4f, %.4f)",
-              target_update.inlier_count, target_update.observation_count,
-              target_selector_config_.acquisition_frames,
-              target_update.score, target_update.confidence,
-              target_update.horizontal_centrality,
-              target_update.reference_point.x, target_update.reference_point.y,
-              target_update.reference_point.z, target_update.stddev.x,
-              target_update.stddev.y, target_update.stddev.z);
+              get_logger(), "Target vote: window=%s type=%s votes=%zu confidence=%.3f "
+              "has_point=%d bad_veto=%d", context.window_id.c_str(), target.type.c_str(),
+              target.observation_count, target.confidence, target.has_point,
+              target.type == "bad");
           }
-          if (target_update.point) {
-            result.has_target = true;
-            result.target_point.x = target_update.point->x;
-            result.target_point.y = target_update.point->y;
-            result.target_point.z = target_update.point->z;
-          }
+        }
+        if (target_update.ready) {
+          stream.vote_logged = true;
         }
       } else {
         result.observation_window_id = "";
@@ -962,8 +908,8 @@ private:
   float nms_iou_threshold_{0.45F};
   float target_confidence_weight_{0.70F};
   float target_score_close_threshold_{0.05F};
-  CameraTargetSelectorConfig target_selector_config_{8U, 0.03, 2.0, 8U, 0.70, 0.05};
-  BTargetSelectorConfig b_target_selector_config_{8U, 0.03, 2.0};
+  BTargetSelectorConfig target_selector_config_{10U, 0.03, 2.0};
+  BTargetSelectorConfig b_target_selector_config_{10U, 0.03, 2.0};
   std::atomic<std::uint64_t> target_selection_generation_{0U};
   std::atomic<bool> stopping_{false};
   std::atomic<char> zone_{'A'};

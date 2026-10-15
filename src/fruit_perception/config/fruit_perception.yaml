@@ -55,14 +55,10 @@ fruit_perception_node:
     nms_iou_threshold: 0.45
     camera_target_confidence_weight: 0.7
     camera_target_score_close_threshold: 0.05
-    camera_target_acquisition_frames: 8
-    camera_target_min_observations: 6
-    camera_target_type_support_ratio: 0.75
-    camera_target_max_missed_frames: 2
+    camera_target_acquisition_frames: 10
     camera_target_maturity_confidence_threshold: 0.7
     camera_target_association_radius_m: 0.03
     camera_target_outlier_sigma: 2.0
-    camera_target_lock_miss_frames: 8
-    camera_b_target_acquisition_frames: 8
+    camera_b_target_acquisition_frames: 10
     camera_b_target_association_radius_m: 0.03
     camera_b_target_outlier_sigma: 2.0
