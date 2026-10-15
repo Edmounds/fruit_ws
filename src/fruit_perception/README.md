@@ -113,7 +113,8 @@ The script saves actual `/camera` ROS parameters after recorder startup to
 `log/runtime/latest/camera_params.yaml`, with a maximum 10-second snapshot attempt.
 Snapshot failures produce a warning and `camera_params.log`; perception continues.
 The snapshot and recorded parameter events capture startup values and subsequent changes.
-Other recording profiles and non-debug perception startup are unchanged.
+The mission debug profile records the same depth diagnostics.
+Non-debug perception startup is unchanged.
 
 The service template supplies `--zone A`. Update an existing installed unit before
 using the new script. Do not restart camera services during an active mission.

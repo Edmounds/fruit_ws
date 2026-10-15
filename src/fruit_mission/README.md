@@ -140,7 +140,13 @@ Look 和两层 Store 均使用该规则，无可抓目标也执行该侧 B 安�
 直接执行顶层 launch 时，独立依赖并行初始化，唯一门控仍复用 `stack_readiness_client stack`。
 各项保留原 10 秒超时，TF 保留 5 秒，超时告警后启动 mission。
 不使用固定 sleep，外围节点退出不终止 mission。
-分阶段 `--debug` 在感知心跳可用后后台启动录包，不阻塞比赛。
+ABC、ACB 分阶段 `--debug` 在 `/camera` 节点出现后后台启动录包，不等待 RGBD 心跳，不阻塞比赛。
+录包固定请求原始 RGB、原始深度 `/camera/depth/image_rect_raw`、对齐深度
+`/camera/aligned_depth_to_color/image_raw`、RGBD 心跳和 `/parameter_events`。
+话题暂时没有发布者时仍保留录制请求，便于复盘启动失败和断流。
+同时后台保存实际 `/camera` ROS 参数至当前运行目录的 `camera_params.yaml`，
+诊断日志为 `camera_params.log`。快照最多尝试 10 秒，失败只告警，不阻塞比赛，也不重试或重置相机。
+分阶段准备时传入 `--debug`，定位阶段沿用该会话的录包设置。
 使用 `--debug` 时，准备阶段还会记录内核 USB 事件和 udev 事件，文件分别为
 当前运行目录的 `kernel.log` 和 `udev.log`。退出时监控进程与其他调试进程一起停止。
 直接执行整栈 launch 时，mission 退出触发整栈关闭。
@@ -254,21 +260,8 @@ source scripts/setup_fruit_runtime.bash
 
 ## 自动采集 Look 图像
 
-每个 A、B、C 区成功完成的 Look 会从 `/camera/color/image_raw` 采集一组
-RGB8 原始图像。每组最多保存 5 张不同时间戳的 PNG，间隔 100 ms。采集和 PNG
-写盘在后台线程执行，不等待磁盘操作，也不阻塞导航、识别或机械臂流程。
-
-运行目录按 mission 启动时间创建，例如：
-
-```text
-data/20261013_200507/A/look_001_f01.png
-data/20261013_200507/A/look_001_f02.png
-data/20261013_200507/B/look_001_f01.png
-```
-
-抓取命令开始或当前 Look 被跳过时停止获取新帧。已经获取的图像继续后台重试写盘，
-mission 退出时最多等待 10 秒。输出根目录、图像话题、帧数和间隔在
-`config/fruit_mission.yaml` 中配置。
+比赛流程的自动截屏已禁用。Look 不再触发 PNG 采集或图像写盘。
+使用 `--debug` 录制 rosbag，赛后按需提取 RGB 图像，不重复自动截屏。
 
 独立导航和单点调试脚本通过 `stack_readiness_client bridge-start-required` 检查串口桥：
 标准输出为 `true`（缺失，需要启动）或 `false`（已存在，复用）。节点、

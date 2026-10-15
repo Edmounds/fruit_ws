@@ -252,11 +252,18 @@ class CompetitionRunner(StackReadinessClient):
             self.state.update(
                 phase='FINISHED' if mission.returncode == 0 else 'ERROR',
                 error='' if mission.returncode == 0 else f'mission 退出码 {mission.returncode}')
-        if (self.options.debug and not self.recording_checked and self.last_data.get('perception')
+        if (self.options.debug and not self.recording_checked and '/camera' in nodes
                 and self.state['phase'] not in ('ERROR', 'FINISHED', 'STOPPED')):
             self.recording_checked = True
             if '/rosbag2_recorder' not in nodes:
                 self.start('rosbag', [str(WORKSPACE / 'record_rosbag.sh')])
+            self.start('camera_params', [
+                'bash', '-c',
+                'if timeout --kill-after=1s 9s ros2 param dump /camera --no-daemon > "$1"; then '
+                'printf "[camera_params] saved: %s\\n" "$1"; else '
+                'rm -f -- "$1"; '
+                'printf "[camera_params] WARNING: snapshot failed\\n" >&2; fi',
+                'camera-params', str(self.log_dir / 'camera_params.yaml')])
         self.state.update(updated_at=now, modules=modules)
         self.write_snapshot()
 

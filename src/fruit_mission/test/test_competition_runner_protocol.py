@@ -15,6 +15,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.signals import SignalHandlerOptions
 from rclpy.task import Future
+import yaml
 
 from fruit_mission import competition_runner
 from fruit_robviz_bridge.process_groups import process_groups_alive, stop_process_groups
@@ -79,6 +80,44 @@ class CompetitionRunnerProtocolTest(unittest.TestCase):
         self.assertFalse(self.runner.processes)
         self.runner.close()
         self.assertEqual(self.runner.state['phase'], 'STOPPED')
+
+    def test_camera_snapshot_without_rgbd_or_duplicate_recorder(self):
+        camera = rclpy.create_node('camera')
+        recorder = rclpy.create_node('rosbag2_recorder')
+        camera.declare_parameter('enable_depth', True)
+        camera.declare_parameter('depth_module.depth_profile', '848x480x30')
+        executor = SingleThreadedExecutor()
+        executor.add_node(camera)
+        executor.add_node(recorder)
+        thread = threading.Thread(target=executor.spin)
+        thread.start()
+        domain_before = os.environ.get('ROS_DOMAIN_ID')
+        try:
+            self.assertTrue(self.runner.wait_until(
+                lambda: {'/camera', '/rosbag2_recorder'} <= self.runner.node_names(), 3))
+            os.environ['ROS_DOMAIN_ID'] = '201'
+            self.runner.options.debug = True
+            self.runner.snapshot()
+            self.assertNotIn('perception', self.runner.last_data)
+            self.assertNotIn('rosbag', self.runner.processes)
+            process = self.runner.processes['camera_params']
+            self.processes.append(process)
+            self.assertEqual(process.wait(timeout=10), 0)
+            parameters = yaml.safe_load(
+                (self.root / 'camera_params.yaml').read_text())['/camera']['ros__parameters']
+            self.assertTrue(parameters['enable_depth'])
+            self.assertEqual(parameters['depth_module']['depth_profile'], '848x480x30')
+            self.runner.snapshot()
+            self.assertIs(self.runner.processes['camera_params'], process)
+        finally:
+            if domain_before is None:
+                os.environ.pop('ROS_DOMAIN_ID', None)
+            else:
+                os.environ['ROS_DOMAIN_ID'] = domain_before
+            executor.shutdown(timeout_sec=2)
+            thread.join(timeout=2)
+            camera.destroy_node()
+            recorder.destroy_node()
 
     def test_module_output_reaches_existing_subsystem_logs(self):
         for name, label, logfile in [('prepared_stack', 'arm_planner_node', 'arm_planner.log'),

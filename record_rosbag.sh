@@ -21,8 +21,8 @@ Camera topics are added only for profiles that use the camera, when /camera,
 /fruit_perception_node, and each selected image publisher are ready.
 The selected raw visual topics are /camera/color/image_raw,
 /camera/aligned_depth_to_color/image_raw, and
-/fruit_perception/camera/annotated_image. The perception debug profile also
-requests /camera/depth/image_rect_raw, aligned depth, and /parameter_events
+/fruit_perception/camera/annotated_image. The perception and mission debug profiles
+also request raw RGB, /camera/depth/image_rect_raw, aligned depth, and /parameter_events
 even before their publishers appear. Camera info, /camera/rgbd, and compressed
 image transport topics are not recorded.
 The bag is written to:
@@ -149,8 +149,8 @@ while IFS= read -r topic; do
   add_topic "$topic"
 done < <(fruit_recording_profile_topics "$BAG_PROFILE")
 
-if [[ "$BAG_PROFILE" == perception ]]; then
-  for topic in /camera/depth/image_rect_raw \
+if [[ "$BAG_PROFILE" == perception || "$BAG_PROFILE" == mission ]]; then
+  for topic in /camera/color/image_raw /camera/depth/image_rect_raw \
     /camera/aligned_depth_to_color/image_raw /parameter_events; do
     add_topic "$topic"
   done
