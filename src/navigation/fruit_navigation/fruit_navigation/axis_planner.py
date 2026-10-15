@@ -76,7 +76,10 @@ class OdomProgressWatchdog:
         """Record a pose and return progress status with window deltas."""
         self.samples.append((now, pose))
         cutoff = now - self.window
-        while len(self.samples) > 1 and self.samples[0][0] < cutoff:
+        # Keep the oldest sample that still brackets the progress window.
+        # Removing it leaves a newest sample younger than ``window`` and
+        # makes the duration check below permanently false at normal rates.
+        while len(self.samples) > 1 and self.samples[1][0] <= cutoff:
             self.samples.popleft()
 
         oldest_time, oldest_pose = self.samples[0]

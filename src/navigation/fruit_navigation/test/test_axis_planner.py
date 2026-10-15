@@ -150,3 +150,23 @@ def test_odom_progress_watchdog_stalls_without_window_motion():
     for second in range(7):
         assert watchdog.observe(AxisPose(0.0, 0.0, 0.0), now=float(second))[0] is False
     assert watchdog.stalled(now=5.0) is True
+
+
+def test_odom_progress_watchdog_keeps_a_full_window_at_control_rate():
+    watchdog = OdomProgressWatchdog(
+        stall_timeout=5.0,
+        window=1.0,
+        position_threshold=0.03,
+        yaw_threshold=0.01,
+        now=0.0,
+    )
+
+    progressed = False
+    for index in range(25):
+        now = index * 0.05
+        progressed, _, _ = watchdog.observe(
+            AxisPose(0.05 * index, 0.0, 0.0), now=now,
+        )
+
+    assert progressed is True
+    assert watchdog.stalled(now=5.0) is False

@@ -72,6 +72,8 @@ def navigate(ctx, waypoints, *, side=None, preset=None, yaws=None):
     if ctx.navigate_named(waypoints, observation_side=side, arm_preset=preset, yaws=yaws):
         return True
     ctx.node.get_logger().warning(f"导航失败，跳过当前动作: {' -> '.join(waypoints)}")
+    if ctx._current_area and not ctx.recover_home():
+        ctx.node.get_logger().warning('导航失败后的安全 Home 未确认，继续跳过当前点')
     if ctx._current_area:
         ctx.telemetry.result('skipped', 'navigation_failed')
     return False

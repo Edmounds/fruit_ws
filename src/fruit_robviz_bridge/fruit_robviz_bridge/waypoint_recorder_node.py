@@ -955,6 +955,7 @@ class WaypointRecorderNode(Node):
         self._run_route_points(cleaned, payload)
 
     def _run_route_points(self, names: list[str], payload: dict) -> None:
+        """Run a manual route without consuming the automatic test cursor."""
         if self._is_busy():
             self._reject_command("A route segment or sampling is already running")
             return
@@ -992,14 +993,12 @@ class WaypointRecorderNode(Node):
             for index, point in enumerate(self._test_store.points)
         }
         resolved_points = []
-        last_index = 0
         for name in names:
             if name not in points_by_name:
                 self._reject_command(f"Waypoint not found in recorded points: {name}")
                 return
-            idx, pt = points_by_name[name]
+            _idx, pt = points_by_name[name]
             resolved_points.append(pt)
-            last_index = idx
 
         if not self._follow_waypoints_client.wait_for_server(timeout_sec=0.5):
             self._reject_command("FollowWaypoints action server is unavailable")
@@ -1015,7 +1014,7 @@ class WaypointRecorderNode(Node):
         self._cancel_request_time = None
         self._navigation_unknown = False
         self._waiting_standstill = False
-        self._pending_test_cursor = last_index + 1
+        self._pending_test_cursor = None
         route_text = " -> ".join(names)
         self._active_route_description = route_text
         self._publish_state(
@@ -1087,7 +1086,8 @@ class WaypointRecorderNode(Node):
                 )
                 return
             if status == GoalStatus.STATUS_SUCCEEDED and not missed:
-                self._test_store.advance_cursor(int(self._pending_test_cursor))
+                if self._pending_test_cursor is not None:
+                    self._test_store.advance_cursor(int(self._pending_test_cursor))
                 msg = (
                     f"Route reached target: {self._active_route_description}"
                     if self._active_route_description
