@@ -88,7 +88,7 @@ ABC 不传 `--flow` 时，定位入口沿用当前准备参数。
 | --- | --- |
 | `run_b(ctx, plan, first_side="right")` | 共用 B1～B8 作业。B1～B8 导航与 Look 并行。ABC 默认奇数右、偶数左，ACB 使用 `first_side="left"`。 |
 | `run_c(ctx, plan)` | 共用 C 区二维码顺序、图导航、抓取、记录和失败推进。 |
-| `navigate(ctx, waypoints, side=None, preset=None, yaws=None)` | 明确导航点，可传入逐点 yaw；有 side 时导航与 Look 并行，有 preset 时导航与指定机械臂预设并行。失败清理待消费动作，直接返回 False。ACB 前往 B 扫码点前同步完成伸直。 |
+| `navigate(ctx, waypoints, side=None, preset=None, yaws=None)` | 明确导航点，可传入逐点 yaw；有 side 时导航与 Look 并行，有 preset 时导航与指定机械臂预设并行。导航或并发预设失败返回 False，Look 成功到点后由采摘函数消费。ACB 前往 B 扫码点前同步完成伸直。 |
 | `pick_a(ctx, side=...)` | 区域 Look/OPEN → 实测停稳 → harvest 窗口 → 成熟目标 → CLOSE/驻留 → 区域 Store/OPEN/驻留。正常不追加 Home，无重复抓取。 |
 | `pick_b_tree(ctx, tree_name=..., target=..., side=...)` | 每树观察一次，按二维码品种、成熟度和基座空间限制筛选，再按检测置信度选最多两个目标。首次抓取前冻结基座请求，再逐个抓取/Store。同树成功抓取之间不回 Home，树末尾执行本侧 `*_to_home_b`。 |
 | `navigate_c(ctx, task)` | 复用现有 C 几何规划，记录路线和 camera_side；失败的记录在恢复前由分区流程保存。 |
@@ -97,9 +97,20 @@ ABC 不传 `--flow` 时，定位入口沿用当前准备参数。
 | `scan_b_qr / scan_c_qr(ctx, arrived=...)` | 已到点且 QR 姿态执行完成后开启 QR 扫码窗口；到点/扫码失败均用 mission 自有固定计划，保存、播报并恢复。ABC B 扫码后切换/保持 shenzhi，导航往 B1 途中直接切换首树 Look；B 完成后前往 C 扫码点途中边走边伸直。 |
 
 `arrived` 使用前一个 `navigate` 的返回值；扫码函数在未到点时使用兜底计划且不操作机械臂，到点但扫码姿态失败时执行一次安全恢复。
+`navigate_named` 只返回底盘导航结果，保留并发机械臂请求，由 `actions.navigate` 消费结果。
+底盘导航失败不调用 `recover_home()`；并发预设或 Look 自身失败时才恢复一次安全 Home。
+未到点但 B Look 已成功时，不识别、不抓取，正常执行已提交侧的 `*_to_home_b`，再推进下一树。
+该安全预设自身失败时仅执行必要停止，不重试预设；安全姿态未确认仍禁止后续运动。
 ACB 的 `scan_b_qr` 指定 `preset="qr_scan_a_to_b", return_home=False`，不执行扫码阶段的 Home 恢复。
 ACB 调用处负责扫码后的 `right_look_a` 交接，包括普通读码失败分支。
 ABC 的默认扫码预设和成功后 Home 保持不变。
+
+离线协议检查使用独立 localhost DDS 域的模拟 Action 和 service，不连接真实硬件，不校验固定比赛路线：
+
+```bash
+source scripts/setup_fruit_runtime.bash
+PYTHONPATH="$PWD/src/fruit_mission:$PYTHONPATH" /usr/bin/python3 -m pytest -q src/fruit_mission/test/test_navigation_arm_protocol.py
+```
 
 `MissionContext` 只保留 ROS 反馈、导航发送、感知窗口、planner 原语及安全交接；
 品种判断和语音格式在 `decisions.py`，C 路线数学继续在 `waypoint_route.py`。

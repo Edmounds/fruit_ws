@@ -193,7 +193,7 @@ class MissionContext:
         arm_preset: Optional[str] = None,
         yaws: Optional[Sequence[float]] = None,
     ) -> bool:
-        """Send the requested names and optional yaw overrides, without route expansion."""
+        """Return navigation success and leave concurrent arm results for the caller."""
         if observation_side is not None and arm_preset is not None:
             raise ValueError("Cannot specify both observation_side and arm_preset")
         names = [str(name) for name in waypoint_names]
@@ -210,20 +210,9 @@ class MissionContext:
         if arm_preset is not None:
             self.start_arm_preset(arm_preset)
         if not self._send_waypoint_names(names, yaws):
-            if observation_side is not None:
-                self._pending_observation = None
-            if arm_preset is not None:
-                self.finish_arm_preset()
             return False
         self._current_waypoint_name = names[-1]
         self._current_route_yaw = self._waypoint_yaw(names[-1]) if yaws is None else yaws[-1]
-        if arm_preset is not None:
-            result = self.finish_arm_preset()
-            if not result.completed:
-                self.node.get_logger().warning(
-                    f"并发机械臂预设执行失败: {result.reason_code}"
-                )
-                return False
         return True
 
     def navigate_c_position(self, position_id: int) -> Dict[str, Any]:

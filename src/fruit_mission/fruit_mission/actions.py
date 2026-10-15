@@ -68,8 +68,26 @@ def navigate(ctx, waypoints, *, side=None, preset=None, yaws=None):
         if ctx._current_area:
             ctx.telemetry.result('skipped', 'navigation_home_unconfirmed')
         return False
-    if ctx.navigate_named(waypoints, observation_side=side, arm_preset=preset, yaws=yaws):
+    arrived = ctx.navigate_named(waypoints, observation_side=side, arm_preset=preset, yaws=yaws)
+    if preset is not None and ctx._pending_arm_preset is not None:
+        motion = ctx.finish_arm_preset()
+        if not motion.completed:
+            record_failed_opportunity(ctx, motion.reason_code)
+            ctx.recover_home()
+            return False
+    if arrived:
         return True
+    if side is not None and ctx._pending_observation is not None:
+        look = ctx.finish_observation(side)
+        ctx.stop_dataset_capture()
+        if not look.completed:
+            record_failed_opportunity(ctx, look.reason_code)
+            ctx.recover_home()
+        elif ctx._current_area == "B":
+            # Finish the submitted Look's normal arm cycle, without grasping.
+            motion = ctx.execute_arm_preset(f"{side}_to_home_b")
+            if not motion.completed:
+                ctx.recover_home_b(stop_only=True)
     ctx.node.get_logger().warning(f"导航失败，跳过当前动作: {' -> '.join(waypoints)}")
     if ctx._current_area:
         ctx.telemetry.result('skipped', 'navigation_failed')
@@ -109,7 +127,7 @@ def scan_b_qr(ctx, *, arrived, preset="qr_scan_b", return_home=True):
         plan = build_b_plan("\n".join(ctx.config["qr_fallback"]["b_targets"]))
     ctx.save_b_plan(plan)
     ctx.announce(format_b_announcement(plan))
-    if not return_home:  # Navigation recovery or caller-owned pose exit.
+    if not return_home:  # Caller-owned pose exit.
         return plan
     if ready:
         motion = ctx.execute_arm_preset('shenzhi')
