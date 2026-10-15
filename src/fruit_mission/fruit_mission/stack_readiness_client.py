@@ -37,9 +37,7 @@ class StackReadinessClient(Node):
             "perception_heartbeat_topic",
             "/fruit_perception/camera/rgbd_heartbeat",
         )
-        self.declare_parameter("perception_readiness_timeout_sec", 30.0)
-        self.declare_parameter("perception_stable_duration_sec", 3.0)
-        self.declare_parameter("perception_stream_max_gap_sec", 1.0)
+        self.declare_parameter("perception_readiness_timeout_sec", 35.0)
 
         self.bridge_ready_topic = self._string_parameter(
             "bridge_ready_topic"
@@ -258,7 +256,7 @@ class StackReadinessClient(Node):
         topic: str,
         timeout_sec: float,
     ) -> bool:
-        """Wait for the first RGBD heartbeat from the perception pipeline."""
+        """Wait for the first RGBD heartbeat indicating model compilation and camera streaming are ready."""
         received = False
 
         def on_heartbeat(_message: Header) -> None:
