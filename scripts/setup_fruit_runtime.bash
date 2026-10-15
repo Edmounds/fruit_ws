@@ -38,6 +38,8 @@ if [[ ! -r /opt/ros/humble/lib/librmw_cyclonedds_cpp.so ]]; then
   return 1
 fi
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+# Keep image data off the lidar Ethernet multicast path; retain node discovery.
+export CYCLONEDDS_URI='<CycloneDDS><Domain Id="any"><General><AllowMulticast>spdp</AllowMulticast></General></Domain></CycloneDDS>'
 
 export PYTHONNOUSERSITE=1
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}/usr/lib/python3/dist-packages"

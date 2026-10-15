@@ -38,6 +38,18 @@ Base 由 Python 节点复用现有变换函数，要求图像采集时已满足�
 首次成功配置重载前不订阅 raw image，关闭全部面板后撤销对应 raw 订阅。
 详见 `src/fruit_robviz_bridge/README.md`。
 
+## 雷达接入后的 DDS 传输
+
+`scripts/setup_fruit_runtime.bash` 统一设置 Cyclone DDS 的 `AllowMulticast=spdp`。
+节点发现保留组播，图像等用户数据使用单播。
+这避免接入雷达网线后，DDS 自动选择百兆有线口并通过数据组播阻塞图像发布。
+此设置不改变 Livox 驱动自身的 UDP 通信，也不修改相机曝光或深度处理参数。
+
+已运行的 ROS 进程不会自动应用环境变量变化。
+停止任务后重新启动相关 ROS 进程，使其加载统一运行环境。
+检查此问题时保持雷达上电、网线连接，仅启动感知，不启动比赛任务或发送运动命令。
+确认原生深度、对齐深度和 `/fruit_perception/camera/rgbd_heartbeat` 持续更新。
+
 ## 启动与运行
 
 所有命令都在工作空间根目录执行，并先加载 ROS 运行环境：
