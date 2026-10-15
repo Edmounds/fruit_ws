@@ -317,6 +317,48 @@ class CompetitionRunner(StackReadinessClient):
         except OSError as error:
             self.get_logger().error(f'Cannot write competition status: {error}')
 
+    def camera_ready(self):
+        now = time.time()
+        camera_time = self.last_data.get('camera')
+        return camera_time is not None and (now - camera_time <= 3.0)
+
+    def radar_ready(self):
+        now = time.time()
+        radar_time = self.last_data.get('radar')
+        return (
+            radar_time is not None
+            and (now - radar_time <= 3.0)
+            and any(node in self.node_names() for node in ('/livox_ros_driver2',))
+        )
+
+    def wait_for_camera(self):
+        self.get_logger().info('等待摄像头启动完成...')
+        last_log = time.monotonic()
+        while rclpy.ok(context=self.context):
+            rclpy.spin_once(self, timeout_sec=0.1)
+            if self.camera_ready():
+                self.snapshot()
+                self.get_logger().info('摄像头已启动完成，请手动打开雷达电源...')
+                return True
+            if time.monotonic() - last_log >= 3.0:
+                self.get_logger().info('正在等待摄像头启动...')
+                last_log = time.monotonic()
+        return False
+
+    def wait_for_radar(self):
+        self.get_logger().info('正在持续观察雷达，等待雷达启动并显示正常...')
+        last_log = time.monotonic()
+        while rclpy.ok(context=self.context):
+            rclpy.spin_once(self, timeout_sec=0.1)
+            if self.radar_ready():
+                self.snapshot()
+                self.get_logger().info('雷达已启动并显示正常！')
+                return True
+            if time.monotonic() - last_log >= 3.0:
+                self.get_logger().info('持续等待雷达启动中（请手动开启雷达电源）...')
+                last_log = time.monotonic()
+        return False
+
     def prepare(self):
         start_bridge = self.robviz_bridge_start_required()
         launch_name = ('fruit_mission_acb.launch.py' if self.options.flow == 'acb'
@@ -338,6 +380,10 @@ class CompetitionRunner(StackReadinessClient):
                 'pidstat', '-h', '-u', '-r', '-d', '-C',
                 'component_cont|livox|pointlio|python3|serial_node', '1'])
             self.start('usb_topology', ['lsusb', '-t'])
+        if not self.wait_for_camera():
+            return
+        if not self.wait_for_radar():
+            return
         try:
             planner = CameraTargetPlannerClient(self)
             # Wait only during preparation, never repeat this gate on the field.

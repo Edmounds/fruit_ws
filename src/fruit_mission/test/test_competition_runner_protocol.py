@@ -162,6 +162,37 @@ class CompetitionRunnerProtocolTest(unittest.TestCase):
             self.assertEqual(process.wait(timeout=3), 0)
             self.assertIn('fixture', (self.root / logfile).read_text())
 
+    def test_camera_ready_and_radar_ready(self):
+        self.assertFalse(self.runner.camera_ready())
+        self.assertFalse(self.runner.radar_ready())
+
+        self.runner.touch('camera')
+        self.assertTrue(self.runner.camera_ready())
+
+        self.runner.last_data['camera'] = time.time() - 4.0
+        self.assertFalse(self.runner.camera_ready())
+
+        self.runner.touch('radar')
+        self.assertFalse(self.runner.radar_ready())
+
+        livox = rclpy.create_node('livox_ros_driver2')
+        executor = SingleThreadedExecutor()
+        executor.add_node(livox)
+        thread = threading.Thread(target=executor.spin)
+        thread.start()
+        try:
+            self.assertTrue(self.runner.wait_until(
+                lambda: '/livox_ros_driver2' in self.runner.node_names(), 3))
+            self.runner.touch('radar')
+            self.assertTrue(self.runner.radar_ready())
+
+            self.runner.last_data['radar'] = time.time() - 4.0
+            self.assertFalse(self.runner.radar_ready())
+        finally:
+            executor.shutdown(timeout_sec=2)
+            thread.join(timeout=2)
+            livox.destroy_node()
+
     def test_named_flow_cannot_trigger_different_prepared_flow(self):
         executor = SingleThreadedExecutor()
 
