@@ -442,7 +442,10 @@ class VideoGatewayServer:
                 return
 
             async def probe(channel):
-                if not channel.settings_applied or self.node.count_publishers(channel.raw_topic) == 0:
+                if (
+                    not channel.settings_applied
+                    or self.node.count_publishers(channel.raw_topic) == 0
+                ):
                     return False
                 channel.add_capture_client("discovery")
                 try:
@@ -946,7 +949,7 @@ def main(args=None) -> None:
     ros_thread = threading.Thread(target=spin_ros, daemon=True)
     ros_thread.start()
 
-    app_runner = web.AppRunner(server.app)
+    app_runner = web.AppRunner(server.app, access_log=None)
     loop.run_until_complete(app_runner.setup())
     site = web.TCPSite(app_runner, host=node.host, port=node.port)
     loop.run_until_complete(site.start())
