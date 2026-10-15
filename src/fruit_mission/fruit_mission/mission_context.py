@@ -104,7 +104,7 @@ class MissionContext:
         self._latest_c_plan: Optional[Dict[str, Any]] = None
         self._pending_observation = None
         self._pending_arm_preset: Optional[tuple[str, Any, str]] = None
-        self._arm_home_confirmed = False
+        self._arm_home_confirmed = True
         self._arm_shenzhi_confirmed = False
         self._last_completed_preset: Optional[str] = None
         self._b_observation_side: Optional[str] = None

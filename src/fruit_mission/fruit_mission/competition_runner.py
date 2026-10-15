@@ -52,7 +52,7 @@ class CompetitionRunner(StackReadinessClient):
         self.requested = options.phase == 'all'
         self.state = {'run_id': str(uuid.uuid4()), 'pid': os.getpid(), 'phase': 'PREPARING',
                       'parameters': {'flow': options.flow, 'open_loop': options.open_loop,
-                                     'debug': options.debug}, 'home': None, 'error': '',
+                                     'debug': options.debug}, 'error': '',
                       'execution': {}, 'modules': {}}
         self.log_dir = Path(os.environ['FRUIT_RUNTIME_SESSION_DIR'])
         self.create_service(Trigger, START_SERVICE, self.request_localization)
@@ -387,13 +387,14 @@ class CompetitionRunner(StackReadinessClient):
         try:
             planner = CameraTargetPlannerClient(self)
             # Wait only during preparation, never repeat this gate on the field.
-            self.wait_until(lambda: planner._preset_client.service_is_ready()
-                            and planner._fresh_pose() is not None, 10.0)
-            completed, reason = planner.execute_preset('home', self.wait_until)
-            self.state['home'] = {'success': completed, 'reason': reason}
+            ready = self.wait_until(
+                lambda: planner._preset_client.service_is_ready()
+                and planner._fresh_pose() is not None, 10.0
+            )
+            if not ready:
+                self.get_logger().warning('机械臂 planner 服务未能在 10s 内就绪')
         except Exception as error:
-            self.state['home'] = {'success': False, 'reason': str(error)}
-            self.get_logger().error(f'Preparation Home failed: {error}')
+            self.get_logger().error(f'Preparation planner readiness check failed: {error}')
         self.state['phase'] = 'PREPARED'
         self.snapshot()
 

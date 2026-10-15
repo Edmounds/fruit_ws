@@ -12,7 +12,7 @@ usage() {
   cat <<'EOF'
 Usage: ./start_fruit_mission.sh [--phase all|prepare|localize] [--flow full|ac|acb|a|b|c] [--open-loop A|C|AC|none] [--debug]
 
-prepare: prestart camera, perception, QR, arm, radar and navigation, then one Home.
+prepare: prestart camera, perception, QR, arm, radar and navigation.
 localize: at the stationary start pose, start Point-LIO and automatically run mission.
 all: perform both stages (default). Use only at the stationary start pose.
 Localization waits up to 10s, then restarts Point-LIO and loam_interface once.
