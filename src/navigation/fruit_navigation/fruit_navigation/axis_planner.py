@@ -6,8 +6,9 @@
 """Pure helpers for cardinal-axis waypoint navigation."""
 
 import math
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Iterable, List, Mapping
+from typing import Deque, Iterable, List, Mapping
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,53 @@ class ProgressWatchdog:
             self.best_error = error
             self.last_progress = now
         return now - self.last_progress > self.timeout
+
+
+@dataclass
+class OdomProgressWatchdog:
+    """Track route progress from odom motion instead of elapsed route time."""
+
+    stall_timeout: float
+    window: float
+    position_threshold: float
+    yaw_threshold: float
+    now: float
+    samples: Deque[tuple[float, AxisPose]] = field(
+        default_factory=deque,
+        init=False,
+    )
+    last_progress: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.last_progress = self.now
+
+    def observe(self, pose: AxisPose, now: float) -> tuple[bool, float, float]:
+        """Record a pose and return progress status with window deltas."""
+        self.samples.append((now, pose))
+        cutoff = now - self.window
+        while len(self.samples) > 1 and self.samples[0][0] < cutoff:
+            self.samples.popleft()
+
+        oldest_time, oldest_pose = self.samples[0]
+        position_delta = math.hypot(
+            pose.x - oldest_pose.x,
+            pose.y - oldest_pose.y,
+        )
+        yaw_delta = abs(normalize_angle(pose.yaw - oldest_pose.yaw))
+        progressed = (
+            now - oldest_time >= self.window
+            and (
+                position_delta >= self.position_threshold
+                or yaw_delta >= self.yaw_threshold
+            )
+        )
+        if progressed:
+            self.last_progress = now
+        return progressed, position_delta, yaw_delta
+
+    def stalled(self, now: float) -> bool:
+        """Return true after the route has lacked odom progress too long."""
+        return now - self.last_progress >= self.stall_timeout
 
 
 def normalize_angle(angle: float) -> float:

@@ -112,7 +112,6 @@ class MissionContext:
         self._navigation_stopped = True
         self._navigation_handle = None
         self._navigation_result = None
-        self._navigation_timeout_sec = 10.0
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(
             self._tf_buffer,
@@ -464,8 +463,6 @@ class MissionContext:
         self._navigation_handle = candidate_handle
         result_future = candidate_handle.get_result_async()
         self._navigation_result = result_future
-        # The server limits each waypoint to 10 s; also bound a lost result reply.
-        self._navigation_timeout_sec = 10.0 * len(names)
         result_future.add_done_callback(self._on_navigation_result)
         if not self._wait_future(result_future, watch_observation=True):
             self.node.get_logger().warning(
@@ -1288,11 +1285,16 @@ class MissionContext:
         return predicate()
 
     def _wait_future(self, future, watch_observation=False) -> bool:
-        ready = self._wait_until(
-            lambda: future.done() or (watch_observation and self._observation_failed()),
-            self._navigation_timeout_sec if watch_observation else 10.0,
-        )
-        return ready and future.done()
+        if not watch_observation:
+            return self._wait_until(future.done, 10.0) and future.done()
+        while rclpy.ok() and not future.done():
+            if self._observation_failed():
+                return False
+            self._wait_until(
+                lambda: future.done() or self._observation_failed(),
+                10.0,
+            )
+        return future.done()
 
     def _waypoint_yaw(self, name: str) -> float:
         pose = self.route.pose(name)

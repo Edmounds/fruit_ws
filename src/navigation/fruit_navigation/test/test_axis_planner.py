@@ -4,6 +4,7 @@ import pytest
 
 from fruit_navigation.axis_planner import (
     AxisPose,
+    OdomProgressWatchdog,
     ProgressWatchdog,
     axis_cross_track_error,
     axis_forward_remaining,
@@ -121,3 +122,31 @@ def test_progress_watchdog_resets_after_meaningful_improvement():
     assert watchdog.stalled(0.8, now=11.5) is False
     assert watchdog.stalled(0.8, now=13.4) is False
     assert watchdog.stalled(0.8, now=13.6) is True
+
+
+def test_odom_progress_watchdog_accepts_position_or_yaw_motion():
+    watchdog = OdomProgressWatchdog(
+        stall_timeout=5.0,
+        window=1.0,
+        position_threshold=0.03,
+        yaw_threshold=0.01,
+        now=0.0,
+    )
+    assert watchdog.observe(AxisPose(0.0, 0.0, 0.0), now=0.0)[0] is False
+    assert watchdog.observe(AxisPose(0.0, 0.0, 0.02), now=1.0)[0] is True
+    assert watchdog.stalled(now=5.9) is False
+    assert watchdog.observe(AxisPose(0.0, 0.0, 0.02), now=5.0)[0] is False
+    assert watchdog.observe(AxisPose(0.04, 0.0, 0.02), now=6.0)[0] is True
+
+
+def test_odom_progress_watchdog_stalls_without_window_motion():
+    watchdog = OdomProgressWatchdog(
+        stall_timeout=5.0,
+        window=1.0,
+        position_threshold=0.03,
+        yaw_threshold=0.01,
+        now=0.0,
+    )
+    for second in range(7):
+        assert watchdog.observe(AxisPose(0.0, 0.0, 0.0), now=float(second))[0] is False
+    assert watchdog.stalled(now=5.0) is True

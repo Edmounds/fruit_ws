@@ -21,3 +21,7 @@ axis_waypoint_action_server:
     tf_timeout_sec: 0.5
     waypoint_retry_attempts: 0
     waypoint_pass_tolerance: 0.08
+    progress_window_sec: 1.0
+    progress_position_threshold: 0.03
+    progress_yaw_threshold: 0.01
+    stall_timeout_sec: 5.0

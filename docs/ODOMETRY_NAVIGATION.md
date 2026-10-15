@@ -32,7 +32,8 @@ Point-LIO 原生的 `camera_init` / `body` 坐标系也保留；它们属于雷�
 5. **`fruit_nav_bringup`**: 纯里程计导航集成启动包（位于 `src/navigation/fruit_nav_bringup`）。
 
 导航集成 include Point-LIO 和轴导航基础 launch，不重复定义轴导航节点。
-无实际用途的 `progress_timeout_sec`、`progress_min_delta` 已删除，不新增推进看门狗。
+导航服务端使用 `odom -> base_link` 的位置和 yaw 变化判断路线进度，不按固定路点耗时终止。
+默认使用 1 秒观测窗口、3 cm 位置阈值、0.01 rad yaw 阈值和 5 秒无进度阈值。
 
 ---
 
@@ -55,7 +56,7 @@ $(X, Y)$ 并减速停车后，原地调整到航点保存的目标偏航角，�
 - 线速度同时受现有速度范围、接近目标的比例减速、制动距离与角速度上限约束；保留底盘最低线速度和现有加速度限制。
 - `lookahead_distance` 替代旧 `lateral_gain`。较大值通常转向更柔和、纠偏更慢；较小值纠偏更快，也更敏感。调整前视距离后应重启导航节点。
 - 位置阶段只检查既有 `forward_tolerance` / `lateral_tolerance`；位置到位后先将速度指令减到零，再由既有 `_rotate_to` 检查目标 yaw。位置进度使用平面距离，转向进度使用角度误差，避免原地调朝向时被位置 watchdog 误报失败。
-- 每个航点的转向、直行和最终朝向调整共用 10 秒期限；到期发布零速并终止当前目标，不再放宽容差通过。`waypoint_retry_attempts` 默认值及源码配置均为 `0`，Mission 也不重发失败目标。非超时失败保留非最终航点的既有 `waypoint_pass_tolerance` 判断。C 区通行 waypoint 使用当前路径所需的前进或倒车朝向，采摘 goal 使用 YAML 标定朝向。
+- 每个航点的转向、直行和最终朝向调整共用路线级 odom 进度观察。原地转向的 yaw 变化也算有效进度。连续 5 秒没有达到位置或 yaw 阈值时，发布零速并终止当前目标。`waypoint_retry_attempts` 默认值及源码配置均为 `0`，Mission 不重发失败目标。非卡住失败保留非最终航点的既有 `waypoint_pass_tolerance` 判断。C 区通行 waypoint 使用当前路径所需的前进或倒车朝向，采摘 goal 使用 YAML 标定朝向。
 
 此控制器没有 costmap、避障或整机轮廓碰撞检查，前视点跟踪不构成安全走廊保证；必须验证转弯和纠偏时的整机扫掠空间。速度指令归零也不等于实测底盘已经静止。
 源码变更后需构建 `fruit_navigation` 并重启导航；纯运动学检查不代表实机比赛验收。

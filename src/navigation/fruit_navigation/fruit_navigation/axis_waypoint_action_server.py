@@ -24,6 +24,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from fruit_navigation.axis_planner import (
     AxisPose,
     normalize_angle,
+    OdomProgressWatchdog,
     pose_from_ros,
 )
 
@@ -54,6 +55,10 @@ class AxisWaypointActionServer(Node):
         self.declare_parameter("tf_timeout_sec", 0.5)
         self.declare_parameter("waypoint_retry_attempts", 0)
         self.declare_parameter("waypoint_pass_tolerance", 0.08)
+        self.declare_parameter("progress_window_sec", 1.0)
+        self.declare_parameter("progress_position_threshold", 0.03)
+        self.declare_parameter("progress_yaw_threshold", 0.01)
+        self.declare_parameter("stall_timeout_sec", 5.0)
 
         self._map_frame = self.get_parameter("map_frame").value
         self._base_frame = self.get_parameter("base_frame").value
@@ -86,12 +91,24 @@ class AxisWaypointActionServer(Node):
         self._waypoint_pass_tolerance = float(
             self.get_parameter("waypoint_pass_tolerance").value
         )
+        self._progress_window_sec = float(
+            self.get_parameter("progress_window_sec").value
+        )
+        self._progress_position_threshold = float(
+            self.get_parameter("progress_position_threshold").value
+        )
+        self._progress_yaw_threshold = float(
+            self.get_parameter("progress_yaw_threshold").value
+        )
+        self._stall_timeout_sec = float(
+            self.get_parameter("stall_timeout_sec").value
+        )
         self._goal_lock = threading.Lock()
         self._command_lock = threading.Lock()
         self._last_linear_command = 0.0
         self._last_angular_command = 0.0
         self._active_goal = False
-        self._waypoint_deadline = 0.0
+        self._progress_watchdog = None
 
         self._validate_parameters()
         self._tf_buffer = Buffer()
@@ -141,6 +158,14 @@ class AxisWaypointActionServer(Node):
             raise ValueError("waypoint_retry_attempts must not be negative")
         if self._waypoint_pass_tolerance <= 0.0:
             raise ValueError("waypoint_pass_tolerance must be positive")
+        if self._progress_window_sec <= 0.0:
+            raise ValueError("progress_window_sec must be positive")
+        if self._progress_position_threshold <= 0.0:
+            raise ValueError("progress_position_threshold must be positive")
+        if self._progress_yaw_threshold <= 0.0:
+            raise ValueError("progress_yaw_threshold must be positive")
+        if self._stall_timeout_sec <= 0.0:
+            raise ValueError("stall_timeout_sec must be positive")
 
     def _on_goal(self, goal_request) -> GoalResponse:
         try:
@@ -180,8 +205,14 @@ class AxisWaypointActionServer(Node):
         missed_waypoints = []
         result = FollowWaypoints.Result()
         try:
+            self._progress_watchdog = OdomProgressWatchdog(
+                stall_timeout=self._stall_timeout_sec,
+                window=self._progress_window_sec,
+                position_threshold=self._progress_position_threshold,
+                yaw_threshold=self._progress_yaw_threshold,
+                now=time.monotonic(),
+            )
             for index, target in enumerate(goal_handle.request.poses):
-                self._waypoint_deadline = time.monotonic() + 10.0
                 feedback = FollowWaypoints.Feedback()
                 feedback.current_waypoint = index
                 goal_handle.publish_feedback(feedback)
@@ -203,6 +234,7 @@ class AxisWaypointActionServer(Node):
             self._publish_stop()
             return result
         finally:
+            self._progress_watchdog = None
             with self._goal_lock:
                 self._active_goal = False
 
@@ -218,7 +250,12 @@ class AxisWaypointActionServer(Node):
         for attempt in range(attempts):
             if self._follow_one(goal_handle, target, is_final_goal):
                 return True
-            if goal_handle.is_cancel_requested or time.monotonic() >= self._waypoint_deadline:
+            if goal_handle.is_cancel_requested:
+                return False
+            if (
+                self._progress_watchdog is not None
+                and self._progress_watchdog.stalled(time.monotonic())
+            ):
                 return False
             if attempt + 1 < attempts:
                 self.get_logger().warning(
@@ -316,6 +353,7 @@ class AxisWaypointActionServer(Node):
             current = self._lookup_pose()
             if current is None:
                 return False
+            self._observe_progress(current)
             error = normalize_angle(target_yaw - current.yaw)
             if abs(error) <= yaw_tolerance:
                 command = self._publish_limited_command(Twist())
@@ -348,6 +386,7 @@ class AxisWaypointActionServer(Node):
             current = self._lookup_pose()
             if current is None:
                 return False
+            self._observe_progress(current)
             relative_x = current.x - start.x
             relative_y = current.y - start.y
             traveled = relative_x * direction_x + relative_y * direction_y
@@ -413,14 +452,34 @@ class AxisWaypointActionServer(Node):
             goal_handle.canceled()
             self._publish_stop_burst()
             return True
-        if time.monotonic() >= self._waypoint_deadline:
-            self.get_logger().error('Aborting waypoint goal: waypoint exceeded 10 seconds')
+        if (
+            self._progress_watchdog is not None
+            and self._progress_watchdog.stalled(time.monotonic())
+        ):
+            self.get_logger().error(
+                "Aborting waypoint goal: no odom progress for "
+                f"{self._stall_timeout_sec:.1f} seconds"
+            )
             self._publish_stop_burst()
             return True
         return False
 
+    def _observe_progress(self, current: AxisPose) -> None:
+        if self._progress_watchdog is None:
+            return
+        progressed, position_delta, yaw_delta = self._progress_watchdog.observe(
+            current,
+            time.monotonic(),
+        )
+        if progressed:
+            self.get_logger().info(
+                "Odom progress: "
+                f"position_delta={position_delta:.3f}m "
+                f"yaw_delta={yaw_delta:.3f}rad"
+            )
+
     def _lookup_pose(self) -> Optional[AxisPose]:
-        deadline = min(time.monotonic() + self._tf_timeout_sec, self._waypoint_deadline)
+        deadline = time.monotonic() + self._tf_timeout_sec
         transform = None
         last_error = None
         last_transform_age = None
