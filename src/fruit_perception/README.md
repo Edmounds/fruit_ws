@@ -103,6 +103,18 @@ For headless debugging, specify the initial zone explicitly:
 ros2 param set /fruit_perception_node zone B
 ```
 
+Use `start_fruit_perception.sh --zone A --debug` to capture depth failures.
+The perception recording profile always requests native depth
+(`/camera/depth/image_rect_raw`), aligned depth
+(`/camera/aligned_depth_to_color/image_raw`), RGBD heartbeat
+(`/fruit_perception/camera/rgbd_heartbeat`), and `/parameter_events`.
+Recording does not require these publishers to exist at startup.
+The script saves actual `/camera` ROS parameters after recorder startup to
+`log/runtime/latest/camera_params.yaml`, with a maximum 10-second snapshot attempt.
+Snapshot failures produce a warning and `camera_params.log`; perception continues.
+The snapshot and recorded parameter events capture startup values and subsequent changes.
+Other recording profiles and non-debug perception startup are unchanged.
+
 The service template supplies `--zone A`. Update an existing installed unit before
 using the new script. Do not restart camera services during an active mission.
 `start_fruit_mission.sh` uses the complete mission launch, not this debug script.

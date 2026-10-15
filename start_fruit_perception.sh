@@ -146,6 +146,14 @@ if (( DEBUG_MODE )); then
     >/dev/null 2>&1 || printf '[perception] perception readiness timed out; recording available topics only\n'
   fruit_recording_start "$WORKSPACE/record_rosbag.sh" perception
   fruit_recording_wait_ready 10 || true
+  if timeout --kill-after=1s 9s ros2 param dump /camera \
+    >"${FRUIT_RUNTIME_SESSION_DIR}/camera_params.yaml" \
+    2>"${FRUIT_RUNTIME_SESSION_DIR}/camera_params.log"; then
+    printf '[perception] camera parameters saved: %s/camera_params.yaml\n' "$FRUIT_RUNTIME_SESSION_DIR"
+  else
+    rm -f -- "${FRUIT_RUNTIME_SESSION_DIR}/camera_params.yaml"
+    printf '[perception] WARNING: camera parameter snapshot failed; see camera_params.log\n' >&2
+  fi
 fi
 
 while process_alive "$launch_pid"; do
