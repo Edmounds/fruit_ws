@@ -49,7 +49,7 @@ def run_c(ctx, plan):
 
 
 def navigate(ctx, waypoints, *, side=None, preset=None, yaws=None):
-    """Navigate with optional concurrent Look or preset; failed handoffs get one safe Home."""
+    """Navigate with optional concurrent Look or preset."""
     ctx.telemetry.step('navigate', target=' → '.join(waypoints))
     if (
         ctx._current_area == "B"
@@ -64,16 +64,13 @@ def navigate(ctx, waypoints, *, side=None, preset=None, yaws=None):
         and preset is None
         and not (ctx._arm_home_confirmed or ctx._arm_shenzhi_confirmed)
     ):
-        if not ctx.recover_home():
-            ctx.node.get_logger().warning('安全 Home 未确认，跳过当前导航')
-            if ctx._current_area:
-                ctx.telemetry.result('skipped', 'navigation_home_unconfirmed')
-            return False
+        ctx.node.get_logger().warning('安全姿态未确认，跳过当前导航')
+        if ctx._current_area:
+            ctx.telemetry.result('skipped', 'navigation_home_unconfirmed')
+        return False
     if ctx.navigate_named(waypoints, observation_side=side, arm_preset=preset, yaws=yaws):
         return True
     ctx.node.get_logger().warning(f"导航失败，跳过当前动作: {' -> '.join(waypoints)}")
-    if ctx._current_area and not ctx.recover_home():
-        ctx.node.get_logger().warning('导航失败后的安全 Home 未确认，继续跳过当前点')
     if ctx._current_area:
         ctx.telemetry.result('skipped', 'navigation_failed')
     return False
@@ -118,7 +115,7 @@ def scan_b_qr(ctx, *, arrived, preset="qr_scan_b", return_home=True):
         motion = ctx.execute_arm_preset('shenzhi')
         if not motion.completed:
             ctx.recover_home()
-    elif not (ctx._arm_home_confirmed or ctx._arm_shenzhi_confirmed):
+    elif arrived:
         ctx.recover_home()
     return plan
 

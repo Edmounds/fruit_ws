@@ -61,6 +61,6 @@ def main(ctx):
     else:
         ctx.node.get_logger().warning("ACB 未到达 C_QR，跳过 C 区作业、汇总和出口导航")
     if navigate(ctx, ["to_B_lower_waypoint_1"], preset="shenzhi"):
-        # B's first Look needs Home, not shenzhi. Failure already recovered once.
+        # B's first Look needs Home, not shenzhi.
         ctx.recover_home()
     run_b(ctx, b_plan, first_side="left")
