@@ -12,6 +12,7 @@
 | [WAYPOINT_RECORDING.md](WAYPOINT_RECORDING.md) | Web 录点、航点编辑、C 区拓扑与 yaw |
 | [PERCEPTION_MODE_COMMANDS.md](PERCEPTION_MODE_COMMANDS.md) | 单相机常开与观察窗口的 ROS CLI 操作 |
 | [CAMERA_TUNING.md](CAMERA_TUNING.md) | 单 camera 的物种检测 GUI 与参数持久化 |
+| [CAMERA_LIDAR_DDS_ANALYSIS.md](CAMERA_LIDAR_DDS_ANALYSIS.md) | 雷达接入后深度停流的 DDS 根因、实机数据对比及修复边界 |
 | [DATASET_PIPELINE.md](DATASET_PIPELINE.md) | 当前图像采集工具与训练环境边界 |
 | [LOWER_CONTROLLER_COMMANDS.md](LOWER_CONTROLLER_COMMANDS.md) | 串口消息契约、状态与通信限制；不是绕过 planner 的操作指南 |
 | [VOICE_FLOW.md](VOICE_FLOW.md) | 当前代码的播报文本与时序 |
