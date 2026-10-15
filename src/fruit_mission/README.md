@@ -272,8 +272,11 @@ source scripts/setup_fruit_runtime.bash
 
 ## 自动采集 Look 图像
 
-比赛流程的自动截屏已禁用。Look 不再触发 PNG 采集或图像写盘。
-使用 `--debug` 录制 rosbag，赛后按需提取 RGB 图像，不重复自动截屏。
+每个 A、B、C 区成功完成的 Look 都从 `/camera/color/image_raw` 采集 5 帧 RGB
+图像。后台使用 Laplacian 方差评估清晰度，并只保存评分最高的 1 帧 PNG。
+
+图像保存到 `/home/rc4/fruit_ws/data/<mission_time>/<area>/look_<sequence>.png`。
+采集从 Look 到位后的新图像时间戳开始，采集和写盘在后台线程执行，不阻塞任务流程。
 
 独立导航和单点调试脚本通过 `stack_readiness_client bridge-start-required` 检查串口桥：
 标准输出为 `true`（缺失，需要启动）或 `false`（已存在，复用）。节点、

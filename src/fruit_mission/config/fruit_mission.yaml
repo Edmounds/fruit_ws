@@ -8,11 +8,11 @@ fruit_mission:
     stationary:
       joint_speed_rps: 0.05
     c_distribution_output_dir: "/home/rc4/fruit_ws/tmp/fruit_mission"
-    # dataset_output_dir: "/home/rc4/fruit_ws/data"
-    # dataset_image_topic: "/camera/color/image_raw"
-    # dataset_frames_per_look: 5
-    # dataset_frame_interval_sec: 0.1
-    # dataset_shutdown_timeout_sec: 10.0
+    dataset_output_dir: "/home/rc4/fruit_ws/data"
+    dataset_image_topic: "/camera/color/image_raw"
+    dataset_frames_per_look: 5
+    dataset_frame_interval_sec: 0.1
+    dataset_shutdown_timeout_sec: 10.0
     waypoint_file: "/home/rc4/fruit_ws/src/navigation/fruit_nav_bringup/waypoints/odom_waypoints.yaml"
     mission_flow: "full"
     open_loop: "A"
