@@ -24,8 +24,10 @@ def main(ctx):
     # This is the only safe exit from qr_scan_a_to_b, even without a QR result.
     look = ctx.execute_arm_preset("right_look_a")
     if not look.completed:
-        ctx._camera_planner.request_stop()
-        raise RuntimeError(f"ACB 扫码后右 Look 失败，禁止其他运动: {look.reason_code}")
+        ctx.node.get_logger().warning(
+            f"ACB 扫码后右 Look 失败: {look.reason_code}，回 Home 后继续"
+        )
+        ctx.recover_home()
     for name in ("A_right4", "A_right3", "A_right2", "A_right1"):
         if navigate(ctx, [name], side="right"):
             pick_a(ctx, side="right")

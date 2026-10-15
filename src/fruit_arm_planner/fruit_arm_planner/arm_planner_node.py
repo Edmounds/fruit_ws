@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import threading
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -86,6 +86,7 @@ class ArmPlannerNode(Node):
         self.latest_status: Optional[ArmStatus] = None
         self._status_received_at = 0.0
         self.current_joints: Optional[Tuple[float, float, float, float]] = None
+        self._completed_trajectories: Set[int] = set()
 
         # --------------------------------------------------------------------
         # 3. 对接底层硬件通信 (auto_serial_bridge)
@@ -277,6 +278,10 @@ class ArmPlannerNode(Node):
             self.latest_status = msg
             self._status_received_at = time.monotonic()
             self.current_joints = joints if valid else None
+            if msg.task_status == ArmStatus.STATUS_COMPLETED:
+                if len(self._completed_trajectories) > 200:
+                    self._completed_trajectories.clear()
+                self._completed_trajectories.add(msg.trajectory_id)
             if (valid and msg.task_status == ArmStatus.STATUS_IDLE
                     and msg.error_code == ArmStatus.ERROR_NONE):
                 self._require_idle = False
@@ -421,6 +426,9 @@ class ArmPlannerNode(Node):
 
         # 4. 同步监视硬件状态，等待执行完成或下位机报错
         poll_interval = 0.05  # 50ms (20Hz)
+        seen_running = False
+        duration_sec = actual_traj_duration_ms / 1000.0
+        timeout_deadline = time.monotonic() + min(10.0, max(5.0, duration_sec + 3.0))
 
         while rclpy.ok():
             time.sleep(poll_interval)
@@ -428,17 +436,35 @@ class ArmPlannerNode(Node):
                 reason = self._interrupt_reason
                 status = self.latest_status
                 received_at = self._status_received_at
+                completed_latched = traj_id in self._completed_trajectories
             if reason:
                 return False, traj_id, reason
             if status is None or received_at <= dispatched_at:
+                if time.monotonic() > timeout_deadline:
+                    return False, traj_id, "Execution timed out waiting for arm status"
                 continue
 
             # 匹配当前任务
             if status.trajectory_id == traj_id:
-                if status.task_status == ArmStatus.STATUS_COMPLETED:
+                if status.task_status == ArmStatus.STATUS_RUNNING:
+                    seen_running = True
+
+                if status.task_status == ArmStatus.STATUS_COMPLETED or completed_latched:
                     elapsed = time.monotonic() - dispatched_at
                     self.get_logger().info(
                         f"Trajectory {traj_id} executed successfully in {elapsed:.2f}s"
+                    )
+                    return True, traj_id, f"Execution completed in {elapsed:.2f}s"
+
+                if (
+                    seen_running
+                    and status.task_status == ArmStatus.STATUS_IDLE
+                    and status.error_code == ArmStatus.ERROR_NONE
+                    and (time.monotonic() - dispatched_at) >= duration_sec
+                ):
+                    elapsed = time.monotonic() - dispatched_at
+                    self.get_logger().info(
+                        f"Trajectory {traj_id} returned to IDLE successfully in {elapsed:.2f}s"
                     )
                     return True, traj_id, f"Execution completed in {elapsed:.2f}s"
 
@@ -449,6 +475,10 @@ class ArmPlannerNode(Node):
                     )
                     self.get_logger().error(err_msg)
                     return False, traj_id, err_msg
+
+            if time.monotonic() > timeout_deadline:
+                timeout_val = min(10.0, max(5.0, duration_sec + 3.0))
+                return False, traj_id, f"Execution timed out after {timeout_val:.1f}s"
 
         return False, traj_id, "Execution interrupted by node shutdown"
 
