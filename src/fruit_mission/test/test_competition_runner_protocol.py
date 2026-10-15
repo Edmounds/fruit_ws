@@ -15,6 +15,8 @@ import rclpy
 from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.signals import SignalHandlerOptions
 from rclpy.task import Future
+from sensor_msgs.msg import Image
+from std_msgs.msg import Header
 import yaml
 
 from fruit_mission import competition_runner
@@ -86,6 +88,9 @@ class CompetitionRunnerProtocolTest(unittest.TestCase):
         recorder = rclpy.create_node('rosbag2_recorder')
         camera.declare_parameter('enable_depth', True)
         camera.declare_parameter('depth_module.depth_profile', '848x480x30')
+        image_publisher = camera.create_publisher(Image, '/camera/color/image_raw', 10)
+        heartbeat_publisher = camera.create_publisher(
+            Header, self.runner.perception_heartbeat_topic, 10)
         executor = SingleThreadedExecutor()
         executor.add_node(camera)
         executor.add_node(recorder)
@@ -109,6 +114,34 @@ class CompetitionRunnerProtocolTest(unittest.TestCase):
             self.assertEqual(parameters['depth_module']['depth_profile'], '848x480x30')
             self.runner.snapshot()
             self.assertIs(self.runner.processes['camera_params'], process)
+            self.assertNotIn('camera_params_streaming', self.runner.processes)
+            camera.declare_parameter('align_depth.enable', True)
+            self.assertTrue(self.runner.wait_until(
+                lambda: image_publisher.get_subscription_count() > 0
+                and heartbeat_publisher.get_subscription_count() > 0, 3))
+            image = Image()
+            image.header.stamp = camera.get_clock().now().to_msg()
+            image.height, image.width, image.step = 1, 1, 3
+            image.encoding = 'rgb8'
+            image.data = [0, 0, 0]
+            image_publisher.publish(image)
+            heartbeat_publisher.publish(image.header)
+            self.assertTrue(self.runner.wait_until(
+                lambda: {'camera', 'perception'} <= self.runner.last_data.keys(), 3))
+            self.runner.snapshot()
+            streaming = self.runner.processes['camera_params_streaming']
+            self.processes.append(streaming)
+            self.assertEqual(streaming.wait(timeout=10), 0)
+            parameters = yaml.safe_load((self.root / 'camera_params_streaming.yaml').read_text())
+            self.assertTrue(parameters['/camera']['ros__parameters']['align_depth']['enable'])
+            records = [json.loads(line) for line in
+                       (self.root / 'camera_health.log').read_text().splitlines()]
+            self.assertEqual(sum(row['streams']['camera']['messages'] for row in records), 1)
+            self.assertEqual(sum(row['streams']['perception']['messages'] for row in records), 1)
+            self.assertIsNone(records[-1]['streams']['depth']['last_received_age_s'])
+            self.assertIsNotNone(records[-1]['streams']['camera']['header_age_s'])
+            self.runner.snapshot()
+            self.assertIs(self.runner.processes['camera_params_streaming'], streaming)
         finally:
             if domain_before is None:
                 os.environ.pop('ROS_DOMAIN_ID', None)

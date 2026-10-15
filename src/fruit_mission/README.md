@@ -146,6 +146,20 @@ ABC、ACB 分阶段 `--debug` 在 `/camera` 节点出现后后台启动录包，
 话题暂时没有发布者时仍保留录制请求，便于复盘启动失败和断流。
 同时后台保存实际 `/camera` ROS 参数至当前运行目录的 `camera_params.yaml`，
 诊断日志为 `camera_params.log`。快照最多尝试 10 秒，失败只告警，不阻塞比赛，也不重试或重置相机。
+首份参数快照可能早于设备初始化。首次收到 RGB 或原始深度后，额外保存一次
+`camera_params_streaming.yaml`，日志为 `camera_params_streaming.log`。不等待 RGBD 心跳。
+`--debug` 将相机 `camera` logger 提升到 INFO，保留 USB 类型、固件、打开的流配置和起流信息。
+ABC、ACB 和独立感知脚本共用此规则。正常启动仍为 WARN，不启用逐帧 DEBUG 输出。
+分阶段比赛每秒写入 `camera_health.log`，每行是一个 JSON 对象。
+`camera/depth/annotated/perception/radar/serial` 分别表示 RGB、原始深度、标注图、RGBD 心跳、雷达 IMU 和串口状态。
+`messages` 是本采样间隔的接收数，`received_hz` 是接收频率，不是独立传感器帧率。
+`last_received_age_s` 表示距上次接收的秒数，`header_age_s` 表示最新消息时间戳距当前 ROS 时间的秒数。
+未收到消息或没有有效时间戳时，对应值为 `null`。观察接收延迟可能包含订阅端调度延迟。
+日志复用现有图像和 RGBD 心跳订阅，不增加订阅或图像流。
+分阶段比赛还写入 `system_load.log`（`vmstat` 的 CPU、内存、I/O 和等待情况）、
+`process_load.log`（`pidstat` 的相关进程 CPU、内存和 I/O）及启动时的 `usb_topology.log`。
+`vmstat` 首行是开机以来的平均值，后续每秒采样。进程统计需要系统提供 `pidstat`。
+这些诊断只在 `--debug` 启用，失败不阻塞比赛，不修改相机参数或执行恢复动作。
 分阶段准备时传入 `--debug`，定位阶段沿用该会话的录包设置。
 使用 `--debug` 时，准备阶段还会记录内核 USB 事件和 udev 事件，文件分别为
 当前运行目录的 `kernel.log` 和 `udev.log`。退出时监控进程与其他调试进程一起停止。

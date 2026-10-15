@@ -42,6 +42,9 @@ class CompetitionRunner(StackReadinessClient):
         self.processes = {}
         self.process_groups = {}
         self.last_data = {}
+        self.stream_counts = {}
+        self.stream_stamps = {}
+        self.stream_log_at = time.monotonic()
         self.odometry = None
         self.started_ns = 0
         self.arm_fault = ''
@@ -63,7 +66,8 @@ class CompetitionRunner(StackReadinessClient):
             ('pointlio', '/aft_mapped_to_init', Odometry),
         ):
             self.create_subscription(message_type, topic,
-                                     lambda msg, k=key: self.touch(k), qos_profile_sensor_data)
+                                     lambda msg, k=key: self.touch(k, msg),
+                                     qos_profile_sensor_data)
         self.create_subscription(Odometry, '/odometry', self.on_odometry, 10)
         self.create_subscription(ArmTelemetry, '/arm_planner_node/joint_states',
                                  lambda msg: self.touch('arm'), 10)
@@ -76,8 +80,13 @@ class CompetitionRunner(StackReadinessClient):
         timeout_sec = 10.0 if timeout_sec is None else min(timeout_sec, 10.0)
         return super().wait_until(predicate, timeout_sec)
 
-    def touch(self, key):
+    def touch(self, key, message=None):
         self.last_data[key] = time.time()
+        if self.options.debug:
+            self.stream_counts[key] = self.stream_counts.get(key, 0) + 1
+            if message is not None:
+                stamp = message.stamp if isinstance(message, Header) else message.header.stamp
+                self.stream_stamps[key] = stamp.sec * 1_000_000_000 + stamp.nanosec
 
     def on_odometry(self, message):
         self.odometry = message
@@ -125,7 +134,9 @@ class CompetitionRunner(StackReadinessClient):
         self.processes[name] = subprocess.Popen(
             ['bash', '-c', f'set -o pipefail; {shlex.join(command)} 2>&1 | '
              f'{shlex.join(filter_command)}'],
-            env=env, start_new_session=True)
+            env=env, start_new_session=True,
+            stdout=subprocess.DEVNULL if name in (
+                'system_load', 'process_load', 'usb_topology') else None)
         self.process_groups[name] = {self.processes[name].pid}
 
     def stop(self, name):
@@ -195,6 +206,29 @@ class CompetitionRunner(StackReadinessClient):
 
     def snapshot(self):
         now = time.time()
+        if self.options.debug:
+            steady_now = time.monotonic()
+            interval = max(steady_now - self.stream_log_at, 1e-6)
+            ros_now = self.get_clock().now().nanoseconds
+            streams = {}
+            for key in ('camera', 'depth', 'annotated', 'perception', 'radar', 'serial'):
+                received = self.last_data.get(key)
+                stamp = self.stream_stamps.get(key)
+                count = self.stream_counts.get(key, 0)
+                streams[key] = {
+                    'messages': count, 'received_hz': round(count / interval, 3),
+                    'last_received_age_s': None if received is None else round(now - received, 3),
+                    'header_age_s': None if not stamp else round((ros_now - stamp) / 1e9, 3),
+                }
+            try:
+                with (self.log_dir / 'camera_health.log').open('a', encoding='utf-8') as stream:
+                    stream.write(json.dumps({
+                        'time': now, 'interval_s': round(interval, 3), 'streams': streams,
+                    }) + '\n')
+            except OSError as error:
+                self.get_logger().warning(f'Cannot write camera health: {error}')
+            self.stream_counts.clear()
+            self.stream_log_at = steady_now
         nodes = self.node_names()
         services = {name for name, types in self.get_service_names_and_types()}
         modules = {}
@@ -252,18 +286,25 @@ class CompetitionRunner(StackReadinessClient):
             self.state.update(
                 phase='FINISHED' if mission.returncode == 0 else 'ERROR',
                 error='' if mission.returncode == 0 else f'mission 退出码 {mission.returncode}')
-        if (self.options.debug and not self.recording_checked and '/camera' in nodes
+        if (self.options.debug and '/camera' in nodes
                 and self.state['phase'] not in ('ERROR', 'FINISHED', 'STOPPED')):
-            self.recording_checked = True
-            if '/rosbag2_recorder' not in nodes:
-                self.start('rosbag', [str(WORKSPACE / 'record_rosbag.sh')])
-            self.start('camera_params', [
-                'bash', '-c',
-                'if timeout --kill-after=1s 9s ros2 param dump /camera --no-daemon > "$1"; then '
-                'printf "[camera_params] saved: %s\\n" "$1"; else '
-                'rm -f -- "$1"; '
-                'printf "[camera_params] WARNING: snapshot failed\\n" >&2; fi',
-                'camera-params', str(self.log_dir / 'camera_params.yaml')])
+            if not self.recording_checked:
+                self.recording_checked = True
+                if '/rosbag2_recorder' not in nodes:
+                    self.start('rosbag', [str(WORKSPACE / 'record_rosbag.sh')])
+            for name, ready in (
+                ('camera_params', True),
+                ('camera_params_streaming',
+                 'camera' in self.last_data or 'depth' in self.last_data),
+            ):
+                if ready and name not in self.processes:
+                    self.start(name, [
+                        'bash', '-c',
+                        'if timeout --kill-after=1s 9s '
+                        'ros2 param dump /camera --no-daemon > "$1"; '
+                        'then printf "[camera_params] saved: %s\\n" "$1"; else rm -f -- "$1"; '
+                        'printf "[camera_params] WARNING: snapshot failed\\n" >&2; fi',
+                        'camera-params', str(self.log_dir / f'{name}.yaml')])
         self.state.update(updated_at=now, modules=modules)
         self.write_snapshot()
 
@@ -292,6 +333,11 @@ class CompetitionRunner(StackReadinessClient):
         if self.options.debug:
             self.start('udev', ['udevadm', 'monitor', '--kernel', '--udev'])
             self.start('kernel', ['journalctl', '-k', '-f', '-o', 'short-iso'])
+            self.start('system_load', ['vmstat', '-w', '-t', '1'])
+            self.start('process_load', [
+                'pidstat', '-h', '-u', '-r', '-d', '-C',
+                'component_cont|livox|pointlio|python3|serial_node', '1'])
+            self.start('usb_topology', ['lsusb', '-t'])
         try:
             planner = CameraTargetPlannerClient(self)
             # Wait only during preparation, never repeat this gate on the field.

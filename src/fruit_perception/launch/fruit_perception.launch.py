@@ -1,3 +1,5 @@
+import os
+
 import yaml
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -113,6 +115,8 @@ def generate_launch_description():
         arguments=[
             '--ros-args', '--log-level', 'warn', '--log-level',
             ['fruit_perception_node:=', LaunchConfiguration('perception_log_level')],
+            '--log-level',
+            'camera:=info' if os.environ.get('FRUIT_LOGGING_DEBUG') == '1' else 'camera:=warn',
         ],
     )
 
