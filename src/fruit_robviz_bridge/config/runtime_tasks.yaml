@@ -42,7 +42,7 @@ tasks:
     log_file: perception.log
     script: start_fruit_perception.sh
     parameters:
-      zone: {flag: --zone, choices: [A, B, C], required: true}
+      zone: {flag: --zone, choices: [A, B, C, D], required: true}
       debug: {flag: --debug, default: false}
       ripeness_model: {flag: 'ripeness_model:=', choices: [edge, yolo], default: edge}
       performance_hint: {flag: 'performance_hint:=', choices: [latency, throughput], default: latency}
@@ -63,7 +63,7 @@ tasks:
     script: start_fruit_mission.sh
     parameters:
       phase: {flag: --phase, choices: [all, prepare, localize], default: all}
-      flow: {flag: --flow, choices: [full, ac, a, b, c], default: full}
+      flow: {flag: --flow, choices: [full, ac, acb, acbd, a, b, c], default: full}
       open_loop: {flag: --open-loop, choices: [A, C, AC, none], default: A}
       debug: {flag: --debug, default: false}
 
@@ -74,6 +74,17 @@ tasks:
     log_file: mission_acb.log
     script: start_fruit_mission_acb.sh
     note: 'ACB 固定：A 去程开环，A 回程及 C 闭环。定位阶段沿用准备参数。'
+    parameters:
+      phase: {flag: --phase, choices: [all, prepare, localize], default: all}
+      debug: {flag: --debug, default: false}
+
+  mission_acbd:
+    command: "/home/rc4/fruit_ws/start_fruit_mission_acbd.sh"
+    readiness:
+      process_pattern: "--flow acbd --open-loop none"
+    log_file: mission_acbd.log
+    script: start_fruit_mission_acbd.sh
+    note: 'ACBD 固定：全闭环采摘，B8完成后进入D区。定位阶段沿用准备参数。'
     parameters:
       phase: {flag: --phase, choices: [all, prepare, localize], default: all}
       debug: {flag: --debug, default: false}
@@ -100,7 +111,7 @@ tasks:
     readiness: {process_pattern: /home/rc4/fruit_ws/test_camera_arm_target.sh}
     script: test_camera_arm_target.sh
     parameters:
-      zone: {flag: --zone, choices: [A, B, C], required: true}
+      zone: {flag: --zone, choices: [A, B, C, D], required: true}
       side: {choices: [--left, --right], required: true}
       debug: {flag: --debug, default: false}
 
