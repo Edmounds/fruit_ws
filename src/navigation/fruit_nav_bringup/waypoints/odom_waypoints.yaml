@@ -52,7 +52,7 @@ points:
   type: goal
 - name: to_B_QR_waypoint
   position:
-    x: 2.492037873649382
+    x: 2.502037873649382
     y: -0.22334814654412347
     z: -0.006181007303051454
   orientation:

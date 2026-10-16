@@ -4,7 +4,7 @@ args=()
 
 usage() {
   echo "Usage: ./start_fruit_mission_acb.sh [--phase all|prepare|localize] [--debug]"
-  echo "A left open-loop -> B QR -> A right closed-loop -> C closed-loop -> summary -> B."
+  echo "A left closed-loop -> B QR -> A right closed-loop -> C closed-loop -> summary -> B."
 }
 
 while (($#)); do

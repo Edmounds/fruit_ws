@@ -188,7 +188,7 @@ arm_planner_node:
           gripper: 0
           linear: false
         - target:
-          - -0.18
+          - -0.13
           - 0.01
           - 0.26
           - 0.0
@@ -208,7 +208,7 @@ arm_planner_node:
         - target:
           - 0.0
           - -0.42
-          - -0.13
+          - -0.16
           - 0.0
           duration_ms: 2000
           gripper: 2
@@ -264,32 +264,63 @@ arm_planner_node:
         description: 右方抓取完毕后存储并回到右侧位，闭环抓取完后调用。
         coordinate_frame: cartesian
         waypoints:
+        - target: [0.0, -0.29, 0.23, 0.0]
+          duration_ms: 1000
+          gripper: 0
+        - target: [-0.18, -0.01, 0.23, 0.0]
+          duration_ms: 1000
+          gripper: 1
+        - target: [0.0, -0.22, 0.23, 0.0]
+          duration_ms: 1000
+          gripper: 0
+          is_via_point: true
+      left_drop_openloop_a:
+        description: a区左方开环控制抓取，只能由left look a状态进入。
+        coordinate_frame: cartesian
+        waypoints:
         - target:
           - 0.0
-          - -0.29
-          - 0.23
+          - 0.42
+          - -0.13
+          - 0.0
+          duration_ms: 2000
+          gripper: 2
+        - target:
+          - -0.1
+          - 0.22
+          - 0.26
+          - 0.0
+          duration_ms: 1000
+          gripper: 1
+        - target:
+          - 0.0
+          - 0.22
+          - 0.26
           - 0.0
           duration_ms: 1000
           gripper: 0
+      right_drop_openloop_a:
+        description: a区左方开环控制抓取，只能由left look a状态进入。
+        coordinate_frame: cartesian
+        waypoints:
         - target:
-          - -0.18
-          - -0.01
-          - 0.23
+          - 0.0
+          - -0.42
+          - -0.13
+          - 0.0
+          duration_ms: 2000
+          gripper: 2
+        - target:
+          - -0.1
+          - -0.22
+          - 0.26
           - 0.0
           duration_ms: 1000
           gripper: 1
         - target:
           - 0.0
           - -0.22
-          - 0.23
-          - 0.0
-          duration_ms: 1000
-          gripper: 0
-          is_via_point: true
-        - target:
-          - 0.22
-          - 0.0
-          - 0.17
+          - 0.26
           - 0.0
           duration_ms: 1000
           gripper: 0
@@ -324,7 +355,7 @@ arm_planner_node:
         - target:
           - 0.0
           - 0.37
-          - -0.13
+          - -0.14
           - 0.0
           duration_ms: 2000
           gripper: 2
@@ -339,7 +370,7 @@ arm_planner_node:
         - target:
           - -0.18
           - 0.01
-          - 0.25
+          - 0.28
           - 0.0
           duration_ms: 1000
           gripper: 1
@@ -364,7 +395,7 @@ arm_planner_node:
         - target:
           - 0.0
           - -0.37
-          - -0.13
+          - -0.14
           - 0.0
           duration_ms: 2000
           gripper: 2
@@ -379,7 +410,7 @@ arm_planner_node:
         - target:
           - -0.18
           - -0.01
-          - 0.25
+          - 0.28
           - 0.0
           duration_ms: 1000
           gripper: 1
@@ -404,26 +435,78 @@ arm_planner_node:
         - target:
           - 0.0
           - 0.29
+          - 0.25
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+          is_via_point: true
+        - target:
+          - -0.18
+          - 0.01
+          - 0.35
+          - 0.0
+          duration_ms: 1000
+          gripper: 1
+        - target:
+          - 0.0
+          - 0.22
+          - 0.35
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
+      right_store_c:
+        description: 右方抓取完毕后存储并回到原位，闭环抓取完后调用。
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.0
+          - -0.29
+          - 0.25
+          - 0.0
+          duration_ms: 2000
+          gripper: 0
+          is_via_point: true
+        - target:
+          - -0.18
+          - -0.01
+          - 0.35
+          - 0.0
+          duration_ms: 1000
+          gripper: 1
+        - target:
+          - 0.0
+          - -0.22
+          - 0.35
+          - 0.0
+          duration_ms: 1000
+          gripper: 0
+      left_drop_c:
+        description: 左方抓取完毕后丢弃，闭环抓取完后调用。
+        coordinate_frame: cartesian
+        waypoints:
+        - target:
+          - 0.0
+          - 0.29
           - 0.23
           - 0.0
           duration_ms: 2000
           gripper: 0
         - target:
-          - -0.18
-          - 0.01
+          - -0.1
+          - 0.29
           - 0.23
           - 0.0
-          duration_ms: 2000
+          duration_ms: 1000
           gripper: 1
         - target:
           - 0.0
           - 0.22
           - 0.23
           - 0.0
-          duration_ms: 2000
+          duration_ms: 1000
           gripper: 0
-      right_store_c:
-        description: 右方抓取完毕后存储并回到原位，闭环抓取完后调用。
+      right_drop_c:
+        description: 右方抓取完毕后丢弃，闭环抓取完后调用。
         coordinate_frame: cartesian
         waypoints:
         - target:
@@ -434,21 +517,21 @@ arm_planner_node:
           duration_ms: 2000
           gripper: 0
         - target:
-          - -0.18
-          - -0.01
+          - -0.1
+          - -0.29
           - 0.23
           - 0.0
-          duration_ms: 2000
+          duration_ms: 1000
           gripper: 1
         - target:
           - 0.0
           - -0.22
           - 0.23
           - 0.0
-          duration_ms: 2000
+          duration_ms: 1000
           gripper: 0
       left_look_b:
-        description: b区机械臂左侧观察位姿，切换到右侧观察位时，必须调用Left Home B。
+        description: b区机械臂左侧观察位姿，切换到右侧观察位时，必须调用Left Home B。如果要回到home必须调用Left to Home B
         coordinate_frame: cartesian
         waypoints:
         - target:
@@ -460,7 +543,7 @@ arm_planner_node:
           gripper: 1
           dwell_ms: 0
       right_look_b:
-        description: b区机械臂右侧观察位姿，切换到左侧观察位时，必须调用right Home B。
+        description: b区机械臂右侧观察位姿，切换到左侧观察位时，必须调用right Home B。如果要回到home必须调用right to Home B
         coordinate_frame: cartesian
         waypoints:
         - target:
@@ -472,8 +555,8 @@ arm_planner_node:
           gripper: 1
           dwell_ms: 0
       left_to_home_b:
-        coordinate_frame: cartesian
         description: 从B区左侧观察位回到中间状态，从这个状态可以去到右侧观察位和Home。
+        coordinate_frame: cartesian
         waypoints:
         - target:
           - 0.064
@@ -487,11 +570,11 @@ arm_planner_node:
           - 0.0
           - 0.359
           - -37.0
-          duration_ms: 600
+          duration_ms: 300
           gripper: 0
       right_to_home_b:
-        coordinate_frame: cartesian
         description: 从B区右侧观察位回到中间状态，从这个状态可以去到左侧观察位和Home。
+        coordinate_frame: cartesian
         waypoints:
         - target:
           - 0.064
@@ -505,7 +588,7 @@ arm_planner_node:
           - 0.0
           - 0.359
           - -37.0
-          duration_ms: 600
+          duration_ms: 300
           gripper: 0
       left_store_b_up:
         description: b区左方上层抓取完毕后存储并回到原位

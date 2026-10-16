@@ -36,4 +36,4 @@ b_limits:
   min_m: -0.01
   split_m: 0.12
   max_m: 0.30
-  max_distance_m: 1.0  # 未叠加抓取偏置的目标到机械臂基座原点的三维距离
+  max_distance_m: 0.65  # 未叠加抓取偏置的目标到机械臂基座原点的三维距离
