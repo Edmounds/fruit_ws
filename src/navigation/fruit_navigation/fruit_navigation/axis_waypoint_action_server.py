@@ -23,6 +23,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from fruit_navigation.axis_planner import (
     AxisPose,
+    choose_reverse_motion,
     normalize_angle,
     OdomProgressWatchdog,
     pose_from_ros,
@@ -48,6 +49,7 @@ class AxisWaypointActionServer(Node):
         self.declare_parameter("forward_tolerance", 0.03)
         self.declare_parameter("lateral_tolerance", 0.06)
         self.declare_parameter("rotate_yaw_tolerance", 0.06)
+        # Accepted for legacy configuration compatibility, no longer used.
         self.declare_parameter("reverse_yaw_tolerance", 0.25)
         self.declare_parameter("linear_gain", 0.8)
         self.declare_parameter("yaw_gain", 1.8)
@@ -77,9 +79,6 @@ class AxisWaypointActionServer(Node):
         self._lateral_tolerance = float(self.get_parameter("lateral_tolerance").value)
         self._rotate_yaw_tolerance = float(
             self.get_parameter("rotate_yaw_tolerance").value
-        )
-        self._reverse_yaw_tolerance = float(
-            self.get_parameter("reverse_yaw_tolerance").value
         )
         self._linear_gain = float(self.get_parameter("linear_gain").value)
         self._yaw_gain = float(self.get_parameter("yaw_gain").value)
@@ -146,10 +145,11 @@ class AxisWaypointActionServer(Node):
             raise ValueError("max_angular_acceleration must be positive")
         if self._forward_tolerance <= 0.0 or self._lateral_tolerance <= 0.0:
             raise ValueError("tolerances must be positive")
-        if self._rotate_yaw_tolerance <= 0.0:
-            raise ValueError("rotate_yaw_tolerance must be positive")
-        if self._reverse_yaw_tolerance <= 0.0:
-            raise ValueError("reverse_yaw_tolerance must be positive")
+        if (
+            not math.isfinite(self._rotate_yaw_tolerance)
+            or self._rotate_yaw_tolerance <= 0.0
+        ):
+            raise ValueError("rotate_yaw_tolerance must be finite and positive")
         if not math.isfinite(self._lookahead_distance) or self._lookahead_distance <= 0.0:
             raise ValueError("lookahead_distance must be finite and positive")
         if self._tf_timeout_sec <= 0.0:
@@ -300,12 +300,12 @@ class AxisWaypointActionServer(Node):
         )
         if distance > self._forward_tolerance:
             path_heading = math.atan2(target.y - start.y, target.x - start.x)
-            reverse_heading = normalize_angle(path_heading + math.pi)
-            use_reverse = (
-                abs(normalize_angle(target.yaw - reverse_heading))
-                <= self._reverse_yaw_tolerance
+            use_reverse = choose_reverse_motion(
+                start.yaw, target.yaw, path_heading, self._rotate_yaw_tolerance,
             )
-            approach_yaw = reverse_heading if use_reverse else path_heading
+            approach_yaw = normalize_angle(
+                path_heading + (math.pi if use_reverse else 0.0)
+            )
             if not self._rotate_to(
                 goal_handle,
                 approach_yaw,
@@ -317,13 +317,15 @@ class AxisWaypointActionServer(Node):
             if start is None:
                 return False
             distance = math.hypot(target.x - start.x, target.y - start.y)
+            if distance <= self._forward_tolerance:
+                return self._rotate_to(
+                    goal_handle, target.yaw, self._rotate_yaw_tolerance,
+                )
             path_heading = math.atan2(target.y - start.y, target.x - start.x)
-            reverse_heading = normalize_angle(path_heading + math.pi)
-            use_reverse = (
-                abs(normalize_angle(target.yaw - reverse_heading))
-                <= self._reverse_yaw_tolerance
+            # Refresh line geometry, but keep the direction chosen before turning.
+            approach_yaw = normalize_angle(
+                path_heading + (math.pi if use_reverse else 0.0)
             )
-            approach_yaw = reverse_heading if use_reverse else path_heading
             linear_direction = -1.0 if use_reverse else 1.0
             self.get_logger().info(
                 "Waypoint line after rotation: "

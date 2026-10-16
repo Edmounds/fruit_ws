@@ -1,3 +1,4 @@
+import itertools
 import math
 
 import pytest
@@ -9,6 +10,7 @@ from fruit_navigation.axis_planner import (
     axis_cross_track_error,
     axis_forward_remaining,
     choose_axis_segments,
+    choose_reverse_motion,
     normalize_angle,
     validate_waypoints,
 )
@@ -18,6 +20,66 @@ def test_normalize_angle_returns_minus_pi_to_pi():
     assert normalize_angle(0.0) == 0.0
     assert math.isclose(normalize_angle(3.0 * math.pi), -math.pi)
     assert math.isclose(normalize_angle(-3.0 * math.pi), -math.pi)
+
+
+@pytest.mark.parametrize(
+    ("start_yaw", "target_yaw", "path_heading", "expected"),
+    (
+        (0.0, 0.0, 0.0, False),
+        (0.0, 0.0, math.pi, True),
+        (0.0, -math.pi / 2.0, math.pi, True),
+        (0.0, -math.pi / 2.0, 0.0, False),
+        (-3.118, 1.569, math.atan2(-0.710, 0.205), True),
+        (math.pi / 4.0, math.pi, 0.0, True),
+        (0.0, math.pi, 0.0, False),
+        (math.pi, 0.0, 0.0, True),
+        (math.pi / 2.0, -math.pi / 2.0, 0.0, False),
+        (-math.pi / 2.0, math.pi / 2.0, 0.0, False),
+    ),
+)
+def test_direction_minimizes_rotation_and_resolves_ties(
+    start_yaw, target_yaw, path_heading, expected,
+):
+    for offset in (-2.0 * math.pi, -0.3, 0.0, math.pi, 2.0 * math.pi):
+        assert choose_reverse_motion(
+            start_yaw + offset, target_yaw + offset, path_heading + offset, 0.042,
+        ) is expected
+
+
+@pytest.mark.parametrize(
+    ("reverse_saving", "expected"),
+    ((-0.2, False), (0.02, False), (0.125, False), (0.126, True)),
+)
+def test_direction_uses_entry_rotation_inside_the_total_rotation_tie_band(
+    reverse_saving, expected,
+):
+    # Forward needs less entry rotation, but reverse can save total rotation.
+    assert choose_reverse_motion(
+        0.5, math.pi - 0.5 + reverse_saving / 2.0, 0.0, 0.0625,
+    ) is expected
+
+
+def test_direction_near_opposite_endpoint_yaws_is_stable_under_pose_perturbations():
+    for dx, dy, dyaw in itertools.product(
+        (-0.01, 0.0, 0.01), (-0.01, 0.0, 0.01), (-0.042, 0.0, 0.042),
+    ):
+        heading = math.atan2(-1.010 - (-1.944 + dy), 0.048 - (-0.042 + dx))
+        assert choose_reverse_motion(-3.126 + dyaw, 0.0, heading, 0.042) is True
+
+
+@pytest.mark.parametrize("value", (math.nan, math.inf, -math.inf))
+@pytest.mark.parametrize("index", range(4))
+def test_direction_rejects_nonfinite_inputs(value, index):
+    values = [0.0, 0.0, 0.0, 0.042]
+    values[index] = value
+    with pytest.raises(ValueError):
+        choose_reverse_motion(*values)
+
+
+@pytest.mark.parametrize("yaw_tolerance", (0.0, -0.01))
+def test_direction_rejects_nonpositive_yaw_tolerance(yaw_tolerance):
+    with pytest.raises(ValueError):
+        choose_reverse_motion(0.0, 0.0, 0.0, yaw_tolerance)
 
 
 def test_axis_segments_choose_current_heading_first():

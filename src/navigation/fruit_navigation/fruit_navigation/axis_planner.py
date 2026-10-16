@@ -112,6 +112,29 @@ def normalize_angle(angle: float) -> float:
     return normalized
 
 
+def choose_reverse_motion(
+    start_yaw: float,
+    target_yaw: float,
+    path_heading: float,
+    yaw_tolerance: float,
+) -> bool:
+    """Minimize total rotation, preferring less entry rotation for near ties."""
+    if not all(math.isfinite(value) for value in (
+        start_yaw, target_yaw, path_heading, yaw_tolerance,
+    )) or yaw_tolerance <= 0.0:
+        raise ValueError("angles must be finite and yaw_tolerance must be positive")
+    reverse_heading = normalize_angle(path_heading + math.pi)
+    forward_turn = abs(normalize_angle(path_heading - start_yaw))
+    reverse_turn = abs(normalize_angle(reverse_heading - start_yaw))
+    forward_cost = forward_turn + abs(normalize_angle(target_yaw - path_heading))
+    reverse_cost = reverse_turn + abs(normalize_angle(target_yaw - reverse_heading))
+    # Both endpoint rotations stop within yaw_tolerance. Ignore smaller savings.
+    if abs(forward_cost - reverse_cost) <= 2.0 * yaw_tolerance:
+        # Resolve exact ties towards forward, including angle-wrap roundoff.
+        return reverse_turn + 1e-12 < forward_turn
+    return reverse_cost < forward_cost
+
+
 def yaw_from_quaternion(x: float, y: float, z: float, w: float) -> float:
     """Return planar yaw from a quaternion."""
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
