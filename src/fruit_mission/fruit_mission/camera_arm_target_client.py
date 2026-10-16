@@ -314,14 +314,17 @@ class CameraArmTargetClient(Node):
             return 1
         self.get_logger().info(f'Confirmed perception zone: {zone}')
 
-        # 4. Move arm to home preset first
-        self.get_logger().info('Moving arm to home preset...')
-        completed, reason = self._camera_planner.execute_preset('home', self.wait_until)
-        if not completed:
-            self.get_logger().error(f'执行初始预设 home 失败: {reason}')
-            self.safe_recover_home()
-            return 1
-        self.get_logger().info('Arm reached home position')
+        # 4. Move arm to home preset first (Zone D skips initial home)
+        if zone != 'D':
+            self.get_logger().info('Moving arm to home preset...')
+            completed, reason = self._camera_planner.execute_preset('home', self.wait_until)
+            if not completed:
+                self.get_logger().error(f'执行初始预设 home 失败: {reason}')
+                self.safe_recover_home()
+                return 1
+            self.get_logger().info('Arm reached home position')
+        else:
+            self.get_logger().info('Zone D: 跳过初始 home 预设，直接从当前位姿执行观察预设')
 
         # 5. Move arm to look preset
         self.get_logger().info(f'Moving arm to {look_preset}...')
