@@ -302,6 +302,46 @@ def load_file_catalog(config: EditorConfig) -> Dict[str, EditorFile]:
     }
 
 
+def _backgrounds_dir(config: EditorConfig) -> Path:
+    return config.waypoint_file.parent / "backgrounds"
+
+
+def _detect_image_ext(data: bytes) -> str | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
+def validate_background_config(payload: Mapping[str, Any]) -> dict:
+    """Validate background image transform parameters in odom frame."""
+    if not isinstance(payload, Mapping):
+        raise ValueError("背景配置必须是对象")
+    return {
+        "center_x": _finite_number(payload.get("center_x", 0.0), "center_x"),
+        "center_y": _finite_number(payload.get("center_y", 0.0), "center_y"),
+        "meters_per_pixel": _strict_positive(
+            payload.get("meters_per_pixel", 0.01), "meters_per_pixel", 1000.0
+        ),
+        "rotation_deg": _finite_number(
+            payload.get("rotation_deg", 0.0), "rotation_deg"
+        ),
+        "opacity": max(
+            0.0,
+            min(1.0, _finite_number(payload.get("opacity", 0.5), "opacity")),
+        ),
+        "visible": _strict_bool(payload.get("visible", True), "visible"),
+        "pivot_u": _finite_number(payload.get("pivot_u", 0.0), "pivot_u"),
+        "pivot_v": _finite_number(payload.get("pivot_v", 0.0), "pivot_v"),
+        "width": max(1, int(_finite_number(payload.get("width", 100), "width"))),
+        "height": max(1, int(_finite_number(payload.get("height", 100), "height"))),
+        "image_file": str(payload.get("image_file", "")).strip(),
+    }
+
+
 def _default_image_settings() -> dict:
     return copy.deepcopy(DEFAULT_IMAGE_SETTINGS)
 
@@ -662,6 +702,76 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                     )
                 self._send_json(HTTPStatus.OK, {"files": files})
                 return
+            if parsed.path == "/api/background":
+                editor_file = self._catalog_file(query)
+                if not editor_file.formal:
+                    raise RequestError(
+                        HTTPStatus.BAD_REQUEST, "仅正式航点预设支持背景图"
+                    )
+                bg_dir = _backgrounds_dir(self.server.editor_config)
+                config_path = bg_dir / f"{editor_file.file_id}.json"
+                if not config_path.is_file():
+                    self._send_json(
+                        HTTPStatus.OK, {"has_image": False, "config": None}
+                    )
+                    return
+                try:
+                    with config_path.open(encoding="utf-8") as stream:
+                        saved_config = json.load(stream)
+                    validated = validate_background_config(saved_config)
+                except Exception:
+                    self._send_json(
+                        HTTPStatus.OK, {"has_image": False, "config": None}
+                    )
+                    return
+                image_file = bg_dir / validated["image_file"]
+                if not image_file.is_file():
+                    self._send_json(
+                        HTTPStatus.OK, {"has_image": False, "config": None}
+                    )
+                    return
+                mtime = int(image_file.stat().st_mtime)
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "has_image": True,
+                        "image_url": (
+                            f"/api/background/image?id={editor_file.file_id}&v={mtime}"
+                        ),
+                        "config": validated,
+                    },
+                )
+                return
+            if parsed.path == "/api/background/image":
+                editor_file = self._catalog_file(query)
+                if not editor_file.formal:
+                    raise RequestError(
+                        HTTPStatus.BAD_REQUEST, "仅正式航点预设支持背景图"
+                    )
+                bg_dir = _backgrounds_dir(self.server.editor_config)
+                config_path = bg_dir / f"{editor_file.file_id}.json"
+                image_path = None
+                if config_path.is_file():
+                    try:
+                        with config_path.open(encoding="utf-8") as stream:
+                            candidate_name = str(
+                                json.load(stream).get("image_file", "")
+                            ).strip()
+                            candidate = bg_dir / candidate_name
+                            if candidate.is_file():
+                                image_path = candidate
+                    except Exception:
+                        pass
+                if image_path is None:
+                    for ext in (".png", ".jpg", ".jpeg", ".webp"):
+                        candidate = bg_dir / f"{editor_file.file_id}{ext}"
+                        if candidate.is_file():
+                            image_path = candidate
+                            break
+                if image_path is None or not image_path.is_file():
+                    raise RequestError(HTTPStatus.NOT_FOUND, "背景图片不存在")
+                self._send_file(image_path)
+                return
             if parsed.path == "/api/document":
                 editor_file = self._catalog_file(query)
                 document, points, version = load_waypoint_snapshot(editor_file)
@@ -744,6 +854,31 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+            if parsed.path == "/api/background/config":
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                editor_file = self._catalog_file(query)
+                if not editor_file.formal:
+                    raise RequestError(
+                        HTTPStatus.BAD_REQUEST, "仅正式航点预设支持背景图"
+                    )
+                payload = self._read_json_body()
+                validated = validate_background_config(payload)
+                bg_dir = _backgrounds_dir(self.server.editor_config)
+                bg_dir.mkdir(parents=True, exist_ok=True)
+                config_path = bg_dir / f"{editor_file.file_id}.json"
+                _atomic_save_json(
+                    config_path,
+                    validated,
+                    self.server.editor_config.backup_dir / "backgrounds",
+                )
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "saved": True,
+                        "config": validated,
+                    },
+                )
+                return
             if parsed.path != "/api/document":
                 raise RequestError(HTTPStatus.NOT_FOUND, "接口不存在")
             payload = self._read_json_body()
@@ -806,6 +941,52 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
                 result = calculate(self._read_json_body(), parsed.path.endswith('/preview'))
                 self._send_json(HTTPStatus.OK, result)
                 return
+            if parsed.path == "/api/background/image":
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                editor_file = self._catalog_file(query)
+                if not editor_file.formal:
+                    raise RequestError(
+                        HTTPStatus.BAD_REQUEST, "仅正式航点预设支持背景图"
+                    )
+                raw_length = self.headers.get("Content-Length")
+                if raw_length is None:
+                    raise RequestError(HTTPStatus.LENGTH_REQUIRED, "缺少 Content-Length")
+                try:
+                    length = int(raw_length)
+                except ValueError as error:
+                    raise RequestError(
+                        HTTPStatus.BAD_REQUEST, "Content-Length 无效"
+                    ) from error
+                max_image_bytes = 20 * 1024 * 1024
+                if length <= 0 or length > max_image_bytes:
+                    raise RequestError(
+                        HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                        "背景图片大小必须在 1 字节至 20 MiB 之间",
+                    )
+                data = self.rfile.read(length)
+                ext = _detect_image_ext(data)
+                if ext is None:
+                    raise RequestError(
+                        HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                        "仅支持 PNG、JPEG 或 WebP 图片格式",
+                    )
+                bg_dir = _backgrounds_dir(self.server.editor_config)
+                bg_dir.mkdir(parents=True, exist_ok=True)
+                for old_ext in (".png", ".jpg", ".jpeg", ".webp"):
+                    old_file = bg_dir / f"{editor_file.file_id}{old_ext}"
+                    if old_file.is_file() and old_ext != ext:
+                        old_file.unlink(missing_ok=True)
+                target_file = bg_dir / f"{editor_file.file_id}{ext}"
+                target_file.write_bytes(data)
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "uploaded": True,
+                        "image_file": target_file.name,
+                        "size": len(data),
+                    },
+                )
+                return
             if parsed.path != "/api/image-settings/defaults":
                 raise RequestError(HTTPStatus.NOT_FOUND, "接口不存在")
             payload = self._read_json_body()
@@ -839,9 +1020,38 @@ class WaypointEditorRequestHandler(BaseHTTPRequestHandler):
             )
 
     def do_DELETE(self) -> None:  # noqa: N802
-        self._send_error(
-            RequestError(HTTPStatus.METHOD_NOT_ALLOWED, "不支持该请求方法")
-        )
+        parsed = urlparse(self.path)
+        try:
+            self._check_same_origin()
+            if parsed.path == "/api/background":
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                editor_file = self._catalog_file(query)
+                if not editor_file.formal:
+                    raise RequestError(
+                        HTTPStatus.BAD_REQUEST, "仅正式航点预设支持背景图"
+                    )
+                bg_dir = _backgrounds_dir(self.server.editor_config)
+                config_path = bg_dir / f"{editor_file.file_id}.json"
+                if config_path.is_file():
+                    config_path.unlink(missing_ok=True)
+                for ext in (".png", ".jpg", ".jpeg", ".webp"):
+                    img_file = bg_dir / f"{editor_file.file_id}{ext}"
+                    if img_file.is_file():
+                        img_file.unlink(missing_ok=True)
+                self._send_json(HTTPStatus.OK, {"deleted": True})
+                return
+            self._send_error(
+                RequestError(HTTPStatus.METHOD_NOT_ALLOWED, "不支持该请求方法")
+            )
+        except RequestError as error:
+            self._send_error(error)
+        except Exception:
+            logging.exception("Unhandled RobViz web DELETE error")
+            self._send_error(
+                RequestError(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, "服务器内部错误"
+                )
+            )
 
     def log_message(self, message: str, *args: Any) -> None:
         logging.info("%s - %s", self.address_string(), message % args)

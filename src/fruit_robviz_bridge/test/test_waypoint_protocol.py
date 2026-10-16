@@ -51,18 +51,32 @@ def editor(tmp_path):
         thread.join()
 
 
-def request(base, path, payload=None, origin=None):
+def request(base, path, payload=None, origin=None, method=None):
     headers = {"Content-Type": "application/json"}
     if origin:
         headers["Origin"] = origin
+    if method is None:
+        method = "PUT" if payload is not None else "GET"
     req = Request(base + path, headers=headers,
                   data=json.dumps(payload).encode() if payload is not None else None,
-                  method="PUT" if payload is not None else "GET")
+                  method=method)
     try:
         with urlopen(req, timeout=3) as response:
             return response.status, json.load(response)
     except HTTPError as error:
         return error.code, json.load(error)
+
+
+def request_binary(base, path, data, content_type="image/png", method="POST", origin=None):
+    headers = {"Content-Type": content_type}
+    if origin:
+        headers["Origin"] = origin
+    req = Request(base + path, headers=headers, data=data, method=method)
+    try:
+        with urlopen(req, timeout=3) as response:
+            return response.status, response.read()
+    except HTTPError as error:
+        return error.code, error.read()
 
 
 def test_catalog_and_partial_document(editor):
@@ -135,3 +149,70 @@ def test_template_save_leaves_old_template_unchanged(editor):
     _, saved = request(base, "/api/document?id=template_acb")
     assert saved["points"][-1]["name"] == "new_stop"
     assert (root / "template.yaml").read_bytes() == before
+
+
+def test_background_endpoints_lifecycle(editor):
+    base, root = editor
+    # Initial: no background
+    status, res = request(base, "/api/background?id=odom_acbd")
+    assert status == 200
+    assert not res["has_image"]
+
+    # Reject non-formal file
+    status, err = request(base, "/api/background?id=template")
+    assert status == 400
+
+    # Upload 1x1 valid PNG
+    tiny_png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01"
+        b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    status, upload_res = request_binary(base, "/api/background/image?id=odom_acbd", tiny_png)
+    assert status == 200
+    upload_json = json.loads(upload_res.decode())
+    assert upload_json["uploaded"]
+    assert upload_json["image_file"] == "odom_acbd.png"
+
+    # Save config
+    bg_config = {
+        "center_x": 1.25,
+        "center_y": -0.5,
+        "meters_per_pixel": 0.02,
+        "rotation_deg": 15.0,
+        "opacity": 0.75,
+        "visible": True,
+        "pivot_u": 0.5,
+        "pivot_v": 0.5,
+        "width": 1,
+        "height": 1,
+        "image_file": "odom_acbd.png",
+    }
+    status, save_res = request(base, "/api/background/config?id=odom_acbd", bg_config)
+    assert status == 200
+    assert save_res["saved"]
+    assert save_res["config"]["center_x"] == 1.25
+
+    # Check GET
+    status, res = request(base, "/api/background?id=odom_acbd")
+    assert status == 200
+    assert res["has_image"]
+    assert res["config"]["center_x"] == 1.25
+    assert "/api/background/image?id=odom_acbd" in res["image_url"]
+
+    # Fetch image binary
+    status, img_data = request_binary(
+        base, "/api/background/image?id=odom_acbd", None, method="GET"
+    )
+    assert status == 200
+    assert img_data == tiny_png
+
+    # Delete background
+    status, del_res = request(base, "/api/background?id=odom_acbd", method="DELETE")
+    assert status == 200
+    assert del_res["deleted"]
+
+    # Check GET after delete
+    status, res = request(base, "/api/background?id=odom_acbd")
+    assert status == 200
+    assert not res["has_image"]
