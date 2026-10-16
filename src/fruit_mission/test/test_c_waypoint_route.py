@@ -13,6 +13,7 @@ from fruit_mission.waypoint_route import (
     OTHER_GOAL_CHAIN,
     MissionWaypointRoute,
     WaypointPose,
+    c_stop_pose_matches,
     c_top_transit_end,
 )
 
@@ -39,6 +40,37 @@ def rectangle_route(length=4.0, width=1.0):
         for order, (name, x, y, yaw) in enumerate(coordinates)
     ]
     return MissionWaypointRoute(points, required_flow="c")
+
+
+class TestCStopPose(unittest.TestCase):
+    """Check same-stop position radius, yaw wrapping, and invalid TF coordinates."""
+
+    def setUp(self):
+        self.target = WaypointPose('stop', 'goal', 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+
+    def test_small_drift_and_position_boundary(self):
+        for x, y in ((0.0, 0.0), (-0.016, 0.008), (0.02, 0.02), (0.03, 0.0)):
+            with self.subTest(x=x, y=y):
+                self.assertTrue(c_stop_pose_matches((x, y, 0.0), self.target, 0.0))
+        for x, y in ((0.030001, 0.0), (0.025, 0.025), (0.0, -0.04)):
+            with self.subTest(x=x, y=y):
+                self.assertFalse(c_stop_pose_matches((x, y, 0.0), self.target, 0.0))
+
+    def test_yaw_limit_and_wraparound(self):
+        for yaw in (-0.042, 0.042):
+            self.assertTrue(c_stop_pose_matches((0.0, 0.0, yaw), self.target, 0.0))
+        for yaw in (-0.042001, 0.042001, math.pi):
+            self.assertFalse(c_stop_pose_matches((0.0, 0.0, yaw), self.target, 0.0))
+        self.assertTrue(c_stop_pose_matches(
+            (0.0, 0.0, -math.pi + 0.01), self.target, math.pi - 0.01))
+
+    def test_nonfinite_pose_is_rejected(self):
+        for value in (math.nan, math.inf, -math.inf):
+            for coordinate in range(3):
+                current = [0.0, 0.0, 0.0]
+                current[coordinate] = value
+                self.assertFalse(c_stop_pose_matches(tuple(current), self.target, 0.0))
+            self.assertFalse(c_stop_pose_matches((0.0, 0.0, 0.0), self.target, value))
 
 
 class TestCWaypointRoute(unittest.TestCase):

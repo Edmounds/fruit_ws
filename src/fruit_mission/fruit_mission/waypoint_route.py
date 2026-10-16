@@ -106,6 +106,18 @@ class CNavigationPlan:
     rejoin_point: Optional[tuple[float, float, float]]
 
 
+def c_stop_pose_matches(
+    current: tuple[float, float, float], target: WaypointPose, target_yaw: float,
+) -> bool:
+    """Check the operator-approved 3 cm and 0.042 rad same-stop limits."""
+    x, y, yaw = current
+    return (
+        all(math.isfinite(value) for value in (x, y, yaw, target.x, target.y, target_yaw))
+        and math.hypot(x - target.x, y - target.y) <= 0.03
+        and abs(_normalize_angle(yaw - target_yaw)) <= 0.042
+    )
+
+
 class MissionWaypointRoute:
     """Mission route helper built from the configured waypoint YAML."""
 

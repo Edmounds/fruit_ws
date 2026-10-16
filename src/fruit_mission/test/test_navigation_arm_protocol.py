@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 
+from geometry_msgs.msg import TransformStamped
 from nav2_msgs.action import FollowWaypoints
 import rclpy
 from rclpy.action import ActionServer
@@ -14,6 +15,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.signals import SignalHandlerOptions
 from std_srvs.srv import Trigger
+from tf2_msgs.msg import TFMessage
 import yaml
 
 from fruit_interfaces.msg import ArmStatus
@@ -21,6 +23,7 @@ from fruit_interfaces.srv import ExecuteArmPreset
 from fruit_mission.actions import navigate
 from fruit_mission.config import load_config
 from fruit_mission.mission_context import MissionContext
+from fruit_mission.waypoint_route import C_GOAL_NAMES
 
 
 class NavigationArmProtocolTest(unittest.TestCase):
@@ -160,6 +163,64 @@ class NavigationArmProtocolTest(unittest.TestCase):
         self.assertFalse(navigate(self.ctx, [self.goal], side='left'))
         self.assertEqual(self.goals, goals_before)
         self.assertEqual(self.presets, ['right_look_b', 'right_to_home_b'])
+
+    def test_c_same_stop_reuses_only_successful_arrival_with_valid_pose(self):
+        self.assertTrue(self.ctx.report_current_area('C'))
+        target = self.ctx.route.pose(C_GOAL_NAMES[0])
+        positions = [int(value) for value in target.name.split('_')[1:]]
+        transform = TransformStamped()
+        transform.header.frame_id = self.ctx.config['map_frame']
+        transform.child_frame_id = self.ctx.config['base_frame']
+        transform.transform.translation.x = target.x
+        transform.transform.translation.y = target.y
+        transform.transform.rotation.z = target.qz
+        transform.transform.rotation.w = target.qw
+        publisher = self.peer.create_publisher(TFMessage, '/tf', 10)
+
+        def publish_pose():
+            transform.header.stamp = self.peer.get_clock().now().to_msg()
+            publisher.publish(TFMessage(transforms=[transform]))
+
+        def pose_received():
+            current = self.ctx._lookup_map_pose()
+            return current is not None and math.isclose(
+                current[0], transform.transform.translation.x, abs_tol=1e-9)
+
+        self.peer.create_timer(0.02, publish_pose)
+        self.navigation_succeeds = True
+        first = self.ctx.navigate_c_position(positions[0])
+        self.assertEqual(first['status'], 'succeeded')
+        self.assertEqual(first['goal_name'], target.name)
+        self.assertTrue(self.ctx.finish_observation(first['camera_side']).completed)
+        self.assertEqual(self.goals, 1)
+
+        transform.transform.translation.x = target.x + 0.016
+        transform.transform.translation.y = target.y + 0.008
+        self.assertTrue(self.ctx._wait_until(pose_received, 2.0))
+        second = self.ctx.navigate_c_position(positions[1])
+        self.assertEqual(second['status'], 'succeeded')
+        self.assertNotEqual(second['camera_side'], first['camera_side'])
+        self.assertTrue(self.ctx.finish_observation(second['camera_side']).completed)
+        self.assertEqual(self.goals, 1)
+
+        # Leaving the approved radius must submit navigation, not reuse the cache.
+        transform.transform.translation.x = target.x + 0.04
+        self.assertTrue(self.ctx._wait_until(pose_received, 2.0))
+        self.navigation_succeeds = False
+        failed = self.ctx.navigate_c_position(positions[0])
+        self.assertEqual(failed['status'], 'navigation_failed')
+        self.assertTrue(self.ctx.finish_observation(failed['camera_side']).completed)
+        self.assertEqual(self.goals, 2)
+
+        # A failed action must not authorize reuse even after TF returns to the point.
+        transform.transform.translation.x = target.x
+        transform.transform.translation.y = target.y
+        self.assertTrue(self.ctx._wait_until(pose_received, 2.0))
+        self.navigation_succeeds = True
+        recovered = self.ctx.navigate_c_position(positions[1])
+        self.assertEqual(recovered['status'], 'succeeded')
+        self.assertTrue(self.ctx.finish_observation(recovered['camera_side']).completed)
+        self.assertEqual(self.goals, 3)
 
 
 if __name__ == '__main__':

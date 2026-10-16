@@ -1,5 +1,7 @@
 """Repeated competition procedures; ROS dispatch and safety stay in MissionContext."""
 
+from action_msgs.msg import GoalStatus
+
 from fruit_mission.camera_target_planner_client import store_preset_name
 from fruit_mission.decisions import PickExecutionResult
 from fruit_mission.decisions import expected_ripe_type
@@ -8,6 +10,7 @@ from fruit_mission.decisions import format_c_announcement
 from fruit_mission.decisions import format_b_tree_name
 from fruit_mission.decisions import format_position_name
 from fruit_mission.decisions import spoken_model_type
+from fruit_mission.waypoint_route import c_stop_pose_matches
 from fruit_mission.waypoint_route import c_top_transit_end
 from fruit_qr_planner.planner import build_b_plan, build_c_plan
 
@@ -445,6 +448,18 @@ def pick_d_tree(ctx, *, side, waypoint=None, max_targets=3):
 
 def navigate_c_route(ctx, names, yaws, *, side=None):
     """Run shenzhi through the top connector, then Look along the remaining route."""
+    previous = ctx._navigation_result
+    if (side is not None and len(names) == 1 and len(yaws) == 1
+            and names[0] == ctx._current_waypoint_name and ctx._navigation_stopped
+            and previous is not None and previous.done() and not previous.cancelled()
+            and previous.exception() is None
+            and previous.result().status == GoalStatus.STATUS_SUCCEEDED
+            and not previous.result().result.missed_waypoints):
+        current = ctx._lookup_map_pose()
+        if current is not None and c_stop_pose_matches(current, ctx.route.pose(names[0]), yaws[0]):
+            ctx.node.get_logger().info(f'C区复用当前停靠点 {names[0]}，跳过重复导航，切换 {side} Look')
+            ctx.start_observation(side)
+            return True
     transit_end = c_top_transit_end(names)
     if transit_end:
         ctx.start_arm_preset('shenzhi')
