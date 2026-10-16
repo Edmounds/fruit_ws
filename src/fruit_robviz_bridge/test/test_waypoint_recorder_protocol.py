@@ -21,7 +21,12 @@ from fruit_robviz_bridge.waypoint_recorder_node import latched_qos, WaypointReco
 FILES = {
     "odom": ("odom_waypoints.yaml", "template.yaml", "A1", "waypoint"),
     "odom_acb": ("odom_waypoints_acb.yaml", "template_acb.yaml", "A_left1", "goal"),
+    "odom_acbd": ("odom_waypoints_acbd.yaml", "template_acbd.yaml", "A_left1", "goal"),
 }
+
+
+def another_formal_file(file_id):
+    return next(candidate for candidate in FILES if candidate != file_id)
 
 
 @pytest.fixture(params=FILES)
@@ -124,7 +129,7 @@ def recorder(request, tmp_path):
 def test_switch_and_save_use_matching_file_template_and_parameters(recorder):
     root, initial_id, initial, command, service, file_parameters = recorder
     assert initial["file_id"] == initial_id
-    other_id = "odom_acb" if initial_id == "odom" else "odom"
+    other_id = another_formal_file(initial_id)
     old_bytes = (root / FILES[initial_id][0]).read_bytes()
     state = command(command="load_waypoint_file", file_id=other_id, confirm_discard=True)
     point_file, template_file, anchor, point_type = FILES[other_id]
@@ -148,7 +153,7 @@ def test_switch_and_save_use_matching_file_template_and_parameters(recorder):
 
 def test_discard_invalid_load_and_version_conflict_preserve_draft(recorder):
     root, initial_id, initial, command, service, file_parameters = recorder
-    other_id = "odom_acb" if initial_id == "odom" else "odom"
+    other_id = another_formal_file(initial_id)
     parameters_before = file_parameters()
     response, state = service("clear")
     assert response.success and state["dirty"]
@@ -193,7 +198,7 @@ def test_reload_refreshes_template_and_automatic_names(recorder):
 
 def test_derived_file_paths_cannot_escape_source_root(recorder):
     root, initial_id, initial, command, _, _ = recorder
-    other_id = "odom_acb" if initial_id == "odom" else "odom"
+    other_id = another_formal_file(initial_id)
     other_file = root / FILES[other_id][0]
     outside = root.parent / f"outside_{uuid.uuid4().hex}.yaml"
     try:

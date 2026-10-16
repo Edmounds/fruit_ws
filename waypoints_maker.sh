@@ -18,7 +18,7 @@ stopped=0
 
 usage() {
   cat <<'EOF'
-Usage: ./waypoints_maker.sh [--route abc|acb] [--debug]
+Usage: ./waypoints_maker.sh [--route abc|acb|acbd] [--debug]
 
 Start Point-LIO odometry navigation, joystick teleop, and the waypoint recorder
 in the startup-relative odom frame. Use RobViz at http://127.0.0.1:8000/ for editing.
@@ -119,6 +119,10 @@ case "$ROUTE" in
   acb)
     WAYPOINT_FILE="$WAYPOINT_DIR/odom_waypoints_acb.yaml"
     TEMPLATE_FILE="$WAYPOINT_DIR/template_acb.yaml"
+    ;;
+  acbd)
+    WAYPOINT_FILE="$WAYPOINT_DIR/odom_waypoints_acbd.yaml"
+    TEMPLATE_FILE="$WAYPOINT_DIR/template_acbd.yaml"
     ;;
   *) usage >&2; exit 2 ;;
 esac

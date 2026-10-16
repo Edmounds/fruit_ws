@@ -21,9 +21,14 @@ def editor(tmp_path):
         "name": "stop", "type": "goal", "position": {"x": 2.0, "y": 3.0, "z": 0.0},
         "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}, "yaw": 0.0,
     }]}
-    for name in ("template.yaml", "template_acb.yaml"):
+    for name in ("template.yaml", "template_acb.yaml", "template_acbd.yaml"):
         (tmp_path / name).write_text(yaml.safe_dump(template), encoding="utf-8")
-    for name in ("odom_waypoints.yaml", "odom_waypoints_acb.yaml", "debug.yaml"):
+    for name in (
+        "odom_waypoints.yaml",
+        "odom_waypoints_acb.yaml",
+        "odom_waypoints_acbd.yaml",
+        "debug.yaml",
+    ):
         (tmp_path / name).write_text(yaml.safe_dump(points), encoding="utf-8")
     config_file = tmp_path / "web.yaml"
     config_file.write_text(yaml.safe_dump({
@@ -67,12 +72,16 @@ def test_catalog_and_partial_document(editor):
     files = {item["id"]: item for item in catalog["files"]}
     assert files["odom_acb"]["file_name"] == "odom_waypoints_acb.yaml"
     assert files["template_acb"]["mode"] == "template"
+    assert files["odom_acbd"]["file_name"] == "odom_waypoints_acbd.yaml"
+    assert files["template_acbd"]["mode"] == "template"
     status, document = request(base, "/api/document?id=odom_acb")
     assert status == 200
     assert document["formal"]
     assert len(document["points"]) == 1
     assert document["template"][0]["dx"] is None
     assert request(base, "/api/document?id=template_acb")[0] == 200
+    assert request(base, "/api/document?id=odom_acbd")[0] == 200
+    assert request(base, "/api/document?id=template_acbd")[0] == 200
     assert request(base, "/api/document?id=../../unknown.yaml")[0] == 404
 
 
@@ -89,6 +98,18 @@ def test_save_and_version_conflict_leave_old_file_unchanged(editor):
     assert request(base, "/api/document", payload)[0] == 409
     assert (root / "odom_waypoints.yaml").read_bytes() == old
     assert request(base, "/api/document?id=odom_acb")[1]["points"][0]["x"] == 4.0
+
+
+def test_acbd_document_can_be_saved(editor):
+    base, root = editor
+    _, document = request(base, "/api/document?id=odom_acbd")
+    payload = {key: document[key] for key in ("id", "version", "points")}
+    payload["points"][0]["x"] = 5.0
+    status, saved = request(base, "/api/document", payload)
+    assert status == 200
+    assert saved["version"] != document["version"]
+    assert (root / "backups" / "acbd").is_dir()
+    assert request(base, "/api/document?id=odom_acbd")[1]["points"][0]["x"] == 5.0
 
 
 def test_write_validation_preserves_document(editor):

@@ -279,6 +279,26 @@ def load_file_catalog(config: EditorConfig) -> Dict[str, EditorFile]:
             reference_file=config.template_file.with_name("template_acb.yaml"),
             formal=False,
         ),
+        "odom_acbd": EditorFile(
+            file_id="odom_acbd",
+            profile="acbd",
+            mode="odometry",
+            frame_id="odom",
+            waypoint_file=config.waypoint_file.with_name("odom_waypoints_acbd.yaml"),
+            template_file=config.template_file.with_name("template_acbd.yaml"),
+            reference_file=config.waypoint_file.with_name("odom_waypoints_acbd.yaml"),
+            formal=True,
+        ),
+        "template_acbd": EditorFile(
+            file_id="template_acbd",
+            profile="acbd",
+            mode="template",
+            frame_id="",
+            waypoint_file=config.template_file.with_name("template_acbd.yaml"),
+            template_file=config.template_file.with_name("template_acbd.yaml"),
+            reference_file=config.template_file.with_name("template_acbd.yaml"),
+            formal=False,
+        ),
     }
 
 

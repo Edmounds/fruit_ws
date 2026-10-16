@@ -163,14 +163,17 @@ class WaypointRecorderNode(Node):
         if not backup_dir_value:
             raise ValueError("backup_dir must be configured")
         backup_dir = Path(backup_dir_value).expanduser().resolve()
-        initial_file_id = "odom_acb" if waypoint_path.name == "odom_waypoints_acb.yaml" else "odom"
+        initial_file_id = {
+            "odom_waypoints_acb.yaml": "odom_acb",
+            "odom_waypoints_acbd.yaml": "odom_acbd",
+        }.get(waypoint_path.name, "odom")
         abc_waypoint_path = (
             waypoint_path.with_name("odom_waypoints.yaml")
-            if initial_file_id == "odom_acb" else waypoint_path
+            if initial_file_id in ("odom_acb", "odom_acbd") else waypoint_path
         )
         abc_template_path = (
             template_path.with_name("template.yaml")
-            if initial_file_id == "odom_acb" else template_path
+            if initial_file_id in ("odom_acb", "odom_acbd") else template_path
         )
         self._file_catalog = {
             "odom": EditorFile(
@@ -201,6 +204,16 @@ class WaypointRecorderNode(Node):
                 waypoint_file=waypoint_path.with_name("odom_waypoints_acb.yaml"),
                 template_file=template_path.with_name("template_acb.yaml"),
                 reference_file=waypoint_path.with_name("odom_waypoints_acb.yaml"),
+                formal=True,
+            ),
+            "odom_acbd": EditorFile(
+                file_id="odom_acbd",
+                profile="acbd",
+                mode="odometry",
+                frame_id=self._frame_id,
+                waypoint_file=waypoint_path.with_name("odom_waypoints_acbd.yaml"),
+                template_file=template_path.with_name("template_acbd.yaml"),
+                reference_file=waypoint_path.with_name("odom_waypoints_acbd.yaml"),
                 formal=True,
             ),
         }
@@ -819,7 +832,7 @@ class WaypointRecorderNode(Node):
             self._confirm_discard(payload)
             file_id = payload.get("file_id", payload.get("id"))
             if not isinstance(file_id, str) or file_id not in self._file_catalog:
-                raise ValueError("file_id must be odom, odom_acb or debug")
+                raise ValueError("file_id must be odom, odom_acb, odom_acbd or debug")
             editor_file = self._file_catalog[file_id]
             candidate, version, template_types = self._load_store_snapshot(editor_file)
             auto_name_file = str(self.get_parameter("auto_name_file").value)

@@ -137,16 +137,18 @@ ros2 launch fruit_robviz_bridge fruit_robviz_bridge.launch.py
 航点录制脚本 (`waypoints_maker.sh`) 与导航脚本 (`start_navigation.sh --recorder`)
 也会自动检测并复用已运行的 `fruit_waypoint_recorder` 节点。
 
-### ABC 与 ACB 录点预设
+### ABC、ACB 与 ACBD 录点预设
 
 `./waypoints_maker.sh --route abc` 使用原文件，且 ABC 仍为默认值。
 `./waypoints_maker.sh --route acb` 同时选择 `odom_waypoints_acb.yaml` 和 `template_acb.yaml`。
+`./waypoints_maker.sh --route acbd` 同时选择 `odom_waypoints_acbd.yaml` 和 `template_acbd.yaml`。
 录点脚本会检查已有录点器的保存文件、模板和自动名称文件。
 文件不匹配或参数读取失败时退出，不静默复用另一套预设。
 启动脚本切换预设前保存数据，停止录点器后重新启动。不必重启 Point-LIO。
 
-网页 Maker 的“文件”下拉框支持 `odom`（ABC）、`odom_acb`（ACB）和 `debug`。
+网页 Maker 的“文件”下拉框支持 `odom`（ABC）、`odom_acb`（ACB）、`odom_acbd`（ACBD）和 `debug`。
 选择 ACB 时，录点器同时切换实际文件、`template_acb.yaml` 和自动名称顺序。
+选择 ACBD 时，录点器同时切换实际文件、`template_acbd.yaml` 和自动名称顺序。
 启动参数已经选择 ACB 时，状态中的文件 ID 为 `odom_acb`。
 正式文件切换后，三个 ROS 文件参数同步反映当前预设。
 录点或导航忙碌时拒绝切换。未保存数据仍需要丢弃确认。
@@ -155,7 +157,7 @@ Maker 显示已录制点数与模板总点数，例如初始 ACB 为 `13/35`。
 模板只在独立航点编辑器中编辑，不能作为 Maker 的实际坐标文件加载。
 更新后先保存并重启旧录点器，再刷新网页。无需启动新的导航目标。
 
-独立航点编辑器通过 `/api/files` 提供 `odom_acb` 和 `template_acb` 两个文件 ID。
+独立航点编辑器通过 `/api/files` 提供 `odom_acb`、`template_acb`、`odom_acbd` 和 `template_acbd` 文件 ID。
 新文件分别位于已配置路点文件和模板文件的同一目录，无需新增配置项。
 保存复用名称、类型校验、版本冲突、备份和原子写入保护。
 ACB 几何参考使用 `A_left1`，原 `A1` 行为不变。
