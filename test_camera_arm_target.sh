@@ -25,14 +25,14 @@ log()
 usage()
 {
   cat <<'EOF'
-Usage: ./test_camera_arm_target.sh --zone A|B|C --left|--right [--debug]
+Usage: ./test_camera_arm_target.sh --zone A|B|C|D --left|--right [--debug]
 
 Test camera and arm coordination.
 Arm returns to the home position first, executes observation and grasp,
 then executes the zone-specific store preset (A/C: <side>_store_<zone>,
-B: <side>_store_b_up / <side>_store_b_down automatically selected by target Base Z)
+B/D: <side>_store_<zone>_up / <side>_store_<zone>_down automatically selected by target Base Z)
 to release the fruit.
-  --zone A|B|C   Competition zone; A/C use vegetable model, B uses fruit model
+  --zone A|B|C|D  Competition zone; A/C use vegetable model, B/D use fruit model
   --left|--right  Arm side; presets are <side>_look_<zone> and <side>_store_<zone>
   --debug         Print detailed logs and start the camera-arm recording profile
 EOF
@@ -43,13 +43,14 @@ parse_arguments()
   while (( $# > 0 )); do
     case "$1" in
       --zone|-z)
-        (( $# >= 2 )) || { log "ERROR: $1 requires A, B or C"; return 2; }
+        (( $# >= 2 )) || { log "ERROR: $1 requires A, B, C or D"; return 2; }
         [[ -z "${ZONE}" ]] || { log "ERROR: zone may only be specified once"; return 2; }
         case "$2" in
           A|a) ZONE=A ;;
           B|b) ZONE=B ;;
           C|c) ZONE=C ;;
-          *) log "ERROR: zone must be A, B or C"; return 2 ;;
+          D|d) ZONE=D ;;
+          *) log "ERROR: zone must be A, B, C or D"; return 2 ;;
         esac
         shift 2
         ;;
@@ -76,7 +77,7 @@ parse_arguments()
     esac
   done
 
-  [[ -n "${ZONE}" ]] || { log "ERROR: --zone A|B|C is required"; return 2; }
+  [[ -n "${ZONE}" ]] || { log "ERROR: --zone A|B|C|D is required"; return 2; }
   [[ -n "${DIRECTION}" ]] || {
     log "ERROR: --left or --right is required"
     return 2

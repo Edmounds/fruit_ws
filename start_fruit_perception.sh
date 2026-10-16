@@ -8,14 +8,14 @@ ZONE=""
 
 usage()
 {
-  printf 'Usage: ./start_fruit_perception.sh --zone A|B|C [--debug] [launch_argument:=value ...]\n'
+  printf 'Usage: ./start_fruit_perception.sh --zone A|B|C|D [--debug] [launch_argument:=value ...]\n'
 }
 
 LAUNCH_ARGS=()
 while (($# > 0)); do
   case "$1" in
     --zone)
-      if (($# < 2)) || [[ -n "$ZONE" ]] || [[ "$2" != A && "$2" != B && "$2" != C ]]; then
+      if (($# < 2)) || [[ -n "$ZONE" ]] || [[ "$2" != A && "$2" != B && "$2" != C && "$2" != D ]]; then
         usage >&2
         exit 2
       fi
@@ -31,7 +31,7 @@ while (($# > 0)); do
       exit 0
       ;;
     zone:=*)
-      printf 'Use --zone A|B|C, not zone:=value\n' >&2
+      printf 'Use --zone A|B|C|D, not zone:=value\n' >&2
       exit 2
       ;;
     *:=*)

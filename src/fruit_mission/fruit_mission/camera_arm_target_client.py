@@ -202,7 +202,7 @@ class CameraArmTargetClient(Node):
                             f'Zone {zone} (vegetable) target locked: '
                             f'x={pt.x:.3f}, y={pt.y:.3f}, z={pt.z:.3f}')
                         return target
-            else:
+            elif zone == 'B':
                 # Model B (fruit)
                 ripe_targets = [
                     t for t in msg.targets
@@ -217,6 +217,24 @@ class CameraArmTargetClient(Node):
                     target.point = best.point
                     self.get_logger().info(
                         f'Model B (fruit) target selected: type={best.type}, '
+                        f'conf={best.confidence:.3f}, '
+                        f'point=({best.point.x:.3f}, {best.point.y:.3f}, {best.point.z:.3f})')
+                    return target
+            elif zone == 'D':
+                # Model D (fruit)
+                ripe_targets = [
+                    t for t in msg.targets
+                    if t.type.endswith('_ripe') and math.isfinite(t.confidence)
+                    and t.has_point and math.isfinite(t.point.x) and math.isfinite(t.point.y)
+                    and math.isfinite(t.point.z) and t.point.z > 0
+                ]
+                if ripe_targets and msg.targets_ready:
+                    best = max(ripe_targets, key=lambda t: t.confidence)
+                    target = PointStamped()
+                    target.header = msg.header
+                    target.point = best.point
+                    self.get_logger().info(
+                        f'Zone D (fruit) target selected: type={best.type}, '
                         f'conf={best.confidence:.3f}, '
                         f'point=({best.point.x:.3f}, {best.point.y:.3f}, {best.point.z:.3f})')
                     return target
@@ -258,10 +276,10 @@ class CameraArmTargetClient(Node):
         return True
 
     def run_sequence(self, zone: str, direction: str) -> int:
-        if zone not in ('A', 'B', 'C') or direction not in ('left', 'right'):
-            raise ValueError('Expected zone A/B/C and direction left/right')
+        if zone not in ('A', 'B', 'C', 'D') or direction not in ('left', 'right'):
+            raise ValueError('Expected zone A/B/C/D and direction left/right')
         look_preset = f'{direction}_look_{zone.lower()}'
-        model_name = 'fruit' if zone == 'B' else 'vegetable'
+        model_name = 'fruit' if zone in ('B', 'D') else 'vegetable'
         self.get_logger().info(
             f'=== Starting Camera-Arm Target Test ===\n'
             f'  Zone: {zone} ({model_name})\n'
@@ -368,6 +386,17 @@ class CameraArmTargetClient(Node):
             self.safe_recover_home()
             return 1
 
+        if zone == 'D':
+            to_home_preset = f'{direction}_to_home_d'
+            self.get_logger().info(f'Moving arm via {to_home_preset}...')
+            completed, reason = self._camera_planner.execute_preset(
+                to_home_preset, self.wait_until)
+            if not completed:
+                self.get_logger().error(
+                    f'过渡预设执行失败 (Failed to execute preset {to_home_preset}): {reason}')
+                self.safe_recover_home()
+                return 1
+
         self.get_logger().info(
             f'Grasp and {store_preset} sequence completed successfully!')
         return 0
@@ -386,8 +415,8 @@ def main(args=None):
                       help='Check if conflicting nodes are absent (serial bridge may exist)')
     parser.add_argument('--debug', action='store_true',
                         help='Enable per-frame detection debug logging')
-    parser.add_argument('--zone', '-z', type=str.upper, choices=('A', 'B', 'C'),
-                        help='Competition zone: A/C use vegetable model, B uses fruit model')
+    parser.add_argument('--zone', '-z', type=str.upper, choices=('A', 'B', 'C', 'D'),
+                        help='Competition zone: A/C use vegetable model, B/D use fruit model')
     direction = parser.add_mutually_exclusive_group()
     direction.add_argument('--left', dest='direction', action='store_const', const='left',
                            help='Use the zone-specific left_look and left_store presets')
@@ -399,7 +428,7 @@ def main(args=None):
         parser.error(f'unrecognized arguments: {" ".join(unknown)}')
     if not options.require_stack_absent:
         if options.zone is None or options.direction is None:
-            parser.error('--zone A|B|C and --left/--right are required')
+            parser.error('--zone A|B|C|D and --left/--right are required')
 
     rclpy.init(args=ros_args)
     node = CameraArmTargetClient(debug=options.debug)

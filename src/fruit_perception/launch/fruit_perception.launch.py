@@ -67,7 +67,7 @@ def generate_launch_description():
     declare_zone = DeclareLaunchArgument(
         'zone',
         default_value=perception_parameters.get('zone', 'A'),
-        choices=['A', 'B', 'C'],
+        choices=['A', 'B', 'C', 'D'],
         description='Initial perception zone; runtime changes use the zone ROS parameter',
     )
     declare_performance_hint = DeclareLaunchArgument(
