@@ -51,7 +51,7 @@ def main(ctx):
     if arrived:
         run_c(ctx, c_plan)
 
-        if ctx.navigate_c_waypoint("C_top_waypoint_2"):
+        if ctx.navigate_c_waypoint("C_top_waypoint_1"):
             ctx.announce_summary(completed=False)
         else:
             ctx.node.get_logger().warning("ACB 汇总航点导航失败，跳过中途汇总")

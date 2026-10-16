@@ -32,7 +32,7 @@ A_left1→4：每点只抓左侧，固定开环
 → A_right4→1：每点只抓右侧，固定闭环
 → to_C_waypoint_1：沿途 shenzhi，用最小转向朝向到点，再原地对齐航点 yaw
 → C_QR：导航到点后执行 qr_scan_c，扫码、播报，按二维码顺序闭环作业
-→ 沿 C 图到 C_top_waypoint_2：播报当前 A+C 累计收获
+→ 沿 C 图到 C_top_waypoint_1：播报当前 A+C 累计收获
 → 沿 C 图到 C_entrance_waypoint_2
 → to_B_lower_waypoint_1：shenzhi 转场，之后确认一次安全 Home
 → 保持 Home 导航到 B1：到点后执行 left_look_b，使用之前保存的 B 计划作业
