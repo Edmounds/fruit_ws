@@ -357,8 +357,10 @@ class RuntimeManager:
             f"source {shlex.quote(str(self.runtime_setup_path))} && "
             f"exec {entry}"
         )
-        output = log_path.open("a", encoding="utf-8")
-        output.write(f"\n--- start {task.task_id} {_now()} ---\n")
+        mode = "w" if script_args is not None else "a"
+        output = log_path.open(mode, encoding="utf-8")
+        prefix = "" if script_args is not None else "\n"
+        output.write(f"{prefix}--- start {task.task_id} {_now()} ---\n")
         output.flush()
         try:
             process = subprocess.Popen(
@@ -498,10 +500,9 @@ class RuntimeManager:
                 if self._tracked_process(task_id) is not None:
                     raise RuntimeConflict(f"脚本 {task_id} 已在运行")
                 log_path = self.log_root / Path(task.log_file).name
-                start = log_path.stat().st_size if log_path.exists() else 0
                 self._launch(task, arguments)
                 run = {
-                    "id": task_id, "run_id": _now(), "start": start,
+                    "id": task_id, "run_id": _now(), "start": 0,
                     "log_path": log_path, "process": self._processes[task_id],
                 }
                 self._script_runs[task_id] = run
@@ -550,7 +551,7 @@ class RuntimeManager:
                     raise RuntimeErrorBase(f"未知脚本: {script_id}", 404)
                 if log_path.exists():
                     current = {
-                        "id": script_id, "run_id": "", "start": 0,
+                        "id": script_id, "run_id": "", "start": log_path.stat().st_size,
                         "log_path": log_path, "exit_code": None,
                     }
         else:
