@@ -42,7 +42,7 @@ parse_arguments()
 {
   while (( $# > 0 )); do
     case "$1" in
-      --zone|-z)
+      --zone|-z|-zone)
         (( $# >= 2 )) || { log "ERROR: $1 requires A, B, C or D"; return 2; }
         [[ -z "${ZONE}" ]] || { log "ERROR: zone may only be specified once"; return 2; }
         case "$2" in
@@ -54,15 +54,19 @@ parse_arguments()
         esac
         shift 2
         ;;
-      --left|--right)
+      --left|-left|--right|-right)
         [[ -z "${DIRECTION}" ]] || {
           log "ERROR: choose exactly one of --left or --right"
           return 2
         }
-        DIRECTION=$1
+        if [[ "$1" == *left* ]]; then
+          DIRECTION="--left"
+        else
+          DIRECTION="--right"
+        fi
         shift
         ;;
-      --debug)
+      --debug|-debug)
         DEBUG=1
         shift
         ;;

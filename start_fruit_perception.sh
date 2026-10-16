@@ -14,7 +14,7 @@ usage()
 LAUNCH_ARGS=()
 while (($# > 0)); do
   case "$1" in
-    --zone)
+    --zone|-z|-zone)
       if (($# < 2)) || [[ -n "$ZONE" ]] || [[ "$2" != A && "$2" != B && "$2" != C && "$2" != D ]]; then
         usage >&2
         exit 2
@@ -22,7 +22,7 @@ while (($# > 0)); do
       ZONE=$2
       shift 2
       ;;
-    --debug)
+    --debug|-debug)
       DEBUG_MODE=1
       shift
       ;;
