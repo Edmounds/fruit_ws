@@ -53,11 +53,11 @@ def navigate(ctx, waypoints, *, side=None, preset=None, yaws=None):
     """Navigate with optional concurrent Look or preset."""
     ctx.telemetry.step('navigate', target=' → '.join(waypoints))
     if (
-        ctx._current_area == "B"
+        ctx._current_area in ("B", "D")
         and (side is not None or ctx._b_observation_side is not None)
         and not (ctx._arm_home_confirmed or ctx._arm_shenzhi_confirmed)
     ):
-        ctx.node.get_logger().warning('B区安全姿态未确认，跳过当前导航和机械臂动作')
+        ctx.node.get_logger().warning(f'{ctx._current_area}区安全姿态未确认，跳过当前导航和机械臂动作')
         ctx.telemetry.result('skipped', 'navigation_home_unconfirmed')
         return False
     if (
@@ -84,9 +84,10 @@ def navigate(ctx, waypoints, *, side=None, preset=None, yaws=None):
         if not look.completed:
             record_failed_opportunity(ctx, look.reason_code)
             ctx.recover_home()
-        elif ctx._current_area == "B":
+        elif ctx._current_area in ("B", "D"):
             # Finish the submitted Look's normal arm cycle, without grasping.
-            motion = ctx.execute_arm_preset(f"{side}_to_home_b")
+            zone = ctx._current_area.lower()
+            motion = ctx.execute_arm_preset(f"{side}_to_home_{zone}")
             if not motion.completed:
                 ctx.recover_home_b(stop_only=True)
     ctx.node.get_logger().warning(f"导航失败，跳过当前动作: {' -> '.join(waypoints)}")
@@ -261,9 +262,12 @@ def _grasp_and_collect(ctx, request, *, store_preset, matched_type=None):
     )
 
 
-def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
-    """Observe (open gripper) once; freeze up to two matching ripe targets before either grasp."""
+def pick_b_tree(ctx, *, target=None, side, tree_name=None, waypoint=None, max_targets=None):
+    """Observe (open gripper) once; freeze matching ripe targets before either grasp."""
+    if max_targets is None:
+        max_targets = 3 if ctx._current_area == "D" or target is None else 2
     label = tree_name or (f"{waypoint}号" if waypoint else "一号")
+    area = ctx._current_area or "B"
     ctx.telemetry.step('look', target=f'{waypoint or label}/{label}')
     look = ctx.finish_observation(side)
     if not look.completed:
@@ -271,8 +275,8 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
         ctx.recover_home()
         ctx.announce(f"{label}识别失败，跳过。")
         return False
-    window_id = ctx.open_observation_window("B", "harvest", target)
-    ctx.telemetry.step('observe', target=target)
+    window_id = ctx.open_observation_window(area, "harvest", target)
+    ctx.telemetry.step('observe', target=target or '')
     try:
         targets = ctx.wait_b_targets(window_id)
     finally:
@@ -294,24 +298,29 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
     for item in selected:
         try:
             req, layer = ctx.camera_target_request(item.point)
-            store_preset = store_preset_name(side, "B", layer)
+            store_preset = store_preset_name(side, area, layer)
             requests.append((req, store_preset, item.model_type))
-            if len(requests) == 2:
+            if len(requests) == max_targets:
                 break
         except ValueError as error:
-            ctx.node.get_logger().warning(f"Skipping invalid B target: {error}")
+            ctx.node.get_logger().warning(f"Skipping invalid {area} target: {error}")
             record_failed_opportunity(ctx, 'camera_target_invalid', item.model_type)
     if not requests:
         record_failed_opportunity(ctx, 'no_matching_valid_target', target)
         ctx.stop_dataset_capture()
-        motion = ctx.execute_arm_preset(f"{side}_to_home_b")
+        zone = ctx._current_area.lower() if ctx._current_area in ('B', 'D') else 'b'
+        motion = ctx.execute_arm_preset(f"{side}_to_home_{zone}")
         if not motion.completed:
             ctx.recover_home_b(stop_only=True)
         return False
-    expected_type = expected_ripe_type(target)
-    observed = spoken_model_type(expected_type)
+    if target:
+        expected_type = expected_ripe_type(target)
+        observed = spoken_model_type(expected_type)
+    else:
+        observed = spoken_model_type(requests[0][2])
     ctx.announce(f"{label}识别到{observed}，开始抓取。")
     success = True
+    result = PickExecutionResult(True, "store_completed", None)
     for request, store_preset, model_type in requests:
         result = _grasp_and_collect(
             ctx, request, store_preset=store_preset, matched_type=model_type)
@@ -321,8 +330,9 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
                 ctx.announce(f"{label}机械臂执行失败，跳过。")
                 return False
             ctx.announce(f"{label}继续下一个目标。")
-    if result.success:  # The last failed grasp already recovered B safe Home once.
-        motion = ctx.execute_arm_preset(f"{side}_to_home_b")
+    if result.success:  # The last failed grasp already recovered safe Home once.
+        zone = ctx._current_area.lower() if ctx._current_area in ('B', 'D') else 'b'
+        motion = ctx.execute_arm_preset(f"{side}_to_home_{zone}")
         if not motion.completed:
             ctx.recover_home_b(stop_only=True)
             return False
@@ -333,15 +343,104 @@ def _select_b_targets(ctx, label, target, targets):
     if not targets:
         ctx.announce(f"{label}没有识别到果实，跳过。")
         return []
-    expected_type = expected_ripe_type(target)
+    if target:
+        expected_type = expected_ripe_type(target)
+        selected = sorted(
+            (item for item in targets if item.model_type == expected_type),
+            key=lambda item: item.confidence, reverse=True)
+        if not selected:
+            first_type = targets[0].model_type
+            observed = spoken_model_type(first_type)
+            ctx.announce(f"{label}识别到{observed}，跳过。")
+        return selected
+
+    valid_tree_types = {'apple_ripe', 'pear_ripe'}
     selected = sorted(
-        (item for item in targets if item.model_type == expected_type),
+        (item for item in targets if item.model_type in valid_tree_types),
         key=lambda item: item.confidence, reverse=True)
     if not selected:
         first_type = targets[0].model_type
         observed = spoken_model_type(first_type)
-        ctx.announce(f"{label}识别到{observed}，跳过。")
+        if observed and observed != "未知果实":
+            ctx.announce(f"{label}识别到{observed}，跳过。")
+        else:
+            ctx.announce(f"{label}没有识别到果实，跳过。")
     return selected
+
+
+def _select_d_targets(targets):
+    """Filter ripe apple/pear targets for D-area without any voice announcements."""
+    if not targets:
+        return []
+    valid_tree_types = {'apple_ripe', 'pear_ripe'}
+    return sorted(
+        (item for item in targets if item.model_type in valid_tree_types),
+        key=lambda item: item.confidence, reverse=True)
+
+
+def pick_d_tree(ctx, *, side, waypoint=None, max_targets=3):
+    """Observe D-area tree once, harvest ripe apple/pear without failure voice announcements."""
+    label = waypoint or "D"
+    ctx.telemetry.step('look', target=f'{waypoint or label}/{label}')
+    look = ctx.finish_observation(side)
+    if not look.completed:
+        record_failed_opportunity(ctx, look.reason_code, None)
+        ctx.recover_home()
+        return False
+    window_id = ctx.open_observation_window("D", "harvest", None)
+    ctx.telemetry.step('observe', target='')
+    try:
+        targets = ctx.wait_b_targets(window_id)
+    finally:
+        ctx.close_observation_window()
+    if targets is None:
+        ctx.stop_dataset_capture()
+        record_failed_opportunity(ctx, 'camera_target_timeout', None)
+        ctx.recover_home()
+        return False
+    ignored_count = len(ctx._latest_camera_targets or []) - len(targets)
+    if ignored_count:
+        ctx.node.get_logger().info(
+            f"D区{label}忽略{ignored_count}个无有效深度或三维坐标的目标，不抓取")
+    selected = []
+    if targets or not ignored_count:
+        selected = _select_d_targets(targets)
+    requests = []
+    for item in selected:
+        try:
+            req, layer = ctx.camera_target_request(item.point)
+            store_preset = store_preset_name(side, "D", layer)
+            requests.append((req, store_preset, item.model_type))
+            if len(requests) == max_targets:
+                break
+        except ValueError as error:
+            ctx.node.get_logger().warning(f"Skipping invalid D target: {error}")
+            record_failed_opportunity(ctx, 'camera_target_invalid', item.model_type)
+    if not requests:
+        record_failed_opportunity(ctx, 'no_matching_valid_target', None)
+        ctx.stop_dataset_capture()
+        motion = ctx.execute_arm_preset(f"{side}_to_home_d")
+        if not motion.completed:
+            ctx.recover_home_b(stop_only=True)
+        return False
+
+    observed = spoken_model_type(requests[0][2])
+    ctx.announce(f"识别到{observed}，开始抓取。")
+    success = True
+    result = PickExecutionResult(True, "store_completed", None)
+    for request, store_preset, model_type in requests:
+        result = _grasp_and_collect(
+            ctx, request, store_preset=store_preset, matched_type=model_type)
+        success = result.success and success
+        if not result.success:
+            if not ctx._arm_home_confirmed:
+                return False
+    if result.success:
+        motion = ctx.execute_arm_preset(f"{side}_to_home_d")
+        if not motion.completed:
+            ctx.recover_home_b(stop_only=True)
+            return False
+    return success
 
 
 def navigate_c_route(ctx, names, yaws, *, side=None):

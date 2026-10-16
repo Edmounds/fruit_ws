@@ -4,7 +4,7 @@
 
 `full` 完成 C 区后沿现有 C 区路径前往 `C_top_waypoint_1`，对齐该航点保存的 yaw 后调用采摘记录汇总播报。其他入口结束位置不变。不增加 D 区、换筐或返回起点流程。
 
-ABC 编排在 `src/fruit_mission/fruit_mission/Logic_abc.py` 审核，ACB 在同目录的 `Logic_acb.py` 审核。
+ABC 编排在 `src/fruit_mission/fruit_mission/Logic_abc.py` 审核，ACB 在同目录的 `Logic_acb.py` 审核，ACBD 在同目录的 `Logic_acbd.py` 审核。
 各入口写分区顺序和 A 区路线，共用 B/C 作业、采摘、二维码和播报细节在 `actions.py`；
 ROS 反馈、STOP 和实测停稳留在 `MissionContext`。见[mission 说明](../src/fruit_mission/README.md)。
 单独 B/C 调试也先扫码，再调用同一个分区函数；保留 `--flow full|ac|a|b|c`。
@@ -17,13 +17,18 @@ ROS 反馈、STOP 和实测停稳留在 `MissionContext`。见[mission 说明](.
 
 ## 等待与局部故障
 
-### ACB 中途汇总
+### ACB 与 ACBD 汇总规则
 
-ACB 的播报顺序为起点、B 二维码、A 回程、C 二维码及作业、A+C 汇总、B 作业。
+ACB 与 ACBD 的播报顺序前半程一致，均为起点、B 二维码、A 回程、C 二维码及作业、A+C 汇总、B 作业。
 完成 C 区后沿图前往 `C_top_waypoint_1`，对齐保存的 yaw。
 成功到点才播报“本次采摘记录”和各品种数量，零记录时播报“本次没有采摘记录”。
 中途不播报“任务流程结束”，不清空累计数量，等待播报后继续返 B。
-到点失败时跳过中途汇总。B8 作业结束后直接结束，不再次汇总。
+到点失败时跳过中途汇总。
+ACB 在 B8 作业结束后直接结束，不再次汇总。
+ACBD 在 B8 作业后进入 D 区（D1～D7），D 区不扫码，直接识别并采收成熟苹果和梨。
+D 区不播报点位号，仅复用现有语音素材；同树首抓前播报对应实际品种（“识别到成熟苹果/梨子，开始抓取”），同树后续抓取不再报识别；每次放筐入仓完成后播报“采摘完成”。
+无果实、不成熟、导航失败或机械臂报错等异常均彻底静默，不播报跳过或失败，直接安全收臂或推进下一作业点。
+D7 作业结束后直接结束，不再次汇总。
 ABC 的结束播报和默认入口保持不变。
 
 ### 共用等待规则
