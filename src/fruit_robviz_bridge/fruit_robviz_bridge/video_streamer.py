@@ -77,11 +77,21 @@ class StreamChannel:
         self.latest_raw_time: float = 0.0
         self.capture_viewers: Set[str] = set()
         self.last_admitted_time = 0.0
-        self.subscription = None
         self.viewers: Dict[str, dict] = {}
         self.peer_counter = 0
         self.viewer_telemetry: Dict[str, dict] = {}
         self.last_bitrate_adjustment = 0.0
+
+        # ROS 2 Image subscription (created once and kept for node lifetime)
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self.subscription = self.node.create_subscription(
+            Image, self.raw_topic, self.on_raw_image, qos
+        )
 
         # GStreamer pipeline
         self.pipeline: Optional[Gst.Pipeline] = None
@@ -150,8 +160,8 @@ class StreamChannel:
         return self.has_video_demand() or len(self.capture_viewers) > 0
 
     def update_demand(self) -> None:
-        """Ensure ROS raw subscription is active only when demand exists."""
-        demand = self.has_demand()
+        """Ensure streaming pipeline is active only when video demand exists."""
+        demand = self.has_video_demand()
         if demand and not self.is_active:
             self.start_active()
         elif not demand and self.is_active:
@@ -161,41 +171,40 @@ class StreamChannel:
         if self.is_active:
             return
         self.is_active = True
-        logger.info("[%s] Activating stream subscription: %s", self.name, self.raw_topic)
-        qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1,
-            durability=DurabilityPolicy.VOLATILE,
-        )
-        self.subscription = self.node.create_subscription(
-            Image, self.raw_topic, self.on_raw_image, qos
-        )
+        logger.info("[%s] Activating stream encoding: %s", self.name, self.raw_topic)
         if self.push_task is None or self.push_task.done():
-            self.push_task = asyncio.create_task(self.frame_push_loop())
+            self.push_task = self.loop.create_task(self.frame_push_loop())
 
     def stop_active(self) -> None:
         if not self.is_active:
             return
         self.is_active = False
-        logger.info("[%s] Deactivating stream subscription: %s", self.name, self.raw_topic)
-        if self.subscription is not None:
-            self.node.destroy_subscription(self.subscription)
-            self.subscription = None
+        logger.info("[%s] Deactivating stream encoding: %s", self.name, self.raw_topic)
         if self.push_task is not None:
             self.push_task.cancel()
             self.push_task = None
         with self.lock:
             self.latest_msg = None
-            self.latest_raw_msg = None
-            self.latest_raw_time = 0.0
         self.teardown_pipeline()
+
+    def destroy(self) -> None:
+        """Tear down pipeline and release subscription when ROS executor is stopped."""
+        self.stop_active()
+        if self.subscription is not None:
+            try:
+                self.node.destroy_subscription(self.subscription)
+            except Exception:
+                pass
+            self.subscription = None
 
     def on_raw_image(self, msg: Image) -> None:
         now = time.monotonic()
         with self.lock:
             self.latest_raw_msg = msg
             self.latest_raw_time = now
+
+        if not self.has_video_demand():
+            return
 
         interval = 1.0 / max(0.1, self.max_fps)
         if now - self.last_admitted_time < interval:

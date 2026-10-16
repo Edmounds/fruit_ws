@@ -435,8 +435,22 @@ class VideoGatewayServer:
             "streams": streams,
         }
 
+    async def _safe_send_json(self, ws: web.WebSocketResponse, data: dict) -> bool:
+        if not ws.closed:
+            try:
+                await ws.send_json(data)
+                return True
+            except (
+                ConnectionResetError,
+                aiohttp.ClientConnectionResetError,
+                aiohttp.WebSocketError,
+                OSError,
+            ):
+                pass
+        return False
+
     async def probe_streams(self) -> None:
-        """Briefly subscribe to managed sources without creating video encoders."""
+        """Briefly probe managed sources without creating video encoders."""
         async with self._probe_lock:
             if time.monotonic() - self._last_probe < 2.0:
                 return
@@ -447,28 +461,24 @@ class VideoGatewayServer:
                     or self.node.count_publishers(channel.raw_topic) == 0
                 ):
                     return False
-                channel.add_capture_client("discovery")
-                try:
-                    deadline = time.monotonic() + 1.0
-                    while time.monotonic() < deadline:
-                        frame, received = channel.get_latest_raw_frame()
-                        if frame is not None and time.monotonic() - received <= 1.0:
-                            try:
-                                if channel.name == "depth":
-                                    convert_depth_to_jet(frame)
-                                else:
-                                    validate_and_extract_color(frame)
-                            except Exception as error:
-                                self.node.get_logger().warning(
-                                    f"Source probe rejected {channel.raw_topic}: {error}",
-                                    throttle_duration_sec=2.0,
-                                )
-                                return False
-                            return True
-                        await asyncio.sleep(0.05)
-                    return False
-                finally:
-                    channel.remove_capture_client("discovery")
+                deadline = time.monotonic() + 1.0
+                while time.monotonic() < deadline:
+                    frame, received = channel.get_latest_raw_frame()
+                    if frame is not None and time.monotonic() - received <= 1.0:
+                        try:
+                            if channel.name == "depth":
+                                convert_depth_to_jet(frame)
+                            else:
+                                validate_and_extract_color(frame)
+                        except Exception as error:
+                            self.node.get_logger().warning(
+                                f"Source probe rejected {channel.raw_topic}: {error}",
+                                throttle_duration_sec=2.0,
+                            )
+                            return False
+                        return True
+                    await asyncio.sleep(0.05)
+                return False
 
             channels = list(self.node.channels.values())
             available = await asyncio.gather(*(probe(ch) for ch in channels))
@@ -479,7 +489,7 @@ class VideoGatewayServer:
         payload = self.build_metadata()
         for ws in list(self.active_websockets):
             if not ws.closed:
-                asyncio.create_task(ws.send_json(payload))
+                asyncio.create_task(self._safe_send_json(ws, payload))
 
     async def handle_index(self, request: web.Request) -> web.Response:
         html = """<!DOCTYPE html>
@@ -518,12 +528,14 @@ class VideoGatewayServer:
         capture_topic = self.node.raw_rgb_topic
         logger.info("Client connected: %s", ws_id)
 
-        # Send initial stream metadata on connect
-        await ws.send_json(self.build_metadata())
+        async def send_json(payload: dict) -> bool:
+            return await self._safe_send_json(ws, payload)
 
         async def send_json_cb(payload: dict) -> None:
-            if not ws.closed:
-                await ws.send_json(payload)
+            await send_json(payload)
+
+        # Send initial stream metadata on connect
+        await send_json(self.build_metadata())
 
         try:
             async for msg in ws:
@@ -540,7 +552,7 @@ class VideoGatewayServer:
 
                     if mtype == "getMeta":
                         await self.probe_streams()
-                        await ws.send_json(self.build_metadata())
+                        await send_json(self.build_metadata())
                         continue
 
                     if mtype == "setCaptureTopic":
@@ -551,7 +563,7 @@ class VideoGatewayServer:
                             or not (1 <= len(req_id) <= 128)
                             or not isinstance(requested_topic, str)
                         ):
-                            await ws.send_json(
+                            await send_json(
                                 {
                                     "type": "captureTopicResult",
                                     "requestId": req_id if isinstance(req_id, str) else "",
@@ -567,7 +579,7 @@ class VideoGatewayServer:
                         if requested_channel is None or requested_channel.name not in (
                             "rgb", "camera", "fusion"
                         ):
-                            await ws.send_json(
+                            await send_json(
                                 {
                                     "type": "captureTopicResult",
                                     "requestId": req_id,
@@ -589,7 +601,7 @@ class VideoGatewayServer:
                             capture_registered = True
                         capture_channel = requested_channel
                         capture_topic = requested_topic
-                        await ws.send_json(
+                        await send_json(
                             {
                                 "type": "captureTopicResult",
                                 "requestId": req_id,
@@ -602,7 +614,7 @@ class VideoGatewayServer:
                     if mtype == "getCaptureInfo":
                         req_id = data.get("requestId")
                         if not isinstance(req_id, str) or not (1 <= len(req_id) <= 128):
-                            await ws.send_json(
+                            await send_json(
                                 {
                                     "type": "captureInfo",
                                     "requestId": "",
@@ -616,7 +628,7 @@ class VideoGatewayServer:
                         if capture_channel is None:
                             capture_channel = self.node.channels.get("camera")
                         if capture_channel is None:
-                            await ws.send_json(
+                            await send_json(
                                 {
                                     "type": "captureInfo",
                                     "requestId": req_id,
@@ -645,7 +657,7 @@ class VideoGatewayServer:
                         total_count = _count_png_files(self.node.capture_output_dir)
                         last_name = _get_last_png_name(self.node.capture_output_dir)
 
-                        await ws.send_json(
+                        await send_json(
                             {
                                 "type": "captureInfo",
                                 "requestId": req_id,
@@ -678,7 +690,7 @@ class VideoGatewayServer:
                     if mtype == "captureFrame":
                         req_id = data.get("requestId")
                         if not isinstance(req_id, str) or not (1 <= len(req_id) <= 128):
-                            await ws.send_json(
+                            await send_json(
                                 {
                                     "type": "captureResult",
                                     "requestId": "",
@@ -689,7 +701,7 @@ class VideoGatewayServer:
                             continue
 
                         if not self.is_capture_origin_allowed(request):
-                            await ws.send_json(
+                            await send_json(
                                 {
                                     "type": "captureResult",
                                     "requestId": req_id,
@@ -702,7 +714,7 @@ class VideoGatewayServer:
                         if capture_channel is None:
                             capture_channel = self.node.channels.get("camera")
                         if capture_channel is None:
-                            await ws.send_json(
+                            await send_json(
                                 {
                                     "type": "captureResult",
                                     "requestId": req_id,
@@ -713,7 +725,7 @@ class VideoGatewayServer:
                             continue
 
                         if self.is_save_busy():
-                            await ws.send_json(
+                            await send_json(
                                 {
                                     "type": "captureResult",
                                     "requestId": req_id,
@@ -726,7 +738,7 @@ class VideoGatewayServer:
                         now = time.monotonic()
                         msg, recv_time = capture_channel.get_latest_raw_frame()
                         if msg is None:
-                            await ws.send_json(
+                            await send_json(
                                 {
                                     "type": "captureResult",
                                     "requestId": req_id,
@@ -738,7 +750,7 @@ class VideoGatewayServer:
 
                         age = now - recv_time
                         if age > 1.0:
-                            await ws.send_json(
+                            await send_json(
                                 {
                                     "type": "captureResult",
                                     "requestId": req_id,
@@ -755,7 +767,7 @@ class VideoGatewayServer:
                                 self._active_save_future is not None
                                 and not self._active_save_future.done()
                             ):
-                                await ws.send_json(
+                                await send_json(
                                     {
                                         "type": "captureResult",
                                         "requestId": req_id,
@@ -805,7 +817,7 @@ class VideoGatewayServer:
                                 total_count = _count_png_files(
                                     self.node.capture_output_dir
                                 )
-                                await ws.send_json(
+                                await send_json(
                                     {
                                         "type": "captureResult",
                                         "requestId": req_id,
@@ -827,7 +839,7 @@ class VideoGatewayServer:
                                 raise
                             except Exception as exc:
                                 logger.exception("Capture frame save failed")
-                                await ws.send_json(
+                                await send_json(
                                     {
                                         "type": "captureResult",
                                         "requestId": req_id,
@@ -842,7 +854,7 @@ class VideoGatewayServer:
 
                     channel = self.node.topic_to_channel.get(topic)
                     if channel is None:
-                        await ws.send_json(
+                        await send_json(
                             {
                                 "type": "error",
                                 "topic": topic,
@@ -861,7 +873,7 @@ class VideoGatewayServer:
                         )
                         watched_channels.add(channel)
                         # Notify client of channel's mode
-                        await ws.send_json(
+                        await send_json(
                             {
                                 "type": "meta",
                                 "topic": topic,
@@ -939,12 +951,19 @@ def main(args=None) -> None:
             loop.stop()
 
     def spin_ros():
-        try:
-            executor.spin()
-        except ExternalShutdownException:
-            pass
-        finally:
-            loop.call_soon_threadsafe(stop_http_loop)
+        while rclpy.ok() and not shutting_down.is_set():
+            try:
+                executor.spin_once(timeout_sec=0.1)
+            except ExternalShutdownException:
+                break
+            except Exception as exc:
+                if shutting_down.is_set() or not rclpy.ok():
+                    break
+                if "InvalidHandle" in type(exc).__name__ or "cannot use Destroyable" in str(exc):
+                    logger.warning("Ignored handle destruction race in spin_ros: %s", exc)
+                    continue
+                logger.exception("Unexpected exception in spin_ros: %s", exc)
+        loop.call_soon_threadsafe(stop_http_loop)
 
     ros_thread = threading.Thread(target=spin_ros, daemon=True)
     ros_thread.start()
@@ -976,6 +995,8 @@ def main(args=None) -> None:
             channel.stop_active()
         rclpy.try_shutdown()
         ros_thread.join(timeout=2.0)
+        for channel in node.channels.values():
+            channel.destroy()
         node.destroy_node()
         fusion.destroy_node()
         glib_loop.quit()
