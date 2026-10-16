@@ -283,7 +283,13 @@ def pick_b_tree(ctx, *, target, side, tree_name=None, waypoint=None):
         ctx.recover_home()
         ctx.announce(f"{label}没有识别到果实，跳过。")
         return False
-    selected = _select_b_targets(ctx, label, target, targets)
+    ignored_count = len(ctx._latest_camera_targets or []) - len(targets)
+    if ignored_count:
+        ctx.node.get_logger().info(
+            f"{ctx._current_area or 'B'}区{label}忽略{ignored_count}个无有效深度或三维坐标的目标，不抓取")
+    selected = []
+    if targets or not ignored_count:
+        selected = _select_b_targets(ctx, label, target, targets)
     requests = []
     for item in selected:
         try:
