@@ -324,7 +324,7 @@ def validate_background_config(payload: Mapping[str, Any]) -> dict:
         "center_x": _finite_number(payload.get("center_x", 0.0), "center_x"),
         "center_y": _finite_number(payload.get("center_y", 0.0), "center_y"),
         "meters_per_pixel": _strict_positive(
-            payload.get("meters_per_pixel", 0.01), "meters_per_pixel", 1000.0
+            payload.get("meters_per_pixel", 1.0), "meters_per_pixel", 1000.0
         ),
         "rotation_deg": _finite_number(
             payload.get("rotation_deg", 0.0), "rotation_deg"
