@@ -5,7 +5,7 @@ from fruit_mission.actions import navigate, pick_a, run_b, run_c, scan_b_qr, sca
 
 def main(ctx):
     """Work A left, scan B, work A right and C, report counts, then work B."""
-    ctx.config["open_loop"] = "A"
+    ctx.config["open_loop"] = "none"
     ctx.report_current_area("A")
     for name in ("A_left1", "A_left2", "A_left3", "A_left4"):
         if navigate(ctx, [name], side="left"):
@@ -19,7 +19,6 @@ def main(ctx):
     b_plan = scan_b_qr(
         ctx, arrived=arrived, preset="qr_scan_a_to_b", return_home=False)
 
-    ctx.config["open_loop"] = "none"
     ctx.report_current_area("A")
     # This is the only safe exit from qr_scan_a_to_b, even without a QR result.
     look = ctx.execute_arm_preset("right_look_a")
@@ -60,7 +59,5 @@ def main(ctx):
             ctx.node.get_logger().warning("ACB C区出口导航失败，继续既定B区转场")
     else:
         ctx.node.get_logger().warning("ACB 未到达 C_QR，跳过 C 区作业、汇总和出口导航")
-    if navigate(ctx, ["to_B_lower_waypoint_1"], preset="shenzhi"):
-        # B's first Look needs Home, not shenzhi.
-        ctx.recover_home()
-    run_b(ctx, b_plan, first_side="left")
+    navigate(ctx, ["to_B_lower_waypoint_1"], preset="shenzhi")
+    run_b(ctx, b_plan, first_side="left", concurrent_first_look=False)

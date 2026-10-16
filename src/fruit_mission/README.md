@@ -34,8 +34,8 @@ A_left1→4：每点只抓左侧，固定开环
 → C_QR：导航到点后执行 qr_scan_c，扫码、播报，按二维码顺序闭环作业
 → 沿 C 图到 C_top_waypoint_1：播报当前 A+C 累计收获
 → 沿 C 图到 C_entrance_waypoint_2
-→ to_B_lower_waypoint_1：shenzhi 转场，之后确认一次安全 Home
-→ 保持 Home 导航到 B1：到点后执行 left_look_b，使用之前保存的 B 计划作业
+→ to_B_lower_waypoint_1：shenzhi 转场
+→ 保持 shenzhi 导航到 B1：到点后原地执行 left_look_b，使用之前保存的 B 计划作业
 → B2→B8：导航与 Look 并行，偶数右侧 Look，奇数左侧 Look
 → 停在 B8，直接结束，不再次汇总
 ```
@@ -86,7 +86,7 @@ ABC 不传 `--flow` 时，定位入口沿用当前准备参数。
 
 | 积木 | 参数与职责 |
 | --- | --- |
-| `run_b(ctx, plan, first_side="right")` | 共用 B1～B8 作业。B1～B8 导航与 Look 并行。ABC 默认奇数右、偶数左，ACB 使用 `first_side="left"`。 |
+| `run_b(ctx, plan, first_side="right", concurrent_first_look=True)` | 共用 B1～B8 作业。ABC 默认奇数右、偶数左；ACB 使用 `first_side="left"` 且 `concurrent_first_look=False`（首树 B1 到点后切 Look，B2～B8 导航与 Look 并行）。 |
 | `run_c(ctx, plan)` | 共用 C 区二维码顺序、图导航、抓取、记录和失败推进。 |
 | `navigate(ctx, waypoints, side=None, preset=None, yaws=None)` | 明确导航点，可传入逐点 yaw；有 side 时导航与 Look 并行，有 preset 时导航与指定机械臂预设并行。导航或并发预设失败返回 False，Look 成功到点后由采摘函数消费。ACB 前往 B 扫码点前同步完成伸直。 |
 | `pick_a(ctx, side=...)` | 区域 Look/OPEN → 实测停稳 → harvest 窗口 → 成熟目标 → CLOSE/驻留 → 区域 Store/OPEN/驻留。正常不追加 Home，无重复抓取。 |

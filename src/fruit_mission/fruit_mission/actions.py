@@ -12,7 +12,7 @@ from fruit_mission.waypoint_route import c_top_transit_end
 from fruit_qr_planner.planner import build_b_plan, build_c_plan
 
 
-def run_b(ctx, plan, *, first_side="right"):
+def run_b(ctx, plan, *, first_side="right", concurrent_first_look=True):
     """Fixed B1..B8 order with alternating vehicle-relative observation sides."""
     if first_side not in ("left", "right"):
         raise ValueError("first_side must be left or right")
@@ -23,7 +23,8 @@ def run_b(ctx, plan, *, first_side="right"):
         tree_name = format_b_tree_name(position)
         side = first_side if position % 2 == 1 else other_side
         waypoint = waypoints[position - 1]
-        if navigate(ctx, [waypoint], side=side):
+        nav_side = None if (position == 1 and not concurrent_first_look) else side
+        if navigate(ctx, [waypoint], side=nav_side):
             pick_b_tree(
                 ctx,
                 tree_name=tree_name,
