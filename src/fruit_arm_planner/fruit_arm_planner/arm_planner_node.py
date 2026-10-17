@@ -374,7 +374,7 @@ class ArmPlannerNode(Node):
         start: Tuple[float, float, float, float],
         description: str = 'trajectory',
     ) -> Tuple[bool, int, str]:
-        """下发轨迹并最多等待 10 秒，期间可由下位机或主动停止结束."""
+        """下发轨迹并等待下位机完成/报错、主动 STOP 或节点退出，无执行期限."""
         error = self._validate_trajectory(points, start)
         if error:
             return False, 0, error
@@ -428,8 +428,7 @@ class ArmPlannerNode(Node):
         poll_interval = 0.05  # 50ms (20Hz)
         seen_running = False
         duration_sec = actual_traj_duration_ms / 1000.0
-        execution_timeout_sec = 10.0
-        timeout_deadline = time.monotonic() + execution_timeout_sec
+        timeout_deadline = time.monotonic() + min(10.0, max(5.0, duration_sec + 3.0))
 
         while rclpy.ok():
             time.sleep(poll_interval)
@@ -478,7 +477,8 @@ class ArmPlannerNode(Node):
                     return False, traj_id, err_msg
 
             if time.monotonic() > timeout_deadline:
-                return False, traj_id, f"Execution timed out after {execution_timeout_sec:.1f}s"
+                timeout_val = min(10.0, max(5.0, duration_sec + 3.0))
+                return False, traj_id, f"Execution timed out after {timeout_val:.1f}s"
 
         return False, traj_id, "Execution interrupted by node shutdown"
 
