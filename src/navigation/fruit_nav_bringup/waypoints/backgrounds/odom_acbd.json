@@ -1,0 +1,13 @@
+{
+  "center_x": 1.2300000002526115,
+  "center_y": -2.0900000004193005,
+  "meters_per_pixel": 0.0029213483146,
+  "rotation_deg": -90.0,
+  "opacity": 0.5,
+  "visible": true,
+  "pivot_u": 168.49931191686937,
+  "pivot_v": 930.0191847152755,
+  "width": 1768,
+  "height": 1018,
+  "image_file": "odom_acbd.jpg"
+}

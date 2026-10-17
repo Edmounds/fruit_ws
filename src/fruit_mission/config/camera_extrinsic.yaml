@@ -28,6 +28,8 @@ motion:
   pitch_deg: 0.0  # A/C 抓取绝对俯仰角（度）；null 保持观测俯仰角
   pitch_b_up_deg: 0.0  # B 上层抓取绝对俯仰角（度）
   pitch_b_down_deg: -15.0  # B 下层抓取绝对俯仰角（度）；B 偏置仍按 0 度旋转，独立于抓取俯仰角
+  pitch_d_up_deg: 0.0  # D 上层抓取绝对俯仰角（度）
+  pitch_d_down_deg: 0.0  # D 下层抓取绝对俯仰角（度）
   duration_ms: 1500  # 1500ms 平滑探出抓取
   linear_path: false  # false: 关节空间 PTP 平滑规划
 b_limits:
@@ -36,4 +38,11 @@ b_limits:
   min_m: -0.01
   split_m: 0.12
   max_m: 0.30
+  max_distance_m: 0.65  # 未叠加抓取偏置的目标到机械臂基座原点的三维距离
+d_limits:
+  x_min_m: -0.15  # 未叠加抓取偏置的 arm_base_link X 下限（米，含边界）
+  x_max_m: 0.35   # X 上限；仅 D 区抓取候选生效，不隐藏检测预览
+  min_m: 0.15
+  split_m: 0.32  # D区上/下层分割高度阈值（米）
+  max_m: 0.45
   max_distance_m: 0.65  # 未叠加抓取偏置的目标到机械臂基座原点的三维距离

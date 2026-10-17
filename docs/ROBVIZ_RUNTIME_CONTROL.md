@@ -23,6 +23,7 @@ RobViz 使用两个常驻 HTTP 服务：
 - `navigation`：按需启动 `start_navigation.sh`。
 - `mission`：按需启动 `start_fruit_mission.sh`。
 - `mission_acb`：按需启动 `start_fruit_mission_acb.sh`，使用固定 ACB 模式。
+- `mission_acbd`：按需启动 `start_fruit_mission_acbd.sh`，使用固定 ACBD 模式。
 - `waypoint_recording`：按需启动 `waypoints_maker.sh`。
 
 任务命令和就绪检查属于机器人本机配置。浏览器只能选择任务 ID，不能传入命令。
@@ -98,7 +99,7 @@ POST /api/runtime/scripts/kill             {}
 浏览器 Origin 必须与运行服务同主机，页面端口必须为 8000。
 
 启动返回进程状态，不代表相机、ROS 节点或硬件已经就绪。
-正式比赛的 `mission` 和 `mission_acb` 脚本支持 `phase=prepare|localize|all`。
+正式比赛的 `mission`、`mission_acb` 和 `mission_acbd` 脚本支持 `phase=prepare|localize|all`。
 `prepare` 在场外启动相机、感知、二维码、机械臂、雷达、loam 和导航，并执行一次 Home。
 `localize` 补启动 Point-LIO。每次初始化最多等待 10 秒，失败后重启 Point-LIO 与 `loam_interface` 一次。
 第二次失败会报错，不启动 mission。定位成功后自动进入所选路线。
@@ -116,11 +117,11 @@ runner 在 ROS context 关闭后仍清理子进程，并写入停止状态。
 准备栈、Point-LIO 和 loam 的输出继续分类到 `arm_planner.log`、`perception.log` 和 `navigation.log`。
 刷新或切换页面不会停止本轮。比赛会话锁阻止 ABC 和 ACB 同时拥有硬件。
 
-「正式比赛」的流程下拉框显示 `ABC` 和 `ACB`，并保留单区调试选择。
-ABC 使用 `mission` 任务，`flow=full`。ACB 使用 `mission_acb` 任务和独立 ACB 启动脚本。
-ACB 固定 A 去程开环、A 回程及 C 闭环，因此页面禁用开环选择。
-ACB 卡片只提供 `phase` 和 `debug`，不接受 `flow` 或 `open_loop`。
-两条路线分别使用 `odom_waypoints.yaml` 和 `odom_waypoints_acb.yaml`。
+「正式比赛」的流程下拉框显示 `ABC`、`ACB` 和 `ACBD`，并保留单区调试选择。
+ABC 使用 `mission` 任务，`flow=full`。ACB 使用 `mission_acb` 任务和独立 ACB 启动脚本。ACBD 使用 `mission_acbd` 任务和独立 ACBD 启动脚本。
+ACB 固定 A 去程开环、A 回程及 C 闭环，ACBD 固定全闭环采摘，两者在页面均禁用开环选择。
+ACB 与 ACBD 卡片只提供 `phase` 和 `debug`，不接受 `flow` 或 `open_loop`。
+三条路线分别使用 `odom_waypoints.yaml`、`odom_waypoints_acb.yaml` 和 `odom_waypoints_acbd.yaml`。
 脚本使用 `DISPLAY=:0` 和当前用户的 `/run/user/{uid}` 会话环境，支持本机窗口和音频。
 日志保留 ANSI 颜色和回车更新，使用只读 xterm 显示。
 右侧日志面板为单终端实例，切换 Tab 时重置并按需拉取目标脚本最近尾部数据（最多 256 KiB）。

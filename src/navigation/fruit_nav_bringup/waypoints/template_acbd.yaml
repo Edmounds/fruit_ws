@@ -64,3 +64,33 @@ points:
   type: goal
 - name: B8
   type: goal
+- name: D_entrance_waypoint_1
+  type: waypoint
+- name: D_entrance_waypoint_2
+  type: waypoint
+- name: D_entrance_waypoint_3
+  type: waypoint
+- name: D_entrance_waypoint_4
+  type: waypoint
+- name: D_entrance_waypoint_5
+  type: waypoint
+- name: D1
+  type: goal
+- name: D1_to_D2_waypoint_1
+  type: waypoint
+- name: D2
+  type: goal
+- name: D3
+  type: goal
+- name: D4
+  type: goal
+- name: D_down_waypoint_1
+  type: waypoint
+- name: D_down_waypoint_2
+  type: waypoint
+- name: D5
+  type: goal
+- name: D6
+  type: goal
+- name: D7
+  type: goal

@@ -101,7 +101,7 @@ class DatasetCapture:
 
     def start_look(self, area: str, start_stamp_ns: int) -> None:
         """Start collecting new frames after the Look completion timestamp."""
-        if area not in ("A", "B", "C") or start_stamp_ns <= 0:
+        if area not in ("A", "B", "C", "D") or start_stamp_ns <= 0:
             self.stop_look()
             self._logger.warning("Dataset Look skipped: invalid area or Look timestamp")
             return

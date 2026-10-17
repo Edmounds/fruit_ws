@@ -1,0 +1,13 @@
+{
+  "center_x": 1.1933462244351547,
+  "center_y": -2.1111400567335012,
+  "meters_per_pixel": 0.002921348314,
+  "rotation_deg": -91.0,
+  "opacity": 0.5,
+  "visible": true,
+  "pivot_u": 168.75379205076604,
+  "pivot_v": 929.8783200680148,
+  "width": 1768,
+  "height": 1018,
+  "image_file": "odom.jpg"
+}

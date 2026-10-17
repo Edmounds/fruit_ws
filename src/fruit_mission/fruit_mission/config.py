@@ -149,8 +149,8 @@ def validate_config(params: Mapping[str, Any]) -> None:
     if "playback_timeout_sec" in tts and float(tts["playback_timeout_sec"]) <= 0.0:
         raise ValueError("tts.playback_timeout_sec must be positive")
     mission_flow = str(params.get("mission_flow", "full")).strip().lower()
-    if mission_flow not in {"full", "ac", "acb", "a", "b", "c"}:
-        raise ValueError("mission_flow must be full, ac, acb, a, b, or c")
+    if mission_flow not in {"full", "ac", "acb", "acbd", "a", "b", "c"}:
+        raise ValueError("mission_flow must be full, ac, acb, acbd, a, b, or c")
 
 
 def _validate_qr_fallbacks(params: Mapping[str, Any]) -> None:

@@ -115,6 +115,9 @@ B 区固定访问 1～8 号树，C 区按二维码顺序访问。B/C 单区调�
 独立 ACB 入口为 `start_fruit_mission_acb.sh`，使用 `Logic_acb.py` 和 `odom_waypoints_acb.yaml`。
 它提前保存 B 二维码计划，完成 A/C 后在 `C_top_waypoint_1` 汇总，再执行 B1～B8。
 ACB 固定 A 去程开环、A 回程和 C 闭环，B 奇数左、偶数右，B8 后不再次汇总。
+独立 ACBD 入口为 `start_fruit_mission_acbd.sh`，使用 `Logic_acbd.py` 和 `odom_waypoints_acbd.yaml`。
+ACBD 前半程复用 ACB 逻辑直到 B8，随后由 B8 经入口航点转入 D 区执行 D1～D7。
+D1 右侧 Look/采收，D2～D7 全部左侧作业，作业点间执行伸直，D7 结束后保持左侧 Home 安全结束。
 
 任务启动入口负责里程计导航、单 camera 感知、串口桥与任务状态机。以下是脚本使用方法，
 不是实机采摘验收结论；观察/收臂旧接口及 planner 启动需按架构文档核对：

@@ -361,8 +361,12 @@ class CompetitionRunner(StackReadinessClient):
 
     def prepare(self):
         start_bridge = self.robviz_bridge_start_required()
-        launch_name = ('fruit_mission_acb.launch.py' if self.options.flow == 'acb'
-                       else 'fruit_mission.launch.py')
+        if self.options.flow == 'acb':
+            launch_name = 'fruit_mission_acb.launch.py'
+        elif self.options.flow == 'acbd':
+            launch_name = 'fruit_mission_acbd.launch.py'
+        else:
+            launch_name = 'fruit_mission.launch.py'
         self.start('prepared_stack', [
             'ros2', 'launch', str(WORKSPACE / 'src/fruit_mission/launch' / launch_name),
             'prepare_only:=true', 'start_lidar:=true', 'start_pointlio:=false',
@@ -461,7 +465,7 @@ def request_start(expected_flow=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--phase', choices=('all', 'prepare', 'localize'), default='all')
-    parser.add_argument('--flow', choices=('full', 'ac', 'acb', 'a', 'b', 'c'))
+    parser.add_argument('--flow', choices=('full', 'ac', 'acb', 'acbd', 'a', 'b', 'c'))
     parser.add_argument('--open-loop', choices=('A', 'C', 'AC', 'none'), default='A')
     parser.add_argument('--debug', action='store_true')
     options = parser.parse_args()
@@ -473,9 +477,14 @@ def main():
             rclpy.try_shutdown()
         return
     options.flow = options.flow or 'full'
-    if options.flow == 'acb':
+    if options.flow in ('acb', 'acbd'):
         options.open_loop = 'none'
-    filename = 'odom_waypoints_acb.yaml' if options.flow == 'acb' else 'odom_waypoints.yaml'
+    if options.flow == 'acbd':
+        filename = 'odom_waypoints_acbd.yaml'
+    elif options.flow == 'acb':
+        filename = 'odom_waypoints_acb.yaml'
+    else:
+        filename = 'odom_waypoints.yaml'
     options.waypoint_file = WORKSPACE / 'src/navigation/fruit_nav_bringup/waypoints' / filename
     STATUS.parent.mkdir(parents=True, exist_ok=True)
     with (STATUS.parent / 'session.lock').open('a') as lock:

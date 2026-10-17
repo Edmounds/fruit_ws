@@ -166,7 +166,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             body = None
             if localize:
                 if expected_flow is not None and expected_flow not in (
-                        'full', 'ac', 'acb', 'a', 'b', 'c'):
+                        'full', 'ac', 'acb', 'acbd', 'a', 'b', 'c'):
                     raise RuntimeErrorBase('定位流程无效')
                 if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
                     raise RuntimeErrorBase("请求必须使用 application/json", 415)

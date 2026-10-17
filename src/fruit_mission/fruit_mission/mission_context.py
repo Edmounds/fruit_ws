@@ -137,6 +137,8 @@ class MissionContext:
             target_offset_ac_m=config.get("target_offset_ac_m", (0.0, 0.0, 0.0)),
             target_offset_b_up_m=config.get("target_offset_b_up_m", (0.0, 0.0, 0.0)),
             target_offset_b_down_m=config.get("target_offset_b_down_m", (0.0, 0.0, 0.0)),
+            target_offset_d_up_m=config.get("target_offset_d_up_m"),
+            target_offset_d_down_m=config.get("target_offset_d_down_m"),
             max_joint_speed_rps=config['stationary']['joint_speed_rps'],
         )
         self._dataset_capture = DatasetCapture(
@@ -612,7 +614,8 @@ class MissionContext:
             return _ArmMotionResult(False, reason)
         completed, reason = self._camera_planner.finish_motion(future, self._wait_until)
         if completed:
-            name = f'{side}_look_{self._current_area.lower()}'
+            look_zone = self._current_area.lower()
+            name = f'{side}_look_{look_zone}'
             self._last_completed_preset = name
             self._arm_home_confirmed = False
             self._arm_shenzhi_confirmed = False
@@ -623,7 +626,7 @@ class MissionContext:
 
     def start_dataset_capture(self) -> None:
         """Start the raw RGB burst after a Look reaches its measured pose."""
-        if self._current_area in ('A', 'B', 'C'):
+        if self._current_area in ('A', 'B', 'C', 'D'):
             self._dataset_capture.start_look(
                 self._current_area,
                 self.node.get_clock().now().nanoseconds,
@@ -637,11 +640,12 @@ class MissionContext:
         """Look and navigation share the executor, not blocking worker threads."""
         if side not in ('left', 'right'):
             raise ValueError('side must be left or right')
-        if self._current_area not in ('A', 'B', 'C'):
-            raise ValueError('Observation requires an A/B/C area')
+        if self._current_area not in ('A', 'B', 'C', 'D'):
+            raise ValueError('Observation requires an A/B/C/D area')
         if self._pending_observation is not None:
             raise RuntimeError('Previous observation has not been consumed')
-        name = f'{side}_look_{self._current_area.lower()}'
+        look_zone = self._current_area.lower()
+        name = f'{side}_look_{look_zone}'
         if self._last_completed_preset == name:
             self._pending_observation = (side, None, 'already_completed')
             return
@@ -653,7 +657,7 @@ class MissionContext:
             future = self._camera_planner.start_preset(name)
             reason = 'arm_endpoints_not_ready'
             if future is not None:
-                if self._current_area == 'B':
+                if self._current_area in ('B', 'D'):
                     self._b_observation_side = side
                 self._arm_home_confirmed = False
                 self._arm_shenzhi_confirmed = False
@@ -711,7 +715,7 @@ class MissionContext:
         if (not self._shenzhi_required or preset_name == "shenzhi") and (
             self._arm_home_confirmed
             or self._arm_shenzhi_confirmed
-            or self._current_area in ("A", "B", "C")
+            or self._current_area in ("A", "B", "C", "D")
             or preset_name == "shenzhi"
         ) and self._camera_planner.wait_stationary(self._wait_until):
             future = self._camera_planner.start_preset(preset_name)
@@ -735,8 +739,16 @@ class MissionContext:
         else:
             self._last_completed_preset = None
         self._arm_home_confirmed = completed and (
-            preset_name in ('home', 'left_to_home_b', 'right_to_home_b')
-            or ('store' in preset_name and '_store_b' not in preset_name))
+            preset_name in (
+                'home',
+                'left_to_home_b', 'right_to_home_b',
+                'left_to_home_d', 'right_to_home_d',
+            )
+            or (
+                'store' in preset_name
+                and '_store_b' not in preset_name
+                and '_store_d' not in preset_name
+            ))
         self._arm_shenzhi_confirmed = preset_name == "shenzhi" and completed
         if self._arm_shenzhi_confirmed:
             self._shenzhi_required = False
@@ -744,7 +756,7 @@ class MissionContext:
 
     def camera_target_request(self, point: PointStamped):
         """Freeze a camera point using the shared measured-joint transform."""
-        if self._current_area not in ("A", "B", "C"):
+        if self._current_area not in ("A", "B", "C", "D"):
             raise ValueError(f"Invalid mission current_area: {self._current_area}")
         return self._camera_planner.target_request(point, self._current_area)
 
@@ -766,15 +778,16 @@ class MissionContext:
 
     def recover_home(self) -> bool:
         """Recover to ordinary Home, or the submitted B observation side's safe Home."""
-        if self._current_area == 'B' and self._b_observation_side is not None:
+        if self._current_area in ('B', 'D') and self._b_observation_side is not None:
             return self.recover_home_b()
         return self._recover_to_preset('home')
 
     def recover_home_b(self, *, stop_only: bool = False) -> bool:
-        """Use the last submitted B side, never the next tree's side."""
+        """Use the last submitted B/D side, never the next tree's side."""
         if self._b_observation_side is None:
             return self._recover_to_preset('home', stop_only=stop_only)
-        preset_name = f'{self._b_observation_side}_to_home_b'
+        zone = self._current_area.lower() if self._current_area in ('B', 'D') else 'b'
+        preset_name = f'{self._b_observation_side}_to_home_{zone}'
         completed = self._recover_to_preset(preset_name, stop_only=stop_only)
         if not completed and not stop_only:
             self._recover_to_preset(preset_name, stop_only=True)
@@ -833,8 +846,8 @@ class MissionContext:
 
     def report_current_area(self, area: str) -> bool:
         """Publish mission state and set perception zone without MCU policy."""
-        if area not in {"A", "B", "C"}:
-            raise ValueError("area must be A, B or C")
+        if area not in {"A", "B", "C", "D"}:
+            raise ValueError("area must be A, B, C or D")
         self._current_area = area
         self.telemetry.step('area', area=area, target='')
         message = String()
@@ -938,8 +951,16 @@ class MissionContext:
         else:
             self._last_completed_preset = None
         self._arm_home_confirmed = completed and (
-            preset_name in ('home', 'left_to_home_b', 'right_to_home_b')
-            or ('store' in preset_name and '_store_b' not in preset_name))
+            preset_name in (
+                'home',
+                'left_to_home_b', 'right_to_home_b',
+                'left_to_home_d', 'right_to_home_d',
+            )
+            or (
+                'store' in preset_name
+                and '_store_b' not in preset_name
+                and '_store_d' not in preset_name
+            ))
         self._arm_shenzhi_confirmed = preset_name == 'shenzhi' and completed
         if self._arm_shenzhi_confirmed:
             self._shenzhi_required = False

@@ -15,7 +15,7 @@ def produce_type(model_type):
 
 def count_result(statistics, area, model_type, outcome):
     """Count one actual opportunity, never infer an unseen fruit quantity."""
-    if area not in ('A', 'B', 'C') or outcome not in ('completed', 'failed', 'skipped'):
+    if area not in ('A', 'B', 'C', 'D') or outcome not in ('completed', 'failed', 'skipped'):
         raise ValueError('Invalid competition result')
     counts = statistics.setdefault(area, {}).setdefault(
         produce_type(model_type), {'completed': 0, 'failed': 0, 'skipped': 0})

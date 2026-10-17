@@ -207,6 +207,8 @@ class CompetitionRunnerProtocolTest(unittest.TestCase):
         try:
             with self.assertRaises(RuntimeError):
                 competition_runner.request_start('full')
+            with self.assertRaises(RuntimeError):
+                competition_runner.request_start('acbd')
             self.assertFalse(self.runner.requested)
             competition_runner.request_start('acb')
             self.assertTrue(self.runner.requested)

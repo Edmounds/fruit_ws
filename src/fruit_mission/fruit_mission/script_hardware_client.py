@@ -8,8 +8,8 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 def set_perception_zone(node, client, zone, wait_until, endpoint_timeout=1.0,
                         response_timeout=1.0):
     """Set the authoritative zone and require a successful parameter response."""
-    if zone not in ('A', 'B', 'C'):
-        raise ValueError('Zone must be A, B or C')
+    if zone not in ('A', 'B', 'C', 'D'):
+        raise ValueError('Zone must be A, B, C or D')
     if not client.wait_for_service(timeout_sec=endpoint_timeout):
         node.get_logger().warning('Perception zone parameter service unavailable')
         return False

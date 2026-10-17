@@ -79,6 +79,51 @@ ABC 不传 `--flow` 时，定位入口沿用当前准备参数。
 
 离线检查不代表倒车、二维码姿态或整机扫掠空间已经验收。
 
+## 独立 ACBD 入口
+
+ACBD 编排位于 [`fruit_mission/Logic_acbd.py`](fruit_mission/Logic_acbd.py)。
+运行坐标来自源码 `src/navigation/fruit_nav_bringup/waypoints/odom_waypoints_acbd.yaml`。
+前半程 A、C、B 流程与 ACB 保持一致，直到 B8 结束。
+
+```text
+A_left1→4：每点抓取左侧
+→ 完成 shenzhi 后导航到 B_QR：执行 qr_scan_a_to_b，扫码、播报并保存 B 计划
+→ 执行 right_look_a，开始回程导航
+→ A_right4→1：每点抓取右侧
+→ to_C_waypoint_1：沿途 shenzhi，对齐航点 yaw
+→ C_QR：导航到点后执行 qr_scan_c，按二维码顺序闭环作业
+→ 沿 C 图到 C_top_waypoint_1：播报当前 A+C 累计收获
+→ 沿 C 图到 C_entrance_waypoint_2
+→ to_B_lower_waypoint_1：shenzhi 转场
+→ 保持 shenzhi 导航到 B1：到点原地执行 left_look_b，使用 B 计划作业
+→ B2→B8：偶数右侧 Look，奇数左侧 Look，B8 结束保持在 right_to_home_b
+→ 进入 D 区：上报 current_area 为 D，不执行伸直
+→ 导航经 D_entrance_waypoint_1～5 前往 D1：保持右侧安全 Home
+→ 到达 D1：执行 right_look_b，最多抓取 3 个成熟果实（苹果/梨），回 right_to_home_b
+→ D1 结束：执行 shenzhi，经 D1_to_D2_waypoint_1 导航至 D2
+→ 到达 D2：执行 left_look_b，最多抓取 3 个成熟果实，回 left_to_home_b
+→ D2～D6 每次作业完成后：执行 shenzhi，导航至下一作业点
+（D4 到 D5 经 D_down_waypoint_1 与 D_down_waypoint_2 连接航点）
+→ 到达 D7：执行 left_look_b，采收完成后停在 left_to_home_b
+→ 停在 left_to_home_b，不伸直，安全结束，不再次汇总
+```
+
+D 区不扫码，直接识别成熟苹果和梨。单点最多抓取 3 个有效成熟果实。
+首次抓取前冻结候选目标坐标。超出 B 空间限制的目标跳过。
+D 区航点只有 D1 观察右侧，D2～D7 全部观察左侧。
+连接航点导航失败时不重试，继续下一个航点。
+作业点导航失败跳过采收，继续后续路线。
+局部失败恢复对应侧安全 Home（D1 为 `right_to_home_b`，D2～D7 为 `left_to_home_b`）。
+恢复失败不伪造状态，后续危险动作跳过。
+
+`start_fruit_mission_acbd.sh` 选择独立 `fruit_mission_acbd.launch.py`。
+RobViz「正式比赛」支持选择 ACBD，脚本控制页提供独立 `mission_acbd` 卡片。
+
+```bash
+./start_fruit_mission_acbd.sh
+./start_fruit_mission_acbd.sh --debug
+```
+
 ## 重复动作放在哪里
 
 [`fruit_mission/actions.py`](fruit_mission/actions.py) 是重复工序实现，不是另一套
@@ -90,7 +135,7 @@ ABC 不传 `--flow` 时，定位入口沿用当前准备参数。
 | `run_c(ctx, plan)` | 共用 C 区二维码顺序、图导航、抓取、记录和失败推进。 |
 | `navigate(ctx, waypoints, side=None, preset=None, yaws=None)` | 明确导航点，可传入逐点 yaw；有 side 时导航与 Look 并行，有 preset 时导航与指定机械臂预设并行。导航或并发预设失败返回 False，Look 成功到点后由采摘函数消费。ACB 前往 B 扫码点前同步完成伸直。 |
 | `pick_a(ctx, side=...)` | 区域 Look/OPEN → 实测停稳 → harvest 窗口 → 成熟目标 → CLOSE/驻留 → 区域 Store/OPEN/驻留。正常不追加 Home，无重复抓取。 |
-| `pick_b_tree(ctx, tree_name=..., target=..., side=...)` | 每树观察一次，按二维码品种、成熟度和基座空间限制筛选，再按检测置信度选最多两个目标。首次抓取前冻结基座请求，再逐个抓取/Store。同树成功抓取之间不回 Home，树末尾执行本侧 `*_to_home_b`。 |
+| `pick_b_tree(ctx, tree_name=..., target=..., side=..., max_targets=...)` | 每树观察一次。有 target 时按二维码品种筛选最多两个目标；target 为 None 时（D 区）筛选成熟苹果/梨，最多取三个目标。首次抓取前冻结基座请求，逐个抓取/Store。同树成功抓取之间不回 Home，树末尾执行本侧 `*_to_home_b`。 |
 | `navigate_c(ctx, task)` | 复用现有 C 几何规划，记录路线和 camera_side；失败的记录在恢复前由分区流程保存。 |
 | `navigate_c_route(ctx, names, yaws, side=None)` | C 路线经过任一 top 点时，导航开始异步启动 `shenzhi`，通过最后一个 top 点后，剩余导航并行启动目标侧 Look；收尾不启动 Look。 |
 | `pick_c(ctx, task, side=...)` | 当前二维码项的单次识别/采摘、结果记录和播报；不增加方向复核。 |

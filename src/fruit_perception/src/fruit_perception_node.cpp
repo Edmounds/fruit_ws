@@ -111,7 +111,7 @@ std::optional<ObservationWindowCommand> parse_observation_window_command(
     }
 
     const std::string area_str = static_cast<std::string>(area_node);
-    if (area_str != "A" && area_str != "B" && area_str != "C") {
+    if (area_str != "A" && area_str != "B" && area_str != "C" && area_str != "D") {
       RCLCPP_WARN(logger, "Observation window area '%s' invalid", area_str.c_str());
       return std::nullopt;
     }
@@ -211,8 +211,8 @@ public:
       });
 
     const auto zone = declare_parameter("zone", "A");
-    if (zone != "A" && zone != "B" && zone != "C") {
-      throw std::invalid_argument("zone must be A, B or C");
+    if (zone != "A" && zone != "B" && zone != "C" && zone != "D") {
+      throw std::invalid_argument("zone must be A, B, C or D");
     }
     zone_.store(zone.front());
     zone_parameter_callback_ = add_on_set_parameters_callback(
@@ -226,10 +226,10 @@ public:
           }
           if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_STRING ||
           (parameter.as_string() != "A" && parameter.as_string() != "B" &&
-          parameter.as_string() != "C"))
+          parameter.as_string() != "C" && parameter.as_string() != "D"))
           {
             result.successful = false;
-            result.reason = "zone must be A, B or C";
+            result.reason = "zone must be A, B, C or D";
             return result;
           }
           next_zone = parameter.as_string().front();
@@ -697,10 +697,10 @@ private:
               static_cast<std::size_t>(stream.transform.original_width),
               output.confidence, detections[index].maturity_confidence, output.roi, has_point});
         }
-        auto target_update = (area == 'B' ? stream.b_target_selector :
+        auto target_update = (area == 'B' || area == 'D' ? stream.b_target_selector :
           stream.target_selector)->update(candidates, defects);
         result.targets_ready = target_update.ready;
-        if (area != 'B' && !target_update.targets.empty()) {
+        if (area != 'B' && area != 'D' && !target_update.targets.empty()) {
           // Rank before checking bad/maturity. A fixed preset cannot switch fruit.
           target_update.targets = {*select_primary_target(
               target_update.targets, target_confidence_weight_, target_score_close_threshold_)};
@@ -721,7 +721,7 @@ private:
           result.targets.push_back(std::move(item));
           const bool ripe = target.type.size() >= 5U &&
             target.type.compare(target.type.size() - 5U, 5U, "_ripe") == 0;
-          const bool expected = area == 'B' || context.expected_type.empty() ||
+          const bool expected = area == 'B' || area == 'D' || context.expected_type.empty() ||
             context.expected_type == "ripe" || context.expected_type == target.type;
           if (!result.has_target && target.has_point && ripe && expected) {
             result.has_target = true;
@@ -847,7 +847,7 @@ private:
     if (area == 'A' || area == 'C') {
       return stream.vegetable_request;
     }
-    if (area == 'B') {
+    if (area == 'B' || area == 'D') {
       return stream.fruit_request;
     }
     return nullptr;

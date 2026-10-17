@@ -37,7 +37,7 @@ on `/fruit_mission/observation_window` as JSON strings:
 
 - `valid`: strictly integer `1` (open window) or `0` (close window).
 - `start_sec` / `start_nanosec`: image capture cutoff timestamp (ROS time). Frames with capture stamps earlier than this cutoff are ignored for evidence accumulation.
-- `area`: `"A"`, `"B"`, or `"C"`. Observation windows do not accept D.
+- `area`: `"A"`, `"B"`, `"C"`, or `"D"`.
 - `purpose`: `"harvest"` (accumulate pick evidence) or `"qr"` (QR scanning only).
 - `expected_type`: target filter string (e.g. `"ripe"` or species label; empty string disables filtering).
 
@@ -123,7 +123,7 @@ Mission clients set `zone` through `SetParametersAtomically` and
 check the response before observation. The mission area topic remains state only.
 
 The validated string parameter `zone` selects the model and candidate selection.
-Launch accepts `zone:=A|B|C`, defaulting to the source YAML value (`A`).
+Launch accepts `zone:=A|B|C|D`, defaulting to the source YAML value (`A`).
 Perception no longer subscribes to `/fruit_mission/current_area`.
 Observation windows do not select models. A harvest window must match `zone`.
 Changing `zone` closes the active window and discards old in-flight evidence.
@@ -136,6 +136,7 @@ Open a new matching window after a successful parameter response.
 - Area `C`: the same vegetable detector as A, plus ripeness classification;
   publishes species/maturity labels. Model-internal `pepper` is normalized to business label `chili` **after**
   selecting and running the pepper ripeness classifier.
+- Area `D`: reuses Area `B` fruit detector, ripeness classification, and candidate selector.
 
 Camera startup uses `initial_reset: true`. This resets device state, but does not
 guarantee recovery from a physical MIPI, cable, or USB fault.

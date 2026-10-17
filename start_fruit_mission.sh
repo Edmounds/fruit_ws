@@ -10,7 +10,7 @@ debug_args=()
 
 usage() {
   cat <<'EOF'
-Usage: ./start_fruit_mission.sh [--phase all|prepare|localize] [--flow full|ac|acb|a|b|c] [--open-loop A|C|AC|none] [--debug]
+Usage: ./start_fruit_mission.sh [--phase all|prepare|localize] [--flow full|ac|acb|acbd|a|b|c] [--open-loop A|C|AC|none] [--debug]
 
 prepare: prestart camera, perception, QR, arm, radar and navigation.
 localize: at the stationary start pose, start Point-LIO and automatically run mission.
@@ -21,7 +21,9 @@ Parameters are fixed when preparing. Localize reuses those parameters.
 Explicit --flow must match the prepared session. Without --flow, reuse its flow.
 Completed missions keep modules alive until Ctrl-C or Kill (not hardware ESTOP).
 Use start_fruit_mission_acb.sh for ACB with fixed per-leg picking modes.
+Use start_fruit_mission_acbd.sh for ACBD with fixed per-leg picking modes.
 ACB fixes A outbound to open-loop, A return and C to closed-loop.
+ACBD uses fixed closed-loop picking modes across all areas.
 --debug records the mission rosbag profile and USB diagnostics.
 EOF
 }
@@ -42,11 +44,11 @@ while (($#)); do
   esac
 done
 case "$PHASE" in all|prepare|localize) ;; *) usage >&2; exit 2 ;; esac
-case "$MISSION_FLOW" in full|ac|acb|a|b|c) ;; *) usage >&2; exit 2 ;; esac
+case "$MISSION_FLOW" in full|ac|acb|acbd|a|b|c) ;; *) usage >&2; exit 2 ;; esac
 case "$OPEN_LOOP" in A|C|AC|none) ;; *) usage >&2; exit 2 ;; esac
-if [[ "$MISSION_FLOW" == acb ]]; then
+if [[ "$MISSION_FLOW" == acb || "$MISSION_FLOW" == acbd ]]; then
   if ((OPEN_LOOP_EXPLICIT)) && [[ "$OPEN_LOOP" != none ]]; then
-    echo "ACB uses fixed per-leg picking modes; --open-loop must be none" >&2
+    echo "$MISSION_FLOW uses fixed per-leg picking modes; --open-loop must be none" >&2
     exit 2
   fi
   OPEN_LOOP=none

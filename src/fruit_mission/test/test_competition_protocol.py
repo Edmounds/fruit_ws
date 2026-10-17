@@ -15,8 +15,11 @@ class CompetitionProtocolTest(unittest.TestCase):
         statistics = {}
         count_result(statistics, 'A', 'chili_ripe', 'completed')
         count_result(statistics, 'A', None, 'skipped')
+        count_result(statistics, 'D', 'apple_ripe', 'completed')
         self.assertEqual(statistics['A']['辣椒']['completed'], 1)
         self.assertEqual(statistics['A']['unknown']['skipped'], 1)
+        self.assertEqual(statistics['D']['苹果']['completed'], 1)
+        self.assertNotIn('B', statistics)
 
     def test_localization_sample_requires_new_finite_pose(self):
         values = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)

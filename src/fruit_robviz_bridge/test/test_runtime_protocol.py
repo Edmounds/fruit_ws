@@ -159,23 +159,35 @@ class RuntimeProtocolTest(unittest.TestCase):
         self.server.manager = self.manager
         (self.root / 'start_fruit_mission_acb.sh').write_text(
             'printf "%s\\n" "$@"\n', encoding='utf-8')
+        (self.root / 'start_fruit_mission_acbd.sh').write_text(
+            'printf "%s\\n" "$@"\n', encoding='utf-8')
         status, data = self.request('scripts')
         self.assertEqual(status, 200)
         scripts = {item['id']: item for item in data['scripts']}
         self.assertEqual(scripts['mission_acb']['script'], 'start_fruit_mission_acb.sh')
         self.assertEqual(set(scripts['mission_acb']['parameters']), {'phase', 'debug'})
+        self.assertEqual(scripts['mission_acbd']['script'], 'start_fruit_mission_acbd.sh')
+        self.assertEqual(set(scripts['mission_acbd']['parameters']), {'phase', 'debug'})
         self.assertEqual(self.manager.script_arguments('mission_acb', {}), ['--phase', 'all'])
+        self.assertEqual(self.manager.script_arguments('mission_acbd', {}), ['--phase', 'all'])
         self.assertEqual(self.manager.script_arguments('mission', {}),
                          ['--phase', 'all', '--flow', 'full', '--open-loop', 'A'])
         for parameters in ({'flow': 'full'}, {'open_loop': 'A'}, {'phase': 'invalid'},
                            {'debug': 'true'}, {'phase': '$(touch injected)'}):
             self.assertEqual(self.request('scripts/mission_acb/start', {
                 'parameters': parameters})[0], 400)
+            self.assertEqual(self.request('scripts/mission_acbd/start', {
+                'parameters': parameters})[0], 400)
         status, reply = self.request('scripts/mission_acb/start', {
             'parameters': {'phase': 'prepare', 'debug': True}})
         self.assertEqual(status, 200)
         self.assertEqual(reply['run']['id'], 'mission_acb')
         self.wait_for_log('mission_acb', '--phase\nprepare\n--debug')
+        status, reply_d = self.request('scripts/mission_acbd/start', {
+            'parameters': {'phase': 'prepare', 'debug': True}})
+        self.assertEqual(status, 200)
+        self.assertEqual(reply_d['run']['id'], 'mission_acbd')
+        self.wait_for_log('mission_acbd', '--phase\nprepare\n--debug')
         self.assertFalse((self.root / 'injected').exists())
 
     def test_start_script_without_cleanup_and_failed_cleanup_aborts_kill(self):
@@ -395,8 +407,14 @@ class RuntimeProtocolTest(unittest.TestCase):
         for phase in ('PREPARED', 'LOCALIZING', 'RUNNING'):
             status_path.write_text(json.dumps({'phase': phase, 'parameters': {'flow': 'full'}}))
             self.assertEqual(self.request('competition/localize/acb', {})[0], 409)
+            self.assertEqual(self.request('competition/localize/acbd', {})[0], 409)
         status_path.write_text(json.dumps({'phase': 'RUNNING', 'parameters': {'flow': 'acb'}}))
         code, payload = self.request('competition/localize/acb', {})
+        self.assertEqual(code, 200)
+        self.assertFalse(payload['accepted'])
+        self.assertEqual(self.request('competition/localize/acbd', {})[0], 409)
+        status_path.write_text(json.dumps({'phase': 'RUNNING', 'parameters': {'flow': 'acbd'}}))
+        code, payload = self.request('competition/localize/acbd', {})
         self.assertEqual(code, 200)
         self.assertFalse(payload['accepted'])
         self.assertEqual(self.request('competition/localize', {})[0], 200)

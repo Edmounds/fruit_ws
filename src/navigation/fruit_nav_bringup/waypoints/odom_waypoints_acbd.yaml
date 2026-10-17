@@ -514,9 +514,9 @@ points:
   orientation:
     x: 0.0
     y: 0.0
-    z: 0.7029587256817684
-    w: 0.7112306447193233
-  yaw: 1.559098
+    z: 0.0
+    w: 1.0
+  yaw: 0.0
   type: waypoint
 - name: D_down_waypoint_2
   position:

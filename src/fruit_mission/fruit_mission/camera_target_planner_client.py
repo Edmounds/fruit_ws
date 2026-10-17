@@ -34,12 +34,12 @@ def store_preset_name(side: str, area: str, layer: str | None = None) -> str:
     """Generate canonical store preset name from side, area, and optional layer."""
     if side not in ('left', 'right'):
         raise ValueError(f"side must be 'left' or 'right', got {side!r}")
-    if area not in ('A', 'B', 'C'):
-        raise ValueError(f"area must be 'A', 'B', or 'C', got {area!r}")
-    if area == 'B':
+    if area not in ('A', 'B', 'C', 'D'):
+        raise ValueError(f"area must be 'A', 'B', 'C', or 'D', got {area!r}")
+    if area in ('B', 'D'):
         if layer not in ('up', 'down'):
-            raise ValueError(f"layer must be 'up' or 'down' for area B, got {layer!r}")
-        return f'{side}_store_b_{layer}'
+            raise ValueError(f"layer must be 'up' or 'down' for area {area}, got {layer!r}")
+        return f'{side}_store_{area.lower()}_{layer}'
     if layer is not None:
         raise ValueError(f"layer must be None for area {area}, got {layer!r}")
     return f'{side}_store_{area.lower()}'
@@ -108,6 +108,8 @@ class CameraTargetPlannerClient:
         target_offset_ac_m=(0.0, 0.0, 0.0),
         target_offset_b_up_m=(0.0, 0.0, 0.0),
         target_offset_b_down_m=(0.0, 0.0, 0.0),
+        target_offset_d_up_m=None,
+        target_offset_d_down_m=None,
         max_joint_speed_rps=0.05,
     ):
         self.node = node
@@ -122,6 +124,12 @@ class CameraTargetPlannerClient:
             target_offset_b_up_m, 'target_offset_b_up_m')
         self.target_offset_b_down_m = validate_target_offset(
             target_offset_b_down_m, 'target_offset_b_down_m')
+        self.target_offset_d_up_m = (
+            validate_target_offset(target_offset_d_up_m, 'target_offset_d_up_m')
+            if target_offset_d_up_m is not None else self.target_offset_b_up_m)
+        self.target_offset_d_down_m = (
+            validate_target_offset(target_offset_d_down_m, 'target_offset_d_down_m')
+            if target_offset_d_down_m is not None else self.target_offset_b_down_m)
         with Path(config_path).open(encoding='utf-8') as stream:
             self.config = yaml.safe_load(stream)
         self.rotation, self.translation_mm = load_camera_extrinsic(config_path)
@@ -159,33 +167,45 @@ class CameraTargetPlannerClient:
                                       or not isinstance(pitch, (int, float))
                                       or not math.isfinite(pitch)):
                 raise ValueError(f'{name} must be null or a finite number')
-        b_limits = self.config.get('b_limits')
-        if not isinstance(b_limits, dict):
-            raise ValueError('b_limits must be a mapping')
-        for name in ('min_m', 'split_m', 'max_m', 'max_distance_m', 'x_min_m', 'x_max_m'):
-            if name not in b_limits:
-                raise ValueError(f'{name} missing in b_limits configuration')
-            val = b_limits[name]
-            if (isinstance(val, bool) or not isinstance(val, (int, float))
-                    or not math.isfinite(val)):
-                raise ValueError(f'b_limits.{name} must be a finite number')
-        min_m = float(b_limits['min_m'])
-        split_m = float(b_limits['split_m'])
-        max_m = float(b_limits['max_m'])
-        if not (min_m < split_m < max_m):
-            raise ValueError(
-                f'b_limits bounds must strictly satisfy min_m < split_m < max_m, got '
-                f'{min_m} < {split_m} < {max_m}')
-        self.b_height_min_m = min_m
-        self.b_height_split_m = split_m
-        self.b_height_max_m = max_m
-        self.b_x_min_m = float(b_limits['x_min_m'])
-        self.b_x_max_m = float(b_limits['x_max_m'])
-        if self.b_x_min_m >= self.b_x_max_m:
-            raise ValueError('b_limits bounds must strictly satisfy x_min_m < x_max_m')
-        self.b_max_distance_m = float(b_limits['max_distance_m'])
-        if self.b_max_distance_m <= 0:
-            raise ValueError('b_limits.max_distance_m must be positive')
+        for name in ('pitch_d_up_deg', 'pitch_d_down_deg'):
+            if name in motion:
+                pitch = motion[name]
+                if pitch is not None and (isinstance(pitch, bool)
+                                          or not isinstance(pitch, (int, float))
+                                          or not math.isfinite(pitch)):
+                    raise ValueError(f'{name} must be null or a finite number')
+        for zone in ('b', 'd'):
+            limits_key = f'{zone}_limits'
+            limits = self.config.get(limits_key)
+            if not isinstance(limits, dict):
+                if zone == 'd':
+                    limits = self.config.get('b_limits')
+                else:
+                    raise ValueError(f'{limits_key} must be a mapping')
+            for name in ('min_m', 'split_m', 'max_m', 'max_distance_m', 'x_min_m', 'x_max_m'):
+                if name not in limits:
+                    raise ValueError(f'{name} missing in {limits_key} configuration')
+                val = limits[name]
+                if (isinstance(val, bool) or not isinstance(val, (int, float))
+                        or not math.isfinite(val)):
+                    raise ValueError(f'{limits_key}.{name} must be a finite number')
+            min_m = float(limits['min_m'])
+            split_m = float(limits['split_m'])
+            max_m = float(limits['max_m'])
+            if not (min_m < split_m < max_m):
+                raise ValueError(
+                    f'{limits_key} bounds must strictly satisfy min_m < split_m < max_m, got '
+                    f'{min_m} < {split_m} < {max_m}')
+            setattr(self, f'{zone}_height_min_m', min_m)
+            setattr(self, f'{zone}_height_split_m', split_m)
+            setattr(self, f'{zone}_height_max_m', max_m)
+            setattr(self, f'{zone}_x_min_m', float(limits['x_min_m']))
+            setattr(self, f'{zone}_x_max_m', float(limits['x_max_m']))
+            if getattr(self, f'{zone}_x_min_m') >= getattr(self, f'{zone}_x_max_m'):
+                raise ValueError(f'{limits_key} bounds must strictly satisfy x_min_m < x_max_m')
+            setattr(self, f'{zone}_max_distance_m', float(limits['max_distance_m']))
+            if getattr(self, f'{zone}_max_distance_m') <= 0:
+                raise ValueError(f'{limits_key}.max_distance_m must be positive')
         self._pose = None
         self._latest_received_at = 0.0
         self._status = None
@@ -269,8 +289,8 @@ class CameraTargetPlannerClient:
 
     def target_request(self, target, area):
         """Freeze an optical target into base coordinates before any arm motion."""
-        if area not in ('A', 'B', 'C'):
-            raise ValueError("area must be 'A', 'B', or 'C'")
+        if area not in ('A', 'B', 'C', 'D'):
+            raise ValueError("area must be 'A', 'B', 'C', or 'D'")
 
         stamp_ns = self._stamp_ns(target)
         point_m = (target.point.x, target.point.y, target.point.z)
@@ -290,32 +310,43 @@ class CameraTargetPlannerClient:
 
             raw_base_z_m = base_mm[2] / 1000.0
             layer = None
-            if area == 'B':
+            if area in ('B', 'D'):
+                zone = area.lower()
                 raw_base_x_m = base_mm[0] / 1000.0
+                x_min = getattr(self, f'{zone}_x_min_m')
+                x_max = getattr(self, f'{zone}_x_max_m')
                 # Allow only transform roundoff at the inclusive boundaries (1 nm).
-                if not self.b_x_min_m - 1e-9 <= raw_base_x_m <= self.b_x_max_m + 1e-9:
+                if not x_min - 1e-9 <= raw_base_x_m <= x_max + 1e-9:
                     raise ValueError(
-                        f'Target base X ({raw_base_x_m:.4f}m) out of B area X bounds '
-                        f'[{self.b_x_min_m:.4f}, {self.b_x_max_m:.4f}]m')
+                        f'Target base X ({raw_base_x_m:.4f}m) out of {area} area X bounds '
+                        f'[{x_min:.4f}, {x_max:.4f}]m')
                 distance_m = math.hypot(*base_mm) / 1000.0
-                if distance_m > self.b_max_distance_m:
+                max_dist = getattr(self, f'{zone}_max_distance_m')
+                if distance_m > max_dist:
                     raise ValueError(
-                        f'Target base distance ({distance_m:.4f}m) exceeds B limit '
-                        f'({self.b_max_distance_m:.4f}m)')
-                if raw_base_z_m < self.b_height_min_m or raw_base_z_m > self.b_height_max_m:
+                        f'Target base distance ({distance_m:.4f}m) exceeds {area} limit '
+                        f'({max_dist:.4f}m)')
+                h_min = getattr(self, f'{zone}_height_min_m')
+                h_max = getattr(self, f'{zone}_height_max_m')
+                h_split = getattr(self, f'{zone}_height_split_m')
+                if raw_base_z_m < h_min or raw_base_z_m > h_max:
                     raise ValueError(
-                        f'Target base Z ({raw_base_z_m:.4f}m) out of B area height bounds '
-                        f'[{self.b_height_min_m:.4f}, {self.b_height_max_m:.4f}]m')
-                if raw_base_z_m >= self.b_height_split_m:
+                        f'Target base Z ({raw_base_z_m:.4f}m) out of {area} area height bounds '
+                        f'[{h_min:.4f}, {h_max:.4f}]m')
+                if raw_base_z_m >= h_split:
                     layer = 'up'
-                    offset_m = self.target_offset_b_up_m
-                    config_key = 'target_offset_b_up_m'
-                    pitch_key = 'pitch_b_up_deg'
+                    offset_m = getattr(self, f'target_offset_{zone}_up_m')
+                    config_key = f'target_offset_{zone}_up_m'
+                    pitch_key = f'pitch_{zone}_up_deg'
+                    if pitch_key not in self.config['motion']:
+                        pitch_key = 'pitch_b_up_deg'
                 else:
                     layer = 'down'
-                    offset_m = self.target_offset_b_down_m
-                    config_key = 'target_offset_b_down_m'
-                    pitch_key = 'pitch_b_down_deg'
+                    offset_m = getattr(self, f'target_offset_{zone}_down_m')
+                    config_key = f'target_offset_{zone}_down_m'
+                    pitch_key = f'pitch_{zone}_down_deg'
+                    if pitch_key not in self.config['motion']:
+                        pitch_key = 'pitch_b_down_deg'
             else:
                 offset_m = self.target_offset_ac_m
                 config_key = 'target_offset_ac_m'
@@ -324,8 +355,8 @@ class CameraTargetPlannerClient:
             desired_pitch = self.config['motion'][pitch_key]
             request_pitch_deg = float(
                 pitch_deg if desired_pitch is None else desired_pitch)
-            # B retains its horizontal offset reference (0 deg), independent of grasp pitch.
-            offset_pitch_deg = 0.0 if area == 'B' else request_pitch_deg
+            # B and D retain horizontal offset reference (0 deg), independent of grasp pitch.
+            offset_pitch_deg = 0.0 if area in ('B', 'D') else request_pitch_deg
 
             adjusted_base_mm = apply_target_offset_mm(
                 base_mm, offset_m, math.radians(offset_pitch_deg))

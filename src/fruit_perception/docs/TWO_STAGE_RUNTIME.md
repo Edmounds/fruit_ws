@@ -28,7 +28,7 @@ GPU 的 `COMPILATION_NUM_THREADS` 固定为 1，避免本机新检测器与 Edge
 本机设置 GPU `queue_throttle=LOW`，减少驱动在 CPU 上的忙轮询；离线基准中检测+2 ROI 的进程 CPU 从约 104% 降到约 25%，吞吐约下降 3%。不是把模型切到 CPU，也不是降低输入尺寸。
 检测器和统一分类器检查 ONNX 中的类别元数据；Edge ONNX 没有类别元数据，其类别方向依据原归档契约（0=ripe、1=unripe），更换权重时必须重新核实，不能仅凭形状认定类别方向。
 
-深度几何和目标选择器复用：A/C 单目标，B 最多两个稳定候选。动态字符串参数 `zone` 只接受 A/B/C。
+深度几何和目标选择器复用：A/C 单目标，B/D 多候选。动态字符串参数 `zone` 接受 A/B/C/D（D 复用 B 模型与选择器）。
 当前 mission 在 A 区接受任意品种的成熟投票结果，C 使用指定品种，视觉目标已调用 planner。
 感知不再订阅 `/fruit_mission/current_area`，也不按观察窗口切换模型。
 切区关闭旧窗口并清除旧证据。新的 harvest 窗口区域必须匹配 `zone`，否则不采纳。
