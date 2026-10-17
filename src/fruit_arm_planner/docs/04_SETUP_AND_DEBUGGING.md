@@ -212,7 +212,7 @@ PY
 ### 4. 反馈和等待参数 (`planning`)
 
 - `status_max_age_sec`：状态到达规划器后的最大可用时长，当前配置为 0.25 秒。20 Hz 回报正常时约每 50 ms 更新一次。
-- 运动执行无限等待匹配轨迹 ID 的下位机完成/报错；主动 STOP/ESTOP 或节点退出可中断。`execution_timeout_buffer_sec` 已从配置与加载校验删除，mission 也不再设置前端运动超时。端点发现和反馈新鲜度仍独立校验。
+- 运动执行最多等待 10 秒，等待匹配轨迹 ID 的下位机完成/报错；主动 STOP/ESTOP、节点退出或执行超时可结束等待。`duration_ms` 仍只表示计划轨迹时间。端点发现和反馈新鲜度仍独立校验。
 - `interpolation_step_ms`：路点时间间隔目标值。每条轨迹均从最新实测角的 0 ms 路点开始；预设 `duration_ms` 为逐段时长。
 - `default_dwell_ms`：预设夹爪动作路点未指定 `dwell_ms` 时的默认驻留时间。
 - 下位机收到完整点位后自动启动。planner 不发送启动 Mode，也不设置启动等待参数。
@@ -302,7 +302,7 @@ ros2 topic echo /fruit_hardware_bridge/arm/status
 ### 故障 0.1：服务持续等待或已发布轨迹但机械臂没有运行
 - 记录服务返回的 `trajectory_id`，对照 `/fruit_hardware_bridge/arm/status` 的 ID、`task_status` 与 `error_code`。
 - 规划器按 Header、全部 Point、Mode 顺序发布，但 ROS 话题及桥接层不同报文 ID 之间没有跨队列到达屏障；如果 Mode 在点收齐前到达，固件应报错，具体错误行为仍需现场核实。
-- 执行没有自动超时 STOP；需要人工中断时使用 STOP/ESTOP。停止命令可能在桥接层排队，不要把服务返回当作电机已经停稳。
+- 执行等待最多 10 秒，超时返回失败；需要人工中断时使用 STOP/ESTOP。停止命令可能在桥接层排队，不要把服务返回当作电机已经停稳。
 
 ### 故障 1：发布指令后机械臂毫无反应
 - **排查步骤 1**：检查底层串口通信桥 `auto_serial_bridge` 是否已启动：

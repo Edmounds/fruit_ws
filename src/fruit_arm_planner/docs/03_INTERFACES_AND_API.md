@@ -282,7 +282,7 @@ ros2 topic echo --once /arm_planner_node/joint_states fruit_interfaces/msg/ArmTe
 
 1. 分别创建 `MoveArmJoints`、`MoveArmCartesian` 和 `ExecuteArmPreset` service 客户端。mission 只提交这三类请求，不直接发布 `TrajectoryHeader`、`TrajectoryPoint` 或 `ArmControlMode`。
 2. 调用笛卡尔服务前，由负责视觉和坐标转换的模块把目标转换到机械臂根部固定坐标系。`pitch_deg` 是末端俯仰角；`linear_path` 只选择 PTP 或 LIN，不改变坐标系。
-3. 客户端异步发出 service 请求，由 mission 现有 executor 等待其 future；机械臂执行没有前端期限或自动超时 STOP。下位机完成/报错、主动 STOP/取消或节点退出决定结果。端点发现仍独立限时。不要在正在由同一 executor 调用的回调中再次 `spin_until_future_complete`，避免回调互相等待。
+3. 客户端异步发出 service 请求，由 mission 现有 executor 等待其 future；planner 最多等待 10 秒。下位机完成/报错、主动 STOP/取消、执行超时或节点退出决定结果。端点发现仍独立限时。不要在正在由同一 executor 调用的回调中再次 `spin_until_future_complete`，避免回调互相等待。
 4. future 完成后先处理 service 异常，再判断 `response.success`。仅 `success=true` 表示对应轨迹已由下位机报告完成；`trajectory_id` 用于诊断关联，`message` 记录失败原因。请求异常时结果未知，应取消并请求 STOP，不能推断机械臂已停止。
 5. 若任务中途需中断，调用独立的 STOP 或急停入口。它们当前的 `Trigger.success=true` 只表示规划器已发布控制 Mode；下位机是否停稳应观察后续状态。详细时序和残余风险见[通信架构文档](02_COMMUNICATION_PROTOCOL.md)。
 6. 正式 mission 的观察、二维码、放果与恢复均调用 `execute_preset`，名称直接遵循
