@@ -474,7 +474,7 @@ class AxisWaypointActionServer(Node):
             time.monotonic(),
         )
         if progressed:
-            self.get_logger().info(
+            self.get_logger().debug(
                 "Odom progress: "
                 f"position_delta={position_delta:.3f}m "
                 f"yaw_delta={yaw_delta:.3f}rad"

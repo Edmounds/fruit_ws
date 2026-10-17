@@ -43,6 +43,7 @@ DISCARD_PATTERNS = [
         r"xioctl\((?:VIDIOC_QBUF|UVCIOC_CTRL_QUERY)\).*No such device",
         re.IGNORECASE,
     ),
+    re.compile(r"Odom progress:\s+position_delta="),
 ]
 
 # Patterns that should NEVER be displayed on terminal under any circumstances.
