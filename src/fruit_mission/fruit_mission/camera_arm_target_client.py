@@ -295,18 +295,27 @@ class CameraArmTargetClient(Node):
         # 2. Initialize CameraTargetPlannerClient
         extrinsic_cfg = self.get_parameter('camera_extrinsic_config').value
         config_path = self.get_parameter('config_path').value
-        target_offset_ac_m, target_offset_b_up_m, target_offset_b_down_m = (
-            load_target_offsets(config_path))
+        (
+            target_offset_ac_m,
+            target_offset_b_up_m,
+            target_offset_b_down_m,
+            target_offset_d_up_m,
+            target_offset_d_down_m,
+        ) = load_target_offsets(config_path)
         self.get_logger().debug(
             f'Loaded target_offset_ac_m={target_offset_ac_m}, '
             f'target_offset_b_up_m={target_offset_b_up_m}, '
-            f'target_offset_b_down_m={target_offset_b_down_m} from {config_path}')
+            f'target_offset_b_down_m={target_offset_b_down_m}, '
+            f'target_offset_d_up_m={target_offset_d_up_m}, '
+            f'target_offset_d_down_m={target_offset_d_down_m} from {config_path}')
         self._camera_planner = CameraTargetPlannerClient(
             self,
             extrinsic_cfg,
             target_offset_ac_m=target_offset_ac_m,
             target_offset_b_up_m=target_offset_b_up_m,
             target_offset_b_down_m=target_offset_b_down_m,
+            target_offset_d_up_m=target_offset_d_up_m,
+            target_offset_d_down_m=target_offset_d_down_m,
         )
 
         # 3. Set the perception zone parameter before observing

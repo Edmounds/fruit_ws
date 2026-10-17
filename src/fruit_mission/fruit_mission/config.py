@@ -26,6 +26,10 @@ def load_config(path: str, waypoint_file: str | None = None) -> Dict[str, Any]:
         params["target_offset_b_up_m"], f"target_offset_b_up_m in {path}")
     params["target_offset_b_down_m"] = validate_target_offset(
         params["target_offset_b_down_m"], f"target_offset_b_down_m in {path}")
+    params["target_offset_d_up_m"] = validate_target_offset(
+        params["target_offset_d_up_m"], f"target_offset_d_up_m in {path}")
+    params["target_offset_d_down_m"] = validate_target_offset(
+        params["target_offset_d_down_m"], f"target_offset_d_down_m in {path}")
     return params
 
 
@@ -42,8 +46,14 @@ def validate_target_offset(
 
 def load_target_offsets(
     config_path: str,
-) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
-    """Load and validate AC, B-Up and B-Down target offsets from mission config YAML."""
+) -> tuple[
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+]:
+    """Load and validate AC, B-Up, B-Down, and D target offsets from mission config YAML."""
     path = Path(config_path)
     if not path.is_file():
         raise ValueError(f"mission config file does not exist: {config_path}")
@@ -56,6 +66,10 @@ def load_target_offsets(
         raise ValueError(f"target_offset_b_up_m missing in {config_path}")
     if "target_offset_b_down_m" not in params:
         raise ValueError(f"target_offset_b_down_m missing in {config_path}")
+    if "target_offset_d_up_m" not in params:
+        raise ValueError(f"target_offset_d_up_m missing in {config_path}")
+    if "target_offset_d_down_m" not in params:
+        raise ValueError(f"target_offset_d_down_m missing in {config_path}")
     ac_offset = validate_target_offset(
         params["target_offset_ac_m"], f"target_offset_ac_m in {config_path}"
     )
@@ -65,7 +79,13 @@ def load_target_offsets(
     b_down_offset = validate_target_offset(
         params["target_offset_b_down_m"], f"target_offset_b_down_m in {config_path}"
     )
-    return ac_offset, b_up_offset, b_down_offset
+    d_up_offset = validate_target_offset(
+        params["target_offset_d_up_m"], f"target_offset_d_up_m in {config_path}"
+    )
+    d_down_offset = validate_target_offset(
+        params["target_offset_d_down_m"], f"target_offset_d_down_m in {config_path}"
+    )
+    return ac_offset, b_up_offset, b_down_offset, d_up_offset, d_down_offset
 
 
 def validate_config(params: Mapping[str, Any]) -> None:
@@ -135,6 +155,12 @@ def validate_config(params: Mapping[str, Any]) -> None:
     if "target_offset_b_down_m" not in params:
         raise ValueError("target_offset_b_down_m must be specified in config")
     validate_target_offset(params["target_offset_b_down_m"], "target_offset_b_down_m")
+    if "target_offset_d_up_m" not in params:
+        raise ValueError("target_offset_d_up_m must be specified in config")
+    validate_target_offset(params["target_offset_d_up_m"], "target_offset_d_up_m")
+    if "target_offset_d_down_m" not in params:
+        raise ValueError("target_offset_d_down_m must be specified in config")
+    validate_target_offset(params["target_offset_d_down_m"], "target_offset_d_down_m")
     if not str(params.get("observation_window_topic", "")).strip():
         raise ValueError("observation_window_topic must not be empty")
     _validate_qr_fallbacks(params['qr_fallback'])

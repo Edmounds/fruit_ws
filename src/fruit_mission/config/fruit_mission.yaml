@@ -35,8 +35,13 @@ fruit_mission:
     # Local +X is gripper forward, +Y is gripper left, +Z is gripper up.
     # Applied relative to arm end-effector orientation before MoveArmCartesian.
     target_offset_ac_m: [0.03, 0.0, -0.035]
-    target_offset_b_up_m: [0.016, 0.0, 0.018]
+    # B offset
+    target_offset_b_up_m: [0.016, 0.0, -0.002]
     target_offset_b_down_m: [0.030, 0.0, -0.011]
+
+    #D offset
+    target_offset_d_up_m: [0.016, 0.0, -0.002]
+    target_offset_d_down_m: [0.030, 0.0, -0.016]
 
     tts:
       manifest_path: "/home/rc4/fruit_ws/src/fruit_mission/config/wisadel_voice.yaml"
